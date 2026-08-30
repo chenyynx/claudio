@@ -982,7 +982,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             return instance.customBaseURL?.isEmpty == false
         case .openRouter, .xAI, .kimiCode:
             return true
-        case .anthropic, .gemini, .antigravity, .unsupported:
+        case .anthropic, .gemini, .antigravity, .remoteAgent, .unsupported:
             return false
         }
     }
@@ -1065,6 +1065,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 level = OpenAIAgentProvider.reasoningEffort(for: model, level: thinkLvl) ?? "—"
             case .unsupported:
                 level = "—"
+            case .remoteAgent:
+                level = "—" // thinking display is remote-agent controlled
             case .antigravity:
                 let lid = model.id.lowercased()
                 if lid.contains("claude") { level = "budget: \(AnthropicAgentProvider.thinkingBudget(for: model, maxTokens: 64000, level: thinkLvl))" }

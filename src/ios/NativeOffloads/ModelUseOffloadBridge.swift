@@ -239,6 +239,8 @@ private let logger = AppLogger(category: "ModelUseOffload")
             """
         case .unsupported:
             return ""
+        case .remoteAgent:
+            return "" // bridge agent — image params live in the agent prompt, not here
         case .openAI, .openAIResponses, .openRouter, .xAI, .kimiCode:
             return """
             Hint — \(entry.model.displayName) is an OpenAI-compatible image model. Use the same \

@@ -266,6 +266,8 @@ extension AIChatViewModel {
                 provider.appendV1Suffix = kimiAppendV1
                 return provider
             }
+        case .remoteAgent:
+            throw LLMProviderError.noCredentials // Bridge agent is not an LLMProvider
         case .unsupported:
             throw LLMProviderError.noCredentials
         }
