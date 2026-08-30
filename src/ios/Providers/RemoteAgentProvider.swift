@@ -43,21 +43,23 @@ final class RemoteAgentProvider: AgentProvider {
         // (role == .user, no text parts) — e.g. resuming a session whose
         // latest turn was a tool round. Walk back to the most recent user
         // message that actually carries text; that is the turn to relay.
-        guard let lastUserText = messages
-            .filter { $0.role == .user }
-            .reversed()
-            .first(where: { msg in
-                msg.parts.contains { part in
-                    if case .text = part { return true }
-                    return false
-                }
-            })?
-            .parts
+        let userMessages = messages.filter { $0.role == .user }
+        guard let userTextMessage = userMessages.reversed().first(where: { message in
+            message.parts.contains { part in
+                if case .text = part { return true }
+                return false
+            }
+        }) else {
+            logger.error("[RemoteAgent] FAIL: no user text found in messages — throwing sessionNotStarted")
+            throw CCPocketError.sessionNotStarted
+        }
+        let lastUserText = userTextMessage.parts
             .compactMap({ part -> String? in
                 if case .text(let text) = part { return text }
                 return nil
             })
-            .joined(separator: "\n"), !lastUserText.isEmpty else {
+            .joined(separator: "\n")
+        guard !lastUserText.isEmpty else {
             logger.error("[RemoteAgent] FAIL: no user text found in messages — throwing sessionNotStarted")
             throw CCPocketError.sessionNotStarted
         }
