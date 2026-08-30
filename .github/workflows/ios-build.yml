@@ -59,22 +59,10 @@ jobs:
             -archivePath build/Minis.xcarchive \
             -allowProvisioningUpdates \
             -allowProvisioningDeviceRegistration
-          cat > build/export-options.plist <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>method</key>
-  <string>development</string>
-  <key>signingStyle</key>
-  <string>automatic</string>
-</dict>
-</plist>
-PLIST
           xcodebuild -exportArchive \
             -archivePath build/Minis.xcarchive \
             -exportPath build/export \
-            -exportOptionsPlist build/export-options.plist
+            -exportOptionsPlist ../../.github/export-options.plist
 
       - name: Upload .ipa
         uses: actions/upload-artifact@v4
