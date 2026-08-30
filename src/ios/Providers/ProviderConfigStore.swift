@@ -2614,7 +2614,11 @@ final class ProviderConfigStore: ObservableObject {
         // OAuth-login paths keep their required client UA, so we never pass it there.
         let ua = instance.supportsCustomUserAgent ? instance.effectiveCustomUserAgent : nil
         switch (instance.providerType, instance.credentialType) {
-        case (.remoteAgent, _): return [] // Bridge-managed agent — no model list to fetch
+        case (.remoteAgent, _):
+            // Bridge-managed agent — the real model lives on the remote machine.
+            // Return the placeholder entry immediately: an empty list would send
+            // the caller down the models.dev fallback path with a wss:// baseURL.
+            return instance.providerType.builtInModels
         case (.anthropic, .apiKey):
             guard let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) else {
                 throw ModelRefreshError.noCredential
