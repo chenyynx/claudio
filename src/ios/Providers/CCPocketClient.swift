@@ -74,8 +74,8 @@ final class CCPocketClient: @unchecked Sendable {
         let start = CCPocketProtocol.StartRequest(
             projectPath: projectPath,
             provider: provider,
-            permissionMode: permissionMode,
-            requestId: UUID().uuidString
+            requestId: UUID().uuidString,
+            permissionMode: permissionMode
         )
         try await send(CCPocketProtocol.encode(start))
         logger.info("[CCPocket] start sent")
