@@ -1,0 +1,31 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (unsigned)
+        run: |
+          cd src/ios
+          xcodebuild build \
+            -project Minis.xcodeproj \
+            -scheme Minis \
+            -configuration Debug \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath build/DerivedData
+
+      - name: Upload .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-unsigned-app
+          path: src/ios/build/DerivedData/Build/Products/Debug-iphoneos/*.app
+          if-no-files-found: error
