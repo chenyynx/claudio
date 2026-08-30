@@ -37,18 +37,6 @@ jobs:
           touch deps/resources/alpine-rootfs.zip
           mkdir -p deps/resources/RootfsPatch.bundle
 
-      - name: Cache native deps build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            deps/lame-build
-            deps/*/build-ios
-            deps/libs
-            deps/include
-            deps/resources
-          key: deps-${{ runner.os }}-${{ hashFiles('deps/**') }}
-          restore-keys: deps-${{ runner.os }}-
-
       - name: Build native deps (lame → ffmpeg → ish)
         run: |
           # VDSO needs lld; meson picks `clang` from PATH, so brew LLVM must lead.
