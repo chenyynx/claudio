@@ -15,6 +15,7 @@ final class RemoteAgentProvider: AgentProvider {
 
     private let client: CCPocketClient
     private var sessionId: String?
+    private let logger = AppLogger(category: "RemoteAgent")
 
     init(model: LLMModel, client: CCPocketClient) {
         self.model = model
@@ -33,14 +34,21 @@ final class RemoteAgentProvider: AgentProvider {
         // The Bridge maintains session context server-side; only the latest
         // user message is relayed (matches how the official CC Pocket client
         // sends `input` per turn).
+        // [Diag] Full-chain diagnostics — every stage is logged so a failing
+        // turn can be pinpointed from device logs alone.
+        logger.info("[RemoteAgent] stream start messages=\(messages.count)")
+        let userRoles = messages.filter { $0.role == .user }.map { "\($0.parts.map { String(describing: $0) })" }
+        logger.info("[RemoteAgent] user msgs=\(userRoles.count) parts=\(userRoles.joined(separator: " | "))")
         guard let lastUserText = messages.last(where: { $0.role == .user })?.parts
             .compactMap({ part -> String? in
                 if case .text(let text) = part { return text }
                 return nil
             })
             .joined(separator: "\n"), !lastUserText.isEmpty else {
+            logger.error("[RemoteAgent] FAIL: no user text found in messages — throwing sessionNotStarted")
             throw CCPocketError.sessionNotStarted
         }
+        logger.info("[RemoteAgent] extracted text=\(lastUserText.prefix(50)) providerSession=\(sessionId ?? "nil") clientSession=\(client.sessionId ?? "nil")")
 
         // The Bridge replies to `start` with a system message carrying the
         // session id; if the first input races ahead of it, wait briefly rather
@@ -51,7 +59,13 @@ final class RemoteAgentProvider: AgentProvider {
             try? await Task.sleep(nanoseconds: 100_000_000)
             waited += 1
         }
+        if client.sessionId == nil {
+            logger.warning("[RemoteAgent] sessionId still nil after \(waited * 100)ms wait")
+        } else {
+            logger.info("[RemoteAgent] sessionId captured after \(waited * 100)ms")
+        }
         try await client.sendInput(lastUserText, sessionId: sessionId ?? client.sessionId)
+        logger.info("[RemoteAgent] sendInput OK session=\(sessionId ?? client.sessionId ?? "nil")")
 
         return AsyncThrowingStream { continuation in
             self.client.onMessage = { [weak self] message in
@@ -72,6 +86,20 @@ final class RemoteAgentProvider: AgentProvider {
         _ message: CCPocketProtocol.ServerMessage,
         continuation: AsyncThrowingStream<AgentStreamEvent, Error>.Continuation
     ) -> Bool {
+        // [Diag] Log every incoming event with its key payload.
+        let payload: String = message.text.map { String($0.prefix(40)) }
+            ?? message.result.map { String($0.prefix(40)) }
+            ?? message.error
+            ?? message.message.map { m -> String in
+                switch m {
+                case .assistant(let a): return "assistant/\(a.content?.count ?? 0)blocks"
+                case .text(let t): return "text/\(t.prefix(30))"
+                case .unknown: return "unknown"
+                }
+            }
+            ?? message.subtype
+            ?? ""
+        logger.info("[RemoteAgent] <- \(message.type ?? "?")\(payload.isEmpty ? "" : " \(payload)")")
         switch message.type {
         case "system":
             if let sid = message.sessionId ?? message.claudeSessionId {
@@ -123,9 +151,11 @@ final class RemoteAgentProvider: AgentProvider {
             // Bridge wraps real failures as result subtype=error (error field
             // carries the text) — surface as an error, not a normal end-turn.
             if message.subtype == "error" {
+                logger.error("[RemoteAgent] result/error: \(message.error ?? "?")")
                 continuation.finish(throwing: CCPocketError.server(message.error ?? "Bridge error"))
                 return true
             }
+            logger.info("[RemoteAgent] result/\(message.subtype ?? "?") text=\(message.result?.prefix(50) ?? "nil")")
             // The Bridge's final assistant text arrives in `result` (not in an
             // assistant content block) — surface it before finishing the turn.
             if let text = message.result, !text.isEmpty {
@@ -153,6 +183,7 @@ final class RemoteAgentProvider: AgentProvider {
         case "error":
             let detail: String?
             if case .text(let t) = message.message { detail = t } else { detail = nil }
+            logger.error("[RemoteAgent] error msg: \(detail ?? message.error ?? "?")")
             continuation.finish(throwing: CCPocketError.server(detail ?? message.error ?? "Bridge error"))
             return true
 

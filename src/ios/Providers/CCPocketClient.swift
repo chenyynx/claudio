@@ -16,6 +16,7 @@ final class CCPocketClient: @unchecked Sendable {
     }
 
     private(set) var state: State = .idle
+    private let logger = AppLogger(category: "CCPocketClient")
 
     /// Active agent session id, captured from the Bridge's `system` reply to
     /// our `start`. The receive loop captures it regardless of whether a
@@ -44,7 +45,12 @@ final class CCPocketClient: @unchecked Sendable {
     /// Connect to the Bridge. `projectPath` is the working directory the
     /// Bridge should open the agent session in.
     func connect(projectPath: String, provider: String = "claude", permissionMode: String? = nil) async throws {
-        guard state == .idle else { return }
+        // [Diag]
+        logger.info("[CCPocket] connect url=\(baseURL.absoluteString) projectPath=\(projectPath) provider=\(provider) perm=\(permissionMode ?? "default") state=\(state == .idle ? "idle" : "busy")")
+        guard state == .idle else {
+            logger.warning("[CCPocket] connect skipped — state not idle")
+            return
+        }
 
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "token", value: token)]
@@ -58,6 +64,7 @@ final class CCPocketClient: @unchecked Sendable {
         task = wsTask
         wsTask.resume()
         state = .connected
+        logger.info("[CCPocket] ws connected")
 
         // Announce client capabilities first; Bridge replies with history/state.
         let capabilities = CCPocketProtocol.ClientCapabilities()
@@ -67,9 +74,11 @@ final class CCPocketClient: @unchecked Sendable {
         let start = CCPocketProtocol.StartRequest(
             projectPath: projectPath,
             provider: provider,
+            permissionMode: permissionMode,
             requestId: UUID().uuidString
         )
         try await send(CCPocketProtocol.encode(start))
+        logger.info("[CCPocket] start sent")
 
         startReceiveLoop()
     }
