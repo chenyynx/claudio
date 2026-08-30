@@ -3,6 +3,15 @@
 > Claude Code 自动加载。改 Claudio（OpenMinis 改造）代码前必读。
 > 配合 claudio-preflight.md（产品定位/行为边界）一起看。
 
+## 🔴 会话状态自动加载（pp 2026-08-31 定）
+
+动 Claudio 前**先读 CC 记忆状态文件**（含会话断点追踪区：会话 ID + 最后进度 + 时间线）：
+`/home/ubuntu/.claude/projects/-home-ubuntu/memory/claudio-project-state.md`
+
+- 会话中断/续档：状态文件顶部「🕐 会话断点追踪」区直接续，不翻聊天记录
+- 每完成一步改动（代码/配置/修复/出包）：往状态文件追加一行 `时间 + 动作 + 会话ID`（会话 ID 取 `ls -lt ~/.claude/projects/-home-ubuntu/*.jsonl` 最新文件）
+- 进度状态只进 CC 记忆，**不进 claudio 仓库**
+
 ---
 
 ## 一、改造范围
