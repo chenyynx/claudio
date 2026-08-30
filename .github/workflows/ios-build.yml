@@ -45,6 +45,15 @@ jobs:
           ./deps/build_ffmpeg.sh
           ./deps/build_ish.sh
 
+      - name: Signing diagnostics
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+        run: |
+          echo "APPLE_ID injected: $([ -n \"$APPLE_ID\" ] && echo yes || echo no)"
+          echo "APPLE_ID_PASSWORD injected: $([ -n \"$APPLE_ID_PASSWORD\" ] && echo yes || echo no)"
+          xcodebuild -version
+
       - name: Archive & sign (free personal team)
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
