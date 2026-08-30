@@ -89,7 +89,7 @@ final class RemoteAgentProvider: AgentProvider {
             }
 
         case "assistant":
-            if let content = message.message?.content {
+            if case .assistant(let m) = message.message, let content = m.content {
                 for block in content {
                     switch block.type {
                     case "text":
@@ -151,7 +151,9 @@ final class RemoteAgentProvider: AgentProvider {
             return true
 
         case "error":
-            continuation.finish(throwing: CCPocketError.server(message.error ?? message.message ?? "Bridge error"))
+            let detail: String?
+            if case .text(let t) = message.message { detail = t } else { detail = nil }
+            continuation.finish(throwing: CCPocketError.server(detail ?? message.error ?? "Bridge error"))
             return true
 
         case "tool_result":

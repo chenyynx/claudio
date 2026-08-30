@@ -56,8 +56,8 @@ enum CCPocketProtocol {
         let sessionId: String?
         let claudeSessionId: String?
         let permissionMode: String?
-        // assistant
-        let message: AssistantMessage?
+        // assistant / error payload (object for assistant, string for error)
+        let message: MessagePayload?
         // stream / thinking deltas
         let text: String?
         // tool result
@@ -67,10 +67,9 @@ enum CCPocketProtocol {
         let permissionOutcome: String?
         // result
         let result: String?
-        // Bridge sends errors in the `message` field (e.g. "No active session");
-        // `error` is used for result subtype=error payloads. Parse both.
+        // `error` is used by result subtype=error payloads; plain `message`
+        // strings are carried via `message` (see MessagePayload).
         let error: String?
-        let message: String?
         let stopReason: String?
         let inputTokens: Int?
         let outputTokens: Int?
@@ -86,6 +85,23 @@ enum CCPocketProtocol {
         let userMessageUuid: String?
         let clientMessageId: String?
         let baseSeq: Int?
+    }
+
+    /// `message` is polymorphic across server message types: an assistant
+    /// object for `assistant` messages, a plain string for `error` messages.
+    /// Decode to an enum so one ServerMessage struct carries both — and
+    /// unknown shapes degrade to `.unknown` instead of dropping the message.
+    enum MessagePayload: Decodable {
+        case assistant(AssistantMessage)
+        case text(String)
+        case unknown
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.singleValueContainer()
+            if let s = try? c.decode(String.self) { self = .text(s); return }
+            if let a = try? c.decode(AssistantMessage.self) { self = .assistant(a); return }
+            self = .unknown
+        }
     }
 
     /// Content block inside an assistant message (text / thinking / tool_use).
