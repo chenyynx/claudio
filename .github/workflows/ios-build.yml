@@ -8,11 +8,15 @@ on:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Install deps toolchain
+        run: |
+          brew install meson ninja llvm libarchive || true
 
       - name: Prepare xcconfig
         run: |
@@ -28,6 +32,12 @@ jobs:
           mkdir -p deps/resources
           touch deps/resources/alpine-rootfs.zip
           mkdir -p deps/resources/RootfsPatch.bundle
+
+      - name: Build native deps (lame → ffmpeg → ish)
+        run: |
+          ./deps/build_lame.sh
+          ./deps/build_ffmpeg.sh
+          ./deps/build_ish.sh
 
       - name: Build (unsigned)
         run: |
