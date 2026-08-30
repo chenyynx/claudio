@@ -17,6 +17,13 @@ final class CCPocketClient: @unchecked Sendable {
 
     private(set) var state: State = .idle
 
+    /// Active agent session id, captured from the Bridge's `system` reply to
+    /// our `start`. The receive loop captures it regardless of whether a
+    /// per-turn onMessage handler is installed yet (the start reply can land
+    /// before the provider sets one up), so subsequent `input` messages always
+    /// carry the session.
+    private(set) var sessionId: String?
+
     private let baseURL: URL
     private let token: String
     private var task: URLSessionWebSocketTask?
@@ -78,10 +85,12 @@ final class CCPocketClient: @unchecked Sendable {
                     case .string(let text):
                         if let data = text.data(using: .utf8),
                            let serverMessage = CCPocketProtocol.decodeServerMessage(data) {
+                            self.captureSession(from: serverMessage)
                             self.onMessage?(serverMessage)
                         }
                     case .data(let data):
                         if let serverMessage = CCPocketProtocol.decodeServerMessage(data) {
+                            self.captureSession(from: serverMessage)
                             self.onMessage?(serverMessage)
                         }
                     @unknown default:
@@ -92,6 +101,16 @@ final class CCPocketClient: @unchecked Sendable {
                     return
                 }
             }
+        }
+    }
+
+    /// Capture the agent session id from any `system` message (the Bridge's
+    /// reply to `start`). Runs on every message so the session is captured
+    /// even when no per-turn handler is installed yet.
+    private func captureSession(from message: CCPocketProtocol.ServerMessage) {
+        if message.type == "system",
+           let sid = message.sessionId ?? message.claudeSessionId {
+            sessionId = sid
         }
     }
 

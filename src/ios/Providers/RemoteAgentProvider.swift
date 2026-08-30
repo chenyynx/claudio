@@ -42,7 +42,7 @@ final class RemoteAgentProvider: AgentProvider {
             throw CCPocketError.sessionNotStarted
         }
 
-        try await client.sendInput(lastUserText, sessionId: sessionId)
+        try await client.sendInput(lastUserText, sessionId: sessionId ?? client.sessionId)
 
         return AsyncThrowingStream { continuation in
             self.client.onMessage = { [weak self] message in
@@ -111,6 +111,11 @@ final class RemoteAgentProvider: AgentProvider {
             }
 
         case "result":
+            // The Bridge's final assistant text arrives in `result` (not in an
+            // assistant content block) — surface it before finishing the turn.
+            if let text = message.result, !text.isEmpty {
+                continuation.yield(.textDelta(text))
+            }
             let stopReason: AgentStopReason
             switch message.stopReason {
             case "tool_use": stopReason = .toolUse
