@@ -28,7 +28,7 @@ enum CCPocketProtocol {
         var projectPath: String
         var provider: String?          // "claude" | "codex"
         var sessionId: String?
-        var continue: Bool?
+        var `continue`: Bool?
         var requestId: String?
         var model: String?
         var permissionMode: String?
