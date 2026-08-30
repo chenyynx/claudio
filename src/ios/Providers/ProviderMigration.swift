@@ -77,6 +77,9 @@ enum ProviderMigration {
             case .antigravity:
                 // No legacy tokens to migrate for Antigravity (new provider)
                 break
+            case .remoteAgent:
+                // API-key only (Bridge token); no OAuth migration.
+                break
             case .openRouter:
                 // No legacy tokens to migrate for OpenRouter (new provider)
                 break

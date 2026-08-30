@@ -40,10 +40,39 @@ extension AIChatViewModel {
             return OpenAIAgentProvider(provider: LLMProviderFactory.makeXAIProvider(instance: instance, model: entry.model))
         case .kimiCode:
             return OpenAIAgentProvider(provider: LLMProviderFactory.makeKimiProvider(instance: instance, model: entry.model))
+        case .remoteAgent:
+            return await makeRemoteAgentProvider(instance: instance, model: entry.model)
         case .unsupported:
             logger.error("\(instance.providerType) has no agent provider; returning placeholder")
             return AnthropicAgentProvider(provider: AnthropicProvider(apiKey: "", model: entry.model))
         }
+    }
+
+    /// Build a RemoteAgentProvider for a CC Pocket Bridge instance. Reuses a
+    /// live connection from RemoteAgentStore when available so multi-turn chat
+    /// keeps one Bridge session (and its agent context).
+    static func makeRemoteAgentProvider(instance: ProviderInstance, model: LLMModel) async -> AgentProvider {
+        let placeholder = AnthropicAgentProvider(provider: AnthropicProvider(apiKey: "", model: model))
+        guard let urlString = instance.effectiveCustomBaseURL,
+              let baseURL = URL(string: urlString) else {
+            logger.error("remoteAgent: no wss URL configured for instance \(instance.id)")
+            return placeholder
+        }
+        let token = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+        let connection = RemoteAgentConnection.load(instanceID: instance.id)
+        let projectPath = connection?.projectPath ?? ""
+
+        if let existing = RemoteAgentStore.shared.existingClient(instanceID: instance.id) {
+            return RemoteAgentProvider(model: model, client: existing)
+        }
+        let client = CCPocketClient(baseURL: baseURL, token: token)
+        do {
+            try await client.connect(projectPath: projectPath, provider: connection?.provider ?? "claude")
+            RemoteAgentStore.shared.retain(client, instanceID: instance.id)
+        } catch {
+            logger.error("remoteAgent: connect failed for instance \(instance.id): \(error.localizedDescription)")
+        }
+        return RemoteAgentProvider(model: model, client: client)
     }
 
     /// Build an AnthropicAgentProvider for cache keep-alive warmup, reusing the

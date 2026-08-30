@@ -19,6 +19,10 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
     /// OpenAI-compatible coding upstream — flows through OpenAIProvider with
     /// custom base URL + OAuth bearer, like xAI. See the Kimi Code OAuth design notes.
     case kimiCode
+    /// CC Pocket Bridge remote agent (Claudio): drives the agent CLI running
+    /// on the user's own machine through the Bridge's public WebSocket
+    /// protocol. See RemoteAgentProvider.
+    case remoteAgent
     /// Sentinel for a provider type this app build doesn't recognize — e.g. a
     /// NEWER build synced an instance whose `provider_type` string isn't a known
     /// case here. We DECODE to this instead of throwing/dropping, so the instance
@@ -43,6 +47,7 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
         case .openAIResponses: return "Responses API (v3)"
         case .xAI: return "xAI (Grok)"
         case .kimiCode: return "Kimi Code"
+        case .remoteAgent: return String(localized: "My Computer")
         case .unsupported: return "Unsupported"
         }
     }
@@ -58,6 +63,10 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
         case .openAIResponses: return LLMModel.allOpenAI
         case .xAI: return XAIModelsAPI.allModels
         case .kimiCode: return KimiModelsAPI.allModels
+        case .remoteAgent:
+            // One placeholder model entry; the real model lives on the remote
+            // machine (chosen server-side by the Bridge).
+            return [LLMModel(id: "ccpocket-remote", displayName: "My Computer", provider: "ccpocket")]
         case .unsupported: return []
         }
     }
@@ -80,6 +89,8 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
             return String(localized: "Works with the Grok series of models")
         case .kimiCode:
             return String(localized: "Sign in with your Kimi Code / Coding Plan subscription")
+        case .remoteAgent:
+            return String(localized: "Connect to your own computer's agent (Claude Code / Codex)")
         case .antigravity:
             return String(localized: "\(builtInModels.count) built-in models")
         case .unsupported:
@@ -98,6 +109,7 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
         case .openAIResponses: return .vision
         case .xAI: return .vision
         case .kimiCode: return .vision
+        case .remoteAgent: return .vision
         case .unsupported: return .vision
         }
     }

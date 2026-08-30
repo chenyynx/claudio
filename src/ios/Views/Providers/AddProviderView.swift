@@ -157,6 +157,8 @@ struct AddProviderView: View {
     /// straight to the type list, not to a credential step the user never saw.
     @State private var enteredViaVoiceTemplate = false
     @State private var customBaseURLInput = ""
+    /// Project path for the remote agent provider (CC Pocket Bridge).
+    @State private var projectPathInput = ""
     @State private var appendV1SuffixInput = true
     @State private var useResponsesAPI = false
     @State private var manualOAuthTokenInput = ""
@@ -609,6 +611,16 @@ struct AddProviderView: View {
                 oauthSection
             }
 
+            // Remote agent (CC Pocket Bridge): QR scan + project path sit on
+            // top of the API-key form (token) and base URL (wss) fields.
+            if selectedType == .remoteAgent {
+                RemoteAgentConfigView(
+                    wssURL: $customBaseURLInput,
+                    token: $apiKeyInput,
+                    projectPath: $projectPathInput
+                )
+            }
+
             if let error = errorMessage {
                 Section {
                     Text(error)
@@ -888,6 +900,13 @@ struct AddProviderView: View {
             appendV1Suffix: appendV1SuffixInput
         )
         ProviderKeychainHelper.saveAPIKey(trimmedKey, instanceId: instance.id)
+        if effectiveType == .remoteAgent {
+            let trimmedPath = projectPathInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            RemoteAgentConnection.save(
+                RemoteAgentConnection(projectPath: trimmedPath),
+                instanceID: instance.id
+            )
+        }
         store.addInstance(instance)
         isSaving = false
         dismiss()
@@ -1095,7 +1114,7 @@ struct AddProviderView: View {
         switch type {
         case .antigravity:
             return [.oauth]
-        case .openAIResponses, .gemini:
+        case .openAIResponses, .gemini, .remoteAgent:
             return [.apiKey]
         default:
             return [.apiKey, .oauth]

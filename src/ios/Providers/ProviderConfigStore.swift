@@ -2892,6 +2892,7 @@ final class ProviderConfigStore: ObservableObject {
         case .gemini: return "https://generativelanguage.googleapis.com"
         case .openRouter: return "https://openrouter.ai/api"
         case .antigravity: return nil // No public base URL
+        case .remoteAgent: return nil // wss URL lives in customBaseURL
         case .unsupported: return nil // synced from newer build
         }
     }

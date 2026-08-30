@@ -36,6 +36,10 @@ enum LLMProviderFactory {
             return makeKimiProvider(instance: instance, model: entry.model)
         case .unsupported:
             throw FactoryError.voiceOnlyProvider
+        case .remoteAgent:
+            // Remote agent has no LLMProvider path — it is created via
+            // AIChatViewModel.makeAgentProvider (RemoteAgentProvider).
+            throw FactoryError.voiceOnlyProvider
         }
     }
 

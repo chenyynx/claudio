@@ -126,8 +126,9 @@ enum VoiceProviderFactory {
                 apiKey: apiKey)
 
         // Antigravity has no OpenAI-compatible voice path; unsupported = synced
-        // from a newer build this version can't service.
-        case .antigravity, .kimiCode, .unsupported:
+        // from a newer build this version can't service; remoteAgent drives a
+        // remote CLI agent, no voice.
+        case .antigravity, .kimiCode, .remoteAgent, .unsupported:
             return nil
         }
     }
