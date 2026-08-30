@@ -67,7 +67,11 @@ extension AIChatViewModel {
         }
         let client = CCPocketClient(baseURL: baseURL, token: token)
         do {
-            try await client.connect(projectPath: projectPath, provider: connection?.provider ?? "claude")
+            try await client.connect(
+                projectPath: projectPath,
+                provider: connection?.provider ?? "claude",
+                permissionMode: connection?.permissionMode ?? "bypassPermissions"
+            )
             RemoteAgentStore.shared.retain(client, instanceID: instance.id)
         } catch {
             logger.error("remoteAgent: connect failed for instance \(instance.id): \(error.localizedDescription)")

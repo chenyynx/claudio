@@ -8,6 +8,11 @@ struct RemoteAgentConnection: Codable, Equatable {
     var projectPath: String
     /// Working directory suggestion shown in the config form.
     var provider: String = "claude"
+    /// Bridge execution/permission mode for this connection. M1 defaults to
+    /// bypassPermissions (no approval round-trips — the M1 client does not
+    /// render permission requests yet); M3 adds an approval UI and exposes
+    /// this as a user choice.
+    var permissionMode: String = "bypassPermissions"
 
     // MARK: - Persistence
 

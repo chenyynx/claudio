@@ -43,7 +43,7 @@ final class CCPocketClient: @unchecked Sendable {
 
     /// Connect to the Bridge. `projectPath` is the working directory the
     /// Bridge should open the agent session in.
-    func connect(projectPath: String, provider: String = "claude") async throws {
+    func connect(projectPath: String, provider: String = "claude", permissionMode: String? = nil) async throws {
         guard state == .idle else { return }
 
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
