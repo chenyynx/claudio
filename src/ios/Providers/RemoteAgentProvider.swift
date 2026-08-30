@@ -39,7 +39,20 @@ final class RemoteAgentProvider: AgentProvider {
         logger.info("[RemoteAgent] stream start messages=\(messages.count)")
         let userRoles = messages.filter { $0.role == .user }.map { "\($0.parts.map { String(describing: $0) })" }
         logger.info("[RemoteAgent] user msgs=\(userRoles.count) parts=\(userRoles.joined(separator: " | "))")
-        guard let lastUserText = messages.last(where: { $0.role == .user })?.parts
+        // [Fix] M1: the last user message can be a toolResult-only batch
+        // (role == .user, no text parts) — e.g. resuming a session whose
+        // latest turn was a tool round. Walk back to the most recent user
+        // message that actually carries text; that is the turn to relay.
+        guard let lastUserText = messages
+            .filter { $0.role == .user }
+            .reversed()
+            .first(where: { msg in
+                msg.parts.contains { part in
+                    if case .text = part { return true }
+                    return false
+                }
+            })?
+            .parts
             .compactMap({ part -> String? in
                 if case .text(let text) = part { return text }
                 return nil
