@@ -42,6 +42,15 @@ final class RemoteAgentProvider: AgentProvider {
             throw CCPocketError.sessionNotStarted
         }
 
+        // The Bridge replies to `start` with a system message carrying the
+        // session id; if the first input races ahead of it, wait briefly rather
+        // than sending a session-less input (Bridge rejects it with
+        // "No active session. Send 'start' first.").
+        var waited = 0
+        while client.sessionId == nil && waited < 50 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 1
+        }
         try await client.sendInput(lastUserText, sessionId: sessionId ?? client.sessionId)
 
         return AsyncThrowingStream { continuation in
@@ -111,6 +120,12 @@ final class RemoteAgentProvider: AgentProvider {
             }
 
         case "result":
+            // Bridge wraps real failures as result subtype=error (error field
+            // carries the text) — surface as an error, not a normal end-turn.
+            if message.subtype == "error" {
+                continuation.finish(throwing: CCPocketError.server(message.error ?? "Bridge error"))
+                return true
+            }
             // The Bridge's final assistant text arrives in `result` (not in an
             // assistant content block) — surface it before finishing the turn.
             if let text = message.result, !text.isEmpty {
@@ -136,7 +151,7 @@ final class RemoteAgentProvider: AgentProvider {
             return true
 
         case "error":
-            continuation.finish(throwing: CCPocketError.server(message.error ?? "Bridge error"))
+            continuation.finish(throwing: CCPocketError.server(message.error ?? message.message ?? "Bridge error"))
             return true
 
         case "tool_result":

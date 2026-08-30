@@ -67,7 +67,10 @@ enum CCPocketProtocol {
         let permissionOutcome: String?
         // result
         let result: String?
+        // Bridge sends errors in the `message` field (e.g. "No active session");
+        // `error` is used for result subtype=error payloads. Parse both.
         let error: String?
+        let message: String?
         let stopReason: String?
         let inputTokens: Int?
         let outputTokens: Int?
