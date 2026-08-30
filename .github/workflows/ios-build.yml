@@ -17,8 +17,8 @@ jobs:
       - name: Install deps toolchain
         run: |
           # lld is a separate Homebrew formula since LLVM was split (2026).
-          brew install ninja llvm lld libarchive pkg-config
-          pip3 install meson
+          # brew meson instead of pip3: runner Python is PEP-668 managed.
+          brew install meson ninja llvm lld libarchive pkg-config
 
       - name: Prepare xcconfig
         run: |
