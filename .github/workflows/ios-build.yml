@@ -65,6 +65,7 @@ jobs:
             -configuration Debug \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
             -derivedDataPath build/DerivedData
           mkdir -p build/Payload
           cp -r build/DerivedData/Build/Products/Debug-iphoneos/Minis.app build/Payload/
