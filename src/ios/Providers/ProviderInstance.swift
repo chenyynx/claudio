@@ -146,7 +146,7 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         switch providerType {
         case .openAI, .openAIResponses, .openRouter, .xAI, .kimiCode, .anthropic:
             return true
-        case .gemini, .antigravity, .unsupported:
+        case .gemini, .antigravity, .remoteAgent, .unsupported:
             return false
         }
     }
