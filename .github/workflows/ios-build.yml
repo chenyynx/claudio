@@ -16,7 +16,9 @@ jobs:
 
       - name: Install deps toolchain
         run: |
-          brew install meson ninja llvm libarchive || true
+          # lld is a separate Homebrew formula since LLVM was split (2026).
+          brew install ninja llvm lld libarchive pkg-config
+          pip3 install meson
 
       - name: Prepare xcconfig
         run: |
@@ -36,7 +38,7 @@ jobs:
       - name: Build native deps (lame → ffmpeg → ish)
         run: |
           # VDSO needs lld; meson picks `clang` from PATH, so brew LLVM must lead.
-          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+          export PATH="/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/lld/bin:$PATH"
           ./deps/build_lame.sh
           ./deps/build_ffmpeg.sh
           ./deps/build_ish.sh
@@ -48,7 +50,7 @@ jobs:
             -project Minis.xcodeproj \
             -scheme Minis \
             -configuration Debug \
-            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             -derivedDataPath build/DerivedData
 
