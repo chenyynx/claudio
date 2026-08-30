@@ -1823,7 +1823,7 @@ static void gov_tick(void) {
 - (void)beginBackgroundCPUGovernor {
     if (g_gov_timer) return;  // idempotent
     if (!g_gov_queue)
-        g_gov_queue = dispatch_queue_create("com.openminis.ish.cpugovernor",
+        g_gov_queue = dispatch_queue_create("com.claudio.ish.cpugovernor",
             dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
 
     g_gov_head = 0;

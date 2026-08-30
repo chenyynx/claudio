@@ -527,7 +527,7 @@ struct MinisApp: App {
     // MARK: - FileProvider
 
     private static let fileProviderDomain = NSFileProviderDomain(
-        identifier: NSFileProviderDomainIdentifier("com.openminis.app.files"),
+        identifier: NSFileProviderDomainIdentifier("com.claudio.app.files"),
         displayName: "Minis"
     )
 
@@ -683,7 +683,7 @@ struct MinisApp: App {
             }
 
             // Remove any stale domains with different identifiers, then add ours.
-            let stale = domains.filter { $0.identifier.rawValue.contains("com.openminis") }
+            let stale = domains.filter { $0.identifier.rawValue.contains("com.claudio.app") }
             let group = DispatchGroup()
             for d in stale {
                 group.enter()
@@ -865,7 +865,7 @@ struct MinisApp: App {
     private static func migrateSharedDirToAppGroup() {
         let fm = FileManager.default
         let library = fm.urls(for: .libraryDirectory, in: .userDomainMask).first!
-        let container = fm.containerURL(forSecurityApplicationGroupIdentifier: "group.com.openminis.app")!
+        let container = fm.containerURL(forSecurityApplicationGroupIdentifier: "group.com.claudio.app")!
 
         let migrations: [(source: URL, dest: URL, label: String)] = [
             // Legacy Library/MinisChat/shared → new shared
@@ -906,7 +906,7 @@ struct MinisApp: App {
     /// targets logged during MOUNT setup.
     private static func logFPSyncTracePaths() {
         let fm = FileManager.default
-        let groupID = "group.com.openminis.app"
+        let groupID = "group.com.claudio.app"
         let containerURL = fm.containerURL(forSecurityApplicationGroupIdentifier: groupID)
         let containerPath = containerURL?.path ?? "<nil>"
         let resolvedContainer = containerURL?.resolvingSymlinksInPath().path ?? "<nil>"
@@ -945,7 +945,7 @@ struct MinisApp: App {
     // (`presentWebAppDeepLink`) is the remaining WebApp presentation path.
 
     /// Resolves a transient `WebAppShortcut` reconstructed from a
-    /// `minis://open?session=…&path=…` deep link (openminis.app launcher
+    /// `minis://open?session=…&path=…` deep link (com.claudio.app launcher
     /// round-trip) and presents the immersive WebView. Does not touch
     /// ChatStore — the launcher URL is fully self-describing.
     @MainActor

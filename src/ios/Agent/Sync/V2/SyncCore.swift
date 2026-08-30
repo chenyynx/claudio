@@ -251,7 +251,7 @@ final class SyncCore {
                 }
             }
         }
-        m.start(queue: DispatchQueue(label: "com.openminis.sync.pathMonitor"))
+        m.start(queue: DispatchQueue(label: "com.claudio.sync.pathMonitor"))
         pathMonitor = m
     }
 

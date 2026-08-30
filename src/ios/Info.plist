@@ -32,7 +32,7 @@
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.openminis.app.liveactivity-refresh</string>
+		<string>com.claudio.app.liveactivity-refresh</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
@@ -303,7 +303,7 @@
 			<string>Claude OAuth Callback</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.openminis.app</string>
+				<string>com.claudio.app</string>
 			</array>
 		</dict>
 		<dict>
