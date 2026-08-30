@@ -41,11 +41,13 @@ enum DebugRPCProvider {
             case .openAIResponses: supportedCreds = ["apiKey"]
             case .xAI: supportedCreds = ["apiKey", "oauth"]
             case .kimiCode: supportedCreds = ["oauth"]
+            case .remoteAgent: supportedCreds = ["apiKey"] // Bridge token rides the apiKey slot
             case .unsupported: supportedCreds = []
             }
             let customBaseSupported: Bool
             switch type {
             case .openAI, .openRouter, .openAIResponses, .gemini, .xAI, .kimiCode: customBaseSupported = true
+            case .remoteAgent: customBaseSupported = true // Bridge wss URL lives in customBaseURL
             case .anthropic, .antigravity, .unsupported: customBaseSupported = false
             }
             return [
