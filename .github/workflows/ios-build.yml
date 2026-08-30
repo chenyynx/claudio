@@ -74,13 +74,13 @@ jobs:
           xcodebuild build \
             -project Minis.xcodeproj \
             -scheme Minis \
-            -configuration Debug \
+            -configuration Release \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_DEBUG_DYLIB=NO \
             -derivedDataPath build/DerivedData
           mkdir -p build/Payload
-          cp -r build/DerivedData/Build/Products/Debug-iphoneos/Minis.app build/Payload/
+          cp -r build/DerivedData/Build/Products/Release-iphoneos/Minis.app build/Payload/
           # Auto-increment build number: CFBundleVersion = git commit count, so
           # every sideloaded ipa is distinguishable (monotonic, never repeats).
           BUILD_NO=$(git rev-list --count HEAD)
