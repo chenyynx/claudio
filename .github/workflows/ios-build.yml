@@ -45,20 +45,40 @@ jobs:
           ./deps/build_ffmpeg.sh
           ./deps/build_ish.sh
 
-      - name: Build (unsigned)
+      - name: Archive & sign (free personal team)
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
         run: |
           cd src/ios
-          xcodebuild build \
+          xcodebuild archive \
             -project Minis.xcodeproj \
             -scheme Minis \
             -configuration Debug \
             -destination 'generic/platform=iOS' \
-            CODE_SIGNING_ALLOWED=NO \
-            -derivedDataPath build/DerivedData
+            -archivePath build/Minis.xcarchive \
+            -allowProvisioningUpdates \
+            -allowProvisioningDeviceRegistration
+          cat > build/export-options.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key>
+  <string>development</string>
+  <key>signingStyle</key>
+  <string>automatic</string>
+</dict>
+</plist>
+PLIST
+          xcodebuild -exportArchive \
+            -archivePath build/Minis.xcarchive \
+            -exportPath build/export \
+            -exportOptionsPlist build/export-options.plist
 
-      - name: Upload .app
+      - name: Upload .ipa
         uses: actions/upload-artifact@v4
         with:
-          name: Minis-unsigned-app
-          path: src/ios/build/DerivedData/Build/Products/Debug-iphoneos/*.app
+          name: Minis-signed-ipa
+          path: src/ios/build/export/*.ipa
           if-no-files-found: error
