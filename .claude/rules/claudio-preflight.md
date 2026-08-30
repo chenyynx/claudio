@@ -47,6 +47,11 @@
 
 ## 三、决策记录（2026-08-30 定）
 
+0. **🔴 管道 = K9i-0/ccpocket（老项目）**：Flutter App + Node.js Bridge（`npx @ccpocket/bridge@latest`）+ **公开 JSON WebSocket 协议**（stack.md）。理由：无云直连契合"数据不出用户机器"卖点、协议公开稳定（2 月至今）、无中心化依赖。
+   - ⚠️ **同名项目警示**：GitHub 上还有 **heypandax/cc-pocket**（Panda Lee 大鹏李，2026-06 创建，Kotlin daemon + **零知识中继** + 国区 App Store "随身编程遥控" id6778773969）——**与 K9i-0 完全独立的项目**（作者/代码/App 全不同，README 互不提），只是同名。**已排除**：零知识中继 = 数据经过官方服务器（与无云卖点冲突）、架构大改期协议不稳、105⭐ 生态小。**任何时候看到"CC Pocket"先确认是哪个仓库，不许混用。**
+   - 老项目 App Store："CC Pocket – Code Anywhere"（id6759188790，主要 US 区，国区可用性见 M0 实测）
+   - **happy（slopus/happy）重新评估（2026-08-30 晚）**：协议已文档化（docs/protocol.md + happy-wire.md + encryption.md，AES-GCM/NaCl 标准算法）、23.5k⭐、可自托管 happy-server——**但集成成本 2-3 倍**：E2E 加密客户端实现（1-2 周）+ Socket.IO+HTTP 双通道（Swift 第三方依赖、协议不透明）+ 事件模型是资源级 CRUD（云同步用）不是 UI 展示级（转换层自己写）+ 账号体系 + server 部署（Postgres）。事件模型对比结论：K9i-0 的 stream_delta/thinking_delta/tool_use/permission_request 直接对应 C 档 UI，零转换；happy 的 seq 重连恢复是云同步场景需要，直连场景用不上。纯 WS 优于 Socket.IO（透明/零依赖/原生支持，重连 M4 自做）。**维持 CC Pocket 定案；happy 仅当协议 SDK 化或需要实时语音时再评估。**
+
 1. **本地/远端关系**：各用各的（两个独立入口，用户自选），第一版不做协同
 2. **协议**：照 CC Pocket 公开 JSON WebSocket 协议写客户端，**通用事件模型**（正文/思考/工具调用/结果/审批，不绑死 agent）——预留多 agent
 3. **第一版实际接**：Claude Code + Codex（Bridge 现成适配器，零代码）；DSH 等有需求再做
