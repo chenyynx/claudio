@@ -12,6 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prepare xcconfig
+        run: |
+          cd src/ios
+          cp Configs/ProviderCustomization.xcconfig.example Configs/ProviderCustomization.xcconfig
+
       - name: Build (unsigned)
         run: |
           cd src/ios
