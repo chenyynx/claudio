@@ -35,6 +35,8 @@ jobs:
 
       - name: Build native deps (lame → ffmpeg → ish)
         run: |
+          # VDSO needs lld; meson picks `clang` from PATH, so brew LLVM must lead.
+          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           ./deps/build_lame.sh
           ./deps/build_ffmpeg.sh
           ./deps/build_ish.sh
