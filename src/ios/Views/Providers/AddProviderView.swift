@@ -960,6 +960,7 @@ struct AddProviderView: View {
             case .openAIResponses: break // API key only, no OAuth
             case .xAI: try await XAIOAuthManager.shared.login(instanceId: pendingInstanceId)
             case .kimiCode: break // device-code flow runs in KimiDeviceLoginSheet, not here
+            case .remoteAgent: break // Bridge URL + token, no OAuth
             case .unsupported: break // free / unsupported — no OAuth
             }
             oauthAuthTime = Date()
@@ -991,6 +992,8 @@ struct AddProviderView: View {
             token = ProviderKeychainHelper.loadOAuthToken(instanceId: pendingInstanceId, as: XAITokenStorage.self)?.accessToken
         case .kimiCode:
             token = ProviderKeychainHelper.loadOAuthToken(instanceId: pendingInstanceId, as: KimiTokenStorage.self)?.accessToken
+        case .remoteAgent:
+            token = nil // Bridge URL + token, no OAuth
         case .unsupported:
             token = nil // free / unsupported — no token
         }
@@ -1069,6 +1072,7 @@ struct AddProviderView: View {
         case .openAIResponses: return String(localized: "Sign In") // Not reachable — API key only
         case .xAI: return String(localized: "Sign in with xAI")
         case .kimiCode: return String(localized: "Sign in with Kimi Code")
+        case .remoteAgent: return String(localized: "Sign In") // Bridge URL + token, no OAuth
         case .unsupported: return String(localized: "Sign In")
         }
     }
@@ -1084,6 +1088,7 @@ struct AddProviderView: View {
         case .openAIResponses: return "sk-..."
         case .xAI: return "xai-..."
         case .kimiCode: return "" // OAuth only
+        case .remoteAgent: return "" // Bridge URL + token, not an API key
         case .unsupported: return ""
         }
     }
@@ -1098,6 +1103,7 @@ struct AddProviderView: View {
         case .openAIResponses: return "Responses API"
         case .xAI: return "xAI (Grok)"
         case .kimiCode: return "Kimi Code"
+        case .remoteAgent: return type.displayName
         case .unsupported: return String(localized: "Unsupported")
         }
     }
@@ -1127,6 +1133,8 @@ struct AddProviderView: View {
             return String(localized: "Supports OpenAI official API and third-party services like OpenRouter, MiniMax, etc.")
         case (.openAIResponses, .apiKey):
             return String(localized: "Use an API key for a Responses API endpoint")
+        case (.remoteAgent, _):
+            return String(localized: "Connect to the agent on your own computer via CC Pocket Bridge")
         case (_, .apiKey):
             return String(localized: "Use an API key from your \(type.displayName) account")
         case (.anthropic, .oauth):
@@ -1179,6 +1187,9 @@ struct AddProviderView: View {
         case .kimiCode:
             Image(systemName: "moon.stars")
                 .foregroundStyle(.indigo)
+        case .remoteAgent:
+            Image(systemName: "desktopcomputer")
+                .foregroundStyle(.teal)
         case .unsupported:
             Image(systemName: "questionmark.circle")
                 .foregroundStyle(.gray)
@@ -1195,6 +1206,7 @@ struct AddProviderView: View {
         case .openAIResponses: return .mint
         case .xAI: return .gray
         case .kimiCode: return .indigo
+        case .remoteAgent: return .teal
         case .unsupported: return .gray
         }
     }

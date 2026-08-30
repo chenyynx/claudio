@@ -129,12 +129,14 @@ enum CCPocketError: LocalizedError {
     case invalidURL
     case notConnected
     case sessionNotStarted
+    case server(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "Invalid Bridge URL"
         case .notConnected: return "Not connected to Bridge"
         case .sessionNotStarted: return "Agent session has not started"
+        case .server(let message): return "Bridge error: \(message)"
         }
     }
 }
