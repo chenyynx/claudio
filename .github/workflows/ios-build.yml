@@ -54,28 +54,25 @@ jobs:
           echo "APPLE_ID_PASSWORD injected: $([ -n \"$APPLE_ID_PASSWORD\" ] && echo yes || echo no)"
           xcodebuild -version
 
-      - name: Archive & sign (free personal team)
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+      # KSign on-device signing path: CI ships an UNSIGNED ipa; the user's
+      # iPhone signs it locally via KSign (free, no paid developer account).
+      - name: Build (unsigned) + package ipa
         run: |
           cd src/ios
-          xcodebuild archive \
+          xcodebuild build \
             -project Minis.xcodeproj \
             -scheme Minis \
             -configuration Debug \
             -destination 'generic/platform=iOS' \
-            -archivePath build/Minis.xcarchive \
-            -allowProvisioningUpdates \
-            -allowProvisioningDeviceRegistration
-          xcodebuild -exportArchive \
-            -archivePath build/Minis.xcarchive \
-            -exportPath build/export \
-            -exportOptionsPlist ../../.github/export-options.plist
+            CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath build/DerivedData
+          mkdir -p build/Payload
+          cp -r build/DerivedData/Build/Products/Debug-iphoneos/Minis.app build/Payload/
+          cd build && zip -qr Minis-unsigned.ipa Payload
 
-      - name: Upload .ipa
+      - name: Upload unsigned .ipa
         uses: actions/upload-artifact@v4
         with:
-          name: Minis-signed-ipa
-          path: src/ios/build/export/*.ipa
+          name: Minis-unsigned-ipa
+          path: src/ios/build/Minis-unsigned.ipa
           if-no-files-found: error
