@@ -7,7 +7,9 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    # Project targets iOS 26.2 / Swift 6.0 — macos-15's Xcode 16.4 (iOS 18.5
+    # SDK) fails on upstream code (glassEffect etc.). Need Xcode 26.
+    runs-on: macos-26
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
