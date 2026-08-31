@@ -5145,7 +5145,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
             let streamEnd = Date()
             let assistantText = streamResult.assistantText
-            let toolEntries = streamResult.toolEntries
+            var toolEntries = streamResult.toolEntries
             let stopReason = streamResult.stopReason
             turnUsage = streamResult.turnUsage
             logger.info("📐 Context after API: latestContextTokens=\(turnUsage.latestContextTokens) (in:\(turnUsage.inputTokens) cache_read:\(turnUsage.cacheReadTokens) cache_create:\(turnUsage.cacheCreationTokens))")
@@ -5283,6 +5283,18 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             }
 
             // If no tool uses, this turn is done — persist and break.
+            // [Fix] CC Pocket Remote: the Bridge agent executes tools itself
+            // and streams results back as tool_result events; locally
+            // executing the tool_use here would fail with "Unknown tool" and
+            // pollute history (observed: Read/Bash DISPATCH → COMPLETED
+            // success=false, red failure cards + 7-8s wasted per call). Treat
+            // every remote-agent turn as tool-less for execution purposes —
+            // the tool_use blocks still persist for UI rendering, and the
+            // Bridge's final `result` event carries the complete answer.
+            if provider is RemoteAgentProvider, !toolEntries.isEmpty {
+                logger.info("[ToolLifecycle] SKIP local tool execution (remote agent) — \(toolEntries.count) tool(s) handled by Bridge; ending round")
+                toolEntries = []
+            }
             guard !toolEntries.isEmpty else {
                 logger.info("Agent loop ending — no tool calls. stopReason=\(String(describing: stopReason))")
 
