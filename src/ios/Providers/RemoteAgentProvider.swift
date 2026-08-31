@@ -159,12 +159,18 @@ final class RemoteAgentProvider: AgentProvider {
                 for block in content {
                     switch block.type {
                     case "text":
-                        if let text = block.text, !text.isEmpty {
+                        // Assistant blocks are full-content snapshots; when
+                        // stream_delta already streamed this text incrementally
+                        // (textBlockStarted), yielding the snapshot duplicates
+                        // the message. Only use it as a fallback when no
+                        // deltas arrived.
+                        if let text = block.text, !text.isEmpty, !textBlockStarted {
                             openTextBlockIfNeeded(continuation)
                             continuation.yield(.textDelta(text))
                         }
                     case "thinking":
-                        if let text = block.text, !text.isEmpty {
+                        // Same snapshot-vs-delta rule as text above.
+                        if let text = block.text, !text.isEmpty, thinkingAccumulator.isEmpty {
                             continuation.yield(.thinkingDelta(text))
                         }
                     case "tool_use":
