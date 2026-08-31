@@ -62,6 +62,7 @@ extension AIChatViewModel {
         let connection = RemoteAgentConnection.load(instanceID: instance.id)
         let projectPath = connection?.projectPath ?? ""
         let client = CCPocketClient(baseURL: baseURL, token: token)
+        client.mappingInstanceID = instance.id
 
         // [Fix] Resume identity: the persisted per-instance mapping holds
         // the Claude session id of *this* instance's conversation (never a

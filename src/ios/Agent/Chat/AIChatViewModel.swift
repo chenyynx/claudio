@@ -4202,7 +4202,19 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                     }
                     if !tailTextParts.isEmpty {
                         tailTextParts.append(.text("<system-reminder>The user stopped this response. Content may be incomplete.</system-reminder>"))
-                        let assistantMsg = AgentMessage(role: .assistant, parts: tailTextParts)
+                        // [Fix] Persist thinking accumulated during the
+                        // interrupted turn — previously it only lived in
+                        // in-memory UI blocks and vanished on reload.
+                        let thinkingText = last.blocks
+                            .compactMap { block -> String? in
+                                if block.kind == .thinking, !block.content.isEmpty { return block.content }
+                                return nil
+                            }
+                            .joined(separator: "\n")
+                        var assistantMsg = AgentMessage(role: .assistant, parts: tailTextParts)
+                        if !thinkingText.isEmpty {
+                            assistantMsg.reasoningContent = thinkingText
+                        }
                         let asstIdx = agentHistory.count
                         agentHistory.append(assistantMsg)
                         Task { @MainActor [weak self] in
@@ -4289,7 +4301,19 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 logger.info("⏹️[StopDiag] Case2 collect textParts=\(textParts.count) safeStart=\(safeStart) histLastIsAsst=\(histLastIsAsst) → \(!textParts.isEmpty && !histLastIsAsst ? "WILL COMMIT" : "SKIP commit")")
                 if !textParts.isEmpty, agentHistory.last?.role != .assistant {
                     textParts.append(.text("<system-reminder>The user stopped this response. Content may be incomplete.</system-reminder>"))
-                    let assistantMsg = AgentMessage(role: .assistant, parts: textParts)
+                    // [Fix] Persist thinking accumulated during the
+                    // interrupted turn — previously it only lived in
+                    // in-memory UI blocks and vanished on reload.
+                    let thinkingText = last.blocks
+                        .compactMap { block -> String? in
+                            if block.kind == .thinking, !block.content.isEmpty { return block.content }
+                            return nil
+                        }
+                        .joined(separator: "\n")
+                    var assistantMsg = AgentMessage(role: .assistant, parts: textParts)
+                    if !thinkingText.isEmpty {
+                        assistantMsg.reasoningContent = thinkingText
+                    }
                     let asstIdx = agentHistory.count
                     agentHistory.append(assistantMsg)
                     Task { @MainActor [weak self] in

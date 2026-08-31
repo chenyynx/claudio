@@ -40,6 +40,12 @@ final class CCPocketClient: @unchecked Sendable {
     private(set) var state: State = .idle
     private let logger = AppLogger(category: "CCPocketClient")
 
+    /// Provider-instance id this client belongs to. Set by the factory;
+    /// used to persist the session mapping immediately when the Claude id
+    /// is captured (not only at turn end), so a kill right after the first
+    /// message still resumes the same conversation next launch.
+    var mappingInstanceID: String?
+
     /// Bridge session id (short, 8 chars) — routes `input` (the Bridge
     /// resolves it exactly) and identifies this runtime session.
     private(set) var sessionId: String?
@@ -456,6 +462,14 @@ final class CCPocketClient: @unchecked Sendable {
         if let claudeId, claudeId != claudeSessionId {
             claudeSessionId = claudeId
             logger.info("[CCPocket] captured claudeSessionId=\(claudeId.prefix(8))... msg=\(message.type ?? "?")")
+            // [Fix] Persist the mapping the moment the Claude id is known —
+            // waiting for turn end lost it when the app was killed right
+            // after the first message (next launch started a brand-new
+            // conversation → the official client showed a new session per
+            // reply).
+            if let mappingInstanceID {
+                saveMapping(instanceID: mappingInstanceID)
+            }
         }
         // `session_list` carries the authoritative claudeSessionId per
         // Bridge session — match by our Bridge session id.
