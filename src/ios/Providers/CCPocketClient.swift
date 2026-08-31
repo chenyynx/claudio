@@ -175,11 +175,19 @@ final class CCPocketClient: @unchecked Sendable {
     ///   resume.
     private func captureSession(from message: CCPocketProtocol.ServerMessage) {
         // Bridge session id — short (8 chars), on the `system` reply.
-        if message.type == "system",
-           let raw = message.sessionId,
-           raw.count <= 8,
-           raw != sessionId {
-            sessionId = raw
+        // [Diag] Log the raw value so a missing capture is explainable from
+        // device logs alone (e.g. the Bridge sending a long id here).
+        if message.type == "system" {
+            if let raw = message.sessionId {
+                if raw.count <= 8, raw != sessionId {
+                    sessionId = raw
+                    logger.info("[CCPocket] captured bridgeSessionId=\(raw) msg=\(message.subtype ?? "system")")
+                } else if raw.count > 8 {
+                    logger.info("[CCPocket] system msg has long sessionId (claude id, len=\(raw.count)) — not a bridge routing id")
+                }
+            } else if sessionId == nil {
+                logger.info("[CCPocket] system msg without sessionId (\(message.subtype ?? "?"))")
+            }
         }
         // Claude session id — full UUID (36 chars).
         let claudeId: String?

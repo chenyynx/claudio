@@ -82,21 +82,27 @@ final class RemoteAgentProvider: AgentProvider {
         logger.info("[RemoteAgent] extracted text=\(lastUserText.prefix(50)) providerSession=\(sessionId ?? "nil") clientSession=\(client.sessionId ?? "nil")")
 
         // The Bridge replies to `start` with a system message carrying the
-        // session id; if the first input races ahead of it, wait briefly rather
-        // than sending a session-less input (Bridge rejects it with
-        // "No active session. Send 'start' first.").
+        // session id; if the first input races ahead of it, wait rather than
+        // sending a session-less input. [Fix] A session-less input is never
+        // sent: the Bridge's resolveSession(nil) falls back to "the most
+        // recently created session" — with multiple clients on one Bridge
+        // (official app + Claudio) that routes the message into an unrelated
+        // conversation (cross-session bleed). If the Bridge session id is
+        // not captured in time, fail the turn instead of bleeding.
         var waited = 0
-        while client.sessionId == nil && waited < 50 {
+        while client.sessionId == nil && waited < 100 {
             try? await Task.sleep(nanoseconds: 100_000_000)
             waited += 1
         }
-        if client.sessionId == nil {
-            logger.warning("[RemoteAgent] sessionId still nil after \(waited * 100)ms wait")
-        } else {
-            logger.info("[RemoteAgent] sessionId captured after \(waited * 100)ms")
+        guard let bridgeSessionId = sessionId ?? client.sessionId else {
+            logger.error("[RemoteAgent] FAIL: Bridge session id never captured after \(waited * 100)ms — aborting send to avoid cross-session bleed")
+            throw CCPocketError.sessionNotStarted
         }
-        try await client.sendInput(lastUserText, sessionId: sessionId ?? client.sessionId)
-        logger.info("[RemoteAgent] sendInput OK session=\(sessionId ?? client.sessionId ?? "nil")")
+        if waited > 0 {
+            logger.info("[RemoteAgent] bridgeSessionId captured after \(waited * 100)ms")
+        }
+        try await client.sendInput(lastUserText, sessionId: bridgeSessionId)
+        logger.info("[RemoteAgent] sendInput OK session=\(bridgeSessionId)")
 
         return AsyncThrowingStream { continuation in
             self.client.onMessage = { [weak self] message in
