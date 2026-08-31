@@ -53,10 +53,11 @@ jobs:
       - name: Build (unsigned) + package ipa
         run: |
           cd src/ios
-          # -max-swift-jobs 2: cap Swift compiler parallelism. macos-26 runner
-          # images changed in Aug 2026 and xcodebuild started dying silently
-          # mid-build (no error output, ibtoold orphans) — consistent with OOM
-          # on the default Swift job count for this large mixed codebase.
+          # SWIFT_NUM_THREADS=2: cap Swift compiler parallelism. macos-26
+          # runner images changed in Aug 2026 and xcodebuild started dying
+          # silently mid-build (no error output, ibtoold orphans) — consistent
+          # with OOM on the default Swift thread count for this large mixed
+          # codebase.
           xcodebuild build \
             -project Minis.xcodeproj \
             -scheme Minis \
@@ -64,7 +65,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_DEBUG_DYLIB=NO \
-            -max-swift-jobs 2 \
+            SWIFT_NUM_THREADS=2 \
             -derivedDataPath build/DerivedData
           mkdir -p build/Payload
           cp -r build/DerivedData/Build/Products/Release-iphoneos/Minis.app build/Payload/
