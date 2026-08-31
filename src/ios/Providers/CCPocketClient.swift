@@ -344,7 +344,7 @@ final class CCPocketClient: @unchecked Sendable {
             self.reconnectTask = nil
         }
     }
-    private var reconnectDelay: UInt64 = Self.reconnectBaseDelayNanoseconds
+    private var reconnectDelay: UInt64 = CCPocketClient.reconnectBaseDelayNanoseconds
 
     // MARK: - Receive loop
 
