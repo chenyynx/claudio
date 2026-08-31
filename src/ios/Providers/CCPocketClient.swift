@@ -186,7 +186,8 @@ final class CCPocketClient: @unchecked Sendable {
             } catch {
                 throw error
             }
-            guard let task else { throw CCPocketError.notConnected }
+            // `task` is the function-level unwrap from the guard at the top —
+            // reconnect replaced the underlying socket, so just retry on it.
             try await task.send(.string(string))
         }
     }
