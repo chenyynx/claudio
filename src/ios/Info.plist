@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleDisplayName</key>
+	<string>Claudio</string>
 	<key>CFBundleLocalizations</key>
 	<array>
 		<string>en</string>
@@ -207,38 +209,56 @@
 		</dict>
 		<key>CFBundleAlternateIcons</key>
 		<dict>
-			<key>AppIcon-Light</key>
+			<key>AppIcon-Orange</key>
 			<dict>
 				<key>CFBundleIconFiles</key>
 				<array>
-					<string>AlternateIcons/AppIcon-Light</string>
+					<string>AlternateIcons/AppIcon-Orange</string>
 				</array>
 				<key>UIPrerenderedIcon</key>
 				<false/>
 			</dict>
-			<key>AppIcon-Dark</key>
+			<key>AppIcon-Invert</key>
 			<dict>
 				<key>CFBundleIconFiles</key>
 				<array>
-					<string>AlternateIcons/AppIcon-Dark</string>
+					<string>AlternateIcons/AppIcon-Invert</string>
 				</array>
 				<key>UIPrerenderedIcon</key>
 				<false/>
 			</dict>
-			<key>AppIcon-LegacyLight</key>
+			<key>AppIcon-Violet</key>
 			<dict>
 				<key>CFBundleIconFiles</key>
 				<array>
-					<string>AlternateIcons/AppIcon-LegacyLight</string>
+					<string>AlternateIcons/AppIcon-Violet</string>
 				</array>
 				<key>UIPrerenderedIcon</key>
 				<false/>
 			</dict>
-			<key>AppIcon-LegacyDark</key>
+			<key>AppIcon-Pink</key>
 			<dict>
 				<key>CFBundleIconFiles</key>
 				<array>
-					<string>AlternateIcons/AppIcon-LegacyDark</string>
+					<string>AlternateIcons/AppIcon-Pink</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<false/>
+			</dict>
+			<key>AppIcon-PinkDark</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AlternateIcons/AppIcon-PinkDark</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<false/>
+			</dict>
+			<key>AppIcon-PinkWhite</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AlternateIcons/AppIcon-PinkWhite</string>
 				</array>
 				<key>UIPrerenderedIcon</key>
 				<false/>
@@ -258,38 +278,56 @@
 		</dict>
 		<key>CFBundleAlternateIcons</key>
 		<dict>
-			<key>AppIcon-Light</key>
+			<key>AppIcon-Orange</key>
 			<dict>
 				<key>CFBundleIconFiles</key>
 				<array>
-					<string>AlternateIcons/AppIcon-Light</string>
+					<string>AlternateIcons/AppIcon-Orange</string>
 				</array>
 				<key>UIPrerenderedIcon</key>
 				<false/>
 			</dict>
-			<key>AppIcon-Dark</key>
+			<key>AppIcon-Invert</key>
 			<dict>
 				<key>CFBundleIconFiles</key>
 				<array>
-					<string>AlternateIcons/AppIcon-Dark</string>
+					<string>AlternateIcons/AppIcon-Invert</string>
 				</array>
 				<key>UIPrerenderedIcon</key>
 				<false/>
 			</dict>
-			<key>AppIcon-LegacyLight</key>
+			<key>AppIcon-Violet</key>
 			<dict>
 				<key>CFBundleIconFiles</key>
 				<array>
-					<string>AlternateIcons/AppIcon-LegacyLight</string>
+					<string>AlternateIcons/AppIcon-Violet</string>
 				</array>
 				<key>UIPrerenderedIcon</key>
 				<false/>
 			</dict>
-			<key>AppIcon-LegacyDark</key>
+			<key>AppIcon-Pink</key>
 			<dict>
 				<key>CFBundleIconFiles</key>
 				<array>
-					<string>AlternateIcons/AppIcon-LegacyDark</string>
+					<string>AlternateIcons/AppIcon-Pink</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<false/>
+			</dict>
+			<key>AppIcon-PinkDark</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AlternateIcons/AppIcon-PinkDark</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<false/>
+			</dict>
+			<key>AppIcon-PinkWhite</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AlternateIcons/AppIcon-PinkWhite</string>
 				</array>
 				<key>UIPrerenderedIcon</key>
 				<false/>

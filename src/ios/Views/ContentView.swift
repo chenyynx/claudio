@@ -6921,11 +6921,13 @@ private struct AppearanceSettingsView: View {
     @ObservedObject private var fontSettings = FontSettings.shared
 
     private let iconOptions: [AppIconOption] = [
-        AppIconOption(id: 0, title: "Automatic", subtitle: "Follows system", iconName: nil, imageName: "AlternateIcons/AppIcon-Light"),
-        AppIconOption(id: 1, title: "Light", subtitle: "Always light", iconName: "AppIcon-Light", imageName: "AlternateIcons/AppIcon-Light"),
-        AppIconOption(id: 2, title: "Dark", subtitle: "Always dark", iconName: "AppIcon-Dark", imageName: "AlternateIcons/AppIcon-Dark"),
-        AppIconOption(id: 3, title: "Light (Legacy)", subtitle: "Classic light icon", iconName: "AppIcon-LegacyLight", imageName: "AlternateIcons/AppIcon-LegacyLight"),
-        AppIconOption(id: 4, title: "Dark (Legacy)", subtitle: "Classic dark icon", iconName: "AppIcon-LegacyDark", imageName: "AlternateIcons/AppIcon-LegacyDark"),
+        AppIconOption(id: 0, title: "Default", subtitle: "Cream", iconName: nil, imageName: "AlternateIcons/AppIcon-Default"),
+        AppIconOption(id: 1, title: "Orange", subtitle: "Black + Claude orange", iconName: "AppIcon-Orange", imageName: "AlternateIcons/AppIcon-Orange"),
+        AppIconOption(id: 2, title: "Invert", subtitle: "White + black", iconName: "AppIcon-Invert", imageName: "AlternateIcons/AppIcon-Invert"),
+        AppIconOption(id: 3, title: "Violet", subtitle: "Deep violet", iconName: "AppIcon-Violet", imageName: "AlternateIcons/AppIcon-Violet"),
+        AppIconOption(id: 4, title: "Pink", subtitle: "Blush pink", iconName: "AppIcon-Pink", imageName: "AlternateIcons/AppIcon-Pink"),
+        AppIconOption(id: 5, title: "Pink Dark", subtitle: "Black + hot pink", iconName: "AppIcon-PinkDark", imageName: "AlternateIcons/AppIcon-PinkDark"),
+        AppIconOption(id: 6, title: "Pink White", subtitle: "White + pink", iconName: "AppIcon-PinkWhite", imageName: "AlternateIcons/AppIcon-PinkWhite"),
     ]
 
     var body: some View {
