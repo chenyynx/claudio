@@ -682,6 +682,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             }
         }
     }
+    /// True while the current/last agent loop ran a CC Pocket Remote
+    /// provider. Remote sessions legitimately end with unpaired tool_use
+    /// blocks (the Bridge executes tools and streams results separately) —
+    /// the interrupted-tail heuristics must not classify them as broken.
+    private(set) var lastAgentProviderIsRemote = false
+
     @Published var canResume = false {
         didSet {
             // [T-session-paused-badge-active-false-positive] Drive the session-
@@ -4413,6 +4419,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             return
         }
         var provider = await makeAgentProvider(for: entry)
+        lastAgentProviderIsRemote = provider is RemoteAgentProvider
 
         // Set extended cache TTL globally for Anthropic request patching
         RequestBodyPatcher.setExtendedCacheTTL(self.enhancedCacheEnabled)

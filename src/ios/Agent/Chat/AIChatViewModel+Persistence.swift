@@ -788,6 +788,19 @@ extension AIChatViewModel {
     /// matches the list's .paused badge.
     private func recheckCanResumeFromHistory() {
         guard let sessionId, !isProcessing, let lastEntry = agentHistory.last else { return }
+        // [Fix] Remote agent sessions (CC Pocket Bridge) legitimately end
+        // with unpaired tool_use blocks — the Bridge executes tools and
+        // streams results separately, and M1 does not surface tool_result in
+        // the stream. The interrupted-tail heuristics below would otherwise
+        // mark every completed remote turn as "interrupted", leaving the
+        // Resume banner up forever after a normal reply.
+        if lastAgentProviderIsRemote {
+            if canResume {
+                canResume = false
+                logger.info("[SessionLoad] \(sessionId.prefix(8)) — remote agent session, clearing stale canResume")
+            }
+            return
+        }
         let isInterrupted: Bool
         if lastEntry.role == .user {
             let allToolResults = !lastEntry.parts.isEmpty && lastEntry.parts.allSatisfy {
