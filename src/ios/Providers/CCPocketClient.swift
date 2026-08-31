@@ -42,6 +42,12 @@ final class CCPocketClient: @unchecked Sendable {
     /// `result` (or error). Sequential turns are the M1 contract.
     var onMessage: ((CCPocketProtocol.ServerMessage) -> Void)?
 
+    /// UserDefaults key for the persisted Bridge agent session id per project.
+    /// Killing the app loses the in-memory session id; persisting it lets the
+    /// next launch resume the same agent conversation instead of the Bridge
+    /// starting a brand-new one (which answers like a stranger).
+    private static let sessionKeyPrefix = "ccpocket.agentSession.v1."
+
     init(baseURL: URL, token: String) {
         self.baseURL = baseURL
         self.token = token
@@ -81,14 +87,16 @@ final class CCPocketClient: @unchecked Sendable {
         let capabilities = CCPocketProtocol.ClientCapabilities()
         try await send(CCPocketProtocol.encode(capabilities), allowsReconnect: false)
 
-        // Start an agent session on this project path. When reconnecting after
-        // a dropped socket, pass the previous session id so the Bridge resumes
-        // the same agent conversation instead of starting a fresh one.
+        // Start an agent session on this project path. Resume the previous
+        // agent conversation when available (reconnect, or app relaunch after
+        // a kill — the in-memory id is gone but the persisted one survives).
+        let effectiveResumeId = resumeSessionId
+            ?? UserDefaults.standard.string(forKey: Self.sessionKeyPrefix + projectPath)
         let start = CCPocketProtocol.StartRequest(
             projectPath: projectPath,
             provider: provider,
-            sessionId: resumeSessionId,
-            continue: resumeSessionId != nil ? true : nil,
+            sessionId: effectiveResumeId,
+            continue: effectiveResumeId != nil ? true : nil,
             requestId: UUID().uuidString,
             permissionMode: permissionMode
         )
@@ -130,11 +138,15 @@ final class CCPocketClient: @unchecked Sendable {
 
     /// Capture the agent session id from any `system` message (the Bridge's
     /// reply to `start`). Runs on every message so the session is captured
-    /// even when no per-turn handler is installed yet.
+    /// even when no per-turn handler is installed yet. Persisted per project
+    /// so an app kill + relaunch can resume the same agent conversation.
     private func captureSession(from message: CCPocketProtocol.ServerMessage) {
         if message.type == "system",
            let sid = message.sessionId ?? message.claudeSessionId {
             sessionId = sid
+            if let projectPath {
+                UserDefaults.standard.set(sid, forKey: Self.sessionKeyPrefix + projectPath)
+            }
         }
     }
 
