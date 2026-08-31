@@ -28,6 +28,13 @@ final class CCPocketClient: @unchecked Sendable {
     private let baseURL: URL
     private let token: String
     private var task: URLSessionWebSocketTask?
+
+    /// Connection parameters retained for auto-reconnect (send failure after
+    /// the app is suspended / network drops). Reconnect resumes the agent
+    /// session via StartRequest.sessionId so conversation context survives.
+    private var projectPath: String?
+    private var providerName: String = "claude"
+    private var permissionMode: String?
     private var receiveTask: Task<Void, Never>?
 
     /// Single active consumer of the server message stream. The provider
@@ -44,13 +51,17 @@ final class CCPocketClient: @unchecked Sendable {
 
     /// Connect to the Bridge. `projectPath` is the working directory the
     /// Bridge should open the agent session in.
-    func connect(projectPath: String, provider: String = "claude", permissionMode: String? = nil) async throws {
+    func connect(projectPath: String, provider: String = "claude", permissionMode: String? = nil, resumeSessionId: String? = nil) async throws {
         // [Diag]
-        logger.info("[CCPocket] connect url=\(baseURL.absoluteString) projectPath=\(projectPath) provider=\(provider) perm=\(permissionMode ?? "default") state=\(state == .idle ? "idle" : "busy")")
+        logger.info("[CCPocket] connect url=\(baseURL.absoluteString) projectPath=\(projectPath) provider=\(provider) perm=\(permissionMode ?? "default") resume=\(resumeSessionId ?? "none") state=\(state == .idle ? "idle" : "busy")")
         guard state == .idle else {
             logger.warning("[CCPocket] connect skipped — state not idle")
             return
         }
+
+        self.projectPath = projectPath
+        self.providerName = provider
+        self.permissionMode = permissionMode
 
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "token", value: token)]
@@ -68,16 +79,20 @@ final class CCPocketClient: @unchecked Sendable {
 
         // Announce client capabilities first; Bridge replies with history/state.
         let capabilities = CCPocketProtocol.ClientCapabilities()
-        try await send(CCPocketProtocol.encode(capabilities))
+        try await send(CCPocketProtocol.encode(capabilities), allowsReconnect: false)
 
-        // Start an agent session on this project path.
+        // Start an agent session on this project path. When reconnecting after
+        // a dropped socket, pass the previous session id so the Bridge resumes
+        // the same agent conversation instead of starting a fresh one.
         let start = CCPocketProtocol.StartRequest(
             projectPath: projectPath,
             provider: provider,
+            sessionId: resumeSessionId,
+            continue: resumeSessionId != nil ? true : nil,
             requestId: UUID().uuidString,
             permissionMode: permissionMode
         )
-        try await send(CCPocketProtocol.encode(start))
+        try await send(CCPocketProtocol.encode(start), allowsReconnect: false)
         logger.info("[CCPocket] start sent")
 
         startReceiveLoop()
@@ -134,9 +149,34 @@ final class CCPocketClient: @unchecked Sendable {
         try await send(CCPocketProtocol.encode(input))
     }
 
-    private func send(_ string: String) async throws {
+    private func send(_ string: String, allowsReconnect: Bool = true) async throws {
         guard let task else { throw CCPocketError.notConnected }
-        try await task.send(.string(string))
+        do {
+            try await task.send(.string(string))
+        } catch {
+            // Socket died underneath us (app suspended, network switch). The
+            // receive loop may never have observed the error (process was
+            // suspended), so state still says connected — reconnect with the
+            // agent session resumed, then retry this message once.
+            logger.warning("[CCPocket] send failed (\(error.localizedDescription)) — reconnecting and retrying once")
+            let resumeSessionId = sessionId
+            disconnect()
+            guard allowsReconnect, let projectPath else {
+                throw error
+            }
+            do {
+                try await connect(
+                    projectPath: projectPath,
+                    provider: providerName,
+                    permissionMode: permissionMode,
+                    resumeSessionId: resumeSessionId
+                )
+            } catch {
+                throw error
+            }
+            guard let task else { throw CCPocketError.notConnected }
+            try await task.send(.string(string))
+        }
     }
 
     func disconnect() {

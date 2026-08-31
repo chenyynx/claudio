@@ -95,6 +95,21 @@ extension AIChatViewModel {
 
         let attempt = titleGenAttempts
         let subEntry = resolveSubEntry()
+        // [Fix] CC Pocket Remote relays into the live Bridge agent session —
+        // sending a title prompt there would corrupt the agent's own
+        // conversation context (observed: subsequent turns returned empty
+        // streams). Fall back to the first-user-message title instead.
+        if let subEntry, subEntry.model.id.lowercased().contains("ccpocket-remote") {
+            logger.info("[TitleGen] subEntry is CC Pocket Remote — skipping (would pollute agent session), using fallback title")
+            Task { [weak self, sessionId, firstUserRaw, attempt] in
+                await Self.applyFallbackTitle(sessionId: sessionId, firstUserRaw: firstUserRaw, attempt: attempt)
+                await MainActor.run {
+                    self?.titleGenAttempts = 3
+                    self?.isTitleGenerating = false
+                }
+            }
+            return
+        }
         logger.info("[TitleGen] Starting title generation attempt \(attempt)/3 for session \(sessionId ?? "nil"), subEntry: \(subEntry?.model.id ?? "nil")")
         Task { [weak self, sessionId, subEntry, firstUserRaw, summary] in
             do {
