@@ -531,6 +531,13 @@ extension AIChatViewModel {
     /// its id must not name a non-chat capability — those endpoints reject the
     /// chat/completions schema or stream nothing useful.
     static func isTitleEligible(_ entry: ModelEntry) -> Bool {
+        // CC Pocket Remote relays into a live Bridge agent session — sending
+        // a title-generation prompt there would corrupt the agent's own
+        // conversation context. Exclude it; the first-user-message fallback
+        // title covers these sessions.
+        if entry.model.id.lowercased().contains("ccpocket-remote") {
+            return false
+        }
         // Declared modalities without text output = pure TTS/image/video/ASR
         // model. No override (nil) counts as a normal text chat model —
         // mirrors Android's "outs == null || outs.isEmpty() || contains(text)".

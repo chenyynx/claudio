@@ -17,6 +17,14 @@ final class RemoteAgentProvider: AgentProvider {
     private var sessionId: String?
     private let logger = AppLogger(category: "RemoteAgent")
 
+    /// Whether a `.text` content block is currently open. The engine's
+    /// stream consumer only accumulates `textDelta` into a block once
+    /// `contentBlockStart(.text)` has been seen (currentTextBlockIdx is
+    /// set there) — Bridge emits text as bare `stream_delta`/`result`
+    /// events with no block framing, so we must open the block ourselves
+    /// or every delta is silently dropped ("NO TEXT" at StreamEnd).
+    private var textBlockStarted = false
+
     init(model: LLMModel, client: CCPocketClient) {
         self.model = model
         self.client = client
@@ -36,6 +44,7 @@ final class RemoteAgentProvider: AgentProvider {
         // sends `input` per turn).
         // [Diag] Full-chain diagnostics — every stage is logged so a failing
         // turn can be pinpointed from device logs alone.
+        textBlockStarted = false
         logger.info("[RemoteAgent] stream start messages=\(messages.count)")
         let userRoles = messages.filter { $0.role == .user }.map { "\($0.parts.map { String(describing: $0) })" }
         logger.info("[RemoteAgent] user msgs=\(userRoles.count) parts=\(userRoles.joined(separator: " | "))")
@@ -123,6 +132,7 @@ final class RemoteAgentProvider: AgentProvider {
 
         case "stream_delta":
             if let text = message.text, !text.isEmpty {
+                openTextBlockIfNeeded(continuation)
                 continuation.yield(.textDelta(text))
             }
 
@@ -137,6 +147,7 @@ final class RemoteAgentProvider: AgentProvider {
                     switch block.type {
                     case "text":
                         if let text = block.text, !text.isEmpty {
+                            openTextBlockIfNeeded(continuation)
                             continuation.yield(.textDelta(text))
                         }
                     case "thinking":
@@ -173,7 +184,10 @@ final class RemoteAgentProvider: AgentProvider {
             logger.info("[RemoteAgent] result/\(message.subtype ?? "?") text=\(message.result?.prefix(50) ?? "nil")")
             // The Bridge's final assistant text arrives in `result` (not in an
             // assistant content block) — surface it before finishing the turn.
-            if let text = message.result, !text.isEmpty {
+            // Skip when stream_delta already streamed the full text this turn
+            // (result is the same complete text; yielding it again duplicates).
+            if let text = message.result, !text.isEmpty, !textBlockStarted {
+                openTextBlockIfNeeded(continuation)
                 continuation.yield(.textDelta(text))
             }
             let stopReason: AgentStopReason
@@ -211,5 +225,16 @@ final class RemoteAgentProvider: AgentProvider {
             break
         }
         return false
+    }
+
+    /// Open a `.text` content block before the first text delta of a turn.
+    /// Without it the engine's stream consumer never accumulates deltas
+    /// (currentTextBlockIdx stays nil) and the final text is dropped.
+    private func openTextBlockIfNeeded(
+        _ continuation: AsyncThrowingStream<AgentStreamEvent, Error>.Continuation
+    ) {
+        guard !textBlockStarted else { return }
+        textBlockStarted = true
+        continuation.yield(.contentBlockStart(.text))
     }
 }
