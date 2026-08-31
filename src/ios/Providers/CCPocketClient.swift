@@ -226,7 +226,7 @@ final class CCPocketClient: @unchecked Sendable {
                 // sendPing is not async; a dead socket surfaces on the next
                 // send (or this ping errors, which we deliberately ignore —
                 // the send path owns reconnecting).
-                self.task?.sendPing(pongReceiveHandler: nil)
+                self.task?.sendPing(pongReceiveHandler: { _ in })
             }
         }
     }
