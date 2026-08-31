@@ -25,6 +25,12 @@ final class RemoteAgentProvider: AgentProvider {
     /// or every delta is silently dropped ("NO TEXT" at StreamEnd).
     private var textBlockStarted = false
 
+    /// Thinking text accumulated this turn. Emitted as a `reasoningContent`
+    /// event at turn end so the assistant message persists it (DB column
+    /// reasoning_content) and survives session reload; without it the
+    /// thinking blocks only exist in memory during streaming.
+    private var thinkingAccumulator = ""
+
     init(model: LLMModel, client: CCPocketClient) {
         self.model = model
         self.client = client
@@ -45,6 +51,7 @@ final class RemoteAgentProvider: AgentProvider {
         // [Diag] Full-chain diagnostics — every stage is logged so a failing
         // turn can be pinpointed from device logs alone.
         textBlockStarted = false
+        thinkingAccumulator = ""
         logger.info("[RemoteAgent] stream start messages=\(messages.count)")
         let userRoles = messages.filter { $0.role == .user }.map { "\($0.parts.map { String(describing: $0) })" }
         logger.info("[RemoteAgent] user msgs=\(userRoles.count) parts=\(userRoles.joined(separator: " | "))")
@@ -138,6 +145,12 @@ final class RemoteAgentProvider: AgentProvider {
 
         case "thinking_delta":
             if let text = message.text, !text.isEmpty {
+                // Separate distinct thinking segments (Bridge restarts deltas
+                // between tool rounds) so the persisted text stays readable.
+                if !thinkingAccumulator.isEmpty && !text.hasPrefix("\n") {
+                    thinkingAccumulator += "\n"
+                }
+                thinkingAccumulator += text
                 continuation.yield(.thinkingDelta(text))
             }
 
@@ -204,6 +217,12 @@ final class RemoteAgentProvider: AgentProvider {
                     cacheCreationInputTokens: nil,
                     cacheReadInputTokens: nil
                 )))
+            }
+            // Persist thinking accumulated from thinking_delta events so the
+            // conversation reload shows the reasoning (reasoningContent is
+            // stored in the messages table and hydrated on load).
+            if !thinkingAccumulator.isEmpty {
+                continuation.yield(.reasoningContent(thinkingAccumulator))
             }
             continuation.yield(.done(stopReason: stopReason))
             continuation.finish()
