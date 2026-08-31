@@ -39,6 +39,16 @@ jobs:
           # sandbox init with "Failed to open zip archive".
           ./deps/prepare_alpine_rootfs.sh
 
+      - name: Pin Xcode 26.4.1 (stable)
+        # macos-26 default Xcode moved 26.5 -> 26.6 on 2026-07-21 (runner-images
+        # #14344). On this codebase xcodebuild under 26.6 dies SILENTLY mid-build
+        # (no error output, ibtoold orphans — OOM signature). Pin the last
+        # stable release so the build is reproducible across runner-image
+        # rollouts. 3 consecutive failures on 2026-09-01 (3e78947) with 26.6.
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.4.1.app
+          xcodebuild -version
+
       - name: Signing diagnostics
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -46,7 +56,6 @@ jobs:
         run: |
           echo "APPLE_ID injected: $([ -n \"$APPLE_ID\" ] && echo yes || echo no)"
           echo "APPLE_ID_PASSWORD injected: $([ -n \"$APPLE_ID_PASSWORD\" ] && echo yes || echo no)"
-          xcodebuild -version
 
       # KSign on-device signing path: CI ships an UNSIGNED ipa; the user's
       # iPhone signs it locally via KSign (free, no paid developer account).
@@ -65,7 +74,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_DEBUG_DYLIB=NO \
-            SWIFT_NUM_THREADS=2 \
+            SWIFT_NUM_THREADS=1 \
             -derivedDataPath build/DerivedData
           mkdir -p build/Payload
           cp -r build/DerivedData/Build/Products/Release-iphoneos/Minis.app build/Payload/
