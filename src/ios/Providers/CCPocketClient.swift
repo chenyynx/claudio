@@ -265,7 +265,7 @@ final class CCPocketClient: @unchecked Sendable {
         } catch {
             logger.warning("[CCPocket] send failed (\(error.localizedDescription)) — reconnecting and retrying once")
             disconnect()
-            guard allowsReconnect, let projectPath else {
+            guard allowsReconnect else {
                 throw error
             }
             try await reconnectNow()
@@ -364,6 +364,8 @@ final class CCPocketClient: @unchecked Sendable {
                         if let serverMessage = CCPocketProtocol.decodeServerMessage(data) {
                             self.handleIncoming(serverMessage)
                         }
+                    case .none:
+                        break
                     @unknown default:
                         break
                     }
