@@ -18,12 +18,21 @@ final class CCPocketClient: @unchecked Sendable {
     private(set) var state: State = .idle
     private let logger = AppLogger(category: "CCPocketClient")
 
-    /// Active agent session id, captured from the Bridge's `system` reply to
-    /// our `start`. The receive loop captures it regardless of whether a
-    /// per-turn onMessage handler is installed yet (the start reply can land
-    /// before the provider sets one up), so subsequent `input` messages always
-    /// carry the session.
+    /// Active Bridge session id (short, 8 chars), captured from the Bridge's
+    /// `system` reply to our `start`. Used to route `input` messages — the
+    /// Bridge resolves them by exact Bridge session id. The receive loop
+    /// captures it regardless of whether a per-turn onMessage handler is
+    /// installed yet (the start reply can land before the provider sets one
+    /// up), so subsequent `input` messages always carry the session.
     private(set) var sessionId: String?
+
+    /// Claude agent session id (full UUID, 36 chars) — the only id the SDK
+    /// `resume` option accepts. Arrives via the `claudeSessionId` field, or
+    /// as a long `sessionId` on system/result messages (the Bridge captures
+    /// it from the SDK result event). Kept separate from `sessionId` (the
+    /// 8-char Bridge id): routing `input` and resuming an agent conversation
+    /// are different id spaces.
+    private(set) var claudeSessionId: String?
 
     private let baseURL: URL
     private let token: String
@@ -90,13 +99,18 @@ final class CCPocketClient: @unchecked Sendable {
         // Start an agent session on this project path. Resume the previous
         // agent conversation when available (reconnect, or app relaunch after
         // a kill — the in-memory id is gone but the persisted one survives).
+        // [Fix] Resume with the *Claude* session id only, and never combine
+        // it with `continue`: the SDK falls back to "continue the most
+        // recent session" when a resume id is invalid, which hijacks an
+        // unrelated conversation (cross-session message bleed). M1 stored the
+        // 8-char Bridge id here, which was never a valid resume target.
         let effectiveResumeId = resumeSessionId
-            ?? UserDefaults.standard.string(forKey: Self.sessionKeyPrefix + projectPath)
+            ?? persistedResumeId(projectPath: projectPath)
         let start = CCPocketProtocol.StartRequest(
             projectPath: projectPath,
             provider: provider,
             sessionId: effectiveResumeId,
-            continue: effectiveResumeId != nil ? true : nil,
+            continue: nil,
             requestId: UUID().uuidString,
             permissionMode: permissionMode
         )
@@ -136,18 +150,56 @@ final class CCPocketClient: @unchecked Sendable {
         }
     }
 
-    /// Capture the agent session id from any `system` message (the Bridge's
-    /// reply to `start`). Runs on every message so the session is captured
-    /// even when no per-turn handler is installed yet. Persisted per project
-    /// so an app kill + relaunch can resume the same agent conversation.
+    /// Capture the Bridge session id and the Claude session id from incoming
+    /// messages. Runs on every message so ids are captured even when no
+    /// per-turn handler is installed yet.
+    ///
+    /// [Fix] M1 stored whatever `sessionId` the first `system` message
+    /// carried — which is the 8-char *Bridge* id, useless for SDK resume.
+    /// Two separate ids are tracked now:
+    /// - `sessionId` (8 chars): routes `input` (Bridge resolves exactly).
+    /// - `claudeSessionId` (36 chars): the SDK `resume` target. It arrives
+    ///   via an explicit `claudeSessionId` field, or as a long `sessionId`
+    ///   on system/result messages (the Bridge captures the Claude id from
+    ///   the SDK result event). Only this id is persisted for relaunch
+    ///   resume.
     private func captureSession(from message: CCPocketProtocol.ServerMessage) {
+        // Bridge session id — short (8 chars), on the `system` reply.
         if message.type == "system",
-           let sid = message.sessionId ?? message.claudeSessionId {
-            sessionId = sid
+           let raw = message.sessionId,
+           raw.count <= 8,
+           raw != sessionId {
+            sessionId = raw
+        }
+        // Claude session id — full UUID (36 chars).
+        let claudeId: String?
+        if let explicit = message.claudeSessionId {
+            claudeId = explicit
+        } else if let raw = message.sessionId, raw.count > 8 {
+            claudeId = raw
+        } else {
+            claudeId = nil
+        }
+        if let claudeId, claudeId != claudeSessionId {
+            claudeSessionId = claudeId
             if let projectPath {
-                UserDefaults.standard.set(sid, forKey: Self.sessionKeyPrefix + projectPath)
+                UserDefaults.standard.set(claudeId, forKey: Self.sessionKeyPrefix + projectPath)
             }
         }
+    }
+
+    /// Claude session id persisted for this project, if it is usable for
+    /// resume. An 8-char value is a stale Bridge session id written by M1 —
+    /// invalid as an SDK resume target and harmful when combined with
+    /// `continue` (hijacks the most recent session) — so it is dropped.
+    private func persistedResumeId(projectPath: String) -> String? {
+        let key = Self.sessionKeyPrefix + projectPath
+        guard let raw = UserDefaults.standard.string(forKey: key) else { return nil }
+        guard raw.count > 8 else {
+            UserDefaults.standard.removeObject(forKey: key)
+            return nil
+        }
+        return raw
     }
 
     // MARK: - Sending
@@ -171,24 +223,25 @@ final class CCPocketClient: @unchecked Sendable {
             // suspended), so state still says connected — reconnect with the
             // agent session resumed, then retry this message once.
             logger.warning("[CCPocket] send failed (\(error.localizedDescription)) — reconnecting and retrying once")
-            let resumeSessionId = sessionId
+            // [Fix] Resume the *Claude* session (not the 8-char Bridge id):
+            // only the Claude id is a valid SDK resume target.
+            let resumeSessionId = claudeSessionId
             disconnect()
             guard allowsReconnect, let projectPath else {
                 throw error
             }
-            do {
-                try await connect(
-                    projectPath: projectPath,
-                    provider: providerName,
-                    permissionMode: permissionMode,
-                    resumeSessionId: resumeSessionId
-                )
-            } catch {
-                throw error
-            }
-            // `task` is the function-level unwrap from the guard at the top —
-            // reconnect replaced the underlying socket, so just retry on it.
-            try await task.send(.string(string))
+            try await connect(
+                projectPath: projectPath,
+                provider: providerName,
+                permissionMode: permissionMode,
+                resumeSessionId: resumeSessionId
+            )
+            // [Fix] The guard-let binding at the top of this function still
+            // points at the old (now cancelled) socket — reconnect replaced
+            // `self.task`. Re-unwrap the property before retrying, otherwise
+            // the retry sends on a cancelled task and always fails.
+            guard let replacement = self.task else { throw CCPocketError.notConnected }
+            try await replacement.send(.string(string))
         }
     }
 

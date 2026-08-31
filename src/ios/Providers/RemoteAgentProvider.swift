@@ -133,7 +133,11 @@ final class RemoteAgentProvider: AgentProvider {
         logger.info("[RemoteAgent] <- \(message.type ?? "?")\(payload.isEmpty ? "" : " \(payload)")")
         switch message.type {
         case "system":
-            if let sid = message.sessionId ?? message.claudeSessionId {
+            // [Fix] This sessionId routes `input` messages, so it must be the
+            // short Bridge session id — the Bridge resolves input by exact
+            // Bridge session id. The long (36-char) Claude id is only valid
+            // as a resume target, not a routing key.
+            if let sid = message.sessionId, sid.count <= 8 {
                 sessionId = sid
             }
 

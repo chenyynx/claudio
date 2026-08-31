@@ -63,7 +63,17 @@ extension AIChatViewModel {
         let projectPath = connection?.projectPath ?? ""
 
         if let existing = RemoteAgentStore.shared.existingClient(instanceID: instance.id) {
-            return RemoteAgentProvider(model: model, client: existing)
+            // [Fix] Never reuse a dead connection. A failed/idle client fails
+            // every send, and the reconnect path re-runs `start`, which makes
+            // the Bridge spawn a fresh agent process per message (orphaned
+            // process pileup + the Bridge lists a new session each turn).
+            // Only a live connection is reusable; otherwise drop it and
+            // connect fresh below.
+            if existing.state == .connected {
+                return RemoteAgentProvider(model: model, client: existing)
+            }
+            logger.warning("remoteAgent: discarding stale client state=\(existing.state)")
+            RemoteAgentStore.shared.release(instanceID: instance.id)
         }
         let client = CCPocketClient(baseURL: baseURL, token: token)
         do {
