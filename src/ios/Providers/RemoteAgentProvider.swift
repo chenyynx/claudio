@@ -4,9 +4,18 @@ import Foundation
 /// through a CC Pocket Bridge Server.
 ///
 /// The Bridge owns the agent process and its session context; this provider
-/// only relays the user's latest message and re-maps Bridge stream events
-/// onto OpenMinis' `AgentStreamEvent` so the chat engine and tool UI can
-/// render them unchanged.
+/// relays the user's latest message and re-maps Bridge stream events onto
+/// OpenMinis' `AgentStreamEvent` so the chat engine and tool UI render them
+/// unchanged.
+///
+/// Session lifecycle mirrors the official CC Pocket client:
+/// - The first turn of a connection starts (or resumes) the agent session;
+///   later turns reuse the same Bridge session.
+/// - `resume_session` restores the same Claude conversation on relaunch
+///   (id from the persisted per-instance mapping — never a stale id from an
+///   earlier version, which caused cross-session bleed).
+/// - The stream handler is installed *before* `input` is sent so no event
+///   (including `result`) is lost in the race window.
 final class RemoteAgentProvider: AgentProvider {
 
     var name: String { "CC Pocket Remote" }
@@ -14,7 +23,10 @@ final class RemoteAgentProvider: AgentProvider {
     var defaultMaxTokens: Int { 16_384 }
 
     private let client: CCPocketClient
-    private var sessionId: String?
+    private let instanceID: String
+    /// Claude session id to resume on the first turn (nil = new session).
+    private let restoreClaudeId: String?
+    private var sessionStarted = false
     private let logger = AppLogger(category: "RemoteAgent")
 
     /// Whether a `.text` content block is currently open. The engine's
@@ -31,9 +43,11 @@ final class RemoteAgentProvider: AgentProvider {
     /// thinking blocks only exist in memory during streaming.
     private var thinkingAccumulator = ""
 
-    init(model: LLMModel, client: CCPocketClient) {
+    init(model: LLMModel, client: CCPocketClient, instanceID: String, restoreClaudeId: String?) {
         self.model = model
         self.client = client
+        self.instanceID = instanceID
+        self.restoreClaudeId = restoreClaudeId
     }
 
     // MARK: - AgentProvider
@@ -45,20 +59,11 @@ final class RemoteAgentProvider: AgentProvider {
         maxTokens: Int,
         thinkingLevel: ThinkingLevel
     ) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
-        // The Bridge maintains session context server-side; only the latest
-        // user message is relayed (matches how the official CC Pocket client
-        // sends `input` per turn).
-        // [Diag] Full-chain diagnostics — every stage is logged so a failing
-        // turn can be pinpointed from device logs alone.
         textBlockStarted = false
         thinkingAccumulator = ""
         logger.info("[RemoteAgent] stream start messages=\(messages.count)")
         let userRoles = messages.filter { $0.role == .user }.map { "\($0.parts.map { String(describing: $0) })" }
         logger.info("[RemoteAgent] user msgs=\(userRoles.count) parts=\(userRoles.joined(separator: " | "))")
-        // [Fix] M1: the last user message can be a toolResult-only batch
-        // (role == .user, no text parts) — e.g. resuming a session whose
-        // latest turn was a tool round. Walk back to the most recent user
-        // message that actually carries text; that is the turn to relay.
         let userMessages = messages.filter { $0.role == .user }
         guard let userTextMessage = userMessages.reversed().first(where: { message in
             message.parts.contains { part in
@@ -79,39 +84,83 @@ final class RemoteAgentProvider: AgentProvider {
             logger.error("[RemoteAgent] FAIL: no user text found in messages — throwing sessionNotStarted")
             throw CCPocketError.sessionNotStarted
         }
-        logger.info("[RemoteAgent] extracted text=\(lastUserText.prefix(50)) providerSession=\(sessionId ?? "nil") clientSession=\(client.sessionId ?? "nil")")
 
-        // The Bridge replies to `start` with a system message carrying the
-        // session id; if the first input races ahead of it, wait rather than
-        // sending a session-less input. [Fix] A session-less input is never
-        // sent: the Bridge's resolveSession(nil) falls back to "the most
-        // recently created session" — with multiple clients on one Bridge
-        // (official app + Claudio) that routes the message into an unrelated
-        // conversation (cross-session bleed). If the Bridge session id is
-        // not captured in time, fail the turn instead of bleeding.
-        var waited = 0
-        while client.sessionId == nil && waited < 100 {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            waited += 1
+        // [Fix] If the socket died while the app was suspended, revive it
+        // before this turn (reconnect happens async; a send failure would
+        // queue the message and replay it after reconnect anyway).
+        client.ensureConnected()
+
+        // First turn of this connection: start (or resume) the Bridge session.
+        // [Fix] `connect` no longer auto-starts; the agent process is only
+        // spawned when a turn actually begins.
+        if !sessionStarted {
+            await ensureSessionStarted()
         }
-        guard let bridgeSessionId = sessionId ?? client.sessionId else {
-            logger.error("[RemoteAgent] FAIL: Bridge session id never captured after \(waited * 100)ms — aborting send to avoid cross-session bleed")
+        guard client.isStarted, let bridgeSessionId = client.sessionId else {
+            logger.error("[RemoteAgent] FAIL: no bridge session id after start — aborting send to avoid cross-session bleed")
             throw CCPocketError.sessionNotStarted
         }
-        if waited > 0 {
-            logger.info("[RemoteAgent] bridgeSessionId captured after \(waited * 100)ms")
-        }
-        try await client.sendInput(lastUserText, sessionId: bridgeSessionId)
-        logger.info("[RemoteAgent] sendInput OK session=\(bridgeSessionId)")
 
-        return AsyncThrowingStream { continuation in
+        // [Fix] Install the stream handler BEFORE sending input: events
+        // (including the final `result`) arriving in the window between
+        // send and handler-install used to be dropped, leaving the turn
+        // hanging forever.
+        let stream = AsyncThrowingStream<AgentStreamEvent, Error> { continuation in
+            // [Fix] Only a *cancelled* stream (user stopped the turn) sends
+            // `interrupt` — onTermination also fires on normal `.finished`,
+            // and the Bridge has no idle guard: a late interrupt would kill
+            // the next turn mid-generation. This stops the agent from
+            // burning tokens on the machine after the user stopped.
+            continuation.onTermination = { [weak self] termination in
+                guard let self else { return }
+                if case .cancelled = termination {
+                    Task { await self.client.interrupt() }
+                }
+            }
             self.client.onMessage = { [weak self] message in
                 guard let self else { return }
                 let finished = self.handle(message, continuation: continuation)
                 if finished {
                     self.client.onMessage = nil
+                    // Turn ended — persist the session mapping so a relaunch
+                    // resumes this conversation.
+                    self.client.saveMapping(instanceID: self.instanceID)
                 }
             }
+            Task {
+                do {
+                    try await self.client.sendInput(lastUserText, sessionId: bridgeSessionId)
+                    logger.info("[RemoteAgent] sendInput OK session=\(bridgeSessionId)")
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+        return stream
+    }
+
+    /// Start a fresh session, or resume the persisted conversation on the
+    /// first turn. Falls back to a fresh session when resume fails.
+    /// [Fix] `sessionStarted` is only set on success — otherwise a failed
+    /// first turn (Bridge unreachable / timeout) would permanently poison
+    /// the provider and every later turn would fail instantly.
+    private func ensureSessionStarted() async {
+        if let restoreClaudeId {
+            do {
+                try await client.resumeSession(claudeId: restoreClaudeId)
+                logger.info("[RemoteAgent] resumed session claude=\(restoreClaudeId.prefix(8))...")
+                sessionStarted = true
+                return
+            } catch {
+                logger.warning("[RemoteAgent] resume failed (\(error.localizedDescription)) — starting fresh")
+            }
+        }
+        do {
+            try await client.startSession()
+            logger.info("[RemoteAgent] started fresh session")
+            sessionStarted = true
+        } catch {
+            logger.error("[RemoteAgent] start failed: \(error.localizedDescription)")
         }
     }
 
@@ -123,6 +172,15 @@ final class RemoteAgentProvider: AgentProvider {
         _ message: CCPocketProtocol.ServerMessage,
         continuation: AsyncThrowingStream<AgentStreamEvent, Error>.Continuation
     ) -> Bool {
+        // [Fix] The Bridge broadcasts every session's events to all
+        // connected clients. Only messages of OUR session (or id-less
+        // global messages) may affect this turn — otherwise another
+        // client's stream_delta/result would render into our UI and even
+        // finish our turn (receiving-side cross-session bleed).
+        guard message.sessionId == nil || message.sessionId == client.sessionId else {
+            logger.info("[RemoteAgent] ignore event for session \(message.sessionId ?? "?") (ours=\(client.sessionId ?? "?"))")
+            return false
+        }
         // [Diag] Log every incoming event with its key payload.
         let payload: String = message.text.map { String($0.prefix(40)) }
             ?? message.result.map { String($0.prefix(40)) }
@@ -139,13 +197,9 @@ final class RemoteAgentProvider: AgentProvider {
         logger.info("[RemoteAgent] <- \(message.type ?? "?")\(payload.isEmpty ? "" : " \(payload)")")
         switch message.type {
         case "system":
-            // [Fix] This sessionId routes `input` messages, so it must be the
-            // short Bridge session id — the Bridge resolves input by exact
-            // Bridge session id. The long (36-char) Claude id is only valid
-            // as a resume target, not a routing key.
-            if let sid = message.sessionId, sid.count <= 8 {
-                sessionId = sid
-            }
+            // Only capture the short Bridge session id for routing; the
+            // long Claude id is not a routing key.
+            break
 
         case "stream_delta":
             if let text = message.text, !text.isEmpty {
@@ -155,8 +209,6 @@ final class RemoteAgentProvider: AgentProvider {
 
         case "thinking_delta":
             if let text = message.text, !text.isEmpty {
-                // Separate distinct thinking segments (Bridge restarts deltas
-                // between tool rounds) so the persisted text stays readable.
                 if !thinkingAccumulator.isEmpty && !text.hasPrefix("\n") {
                     thinkingAccumulator += "\n"
                 }
@@ -169,17 +221,11 @@ final class RemoteAgentProvider: AgentProvider {
                 for block in content {
                     switch block.type {
                     case "text":
-                        // Assistant blocks are full-content snapshots; when
-                        // stream_delta already streamed this text incrementally
-                        // (textBlockStarted), yielding the snapshot duplicates
-                        // the message. Only use it as a fallback when no
-                        // deltas arrived.
                         if let text = block.text, !text.isEmpty, !textBlockStarted {
                             openTextBlockIfNeeded(continuation)
                             continuation.yield(.textDelta(text))
                         }
                     case "thinking":
-                        // Same snapshot-vs-delta rule as text above.
                         if let text = block.text, !text.isEmpty, thinkingAccumulator.isEmpty {
                             continuation.yield(.thinkingDelta(text))
                         }
@@ -203,18 +249,28 @@ final class RemoteAgentProvider: AgentProvider {
             }
 
         case "result":
-            // Bridge wraps real failures as result subtype=error (error field
-            // carries the text) — surface as an error, not a normal end-turn.
+            // [Fix] Persist thinking accumulated this turn BEFORE finishing,
+            // on every end path (success, stopped, error) — a lost turn used
+            // to drop all of its reasoning.
+            if !thinkingAccumulator.isEmpty {
+                continuation.yield(.reasoningContent(thinkingAccumulator))
+            }
+            // Bridge wraps real failures as result subtype=error.
             if message.subtype == "error" {
                 logger.error("[RemoteAgent] result/error: \(message.error ?? "?")")
                 continuation.finish(throwing: CCPocketError.server(message.error ?? "Bridge error"))
                 return true
             }
+            // [Fix] subtype=stopped: the turn was interrupted (user stop or
+            // another client). End the turn normally so the engine does not
+            // hang; the next turn re-sends.
+            if message.subtype == "stopped" {
+                logger.info("[RemoteAgent] result/stopped — turn interrupted")
+                continuation.yield(.done(stopReason: .endTurn))
+                continuation.finish()
+                return true
+            }
             logger.info("[RemoteAgent] result/\(message.subtype ?? "?") text=\(message.result?.prefix(50) ?? "nil")")
-            // The Bridge's final assistant text arrives in `result` (not in an
-            // assistant content block) — surface it before finishing the turn.
-            // Skip when stream_delta already streamed the full text this turn
-            // (result is the same complete text; yielding it again duplicates).
             if let text = message.result, !text.isEmpty, !textBlockStarted {
                 openTextBlockIfNeeded(continuation)
                 continuation.yield(.textDelta(text))
@@ -234,12 +290,6 @@ final class RemoteAgentProvider: AgentProvider {
                     cacheReadInputTokens: nil
                 )))
             }
-            // Persist thinking accumulated from thinking_delta events so the
-            // conversation reload shows the reasoning (reasoningContent is
-            // stored in the messages table and hydrated on load).
-            if !thinkingAccumulator.isEmpty {
-                continuation.yield(.reasoningContent(thinkingAccumulator))
-            }
             continuation.yield(.done(stopReason: stopReason))
             continuation.finish()
             return true
@@ -247,8 +297,22 @@ final class RemoteAgentProvider: AgentProvider {
         case "error":
             let detail: String?
             if case .text(let t) = message.message { detail = t } else { detail = nil }
-            logger.error("[RemoteAgent] error msg: \(detail ?? message.error ?? "?")")
-            continuation.finish(throwing: CCPocketError.server(detail ?? message.error ?? "Bridge error"))
+            let detailText = detail ?? message.error ?? "?"
+            logger.error("[RemoteAgent] error msg: \(detailText)")
+            // [Fix] Persist accumulated thinking before erroring so the
+            // reasoning of a failed turn is not lost.
+            if !thinkingAccumulator.isEmpty {
+                continuation.yield(.reasoningContent(thinkingAccumulator))
+            }
+            // [Fix] "No active session" means the Bridge session was
+            // destroyed server-side (stopped elsewhere / expired). Clear the
+            // provider-side session so the next turn starts fresh instead of
+            // failing forever.
+            if detailText.contains("No active session") || message.errorCode == "session_not_found" {
+                logger.warning("[RemoteAgent] session gone — resetting for next turn")
+                sessionStarted = false
+            }
+            continuation.finish(throwing: CCPocketError.server(detailText))
             return true
 
         case "tool_result":

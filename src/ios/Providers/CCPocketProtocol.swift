@@ -42,6 +42,26 @@ enum CCPocketProtocol {
         var clientMessageId: String?
     }
 
+    /// `resume_session` — restore a past agent session (official client flow).
+    /// Unlike `start` (which opens a *new* Bridge runtime session), this asks
+    /// the Bridge to restore an existing Claude conversation (from memory or
+    /// disk) and report `session_resume_started` / `session_resume_failed`.
+    struct ResumeSessionRequest: Encodable {
+        let type = "resume_session"
+        var sessionId: String?        // Claude session id (36 chars)
+        var projectPath: String
+        var provider: String?
+        var permissionMode: String?
+        var resumeRequestId: String?
+    }
+
+    /// `interrupt` — stop the current turn; the agent responds with
+    /// `result subtype=stopped`.
+    struct InterruptRequest: Encodable {
+        let type = "interrupt"
+        var sessionId: String?
+    }
+
     // MARK: - Server -> Client (lenient parse)
 
     /// Raw server message. Decoded with all-optional fields so unknown
@@ -91,6 +111,13 @@ enum CCPocketProtocol {
         let messages: [ServerMessage]?
         // session_list
         let sessions: [ServerSession]?
+        // resume flow
+        let sourceSessionId: String?
+        let resumeRequestId: String?
+        // input ack / reject
+        let acceptedSeq: Int?
+        let queued: Bool?
+        let historySeq: Int?
         // error
         let errorCode: String?
         let requestId: String?

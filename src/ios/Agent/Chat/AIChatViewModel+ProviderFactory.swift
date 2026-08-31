@@ -61,6 +61,13 @@ extension AIChatViewModel {
         let token = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
         let connection = RemoteAgentConnection.load(instanceID: instance.id)
         let projectPath = connection?.projectPath ?? ""
+        let client = CCPocketClient(baseURL: baseURL, token: token)
+
+        // [Fix] Resume identity: the persisted per-instance mapping holds
+        // the Claude session id of *this* instance's conversation (never a
+        // stale id from an earlier version — stale ids caused cross-session
+        // bleed by resuming another client's conversation).
+        let restoreClaudeId = client.loadMapping(instanceID: instance.id)?.claudeId
 
         if let existing = RemoteAgentStore.shared.existingClient(instanceID: instance.id) {
             // [Fix] Never reuse a dead connection. A failed/idle client fails
@@ -70,12 +77,13 @@ extension AIChatViewModel {
             // Only a live connection is reusable; otherwise drop it and
             // connect fresh below.
             if existing.state == .connected {
-                return RemoteAgentProvider(model: model, client: existing)
+                // In-memory claude id wins (fresher); fall back to persisted.
+                let resumeId = existing.claudeSessionId ?? restoreClaudeId
+                return RemoteAgentProvider(model: model, client: existing, instanceID: instance.id, restoreClaudeId: resumeId)
             }
             logger.warning("remoteAgent: discarding stale client state=\(existing.state)")
             RemoteAgentStore.shared.release(instanceID: instance.id)
         }
-        let client = CCPocketClient(baseURL: baseURL, token: token)
         do {
             try await client.connect(
                 projectPath: projectPath,
@@ -86,7 +94,7 @@ extension AIChatViewModel {
         } catch {
             logger.error("remoteAgent: connect failed for instance \(instance.id): \(error.localizedDescription)")
         }
-        return RemoteAgentProvider(model: model, client: client)
+        return RemoteAgentProvider(model: model, client: client, instanceID: instance.id, restoreClaudeId: restoreClaudeId)
     }
 
     /// Build an AnthropicAgentProvider for cache keep-alive warmup, reusing the
