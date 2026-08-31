@@ -122,6 +122,12 @@ final class CCPocketClient: @unchecked Sendable {
     private static let reconnectBaseDelayNanoseconds: UInt64 = 1_000_000_000
     private static let reconnectMaxDelayNanoseconds: UInt64 = 30_000_000_000
 
+    /// Serialises reconnect attempts. `ensureConnected` (foreground return)
+    /// and `scheduleReconnect` (ping/receive failure) can fire concurrently;
+    /// without the lock one blip caused two parallel reconnectNow runs, each
+    /// re-spawning a Bridge session (process pile-up).
+    private let reconnectLock = NSLock()
+
     init(baseURL: URL, token: String) {
         self.baseURL = baseURL
         self.token = token
@@ -285,7 +291,11 @@ final class CCPocketClient: @unchecked Sendable {
             try await task.send(.string(string))
         } catch {
             logger.warning("[CCPocket] send failed (\(error.localizedDescription)) — reconnecting and retrying once")
-            disconnect()
+            // [Fix] Soft teardown only: the Bridge session (and its agent
+            // process) survives on the server, so the retry must route
+            // through the same session id — hard-disconnecting cleared it
+            // and forced a resume (new SDK process) per reconnect.
+            teardownSocket()
             guard allowsReconnect else {
                 throw error
             }
@@ -320,30 +330,32 @@ final class CCPocketClient: @unchecked Sendable {
         }
     }
 
-    /// Re-establish the socket and, if a session was started on this
-    /// connection, resume/restart it, then replay queued messages.
+    /// Re-establish the socket only, then replay queued messages.
+    /// [Fix] Aligned with the official client (bridge_service.dart): a
+    /// reconnect NEVER re-runs `start`/`resume_session` — the Bridge keeps
+    /// the agent process alive for idle sessions, and `input` routed to the
+    /// original bridge session id reaches it again. Re-running resume here
+    /// made the Bridge spawn a fresh SDK process per reconnect (process
+    /// pile-up + a new session record per turn in the official client).
+    /// Resume happens only on a cold start, in RemoteAgentProvider's first
+    /// turn (ensureSessionStarted).
     private func reconnectNow() async throws {
+        guard reconnectLock.tryLock() else {
+            logger.info("[CCPocket] reconnectNow skipped — another reconnect in flight")
+            return
+        }
+        defer { reconnectLock.unlock() }
         logger.info("[CCPocket] reconnectNow start (was started=\(started))")
         guard let projectPath else { throw CCPocketError.notConnected }
-        // Capture before disconnect (disconnect clears them).
-        let resumeClaudeId = claudeSessionId
-        let wasStarted = started
-        // [Fix] Reset state first: the receive loop may have left us in
-        // `.failed`, which `connect`'s `guard state == .idle` would reject.
-        disconnect()
+        // Soft teardown: keep started/sessionId/claudeSessionId so queued
+        // messages replay through the existing Bridge session.
+        teardownSocket()
         try await connect(
             projectPath: projectPath,
             provider: providerName,
             permissionMode: permissionMode
         )
-        if wasStarted {
-            if let resumeClaudeId {
-                try? await resumeSession(claudeId: resumeClaudeId)
-            }
-            if !isStarted {
-                try? await startSession()
-            }
-        }
+        // No resume/start here — the session survived on the Bridge.
         // [Fix] A successful reconnect resets the backoff so a later blip
         // retries fast instead of starting at the 30s cap.
         reconnectDelay = Self.reconnectBaseDelayNanoseconds
@@ -522,7 +534,7 @@ final class CCPocketClient: @unchecked Sendable {
                             self.logger.warning("[CCPocket] ping threshold reached — forcing reconnect")
                             Task { [weak self] in
                                 guard let self else { return }
-                                self.disconnect()
+                                self.teardownSocket()
                                 self.scheduleReconnect()
                             }
                         }
@@ -640,22 +652,36 @@ final class CCPocketClient: @unchecked Sendable {
 
     // MARK: - Teardown
 
-    func disconnect() {
+    /// Tear down the socket and its receive/ping loops but keep the session
+    /// identity (`started`/`sessionId`/`claudeSessionId`). Used by the
+    /// reconnect path so a reconnected socket routes `input` straight to the
+    /// existing Bridge session instead of spawning a new agent process
+    /// (aligned with the official client).
+    /// Does not cancel `reconnectTask`: this runs *inside* it.
+    private func teardownSocket() {
         receiveTask?.cancel()
         receiveTask = nil
         pingTask?.cancel()
         pingTask = nil
-        reconnectTask?.cancel()
-        reconnectTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        // Deliberately keep started/sessionId/claudeSessionId — the Bridge
+        // session is still alive and owns the agent process.
+        resumeFailure = nil
+        state = .idle
+    }
+
+    /// Full teardown: also forget the session identity. Used for deliberate
+    /// disconnects (app teardown, provider switch).
+    func disconnect() {
+        teardownSocket()
+        reconnectTask?.cancel()
+        reconnectTask = nil
         // [Fix] Deliberately keep `onMessage`: a mid-turn reconnect must not
         // drop the stream handler (the turn's `result` would be lost and the
         // stream would hang). The provider clears it when the turn finishes.
         started = false
         sessionId = nil
-        resumeFailure = nil
-        state = .idle
     }
 
     deinit {

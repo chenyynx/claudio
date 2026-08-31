@@ -91,3 +91,18 @@ workflow 参考：`.github/workflows/ios-build.yml`（已含全部坑的修复�
 - 付费 Apple Developer 账号（$99/年）：上架前必须，开发期免费 ID 顶着
 - 正式产品名（Claudio 为工作名，上架前最终定）
 - 托管 Bridge 服务（商业化可选，第一版不做）
+
+## 三-B、Swift 代码改动前置检查（2026-08-31 新增，M1 编译失败教训）
+
+1. **改 Swift 前加载 `swiftui-pro` skill** 走 `references/swift.md` 语法/规范核查，再 push
+2. **禁止 guard 条件里一行大链式 + 多行闭包 + optional chaining `?` 跨行组合**——Swift 解析会崩（`$0` 逃出闭包 / guard 缺 else / consecutive statements），改拆步写法：先 `let` 绑定中间结果，guard 只放单表达式，链式放普通赋值
+3. **本地（Linux）无 Swift 工具链**，编译验证只能靠 CI（13 分钟/轮）——push 前人工语法检查至少过一遍
+4. 详细条目见 Bug经验库/状态与数据.md「Claudio M1 — last user message 提取失败」教训⑤⑥
+
+## 三-C、协议客户端实现铁律（2026-08-31 新增，M1 五连坑教训；2026-09-01 升级为"完全对齐"）
+
+1. **🔴 全部功能完全照着 ccpocket 官方实现（pp 2026-09-01 定）**：Claudio 的远端通道本质是用 CC Pocket 的能力，**远端通道的全部功能**（连接、重连、resume、会话生命周期、消息队列、事件消费、工具调用、审批、历史、文件浏览、错误处理、UI 交互）都以 K9i-0/ccpocket 官方客户端为唯一基准照着实现——**不允许凭自己理解"设计"行为，不允许只照抄消息格式，不允许官方有的功能我们不做、官方没有的行为我们自创**。任何功能动手前先找到官方对应代码（本地参考：`/tmp/ccpocket-main`，核心文件 `apps/mobile/lib/services/bridge_service.dart` + `features/claude_session/claude_session_screen.dart` + `features/codex_session/` + `features/session_list/`），对照官方怎么写再写；对照不到的功能先问 pp，不自己拍板
+2. **🔴 重连语义必须对齐官方（2026-09-01 实测翻车教训）**：官方断线重连 = **只重连 socket + 重放离线消息队列**，**不重新 start/resume**（session 是 bridge 侧常驻资源，进程 idle 30 个内不驱逐，重连只是"把管子接回去"）；`resume_session` 只在 ① 冷启动打开会话 ② 离线队列重放时发送。之前每次重连都 resume/start → bridge 每次 spawn 新进程 → 进程堆积 + 会话记录膨胀（修了几轮没根治，根因就是重连语义没对齐）
+3. **审计必须查"行为细节"不是"功能有无"**：对照官方时逐项问"什么时候发什么消息、什么条件下触发"，不能只核对"有没有重连、有没有 resume"这种表面功能（2026-09-01 教训：重连/resume 都"对齐"了，但"重连时发不发 resume"没对齐，导致进程堆积问题反复）
+4. **"最小能跑"不是 M1 终点**——重连、会话恢复、事件去重、持久化是客户端基础能力，不是后期优化。M1 五连坑（文字不显示/消息重复/断连/会话丢失/标题污染）全是这些能力缺失
+5. **新增协议功能前自问**：官方客户端这个场景怎么处理？找不到答案不写代码

@@ -253,8 +253,14 @@ extension AIChatViewModel {
         // The current merged assistant ChatMessage (accumulates blocks across loop iterations)
         var currentAssistant: ChatMessage? = nil
 
-        // Determine whether thinking blocks should be shown based on session config
-        let showThinking = ProviderConfigStore.shared.inferenceConfig(for: sessionId)?.thinkingLevel.isEnabled ?? false
+        // Determine whether thinking blocks should be shown based on session config.
+        // [Fix] Default TRUE when unconfigured (aligned with the official
+        // client: chat_session_cubit.dart shows any non-empty thinking with no
+        // display gate). The old `?? false` hid persisted reasoning after a
+        // reload for every session without an explicit inference config —
+        // "thinking visible while streaming, gone after kill-and-relaunch".
+        // An explicit user setting (thinkingLevel = .off) is still respected.
+        let showThinking = ProviderConfigStore.shared.inferenceConfig(for: sessionId)?.thinkingLevel.isEnabled ?? true
 
         for raw in rawMessages {
             // Always rebuild agent history (every message matters for API context).
