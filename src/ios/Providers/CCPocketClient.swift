@@ -83,6 +83,12 @@ final class CCPocketClient: @unchecked Sendable {
     /// set the routing id.
     private var pendingStartRequestId: String?
 
+    /// Set when the Bridge accepts our `resume_session`
+    /// (`system session_resume_started`). Resuming a large conversation can
+    /// take much longer than a fresh start — once accepted, wait longer
+    /// instead of timing out and racing a fallback `start`.
+    private var resumeAccepted = false
+
     /// Single active consumer of the server message stream. The engine
     /// serialises turns (one turn at a time); a turn ends when the handler
     /// sees a `result` (or error). The provider installs the handler before
@@ -173,6 +179,7 @@ final class CCPocketClient: @unchecked Sendable {
     func startSession() async throws {
         guard !started else { return }
         resumeFailure = nil
+        resumeAccepted = false
         guard let projectPath else { throw CCPocketError.notConnected }
         let requestId = UUID().uuidString
         pendingStartRequestId = requestId
@@ -198,6 +205,7 @@ final class CCPocketClient: @unchecked Sendable {
     func resumeSession(claudeId: String) async throws {
         guard !started else { return }
         resumeFailure = nil
+        resumeAccepted = false
         guard let projectPath else { throw CCPocketError.notConnected }
         let resumeRequestId = UUID().uuidString
         pendingStartRequestId = resumeRequestId
@@ -215,11 +223,18 @@ final class CCPocketClient: @unchecked Sendable {
         logger.info("[CCPocket] session resumed bridgeId=\(sessionId ?? "?")")
     }
 
-    /// Wait (up to 10 s) for the Bridge to hand out the session id after
-    /// start/resume. A `session_resume_failed` message aborts immediately.
+    /// Wait (up to 10 s, 30 s once the Bridge accepted a resume) for the
+    /// session id after start/resume. A `session_resume_failed` aborts
+    /// immediately.
+    /// [Fix] Resuming a large conversation can exceed 10 s; timing out there
+    /// raced a fallback `start` against the still-running resume, which
+    /// created a second session on the Bridge (visible as a new conversation
+    /// in the official client). Once `session_resume_started` arrives the
+    /// resume is in flight — keep waiting.
     private func waitForBridgeSessionId() async throws {
+        let limit = resumeAccepted ? 300 : 100
         var waited = 0
-        while sessionId == nil && waited < 100 {
+        while sessionId == nil && waited < limit {
             if let resumeFailure {
                 logger.error("[CCPocket] resume aborted: \(resumeFailure)")
                 throw ClientError.resumeFailed(resumeFailure)
@@ -436,6 +451,8 @@ final class CCPocketClient: @unchecked Sendable {
                 }
             } else if message.subtype == "session_resume_started" {
                 // Resume is in flight; the session_created reply follows.
+                // Mark accepted so waitForBridgeSessionId extends its window.
+                resumeAccepted = true
                 logger.info("[CCPocket] session_resume_started (waiting for session_created)")
             }
         }
