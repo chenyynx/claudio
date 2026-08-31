@@ -74,7 +74,8 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_DEBUG_DYLIB=NO \
-            SWIFT_NUM_THREADS=1 \
+            SWIFT_NUM_THREADS=2 \
+            SWIFT_COMPILATION_MODE=incremental \
             -derivedDataPath build/DerivedData
           mkdir -p build/Payload
           cp -r build/DerivedData/Build/Products/Release-iphoneos/Minis.app build/Payload/
