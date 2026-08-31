@@ -27,11 +27,12 @@ final class CCPocketClient: @unchecked Sendable {
     private(set) var sessionId: String?
 
     /// Claude agent session id (full UUID, 36 chars) — the only id the SDK
-    /// `resume` option accepts. Arrives via the `claudeSessionId` field, or
-    /// as a long `sessionId` on system/result messages (the Bridge captures
-    /// it from the SDK result event). Kept separate from `sessionId` (the
-    /// 8-char Bridge id): routing `input` and resuming an agent conversation
-    /// are different id spaces.
+    /// `resume` option accepts. Arrives via the `claudeSessionId` field, a
+    /// long `sessionId` on system/result messages (the Bridge captures it
+    /// from the SDK result event), or the `session_list` payload (sent on
+    /// every connection). Kept separate from `sessionId` (the 8-char Bridge
+    /// id): routing `input` and resuming an agent conversation are different
+    /// id spaces.
     private(set) var claudeSessionId: String?
 
     private let baseURL: URL
@@ -45,6 +46,14 @@ final class CCPocketClient: @unchecked Sendable {
     private var providerName: String = "claude"
     private var permissionMode: String?
     private var receiveTask: Task<Void, Never>?
+
+    /// Keep-alive ping task. iOS WebSocket connections can be silently
+    /// dropped by NAT/middleboxes after ~2-3 minutes of inactivity; a
+    /// periodic ping keeps the mapping alive so a foreground session does
+    /// not drop mid-conversation (each drop forces a reconnect, and without
+    /// a resume id that means a brand-new agent session).
+    private var pingTask: Task<Void, Never>?
+    private static let pingIntervalNanoseconds: UInt64 = 30_000_000_000
 
     /// Single active consumer of the server message stream. The provider
     /// installs a handler per turn; a turn ends when the handler sees a
@@ -118,6 +127,7 @@ final class CCPocketClient: @unchecked Sendable {
         logger.info("[CCPocket] start sent")
 
         startReceiveLoop()
+        startPing()
     }
 
     /// Continuously receive server messages and dispatch to the active handler.
@@ -185,6 +195,39 @@ final class CCPocketClient: @unchecked Sendable {
             if let projectPath {
                 UserDefaults.standard.set(claudeId, forKey: Self.sessionKeyPrefix + projectPath)
             }
+            logger.info("[CCPocket] captured claudeSessionId=\(claudeId.prefix(8))... msg=\(message.type ?? "?")")
+        }
+        // `session_list` (Bridge sends it on every connection) carries the
+        // authoritative claudeSessionId per Bridge session — match by our
+        // Bridge session id and persist it. This is the reliable resume
+        // source even when no `result` has landed yet (e.g. reconnect before
+        // the first turn completes).
+        if let sessions = message.sessions,
+           let sessionId,
+           let match = sessions.first(where: { $0.id == sessionId }),
+           let claudeId = match.claudeSessionId,
+           claudeId != claudeSessionId {
+            claudeSessionId = claudeId
+            if let projectPath {
+                UserDefaults.standard.set(claudeId, forKey: Self.sessionKeyPrefix + projectPath)
+            }
+            logger.info("[CCPocket] captured claudeSessionId from session_list=\(claudeId.prefix(8))...")
+        }
+    }
+
+    /// Periodic ping to keep the WebSocket alive through NAT/middleboxes.
+    private func startPing() {
+        pingTask?.cancel()
+        pingTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.pingIntervalNanoseconds)
+                guard !Task.isCancelled else { break }
+                // sendPing is not async; a dead socket surfaces on the next
+                // send (or this ping errors, which we deliberately ignore —
+                // the send path owns reconnecting).
+                self.task?.sendPing(pongReceiveHandler: nil)
+            }
         }
     }
 
@@ -248,6 +291,8 @@ final class CCPocketClient: @unchecked Sendable {
     func disconnect() {
         receiveTask?.cancel()
         receiveTask = nil
+        pingTask?.cancel()
+        pingTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         onMessage = nil

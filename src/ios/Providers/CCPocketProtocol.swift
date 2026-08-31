@@ -46,6 +46,17 @@ enum CCPocketProtocol {
 
     /// Raw server message. Decoded with all-optional fields so unknown
     /// message types or new fields never break the client.
+    /// One entry of the Bridge's `session_list` payload. Carries both the
+    /// short Bridge session id and the authoritative Claude session id —
+    /// the reliable source for resume, since it is sent on every connection
+    /// (even before any `result` event lands).
+    struct ServerSession: Decodable {
+        let id: String?
+        let claudeSessionId: String?
+        let projectPath: String?
+        let status: String?
+    }
+
     struct ServerMessage: Decodable {
         let type: String?
         // system
@@ -78,6 +89,8 @@ enum CCPocketProtocol {
         let toolCalls: Int?
         // history
         let messages: [ServerMessage]?
+        // session_list
+        let sessions: [ServerSession]?
         // error
         let errorCode: String?
         let requestId: String?
