@@ -118,6 +118,7 @@ workflow 参考：`.github/workflows/ios-build.yml`（已含全部坑的修复�
 - [ ] 官方源码定位：在 `/tmp/ccpocket-main` 找到对应实现文件+函数（`bridge_service.dart` / `claude_session_screen.dart` / `chat_session_cubit.dart` / `codex_session/` / `session_list/`）
 - [ ] 通读官方对应函数（不是看子代理转述，是自己读）
 - [ ] 把官方行为写进代码注释：`// [Fix] 对齐官方 xxx.dart:yyy — <官方行为一句话>`
+- [ ] **改 Swift 前加载 `swiftui-pro` skill 走语法/API 审查（三-B 节）——任何 Swift 改动，无论大小（2026-09-01 教训：NSLock.tryLock()→try() 重命名没查出来，9 轮构建全废，违规原因=自己给"小改动"加免审）**
 - [ ] 给 pp 报"官方怎么做的 + 我们差异 + 改法"（铁律 1），确认后才写
 - [ ] 检查 C-3 基准表：该行为是否已对齐？已对齐 → 不得偏离；未对齐 → 本轮按官方对齐
 
