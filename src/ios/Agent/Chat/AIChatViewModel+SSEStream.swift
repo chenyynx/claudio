@@ -66,6 +66,7 @@ extension AIChatViewModel {
         case .toolCallComplete(_, let name, _, _): return "toolCallComplete(\(name))"
         case .usage: return "usage"
         case .thinkingDelta: return "thinkingDelta"
+        case .toolResult(let id, _, _): return "toolResult(\(id.prefix(12)))"
         case .reasoningContent: return "reasoningContent"
         case .reasoningEcho: return "reasoningEcho"
         case .done(let stop): return "done(\(stop))"
@@ -107,6 +108,10 @@ extension AIChatViewModel {
         var reasoningEcho: ReasoningEcho? = nil
         /// Accumulated thinking text for UI display.
         var thinkingText: String = ""
+        /// Tool results received during the turn (paired by tool_use id).
+        /// Persisted as AgentContentPart.toolResult so the next request
+        /// carries the real tool output instead of a placeholder error.
+        var toolResults: [(id: String, output: String, isError: Bool)] = []
         /// True when the stream was cut short by an error (network drop, timeout, etc.).
         /// tool_use entries collected so far may have incomplete inputs (partialJson truncated).
         var isStreamInterrupted: Bool = false
@@ -883,6 +888,25 @@ extension AIChatViewModel {
                 currentTextBlockIdx = nil
                 result.assistantText = ""
                 result.spokenTextOffset = 0
+
+            case .toolResult(let id, let output, let isError):
+                // [Fix] Remote agent (Bridge) tool results: pair by tool_use
+                // id, mark the block success/failed, and collect for
+                // persistence. Previously the event never existed — blocks
+                // stayed .running, SafetyNet force-cancelled them, and the
+                // persisted history fed "interrupted" placeholders back to
+                // the model.
+                result.toolResults.append((id: id, output: output, isError: isError))
+                await MainActor.run {
+                    guard msgIdx < messages.count else { return }
+                    if let blockIdx = messages[msgIdx].blocks.firstIndex(where: { $0.toolUseId == id }) {
+                        let block = messages[msgIdx].blocks[blockIdx]
+                        block.toolStatus = isError ? .failed(message: String(output.prefix(500))) : .success
+                        if block.content.isEmpty {
+                            block.content = String(output.prefix(4000))
+                        }
+                    }
+                }
 
             case .thinkingDelta(let text):
                 // Each contiguous thinking segment becomes its own block, appended in

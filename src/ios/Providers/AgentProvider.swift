@@ -144,6 +144,13 @@ enum AgentStreamEvent: @unchecked Sendable {
     /// for in-memory multi-turn replay. Cross-model isolation rules live on
     /// `ReasoningEcho`.
     case reasoningEcho(ReasoningEcho)
+    /// Tool execution result from the agent, paired by tool_use id.
+    /// The CC Pocket Bridge executes tools server-side and streams results
+    /// via `tool_result`; without this event the engine's tool pairing
+    /// never completes (blocks stay .running → SafetyNet force-cancels →
+    /// persisted history shows "Tool execution was interrupted" to the
+    /// model on the next turn).
+    case toolResult(id: String, output: String, isError: Bool)
     /// Response finished.
     case done(stopReason: AgentStopReason)
 }

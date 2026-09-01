@@ -5285,6 +5285,14 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             for tu in toolEntries {
                 assistantParts.append(.toolUse(id: tu.id, name: tu.name, input: tu.args))
             }
+            // [Fix] Remote agent tool results: persist the real output so the
+            // next request carries true tool results instead of placeholder
+            // "interrupted" errors (the engine's tool pairing depends on it).
+            for tr in streamResult.toolResults {
+                assistantParts.append(.toolResult(
+                    id: tr.id, name: "", content: tr.output, isError: tr.isError
+                ))
+            }
             self.prevCommittedBlockCount = self.committedBlockCount
             committedBlockCount = allBlocks.count
             self.committedBlockCount = committedBlockCount

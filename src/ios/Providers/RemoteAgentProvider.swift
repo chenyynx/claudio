@@ -316,9 +316,18 @@ final class RemoteAgentProvider: AgentProvider {
             return true
 
         case "tool_result":
-            // Tool execution results arrive here. M1 does not surface them in
-            // the UI; M2 (tool cards) will render them via AgentStreamEvent.
-            break
+            // [Fix] Bridge executes tools server-side and streams results
+            // here. Previously dropped: the engine's tool pairing never saw
+            // a result, every tool block stayed .running, SafetyNet
+            // force-closed it, and the persisted history showed "Tool
+            // execution was interrupted" placeholders to the model on the
+            // next turn. Aligned with bridge sdk-process.js:396
+            // (type/toolUseId/content, toolName enriched by session.js).
+            if let toolId = message.toolUseId, let output = message.content {
+                let isError = output.hasPrefix("Tool execution was interrupted")
+                    || output.hasPrefix("Error:")
+                continuation.yield(.toolResult(id: toolId, output: output, isError: isError))
+            }
 
         default:
             break
