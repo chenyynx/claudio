@@ -254,14 +254,6 @@ extension AIChatViewModel {
         fresh.disconnect()
     }
 
-    /// [Stop-session] True when the session's model resolves to a remoteAgent
-    /// provider (a Bridge conversation with a stoppable runtime process).
-    static func sessionIsRemote(_ session: ChatSession) -> Bool {
-        guard let entry = ProviderConfigStore.shared.entry(for: session.modelId),
-              let instance = ProviderConfigStore.shared.instance(for: entry.providerInstanceId) else { return false }
-        return instance.providerType == .remoteAgent
-    }
-
     /// [Stop-session] Long-press on the composer stop button (official
     /// _StopButton semantics: tap = interrupt, long-press = stop session).
     func stopRemoteSession() {

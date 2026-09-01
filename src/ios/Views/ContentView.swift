@@ -780,6 +780,9 @@ private enum SessionMenuAction {
 /// [Stop-session] True when the session's model resolves to a remoteAgent
 /// provider (a Bridge conversation with a stoppable runtime process).
 /// Memory-only lookup (ProviderConfigStore) — safe to call per row.
+/// @MainActor: ProviderConfigStore lookups are main-actor isolated; every
+/// call site (view body contextMenu construction) is already on MainActor.
+@MainActor
 fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
     guard let entry = ProviderConfigStore.shared.entry(for: session.modelId),
           let instance = ProviderConfigStore.shared.instance(for: entry.providerInstanceId) else { return false }
