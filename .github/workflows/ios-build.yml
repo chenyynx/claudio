@@ -75,6 +75,12 @@ jobs:
       - name: Build (unsigned) + package ipa
         run: |
           cd src/ios
+          # [Diag] Build fails with NO error output? Default WMO mode hides
+          # compile errors (swift-frontend dies silently, Xcode 26 bug,
+          # 2026-09-01: NSLock.tryLock() -> try() hid for 9 runs). Temporarily
+          # add `SWIFT_COMPILATION_MODE=incremental OTHER_SWIFT_FLAGS="-Xfrontend
+          # -disable-batch-mode"` to the xcodebuild args to surface the real
+          # error, then revert.
           # SWIFT_NUM_THREADS=2: cap Swift compiler parallelism. macos-26
           # runner images changed in Aug 2026 and xcodebuild started dying
           # silently mid-build (no error output, ibtoold orphans) — consistent
@@ -88,8 +94,6 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_DEBUG_DYLIB=NO \
             SWIFT_NUM_THREADS=2 \
-            SWIFT_COMPILATION_MODE=incremental \
-            OTHER_SWIFT_FLAGS="-Xfrontend -disable-batch-mode" \
             -derivedDataPath build/DerivedData
           mkdir -p build/Payload
           cp -r build/DerivedData/Build/Products/Release-iphoneos/Minis.app build/Payload/
