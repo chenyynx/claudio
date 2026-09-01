@@ -74,7 +74,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_DEBUG_DYLIB=NO \
-            SWIFT_NUM_THREADS=1 \
+            SWIFT_NUM_THREADS=2 \
             SWIFT_COMPILATION_MODE=incremental \
             OTHER_SWIFT_FLAGS="-Xfrontend -disable-batch-mode" \
             -derivedDataPath build/DerivedData
