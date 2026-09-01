@@ -2879,12 +2879,22 @@ actor ChatStore {
         // created_at, id) ordering used everywhere else. Correlated subquery on
         // sort_order is enough in practice; ties are vanishingly rare and a
         // mis-pick there only changes a transient badge, never data.
+        // [Fix] Remote agent sessions (CC Pocket Bridge) are exempt from the
+        // interrupted-tail heuristic: they legitimately end with unpaired
+        // tool_use blocks (the Bridge executes tools and streams results
+        // separately), so the tail-shape test would flag every completed
+        // remote turn as "interrupted". The official client has no tail
+        // inference — interruption is a real-time event (result subtype
+        // stopped). Local agent sessions are untouched (their model_id does
+        // not match).
         let sql = """
             SELECT m.session_id, m.role, m.parts_json
             FROM messages m
+            JOIN sessions s ON s.id = m.session_id
             WHERE m.sort_order = (
                 SELECT MAX(m2.sort_order) FROM messages m2 WHERE m2.session_id = m.session_id
             )
+              AND s.model_id NOT LIKE '%ccpocket-remote%'
         """
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }
