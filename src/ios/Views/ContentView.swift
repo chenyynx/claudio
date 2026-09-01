@@ -2888,7 +2888,7 @@ struct ContentView: View {
                                         : session.id
                                     if let menuSid {
                                         SessionContextMenu(
-                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title),
+                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session)),
                                             actions: menuActions
                                         )
                                         .equatable()
