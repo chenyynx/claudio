@@ -789,7 +789,9 @@ private enum SessionMenuAction {
 /// entry.model.id), which entry(for:) — a composite-key lookup — can never
 /// resolve, so the old guard here always returned nil and the sidebar Stop
 /// Session item never appeared. Shared by sessionIsRemote, the remote
-/// badge, and the running dot.
+/// badge, and the running dot. @MainActor: ProviderConfigStore is
+/// main-actor-isolated (doris 4e57a28).
+@MainActor
 fileprivate func remoteAgentInstanceID(for session: ChatSession) -> String? {
     let store = ProviderConfigStore.shared
     if let binding = store.binding(for: session.id) {
@@ -813,6 +815,7 @@ fileprivate func remoteAgentInstanceID(for session: ChatSession) -> String? {
     return nil
 }
 
+@MainActor
 fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
     remoteAgentInstanceID(for: session) != nil
 }
