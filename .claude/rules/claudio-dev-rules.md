@@ -161,6 +161,7 @@ workflow 参考：`.github/workflows/ios-build.yml`（已含全部坑的修复�
 | thinking 显示 | 有内容即显示，**无显示开关**（chat_session_cubit.dart:999） | 流式直接显示；恢复默认显示 ?? true（3e78947 对齐） |
 | result/stopped | 正常结束 turn（bridge_service.dart:847） | handleIncoming → endTurn（已有） |
 | session_resume_failed | 中止等待（bridge_service.dart:819） | resumeFailure → abort（已有） |
+| 多段正文渲染 | 每段 text 独立 TextContent，content_block 级渲染（assistant_bubble.dart / chat_message_handler） | tool_use 后 textBlockStarted 重置 → 下段正文重开 .text 块（3e99b5d 对齐，by Doris 手机端） |
 
 ### C-4. 修复完成标准（替代"症状消失即完成"）
 
