@@ -340,7 +340,7 @@ final class CCPocketClient: @unchecked Sendable {
     /// Resume happens only on a cold start, in RemoteAgentProvider's first
     /// turn (ensureSessionStarted).
     private func reconnectNow() async throws {
-        guard reconnectLock.tryLock() else {
+        guard reconnectLock.try() else {
             logger.info("[CCPocket] reconnectNow skipped — another reconnect in flight")
             return
         }
