@@ -10,10 +10,23 @@ struct RemoteAgentSetupView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var store = ProviderConfigStore.shared
 
+    /// When non-nil, this page edits the existing instance instead of
+    /// adding a new one (fields prefilled, save updates in place).
+    private let existingInstance: ProviderInstance?
+
     @State private var wssURL = ""
     @State private var token = ""
     @State private var projectPath = ""
     @State private var isSaving = false
+
+    init(existingInstance: ProviderInstance? = nil) {
+        self.existingInstance = existingInstance
+        if let instance = existingInstance {
+            _wssURL = State(initialValue: instance.customBaseURL ?? "")
+            _token = State(initialValue: ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? "")
+            _projectPath = State(initialValue: RemoteAgentConnection.load(instanceID: instance.id)?.projectPath ?? "")
+        }
+    }
 
     private var trimmedToken: String {
         token.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -102,27 +115,40 @@ struct RemoteAgentSetupView: View {
 
     /// Persist a `.remoteAgent` instance the same way AddProviderView's
     /// API-key path does: keychain token + RemoteAgentConnection path +
-    /// store instance. After saving the empty-state section flips to
-    /// its connected (checkmark) state on the next appearance.
+    /// store instance. Editing an existing instance updates it in place
+    /// (same id, keychain, connection path) instead of adding a duplicate.
+    /// After saving the empty-state section flips to its connected
+    /// (checkmark) state on the next appearance.
     private func save() {
         let trimmedBase = wssURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPath = projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedToken.isEmpty else { return }
 
         isSaving = true
-        let instance = ProviderInstance(
-            label: ProviderType.remoteAgent.displayName,
-            providerType: .remoteAgent,
-            credentialType: .apiKey,
-            customBaseURL: trimmedBase.isEmpty ? nil : trimmedBase,
-            appendV1Suffix: false
-        )
-        ProviderKeychainHelper.saveAPIKey(trimmedToken, instanceId: instance.id)
-        RemoteAgentConnection.save(
-            RemoteAgentConnection(projectPath: trimmedPath),
-            instanceID: instance.id
-        )
-        store.addInstance(instance)
+        if let existing = existingInstance {
+            var updated = existing
+            updated.customBaseURL = trimmedBase.isEmpty ? nil : trimmedBase
+            ProviderKeychainHelper.saveAPIKey(trimmedToken, instanceId: existing.id)
+            RemoteAgentConnection.save(
+                RemoteAgentConnection(projectPath: trimmedPath),
+                instanceID: existing.id
+            )
+            store.updateInstance(updated)
+        } else {
+            let instance = ProviderInstance(
+                label: ProviderType.remoteAgent.displayName,
+                providerType: .remoteAgent,
+                credentialType: .apiKey,
+                customBaseURL: trimmedBase.isEmpty ? nil : trimmedBase,
+                appendV1Suffix: false
+            )
+            ProviderKeychainHelper.saveAPIKey(trimmedToken, instanceId: instance.id)
+            RemoteAgentConnection.save(
+                RemoteAgentConnection(projectPath: trimmedPath),
+                instanceID: instance.id
+            )
+            store.addInstance(instance)
+        }
         isSaving = false
         dismiss()
     }

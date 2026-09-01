@@ -479,6 +479,10 @@
 		F1W00101 /* PrintHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1W00100 /* PrintHelper.swift */; };
 		F1W0E101 /* WebLoadError.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1W0E100 /* WebLoadError.swift */; };
 		FDD896F80E0A14A7B60B12EF /* VoiceLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28E23EA0E199D6D50EBC76F2 /* VoiceLog.swift */; };
+		2737D6A9962B7438372594DB /* RemoteAgentSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7BE5711846F2CFCD3696E5B /* RemoteAgentSetupView.swift */; };
+		7FE7829374980EEEC86F28A6 /* BridgeSessionRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19F2C7BE8168FC82AA6B3EA8 /* BridgeSessionRegistry.swift */; };
+		57408012353F31A55425B660 /* ConnectionStatusStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99AF5E62EDD2A2F2E75767AF /* ConnectionStatusStore.swift */; };
+		E89DDC8B7F793606FAC36381 /* ConnectionStatusDot.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6C2540548A8FE85D734E662 /* ConnectionStatusDot.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1104,6 +1108,10 @@
 		F1W00100 /* PrintHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrintHelper.swift; sourceTree = "<group>"; };
 		F1W0E100 /* WebLoadError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebLoadError.swift; sourceTree = "<group>"; };
 		F2941B643B8A2F048A2B154E /* VoiceProviderFactory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoiceProviderFactory.swift; sourceTree = "<group>"; };
+		D7BE5711846F2CFCD3696E5B /* RemoteAgentSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAgentSetupView.swift; sourceTree = "<group>"; };
+		19F2C7BE8168FC82AA6B3EA8 /* BridgeSessionRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeSessionRegistry.swift; sourceTree = "<group>"; };
+		99AF5E62EDD2A2F2E75767AF /* ConnectionStatusStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionStatusStore.swift; sourceTree = "<group>"; };
+		D6C2540548A8FE85D734E662 /* ConnectionStatusDot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionStatusDot.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1392,6 +1400,8 @@
 				E5CPF002 /* CCPocketClient.swift */,
 				E5CPF003 /* RemoteAgentProvider.swift */,
 				E5CPF004 /* RemoteAgentConnection.swift */,
+				99AF5E62EDD2A2F2E75767AF /* ConnectionStatusStore.swift */,
+				19F2C7BE8168FC82AA6B3EA8 /* BridgeSessionRegistry.swift */,
 				42A3821DABA8773E8A5BA57E /* Voice */,
 			);
 			path = Providers;
@@ -1586,6 +1596,7 @@
 			isa = PBXGroup;
 			children = (
 				E51000012 /* ContentView.swift */,
+				D6C2540548A8FE85D734E662 /* ConnectionStatusDot.swift */,
 				F1V00014 /* Alarms */,
 				F1V00015 /* Backup */,
 				F1V00010 /* Chat */,
@@ -2099,6 +2110,7 @@
 				E5D00033 /* ModelGroupsView.swift */,
 				E5QT00011 /* ModelQuickTestSheet.swift */,
 				E5CPF005 /* RemoteAgentConfigView.swift */,
+				D7BE5711846F2CFCD3696E5B /* RemoteAgentSetupView.swift */,
 				E5D00036 /* OnboardingModelSelectionView.swift */,
 				E5D00031 /* ProviderInstanceDetailView.swift */,
 				E5TRS002 /* ThinkingRulesSection.swift */,
@@ -2480,6 +2492,10 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+				2737D6A9962B7438372594DB /* RemoteAgentSetupView.swift in Sources */,
+				7FE7829374980EEEC86F28A6 /* BridgeSessionRegistry.swift in Sources */,
+				57408012353F31A55425B660 /* ConnectionStatusStore.swift in Sources */,
+				E89DDC8B7F793606FAC36381 /* ConnectionStatusDot.swift in Sources */,
 		BB1000030F700000000000AA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;

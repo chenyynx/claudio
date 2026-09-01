@@ -76,4 +76,12 @@ final class RemoteAgentStore {
         clients[key]?.disconnect()
         clients.removeValue(forKey: key)
     }
+
+    /// All live client states, for the sidebar connection dot aggregation
+    /// (any connected = connected; any connecting wins for the spinner).
+    func liveStates() -> [CCPocketClient.State] {
+        lock.lock()
+        defer { lock.unlock() }
+        return clients.values.map { $0.state }
+    }
 }

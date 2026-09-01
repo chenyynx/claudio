@@ -15545,6 +15545,38 @@
         }
       }
     },
+    "Connected to your computer" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connected to your computer"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已连接你的电脑"
+          }
+        }
+      }
+    },
+    "Connecting to your computer" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connecting to your computer"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在连接你的电脑"
+          }
+        }
+      }
+    },
     "Confirm Deletion" : {
       "localizations" : {
         "de" : {
@@ -21957,6 +21989,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "放棄修改"
+          }
+        }
+      }
+    },
+    "Disconnected from your computer" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Disconnected from your computer"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已断开与你的电脑的连接"
           }
         }
       }
@@ -80824,6 +80872,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "您的聊天消息和對話歷史"
+          }
+        }
+      }
+    },
+    "Your computer is not set up" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your computer is not set up"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的电脑还未设置"
           }
         }
       }

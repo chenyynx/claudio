@@ -222,6 +222,12 @@ extension AIChatViewModel {
             if let bridgeId {
                 await existing.sendStopSession(bridgeId: bridgeId)
                 logger.info("[StopSession] stop_session sent on live connection bridge=\(bridgeId.prefix(8))")
+                // [Running dot] Optimistic local flip — the Bridge's next
+                // session_list broadcast replaces the set anyway, so this
+                // only shortens the green→grey window.
+                Task { @MainActor in
+                    BridgeSessionRegistry.shared.markStopped(instanceID: instance.id, bridgeId: bridgeId)
+                }
             }
             existing.disconnect()
             store.release(instanceID: instance.id, chatSessionID: chatSessionID)
@@ -248,6 +254,11 @@ extension AIChatViewModel {
             )
             await fresh.sendStopSession(bridgeId: bridgeId)
             logger.info("[StopSession] stop_session sent on throwaway connection bridge=\(bridgeId.prefix(8))")
+            // [Running dot] Optimistic local flip for the throwaway path too
+            // (no live connection whose session_list would update us).
+            Task { @MainActor in
+                BridgeSessionRegistry.shared.markStopped(instanceID: instance.id, bridgeId: bridgeId)
+            }
         } catch {
             logger.warning("[StopSession] connect failed: \(error.localizedDescription)")
         }

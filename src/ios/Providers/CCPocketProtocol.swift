@@ -90,7 +90,7 @@ enum CCPocketProtocol {
     /// short Bridge session id and the authoritative Claude session id —
     /// the reliable source for resume, since it is sent on every connection
     /// (even before any `result` event lands).
-    struct ServerSession: Decodable {
+    struct ServerSession: Decodable, Sendable {
         let id: String?
         let claudeSessionId: String?
         let projectPath: String?

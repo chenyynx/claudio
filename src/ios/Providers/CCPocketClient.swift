@@ -37,7 +37,16 @@ final class CCPocketClient: @unchecked Sendable {
         }
     }
 
-    private(set) var state: State = .idle
+    private(set) var state: State = .idle {
+        didSet {
+            guard oldValue != state else { return }
+            // [Connection dot] Push every state flip to the sidebar's
+            // connection indicator (recomputed on the main actor).
+            Task { @MainActor in
+                ConnectionStatusStore.shared.recompute()
+            }
+        }
+    }
     private let logger = AppLogger(category: "CCPocketClient")
 
     /// Provider-instance id this client belongs to. Set by the factory;
@@ -604,6 +613,15 @@ final class CCPocketClient: @unchecked Sendable {
         // closure) per project Swift rules.
         if let sessions = message.sessions {
             knownBridgeSessions = sessions
+            // [Running dot] The Bridge broadcasts the same global
+            // session_list to every connection; surface it to the sidebar
+            // registry so remote rows can draw their green/grey dot.
+            if let mappingInstanceID {
+                let instanceID = mappingInstanceID
+                Task { @MainActor in
+                    BridgeSessionRegistry.shared.update(instanceID: instanceID, sessions: sessions)
+                }
+            }
             if let sessionId {
                 let match = sessions.first { $0.id == sessionId }
                 if let claudeId = match?.claudeSessionId, claudeId != claudeSessionId {
@@ -774,6 +792,20 @@ final class CCPocketClient: @unchecked Sendable {
         }
         logger.info("[CCPocket] migrated legacy per-instance mapping to chat session \(chatSessionID.prefix(8))")
         return legacy
+    }
+
+    /// Static read of the persisted Bridge session id for a chat
+    /// conversation, without a live client (used by the session-list
+    /// running dot). Instance-path legacy fallback lives in
+    /// `loadPersistedBridgeId` below; the dot only needs the per-chat key.
+    static func persistedBridgeId(instanceID: String, chatSessionID: String?) -> String? {
+        guard let chatSessionID else { return nil }
+        let key = Self.mappingKeyPrefix + instanceID + "." + chatSessionID
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let mapping = try? JSONDecoder().decode(SessionMapping.self, from: data) else {
+            return nil
+        }
+        return mapping.bridgeId
     }
 
     /// Bridge session id persisted at the last save. Used for cold-start

@@ -783,14 +783,15 @@ private enum SessionMenuAction {
 /// @MainActor: ProviderConfigStore lookups are main-actor isolated; every
 /// call site (view body contextMenu construction) is already on MainActor.
 @MainActor
-fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
+/// [Stop-session] Resolve a session's remote-agent provider instance id
+/// through its model binding — the same source of truth used when sending.
+/// session.modelId holds the bare model id (updateSessionModelId writes
+/// entry.model.id), which entry(for:) — a composite-key lookup — can never
+/// resolve, so the old guard here always returned nil and the sidebar Stop
+/// Session item never appeared. Shared by sessionIsRemote, the remote
+/// badge, and the running dot.
+fileprivate func remoteAgentInstanceID(for session: ChatSession) -> String? {
     let store = ProviderConfigStore.shared
-    // [Stop-session] Resolve the session's provider through its model binding —
-    // the same source of truth used when sending. session.modelId holds the
-    // bare model id (updateSessionModelId writes entry.model.id), which
-    // entry(for:) — a composite-key lookup — can never resolve, so the old
-    // guard here always returned nil and the sidebar Stop Session item never
-    // appeared.
     if let binding = store.binding(for: session.id) {
         let entryId: String?
         switch binding.primarySource {
@@ -800,16 +801,20 @@ fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
         if let entryId,
            let entry = store.entry(for: entryId),
            let instance = store.instance(for: entry.providerInstanceId) {
-            return instance.providerType == .remoteAgent
+            return instance.providerType == .remoteAgent ? instance.id : nil
         }
     }
     // Legacy fallback: rows written by older builds may carry a composite or
     // legacy ref in modelId that entry(for:) still understands.
     if let entry = store.entry(for: session.modelId),
        let instance = store.instance(for: entry.providerInstanceId) {
-        return instance.providerType == .remoteAgent
+        return instance.providerType == .remoteAgent ? instance.id : nil
     }
-    return false
+    return nil
+}
+
+fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
+    remoteAgentInstanceID(for: session) != nil
 }
 
 #if DEBUG
@@ -985,10 +990,10 @@ struct ContentView: View {
     /// when `sessions` changes (see .onChange below).
     @State private var sessionsByIdCache: [String: ChatSession] = [:]
     /// Soul name shown as the sidebar title. Sourced from SOUL.md, falls
-    /// back to "Minis". Refreshed whenever SoulStore posts .soulMdChanged.
+    /// back to "Claudio". Refreshed whenever SoulStore posts .soulMdChanged.
     @State private var soulName: String = SoulStore.cachedMetadata.name.isEmpty
-        ? "Minis" : SoulStore.cachedMetadata.name
-    /// Subtitle state shown under the "Minis" sidebar title. nil hides the
+        ? "Claudio" : SoulStore.cachedMetadata.name
+    /// Subtitle state shown under the "Claudio" sidebar title. nil hides the
     /// row; otherwise it renders as small capsules per type or a single
     /// status string. Refreshed by a 5s timer.
     @State private var migrationSubtitle: SyncSubtitleState?
@@ -1264,6 +1269,11 @@ struct ContentView: View {
             .onChange(of: wide) { newWide in
                 isWideLayout = newWide
             }
+            .onChange(of: providerStore.instances) { _ in
+                // [Connection dot] Instance add/remove flips the
+                // configured-state of the connection indicator.
+                ConnectionStatusStore.shared.recompute()
+            }
             .onAppear {
                 isWideLayout = wide
                 wireMenuActions()
@@ -1427,6 +1437,13 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showTerminal) {
             NavigationStack {
                 ISHTerminalView(showCloseButton: true)
+            }
+        }
+        .sheet(isPresented: $showConnectionSheet) {
+            NavigationStack {
+                RemoteAgentSetupView(existingInstance: providerStore.instances.first {
+                    $0.providerType == .remoteAgent && $0.isEnabled
+                })
             }
         }
         .sheet(isPresented: $showAlarmList, onDismiss: { fetchAlarmsIfNeeded() }) {
@@ -2669,7 +2686,7 @@ struct ContentView: View {
         // and can't drop a .soulMdChanged notification arriving during reconstruction.
         .onReceive(NotificationCenter.default.publisher(for: .soulMdChanged)) { _ in
             let n = SoulStore.cachedMetadata.name
-            soulName = n.isEmpty ? "Minis" : n
+            soulName = n.isEmpty ? "Claudio" : n
         }
     }
 
@@ -3064,7 +3081,7 @@ struct ContentView: View {
                 if migrationSubtitle != next { migrationSubtitle = next }
             } else {
                 // No active sync work — hide the subtitle entirely so the
-                // "Minis" title sits at its normal size.
+                // "Claudio" title sits at its normal size.
                 if migrationSubtitle != nil { migrationSubtitle = nil }
             }
         }
@@ -3093,7 +3110,7 @@ struct ContentView: View {
             .map { (label: $0.0, count: $0.1) }
     }
 
-    /// Tiny indicator next to the "Minis" title showing the sync state.
+    /// Tiny indicator next to the "Claudio" title showing the sync state.
     @ViewBuilder
     private func titleSyncIndicator(for state: SyncSubtitleState?) -> some View {
         switch state {
@@ -3197,7 +3214,7 @@ struct ContentView: View {
                     if #available(iOS 17.0, *) { return SyncV2Bootstrap.isEnabled }
                     return false
                 }()
-                // Title text comes from SOUL.md (falls back to "Minis"). The
+                // Title text comes from SOUL.md (falls back to "Claudio"). The
                 // leading sync indicator floats as an overlay so it doesn't
                 // take layout space — title stays perfectly centered in the
                 // navigation bar regardless of whether the indicator is visible.
@@ -3215,9 +3232,19 @@ struct ContentView: View {
                 // attached here gets torn down and re-created constantly and can
                 // drop a .soulMdChanged notification that arrives during the gap.
                 // This Text now only READS `soulName`.
-                let titleLabel = Text(soulName)
-                    .font(.system(size: 18.5, weight: .semibold))
-                    .foregroundStyle(.primary)
+                let titleLabel = HStack(spacing: 2) {
+                    Text(soulName)
+                        .font(.system(size: 18.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    // [Connection dot] Remote-agent (Bridge) connection
+                    // indicator — green/connecting/grey, tap opens the
+                    // connection flow (setup or edit). Sheet state lives
+                    // on ContentView (toolbar principal rebuilds often).
+                    ConnectionStatusDot {
+                        showConnectionSheet = true
+                    }
+                    .offset(y: 1)
+                }
                     .overlay(alignment: .leading) {
                         if canOpenSync {
                             Button {
@@ -3807,6 +3834,7 @@ struct ContentView: View {
     @State private var showAddProvider = false
     @State private var showSelectModels = false
     @State private var showConnectComputer = false
+    @State private var showConnectionSheet = false
 
     private var emptyState: some View {
         let hasProviders = !providerStore.instances.isEmpty
@@ -5524,7 +5552,7 @@ struct ContentView: View {
                 done += 1
                 if msg.isToolResultOnly { continue }
 
-                let role = msg.role == .user ? "User" : "Minis"
+                let role = msg.role == .user ? "User" : "Claudio"
                 let time = timeFmt.string(from: msg.createdAt)
                 var parts: [String] = []
                 for part in msg.parts {
@@ -6301,6 +6329,10 @@ private struct SessionRow: View, Equatable {
     // queue changes. The custom Equatable above gates only the parent-push
     // path; @ObservedObject still drives in-place re-eval on store changes.
     @ObservedObject private var badgeStore = SessionBadgeStore.shared
+    // [Running dot] Observe the Bridge live-session registry so a remote
+    // row's green/grey dot flips in place when the Bridge broadcasts a new
+    // session_list (e.g. right after Stop Session).
+    @ObservedObject private var bridgeRegistry = BridgeSessionRegistry.shared
     // Observe App Base font scale so the row re-evaluates when the user moves
     // the slider. The row's fonts use hardcoded `.system(size:)` which ignore
     // Dynamic Type, so we must explicitly multiply by the App Base scale.
@@ -6337,6 +6369,26 @@ private struct SessionRow: View, Equatable {
     /// purpose for the rest of the session.
     private var isVisuallyLocked: Bool {
         lockStore.isVisuallyLocked(session.id)
+    }
+
+    /// [Running dot] Remote rows show a green dot while the session's Bridge
+    /// runtime session is in the Bridge's broadcast live-session list, grey
+    /// once it is gone (stopped / finished). Local rows get nothing — their
+    /// running state already has the SpinningRing. Persisted bridge id comes
+    /// from the per-chat mapping (same key the Stop Session path uses).
+    @ViewBuilder
+    private var runningDot: some View {
+        let instanceID = remoteAgentInstanceID(for: session)
+        let bridgeId = instanceID.flatMap {
+            CCPocketClient.persistedBridgeId(instanceID: $0, chatSessionID: session.id)
+        }
+        if let instanceID, let bridgeId {
+            let isActive = bridgeRegistry.isActive(instanceID: instanceID, bridgeId: bridgeId)
+            Circle()
+                .fill(isActive ? Color.green : Color(UIColor.systemGray3))
+                .frame(width: 8, height: 8)
+                .accessibilityLabel(isActive ? "Running" : "Stopped")
+        }
     }
 
     /// The transient badge to render for this row, after suppressing states that
@@ -6395,6 +6447,13 @@ private struct SessionRow: View, Equatable {
                             .offset(x: 2, y: 2)
                     } else if session.source == "shortcut" {
                         badgeCircle(icon: "bolt.fill", color: .orange)
+                            .offset(x: 2, y: 2)
+                    } else if remoteAgentInstanceID(for: session) != nil {
+                        // [Remote badge] Cloud-glyph for remote-agent
+                        // (Bridge) sessions — grey to stay distinct from the
+                        // blue iCloud-cross-device badge below. This is the
+                        // same source of truth as the Stop Session menu.
+                        badgeCircle(icon: "cloud.fill", color: .gray, iconSize: 7)
                             .offset(x: 2, y: 2)
                     } else if session.isRemote {
                         badgeCircle(icon: "icloud.fill", color: .blue, iconSize: 7)
@@ -6462,6 +6521,8 @@ private struct SessionRow: View, Equatable {
             .modifier(LockedRowEffect(isLocked: isVisuallyLocked))
 
             Spacer(minLength: 1)
+
+            runningDot
 
             VStack(alignment: .trailing, spacing: 4) {
                 // Date
