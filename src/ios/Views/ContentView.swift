@@ -3806,72 +3806,92 @@ struct ContentView: View {
     @StateObject private var providerStore = ProviderConfigStore.shared
     @State private var showAddProvider = false
     @State private var showSelectModels = false
+    @State private var showConnectComputer = false
 
     private var emptyState: some View {
         let hasProviders = !providerStore.instances.isEmpty
         let hasGroups = !providerStore.modelGroups.isEmpty
+        let hasRemote = providerStore.instances.contains { $0.providerType == .remoteAgent && $0.isEnabled }
 
-        return VStack(spacing: 32) {
-            Spacer()
-            // App icon / hero
-            Image(systemName: "sparkles")
-                .font(.system(size: 56))
-                .foregroundStyle(.tint)
-                .padding(.bottom, 4)
+        return ScrollView {
+            VStack(spacing: 28) {
+                // App icon / hero
+                Image("BrandIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 72, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .padding(.top, 48)
 
-            VStack(spacing: 8) {
-                Text("Welcome to Minis")
-                    .font(.title2.bold())
-                Text("Your first On-Device Agent is almost ready.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+                VStack(spacing: 8) {
+                    Text("Welcome to Claudio")
+                        .font(.title2.bold())
+                    Text("With us, into the unknown.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                // On-Device section — the phone's built-in agent. The original
+                // three steps are unchanged, now grouped under their own header.
+                VStack(alignment: .leading, spacing: 10) {
+                    emptyStateSectionLabel("On-Device")
+
+                    // Step 1 – Add Provider
+                    setupStep(
+                        number: 1,
+                        title: "Add a Provider",
+                        subtitle: hasProviders ? "Done" : "Connect a model provider.",
+                        isDone: hasProviders
+                    ) {
+                        if !hasProviders {
+                            showAddProvider = true
+                        }
+                    }
+
+                    // Step 2 – Select Models
+                    setupStep(
+                        number: 2,
+                        title: "Select Models",
+                        subtitle: hasGroups ? "Done" : (hasProviders ? "Pick the models you want to use." : "Complete step 1 first"),
+                        isDone: hasGroups
+                    ) {
+                        if hasProviders && !hasGroups {
+                            showSelectModels = true
+                        }
+                    }
+
+                    // Step 3 – Start chatting
+                    setupStep(
+                        number: 3,
+                        title: "Start a Conversation",
+                        subtitle: hasGroups ? "Say hello to your agent." : "Complete step 2 first",
+                        isDone: false
+                    ) {
+                        if hasGroups {
+                            openSession(Self.makeNewSessionId())
+                        }
+                    }
+                }
+                .frame(maxWidth: 400)
+
+                // Your Computer section — the remote agent. A peer of the
+                // on-device steps (deliberately NOT a numbered step): own
+                // header, own entry card. When already configured the card
+                // shows the checkmark but stays tappable so the user can
+                // manage the existing connection.
+                VStack(alignment: .leading, spacing: 10) {
+                    emptyStateSectionLabel("Your Computer")
+                    cloudEntryStep(isDone: hasRemote) {
+                        showConnectComputer = true
+                    }
+                }
+                .frame(maxWidth: 400)
+
+                Spacer(minLength: 40)
             }
-
-            // Setup steps
-            VStack(spacing: 16) {
-                // Step 1 – Add Provider
-                setupStep(
-                    number: 1,
-                    title: "Add a Provider",
-                    subtitle: hasProviders ? "Done" : "Configure an API key or sign in with OAuth",
-                    isDone: hasProviders
-                ) {
-                    if !hasProviders {
-                        showAddProvider = true
-                    }
-                }
-
-                // Step 2 – Select Models
-                setupStep(
-                    number: 2,
-                    title: "Select Models",
-                    subtitle: hasGroups ? "Done" : (hasProviders ? "Choose the models you want to use" : "Complete step 1 first"),
-                    isDone: hasGroups
-                ) {
-                    if hasProviders && !hasGroups {
-                        showSelectModels = true
-                    }
-                }
-
-                // Step 3 – Start chatting
-                setupStep(
-                    number: 3,
-                    title: "Start a Conversation",
-                    subtitle: hasGroups ? "Tap the button below to begin" : "Complete step 2 first",
-                    isDone: false
-                ) {
-                    if hasGroups {
-                        openSession(Self.makeNewSessionId())
-                    }
-                }
-            }
-            .padding(.horizontal, 8)
-            .frame(maxWidth: 400)
-            Spacer()
+            .padding(.horizontal, 32)
         }
-        .frame(maxHeight: .infinity)
-        .padding(.horizontal, 32)
         .sheet(isPresented: $showAddProvider) {
             NavigationStack {
                 AddProviderView()
@@ -3880,6 +3900,11 @@ struct ContentView: View {
         .sheet(isPresented: $showSelectModels) {
             NavigationStack {
                 OnboardingModelSelectionView()
+            }
+        }
+        .sheet(isPresented: $showConnectComputer) {
+            NavigationStack {
+                RemoteAgentSetupView()
             }
         }
     }
@@ -3941,6 +3966,66 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .disabled(isDone)
+    }
+
+    /// Section header inside the first-launch empty state. Same styling as
+    /// the sidebar's group headers (small semibold secondary label).
+    private func emptyStateSectionLabel(_ title: LocalizedStringKey) -> some View {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Color(UIColor.secondaryLabel))
+            .padding(.leading, 4)
+    }
+
+    /// Cloud (remote agent) entry card in the first-launch empty state.
+    /// Deliberately NOT a numbered step: the computer is a peer of the
+    /// on-device agent, not step 4. Visual language matches `setupStep`
+    /// (circle glyph + title + caption + chevron) so the two sections read
+    /// as one system. When already configured, shows the checkmark state
+    /// but stays tappable — reopening the setup page lets the user manage
+    /// the existing connection.
+    private func cloudEntryStep(isDone: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(isDone ? Color.green : Color.accentColor)
+                        .frame(width: 32, height: 32)
+                    if isDone {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white)
+                    } else {
+                        Image(systemName: "desktopcomputer")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connect Your Computer")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(isDone ? .secondary : .primary)
+                    Text("Control Claude Code from your phone.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if !isDone {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(UIColor.secondarySystemGroupedBackground))
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Search Bar

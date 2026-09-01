@@ -10417,6 +10417,38 @@
         }
       }
     },
+    "Bridge URL" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bridge URL"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bridge 地址"
+          }
+        }
+      }
+    },
+    "Bridge token" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bridge token"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bridge 令牌"
+          }
+        }
+      }
+    },
     "Browse" : {
       "localizations" : {
         "de" : {
@@ -15465,6 +15497,54 @@
         }
       }
     },
+    "Connect" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接"
+          }
+        }
+      }
+    },
+    "Connect Your Computer" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect Your Computer"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接你的电脑"
+          }
+        }
+      }
+    },
+    "Connect a model provider." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect a model provider."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接一个模型服务商"
+          }
+        }
+      }
+    },
     "Confirm Deletion" : {
       "localizations" : {
         "de" : {
@@ -16141,6 +16221,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "在 Safari 中繼續"
+          }
+        }
+      }
+    },
+    "Control Claude Code from your phone." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Control Claude Code from your phone."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用手机遥控你的 Claude Code"
           }
         }
       }
@@ -33456,6 +33552,22 @@
         }
       }
     },
+    "Install the Bridge" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Install the Bridge"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安装 Bridge"
+          }
+        }
+      }
+    },
     "Installed" : {
       "localizations" : {
         "de" : {
@@ -47407,6 +47519,38 @@
         }
       }
     },
+    "On your computer, run:" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On your computer, run:"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在你的电脑上运行："
+          }
+        }
+      }
+    },
+    "On-Device" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On-Device"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机"
+          }
+        }
+      }
+    },
     "Only dedicated speech-to-text models are listed — those whose only input is audio (e.g. Whisper). Multimodal chat models that can also hear audio are not shown." : {
       "comment" : "Voice input filter explanation",
       "localizations" : {
@@ -50607,6 +50751,22 @@
         }
       }
     },
+    "Pick the models you want to use." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pick the models you want to use."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "挑选你要用的模型"
+          }
+        }
+      }
+    },
     "Picked folders are bind-mounted at /var/minis/mounts/<name>. You can browse them in Browse Files and read/write them directly from the iSH shell, just like /var/minis/shared. Up to 10 folders can be mounted at a time." : {
       "localizations" : {
         "de" : {
@@ -51897,6 +52057,22 @@
         }
       }
     },
+    "Project Path" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Project Path"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "项目路径"
+          }
+        }
+      }
+    },
     "Prompt" : {
       "localizations" : {
         "de" : {
@@ -52673,6 +52849,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "快速設定"
+          }
+        }
+      }
+    },
+    "Quick Setup" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Setup"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速设置"
           }
         }
       }
@@ -59791,6 +59983,22 @@
         }
       }
     },
+    "Say hello to your agent." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Say hello to your agent."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "跟你的 Agent 打个招呼"
+          }
+        }
+      }
+    },
     "Scale fonts for chat input, message content, and general app text. Changes apply immediately." : {
       "localizations" : {
         "de" : {
@@ -59839,6 +60047,54 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "調整聊天輸入、消息內容和應用文本的字體大小。更改立即生效。"
+          }
+        }
+      }
+    },
+    "Scan QR Code" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan QR Code"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "扫描二维码"
+          }
+        }
+      }
+    },
+    "Scan the QR code printed by your Bridge Server — the URL and token fill in automatically. You can also paste them below." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan the QR code printed by your Bridge Server — the URL and token fill in automatically. You can also paste them below."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "扫描 Bridge Server 打印的二维码，URL 和令牌会自动填入，也可以手动粘贴。"
+          }
+        }
+      }
+    },
+    "Scan the QR code printed by your Bridge Server, or paste the details below." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan the QR code printed by your Bridge Server, or paste the details below."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "扫描 Bridge Server 打印的二维码，或手动粘贴以下信息。"
           }
         }
       }
@@ -70218,6 +70474,22 @@
     "The terminal engine isn't running yet. Open a chat or the terminal once, then retry." : {
 
     },
+    "The terminal shows a QR code. Scan it with the button below." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The terminal shows a QR code. Scan it with the button below."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "终端会显示二维码，用下面的按钮扫描即可。"
+          }
+        }
+      }
+    },
     "The thinking fields this rule adds to a request at the High level." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -70387,6 +70659,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "語音服務的端點 URL。"
+          }
+        }
+      }
+    },
+    "The working directory the agent runs in on your computer (e.g. /home/ubuntu)." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The working directory the agent runs in on your computer (e.g. /home/ubuntu)."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent 在你的电脑上运行的工作目录（例如 /home/ubuntu）。"
           }
         }
       }
@@ -77408,6 +77696,22 @@
     "video" : {
 
     },
+    "wss://your-computer:8766" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wss://your-computer:8766"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wss://你的电脑:8766"
+          }
+        }
+      }
+    },
     "Video generation" : {
       "localizations" : {
         "de" : {
@@ -78578,6 +78882,22 @@
         }
       }
     },
+    "Welcome to Claudio" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Welcome to Claudio"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "欢迎使用 Claudio"
+          }
+        }
+      }
+    },
     "Welcome to Minis" : {
       "localizations" : {
         "de" : {
@@ -79601,6 +79921,22 @@
         }
       }
     },
+    "With us, into the unknown." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "With us, into the unknown."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "与我们 探索未至之境"
+          }
+        }
+      }
+    },
     "Working files (scripts, data, configs)" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -80419,6 +80755,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "您可能需要手動新增模型 ID。"
+          }
+        }
+      }
+    },
+    "Your Computer" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your Computer"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的电脑"
           }
         }
       }
