@@ -1867,16 +1867,46 @@ struct ToolLiveSheet: View {
                         jsScriptCard(script)
                             .padding(.top, 12)
                     }
-                    Spacer()
-                    VStack(spacing: 8) {
-                        Image(systemName: "globe")
-                            .font(.system(size: 32))
-                            .foregroundStyle(ChatColors.tertiaryText)
-                        Text("Loading...")
-                            .font(.system(size: 13))
-                            .foregroundStyle(ChatColors.tertiaryText)
+                    if block.content.isEmpty {
+                        // Genuinely nothing to show yet (live browser tool
+                        // before its first output) — keep the placeholder.
+                        Spacer()
+                        VStack(spacing: 8) {
+                            Image(systemName: "globe")
+                                .font(.system(size: 32))
+                                .foregroundStyle(ChatColors.tertiaryText)
+                            Text("Loading...")
+                                .font(.system(size: 13))
+                                .foregroundStyle(ChatColors.tertiaryText)
+                        }
+                        Spacer()
+                    } else {
+                        // [T-remote-tool-text-fallback] Remote tools (WebSearch /
+                        // WebFetch / remote browser_use) run on the server — no
+                        // local screenshot source exists, so this used to sit on
+                        // the "Loading..." placeholder forever. Fall back to the
+                        // shell-output rich text renderer: URLs become tappable
+                        // capsules that open the in-app link preview. Local
+                        // browser tools keep the screenshot path above untouched.
+                        ScrollView {
+                            let allChunks = detailChunks(for: block)
+                            let chunks = Array(allChunks.prefix(max(revealedChunkCount, 1)))
+                            VStack(alignment: .leading, spacing: 0) {
+                                ForEach(chunks, id: \.id) { chunk in
+                                    Text(attributedShellLine(chunk.text))
+                                        .font(.system(size: 13, design: .monospaced))
+                                        .foregroundColor(accentColor)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 14)
+                                }
+                                loadMoreFooter(totalChunks: allChunks.count)
+                                Color.clear.frame(height: 1)
+                            }
+                            .onAppear { resetRevealWindow(for: allChunks) }
+                            .padding(.top, 12)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    Spacer()
                 }
             }
         }
@@ -2287,6 +2317,11 @@ private struct ToolPreviewThumbnail: View {
                     .aspectRatio(contentMode: .fill)
                     .frame(width: 100, height: 65)
                     .clipped()
+            } else if !block.content.isEmpty {
+                // [T-remote-tool-text-fallback] Remote tools have no screenshot
+                // source — show the result text (last lines) instead of a
+                // permanent globe tile. Local tools keep the snapshot path.
+                snapshotTextPreview(block.content)
             } else {
                 ZStack {
                     Color(red: 0.12, green: 0.12, blue: 0.14)
