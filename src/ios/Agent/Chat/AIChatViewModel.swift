@@ -1091,6 +1091,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     // Tool snapshots
     @Published var toolSnapshots: [ToolSnapshotItem] = []
 
+    /// [M3] Latest Bridge `permission_request` awaiting an answer, or nil.
+    /// Drives the RemotePermissionDialog (non-bypass permission modes).
+    @Published var pendingPermission: RemotePermissionRequest?
+
     // Attachments
     @Published var attachments: [InputAttachment] = []
     /// Number of videos currently being imported from the photo picker.
@@ -6126,6 +6130,41 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         messages.append(msg)
     }
 
+    /// [M3] Answer the pending Bridge permission request. `allow` approves
+    /// once, `always` approves for the whole session (official approve /
+    /// approve_always / reject — ApprovalBar). Resolves the live client via
+    /// RemoteAgentStore like every other remote action.
+    func respondToPermission(_ request: RemotePermissionRequest, allow: Bool, always: Bool = false) {
+        guard let entry = resolveCurrentEntry() else {
+            pendingPermission = nil
+            return
+        }
+        let chatID = sessionId
+        guard let client = RemoteAgentStore.shared.existingClient(
+            instanceID: entry.providerInstanceId,
+            chatSessionID: chatID
+        ) else {
+            pendingPermission = nil
+            return
+        }
+        let kind = always ? "approve_always" : (allow ? "approve" : "reject")
+        Task {
+            await client.sendPermissionResponse(kind: kind, id: request.id)
+            await MainActor.run {
+                if pendingPermission?.id == request.id {
+                    pendingPermission = nil
+                }
+            }
+        }
+    }
+
+}
+
+/// [M3] A Bridge `permission_request` awaiting the user's answer.
+struct RemotePermissionRequest: Identifiable {
+    let id: String          // toolUseId
+    let toolName: String
+    let input: [String: Any]
 }
 
 enum LLMProviderError: LocalizedError {

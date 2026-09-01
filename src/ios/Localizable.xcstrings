@@ -4219,6 +4219,22 @@
         }
       }
     },
+    "Accept Edits" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accept Edits"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接受编辑"
+          }
+        }
+      }
+    },
     "Act:" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -6832,6 +6848,22 @@
         }
       }
     },
+    "Always Allow" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Always Allow"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "始终允许"
+          }
+        }
+      }
+    },
     "Always dark" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -8267,6 +8299,22 @@
         }
       }
     },
+    "Ask before tools that need permission" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ask before tools that need permission"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要权限的工具执行前询问"
+          }
+        }
+      }
+    },
     "Associated Files" : {
       "localizations" : {
         "de" : {
@@ -9168,6 +9216,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "自動分組"
+          }
+        }
+      }
+    },
+    "Auto-accept file edit tools" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auto-accept file edit tools"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动接受文件编辑工具"
+          }
+        }
+      }
+    },
+    "Auto-approve routine tools" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auto-approve routine tools"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动批准常规工具"
           }
         }
       }
@@ -10417,6 +10497,22 @@
         }
       }
     },
+    "Branch (optional)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Branch (optional)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分支（可选）"
+          }
+        }
+      }
+    },
     "Bridge URL" : {
       "localizations" : {
         "en" : {
@@ -11023,6 +11119,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "自動允許"
+          }
+        }
+      }
+    },
+    "Bypass All" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bypass All"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全部绕过"
           }
         }
       }
@@ -14505,6 +14617,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "收集語音糾錯資料"
+          }
+        }
+      }
+    },
+    "Coming soon" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Coming soon"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "即将支持"
           }
         }
       }
@@ -23522,6 +23650,22 @@
         }
       }
     },
+    "Effort" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Effort"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "努力程度"
+          }
+        }
+      }
+    },
     "Eligible records" : {
       "localizations" : {
         "de" : {
@@ -26756,6 +26900,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "回退"
+          }
+        }
+      }
+    },
+    "Fallback Model" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fallback Model"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回退模型"
           }
         }
       }
@@ -38629,6 +38789,38 @@
         }
       }
     },
+    "Max budget USD (optional)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Max budget USD (optional)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预算上限 USD（可选）"
+          }
+        }
+      }
+    },
+    "Max turns (optional)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Max turns (optional)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最大轮数（可选）"
+          }
+        }
+      }
+    },
     "Maybe Later" : {
       "localizations" : {
         "en" : {
@@ -47599,6 +47791,22 @@
         }
       }
     },
+    "On-Device Agent" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On-Device Agent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机 Agent"
+          }
+        }
+      }
+    },
     "Only dedicated speech-to-text models are listed — those whose only input is audio (e.g. Whisper). Multimodal chat models that can also hear audio are not shown." : {
       "comment" : "Voice input filter explanation",
       "localizations" : {
@@ -50370,6 +50578,22 @@
         }
       }
     },
+    "Permission Mode" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Permission Mode"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "权限模式"
+          }
+        }
+      }
+    },
     "Permission Request" : {
       "localizations" : {
         "de" : {
@@ -50470,6 +50694,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "權限"
+          }
+        }
+      }
+    },
+    "Persist Session" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Persist Session"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "持久化会话"
           }
         }
       }
@@ -51073,6 +51313,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "純文本"
+          }
+        }
+      }
+    },
+    "Plan" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plan"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "计划"
           }
         }
       }
@@ -52105,12 +52361,44 @@
         }
       }
     },
+    "Project" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Project"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "项目"
+          }
+        }
+      }
+    },
     "Project Path" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Project Path"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "项目路径"
+          }
+        }
+      }
+    },
+    "Project path" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Project path"
           }
         },
         "zh-Hans" : {
@@ -53967,6 +54255,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "在“文件”App 中爲只讀。App 本身始終可讀寫。"
+          }
+        }
+      }
+    },
+    "Read-only plan mode" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read-only plan mode"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只读计划模式"
           }
         }
       }
@@ -59563,6 +59867,22 @@
         }
       }
     },
+    "Runs right on this phone. Zero setup, your data stays on-device." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Runs right on this phone. Zero setup, your data stays on-device."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "直接在手机本机运行。零配置，数据不出手机。"
+          }
+        }
+      }
+    },
     "Safari will open the launcher page. Tap the Share button → Add to Home Screen to pin the icon." : {
       "localizations" : {
         "de" : {
@@ -59611,6 +59931,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Safari 將開啟啟動器頁面。點按分享按鈕 →「加入主畫面」即可固定圖示。"
+          }
+        }
+      }
+    },
+    "Sandbox (Safe Mode)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sandbox (Safe Mode)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "沙箱（安全模式）"
+          }
+        }
+      }
+    },
+    "Sandbox Mode" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sandbox Mode"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "沙箱模式"
           }
         }
       }
@@ -65001,6 +65353,22 @@
         }
       }
     },
+    "Skip all permission prompts" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skip all permission prompts"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "跳过所有权限提示"
+          }
+        }
+      }
+    },
     "Smart home devices, rooms, and scenes" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -65959,6 +66327,22 @@
         }
       }
     },
+    "Standard" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Standard"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标准"
+          }
+        }
+      }
+    },
     "Standard /v1/chat/completions format." : {
       "localizations" : {
         "de" : {
@@ -66204,6 +66588,22 @@
         }
       }
     },
+    "Start On-Device" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start On-Device"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在本机开始"
+          }
+        }
+      }
+    },
     "Start recording" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -66253,6 +66653,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "開始錄音"
+          }
+        }
+      }
+    },
+    "Start with Claude" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start with Claude"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "以 Claude 开始"
           }
         }
       }
@@ -76473,6 +76889,22 @@
         }
       }
     },
+    "Use Worktree" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Worktree"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用 Worktree"
+          }
+        }
+      }
+    },
     "Use the braces button to insert a reference to an App environment variable as $$NAME. Its value is filled in at runtime." : {
       "localizations" : {
         "de" : {
@@ -79844,6 +80276,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "開啟後，模型回覆完成後會自動彈出鍵盤，方便繼續追問。預設開啟；若你希望在閱讀回覆時不被意外彈出的鍵盤打擾，可關閉。"
+          }
+        }
+      }
+    },
+    "Where the agent runs on your computer." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Where the agent runs on your computer."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent 在你的电脑上运行的目录。"
           }
         }
       }

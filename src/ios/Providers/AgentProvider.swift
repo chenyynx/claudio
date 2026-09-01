@@ -167,6 +167,11 @@ enum AgentStreamEvent: @unchecked Sendable {
     /// stay .running → SafetyNet force-cancels → persisted history shows
     /// "Tool execution was interrupted" to the model on the next turn).
     case toolResult(id: String, name: String, output: String, isError: Bool)
+    /// Bridge `permission_request` — the agent wants to run a tool that
+    /// needs approval (non-bypass permission mode). The UI shows the
+    /// approval dialog and answers with approve / approve_always / reject
+    /// (official PermissionRequestMessage + ApprovalBar).
+    case permissionRequest(id: String, toolName: String, input: [String: Any])
     /// Response finished.
     case done(stopReason: AgentStopReason)
 }

@@ -67,6 +67,7 @@ extension AIChatViewModel {
         case .usage: return "usage"
         case .thinkingDelta: return "thinkingDelta"
         case .toolResult(let id, let name, _, _): return "toolResult(\(name):\(id.prefix(12)))"
+        case .permissionRequest(_, let name, _): return "permissionRequest(\(name))"
         case .reasoningContent: return "reasoningContent"
         case .reasoningEcho: return "reasoningEcho"
         case .done(let stop): return "done(\(stop))"
@@ -407,6 +408,13 @@ extension AIChatViewModel {
             }
 
             switch event {
+            case .permissionRequest(let id, let toolName, let input):
+                // [M3] Surface the Bridge permission request; the dialog
+                // answers via respondToPermission (approve/reject/always).
+                await MainActor.run {
+                    pendingPermission = RemotePermissionRequest(id: id, toolName: toolName, input: input)
+                }
+
             case .contentBlockStart(let start):
                 // Model started producing output — clear the "thinking" indicator
                 await MainActor.run {
@@ -466,14 +474,19 @@ extension AIChatViewModel {
                     // the blocks array change triggers a full ForEach re-evaluation.
                     let assistantText = result.assistantText
                     let textIdx = currentTextBlockIdx
+                    // [Fix] Remote agent (Claude Code / Codex) tool names map
+                    // onto the existing OpenMinis block kinds so capsules get
+                    // their proper icon/color instead of the generic shell
+                    // fallback. Local names are unchanged.
                     let blockKind: AssistantBlockKind = switch name {
-                    case "shell_execute": .shellTool(command: "")
-                    case "file_read": .fileReadTool(path: "")
-                    case "file_write": .fileWriteTool(path: "")
-                    case "file_edit": .fileEditTool(path: "")
-                    case "browser_use": .browserTool(action: "")
+                    case "shell_execute", "Bash", "BashOutput": .shellTool(command: "")
+                    case "file_read", "Read", "Glob", "Grep", "View": .fileReadTool(path: "")
+                    case "file_write", "Write": .fileWriteTool(path: "")
+                    case "file_edit", "Edit", "MultiEdit", "NotebookEdit": .fileEditTool(path: "")
+                    case "browser_use", "WebFetch", "WebSearch": .browserTool(action: name)
                     case "read_image": .readImageTool(path: "")
                     case "memory_write", "memory_get": .memoryTool(action: name)
+                    case "Task": .memoryTool(action: "task")
                     default: .shellTool(command: name)
                     }
                     if name == "file_write" || name == "file_edit" {

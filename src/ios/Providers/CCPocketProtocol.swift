@@ -23,15 +23,56 @@ enum CCPocketProtocol {
     }
 
     /// `start` — open a new (or resume an existing) agent session.
+    /// [Fix] Full field set aligned with the official client's
+    /// ClientMessage.start (new_session_sheet.dart → session_list_screen
+    /// _startNewSession): every optional session-start option the Bridge
+    /// understands. Codex-only fields are sent only when provider == codex.
     struct StartRequest: Encodable {
         let type = "start"
         var projectPath: String
-        var provider: String?          // "claude" | "codex"
+        var provider: String? = nil          // "claude" | "codex"
+        var sessionId: String? = nil
+        var `continue`: Bool? = nil
+        var requestId: String? = nil
+        var model: String? = nil
+        var permissionMode: String? = nil
+        var executionMode: String? = nil
+        var planMode: Bool? = nil
+        var effort: String? = nil
+        var maxTurns: Int? = nil
+        var maxBudgetUsd: Double? = nil
+        var fallbackModel: String? = nil
+        var forkSession: Bool? = nil
+        var persistSession: Bool? = nil
+        var useWorktree: Bool? = nil
+        var worktreeBranch: String? = nil
+        var existingWorktreePath: String? = nil
+        // codex-only
+        var approvalPolicy: String? = nil
+        var approvalsReviewer: String? = nil
+        var codexPermissionsMode: String? = nil
+        var profile: String? = nil
+        var sandboxMode: String? = nil
+        var modelReasoningEffort: String? = nil
+        var serviceTier: String? = nil
+        var networkAccessEnabled: Bool? = nil
+        var webSearchMode: String? = nil
+        var additionalWritableRoots: [String]? = nil
+        var autoRename: Bool? = nil
+    }
+
+    /// `approve` / `approve_always` / `reject` / `answer` — respond to a
+    /// Bridge `permission_request` (official ClientMessage.approve /
+    /// approveAlways / reject / answer in messages.dart:4591+). The id is
+    /// the toolUseId from the request.
+    struct PermissionResponseRequest: Encodable {
+        let type: String          // "approve" | "approve_always" | "reject" | "answer"
+        var id: String?
         var sessionId: String?
-        var `continue`: Bool?
-        var requestId: String?
-        var model: String?
-        var permissionMode: String?
+        var clearContext: Bool?
+        var message: String?      // reject reason
+        var toolUseId: String?    // answer
+        var result: String?       // answer value
     }
 
     /// `input` — send a user message to the running session.
@@ -116,6 +157,8 @@ enum CCPocketProtocol {
         let content: String?
         let toolName: String?
         let permissionOutcome: String?
+        // permission_request payload (tool arguments; M3 approval flow)
+        let input: [String: JSONValue]?
         // result
         let result: String?
         // `error` is used by result subtype=error payloads; plain `message`

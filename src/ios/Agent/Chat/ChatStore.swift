@@ -4813,23 +4813,23 @@ extension RawMessage {
         let kind: AssistantBlockKind
         let content: String
         switch tu.name {
-        case "shell_execute":
+        case "shell_execute", "Bash", "BashOutput":
             let cmd = extractCommandFromJSON(tu.input)
             kind = .shellTool(command: cmd)
             content = "$ \(cmd)"
-        case "file_read":
+        case "file_read", "Read", "Glob", "Grep", "View":
             let path = extractStringParam("path", from: tu.input)
             kind = .fileReadTool(path: path)
             content = "Reading \(path)..."
-        case "file_write":
+        case "file_write", "Write":
             let path = extractStringParam("path", from: tu.input)
             kind = .fileWriteTool(path: path)
             content = "Writing \(path)..."
-        case "file_edit":
+        case "file_edit", "Edit", "MultiEdit", "NotebookEdit":
             let path = extractStringParam("path", from: tu.input)
             kind = .fileEditTool(path: path)
             content = "Editing \(path)..."
-        case "browser_use":
+        case "browser_use", "WebFetch", "WebSearch":
             let action = extractStringParam("action", from: tu.input)
             kind = .browserTool(action: action)
             content = "Browser: \(action)"
@@ -4844,6 +4844,9 @@ extension RawMessage {
         case "memory_write", "memory_get":
             kind = .memoryTool(action: tu.name)
             content = tu.name == "memory_write" ? "Writing memory..." : "Reading memory..."
+        case "Task":
+            kind = .memoryTool(action: "task")
+            content = "Running subtask..."
         default:
             kind = .shellTool(command: tu.name)
             content = tu.name

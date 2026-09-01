@@ -220,13 +220,24 @@ final class CCPocketClient: @unchecked Sendable {
         guard let projectPath else { throw CCPocketError.notConnected }
         let requestId = UUID().uuidString
         pendingStartRequestId = requestId
+        // [New-session sheet] Fill the full option set from the persisted
+        // defaults (official _startNewSession semantics: the sheet saves
+        // after each start, the provider reads them at the next start).
+        let defaults = RemoteSessionDefaultsStore.load()
         let start = CCPocketProtocol.StartRequest(
             projectPath: projectPath,
             provider: providerName,
             sessionId: nil,
             continue: nil,
             requestId: requestId,
-            permissionMode: permissionMode
+            permissionMode: permissionMode ?? defaults.permissionMode,
+            executionMode: defaults.executionMode == "default" ? nil : defaults.executionMode,
+            planMode: defaults.planMode ? true : nil,
+            model: defaults.model,
+            effort: defaults.effort,
+            fallbackModel: defaults.fallbackModel,
+            forkSession: defaults.forkSession ? true : nil,
+            persistSession: defaults.persistSession ? true : nil
         )
         try await send(CCPocketProtocol.encode(start), allowsReconnect: false)
         logger.info("[CCPocket] start sent")
@@ -354,6 +365,23 @@ final class CCPocketClient: @unchecked Sendable {
     func sendStopSession(bridgeId: String) async {
         guard state == .connected else { return }
         let request = CCPocketProtocol.StopSessionRequest(sessionId: bridgeId)
+        try? await send(CCPocketProtocol.encode(request))
+    }
+
+    /// [M3] Answer a `permission_request` (official ClientMessage.approve /
+    /// approveAlways / reject / answer — messages.dart:4591). `kind` is the
+    /// wire type; `id` is the toolUseId from the request.
+    func sendPermissionResponse(kind: String, id: String, clearContext: Bool = false, message: String? = nil, answer: String? = nil) async {
+        guard state == .connected else { return }
+        let request = CCPocketProtocol.PermissionResponseRequest(
+            type: kind,
+            id: id,
+            sessionId: sessionId,
+            clearContext: clearContext ? true : nil,
+            message: message,
+            toolUseId: kind == "answer" ? id : nil,
+            result: answer
+        )
         try? await send(CCPocketProtocol.encode(request))
     }
 

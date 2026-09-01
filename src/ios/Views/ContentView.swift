@@ -1448,6 +1448,11 @@ struct ContentView: View {
                 })
             }
         }
+        .sheet(isPresented: $showNewSessionSheet) {
+            RemoteNewSessionSheet { result in
+                handleNewSessionResult(result)
+            }
+        }
         .sheet(isPresented: $showAlarmList, onDismiss: { fetchAlarmsIfNeeded() }) {
             AlarmListView()
         }
@@ -3492,6 +3497,27 @@ struct ContentView: View {
         QuickActionWorkflow.shared.attachTargetSession(newId)
     }
 
+    /// [New-session sheet] Route the sheet's result: on-device starts the
+    /// usual local draft; Claude creates a session bound to the remote-agent
+    /// model (options already persisted to RemoteSessionDefaultsStore by the
+    /// sheet — the provider reads them at start time).
+    private func handleNewSessionResult(_ result: RemoteNewSessionResult) {
+        switch result {
+        case .onDevice:
+            openSession(Self.makeNewSessionId())
+        case .claude:
+            guard let instance = providerStore.instances.first(where: {
+                $0.providerType == .remoteAgent && $0.isEnabled
+            }) else { return }
+            guard let entry = providerStore.visibleEntries(for: instance.id).first else { return }
+            let newId = Self.makeNewSessionId()
+            Task { @MainActor in
+                await ChatStore.shared.updateSessionModelId(newId, modelId: entry.model.id)
+                openSession(newId)
+            }
+        }
+    }
+
     /// Switch to `id` as the one and only session on screen, replacing whatever
     /// is currently there.
     ///
@@ -3837,6 +3863,7 @@ struct ContentView: View {
     @State private var showSelectModels = false
     @State private var showConnectComputer = false
     @State private var showConnectionSheet = false
+    @State private var showNewSessionSheet = false
 
     private var emptyState: some View {
         let hasProviders = !providerStore.instances.isEmpty
@@ -4381,7 +4408,9 @@ struct ContentView: View {
                 dragOffset: $fabDragOffset,
                 didDrag: $fabDidDrag
             ) {
-                if !fabDidDrag { openSession(Self.makeNewSessionId()) }
+                // [New-session sheet] Main new-chat entry: three tabs
+                // (On-Device / Claude / Codex) before anything is created.
+                if !fabDidDrag { showNewSessionSheet = true }
             } label: {
                 fabCircleSurface(
                     tint: Self.newChatGlassTint,

@@ -228,6 +228,25 @@ final class RemoteAgentProvider: AgentProvider {
             // long Claude id is not a routing key.
             break
 
+        case "permission_request":
+            // [M3] Approval flow (official PermissionRequestMessage):
+            // surface the request to the UI, which answers with
+            // approve / approve_always / reject / answer. Without this the
+            // agent would wait forever in non-bypass permission modes.
+            guard let toolId = message.toolUseId, let toolName = message.toolName else {
+                logger.warning("[RemoteAgent] permission_request without id/name — ignored")
+                break
+            }
+            let args: [String: Any] = (message.input ?? [:]).compactMapValues { value in
+                switch value {
+                case .string(let s): return s
+                case .number(let n): return n
+                case .bool(let b): return b
+                default: return nil
+                }
+            }
+            continuation.yield(.permissionRequest(id: toolId, toolName: toolName, input: args))
+
         case "stream_delta":
             if let text = message.text, !text.isEmpty {
                 openTextBlockIfNeeded(continuation)
