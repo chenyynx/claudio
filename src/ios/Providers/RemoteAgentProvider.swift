@@ -420,7 +420,7 @@ final class RemoteAgentProvider: AgentProvider {
     /// Same conversion rules as the live `assistant` case in
     /// `handle(_:continuation:)`: only string / number / bool survive as
     /// tool input args (nested shapes dropped — the live path does the same).
-    private static func jsonArgs(from input: [String: JSONValue]?) -> [String: Any] {
+    private static func jsonArgs(from input: [String: CCPocketProtocol.JSONValue]?) -> [String: Any] {
         guard let input else { return [:] }
         return input.compactMapValues { value -> Any? in
             switch value {
