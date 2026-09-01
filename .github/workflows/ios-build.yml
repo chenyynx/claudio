@@ -121,3 +121,18 @@ jobs:
           name: Minis-unsigned-ipa
           path: src/ios/build/Minis-unsigned.ipa
           if-no-files-found: error
+
+      # [doris] Release the ipa as a release asset (fixed tag, commit-suffixed
+      # filename so every build URL is unique — no Safari cache/416). Asset
+      # downloads work through gh.llkk.cc, unlike Actions artifact blobs.
+      - name: Release unsigned .ipa
+        if: github.ref == refs/heads/main && github.event_name == push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA_SHORT: ${{ github.sha }}
+        run: |
+          TAG="ipa-latest"
+          NAME="Minis-unsigned-${SHA_SHORT:0:7}.ipa"
+          cp src/ios/build/Minis-unsigned.ipa "$NAME"
+          gh release create "$TAG" --title "Claudio unsigned builds" --notes "Latest main build — asset filename carries the commit hash." --clobber || true
+          gh release upload "$TAG" "$NAME" --clobber
