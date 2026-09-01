@@ -916,6 +916,9 @@ final class CCPocketClient: @unchecked Sendable {
     /// pull `recent_sessions` (disk index — includes sessions started from
     /// other clients), push into the registry, disconnect. No agent session
     /// is started; safe to call repeatedly (registry merge is idempotent).
+    /// MainActor: reads ProviderConfigStore.shared (actor-isolated) and
+    /// pushes into the MainActor-confined registry.
+    @MainActor
     static func refreshBridgeInventory(instanceID: String) async {
         guard let instance = ProviderConfigStore.shared.instances.first(where: {
             $0.id == instanceID && $0.providerType == .remoteAgent && $0.isEnabled
