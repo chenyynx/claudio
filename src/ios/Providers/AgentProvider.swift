@@ -162,11 +162,11 @@ enum AgentStreamEvent: @unchecked Sendable {
     case reasoningEcho(ReasoningEcho)
     /// Tool execution result from the agent, paired by tool_use id.
     /// The CC Pocket Bridge executes tools server-side and streams results
-    /// via `tool_result`; without this event the engine's tool pairing
-    /// never completes (blocks stay .running → SafetyNet force-cancels →
-    /// persisted history shows "Tool execution was interrupted" to the
-    /// model on the next turn).
-    case toolResult(id: String, output: String, isError: Bool)
+    /// via `tool_result` (toolName enriched by the Bridge — session.js);
+    /// without this event the engine's tool pairing never completes (blocks
+    /// stay .running → SafetyNet force-cancels → persisted history shows
+    /// "Tool execution was interrupted" to the model on the next turn).
+    case toolResult(id: String, name: String, output: String, isError: Bool)
     /// Response finished.
     case done(stopReason: AgentStopReason)
 }

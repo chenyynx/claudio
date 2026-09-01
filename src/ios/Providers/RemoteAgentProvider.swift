@@ -338,7 +338,7 @@ final class RemoteAgentProvider: AgentProvider {
             if let toolId = message.toolUseId, let output = message.content {
                 let isError = output.hasPrefix("Tool execution was interrupted")
                     || output.hasPrefix("Error:")
-                continuation.yield(.toolResult(id: toolId, output: output, isError: isError))
+                continuation.yield(.toolResult(id: toolId, name: message.toolName ?? "", output: output, isError: isError))
             }
 
         default:

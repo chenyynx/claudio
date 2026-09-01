@@ -5292,7 +5292,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // "interrupted" errors (the engine's tool pairing depends on it).
             for tr in streamResult.toolResults {
                 assistantParts.append(.toolResult(
-                    id: tr.id, name: "", content: tr.output, isError: tr.isError
+                    id: tr.id, name: tr.name, content: tr.output, isError: tr.isError
                 ))
             }
             self.prevCommittedBlockCount = self.committedBlockCount
