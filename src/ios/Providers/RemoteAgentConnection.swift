@@ -34,9 +34,12 @@ struct RemoteAgentConnection: Codable, Equatable {
     }
 }
 
-/// Holds live CCPocketClient connections per ProviderInstance so that
-/// multi-turn chat reuses one Bridge session instead of reconnecting
-/// (and losing context) on every message.
+/// Holds live CCPocketClient connections per (ProviderInstance, chat
+/// session) so that multi-turn chat reuses one Bridge session instead of
+/// reconnecting (and losing context) on every message. [Per-session mapping]
+/// Keyed per chat conversation: every conversation owns its Bridge session
+/// (official: ChatSessionCubit holds its own sessionId); a second
+/// conversation never reuses — let alone evicts — another one's connection.
 final class RemoteAgentStore {
 
     static let shared = RemoteAgentStore()
@@ -45,26 +48,32 @@ final class RemoteAgentStore {
 
     private init() {}
 
-    /// Existing live client for this instance, if any.
-    func existingClient(instanceID: String) -> CCPocketClient? {
+    private func storeKey(instanceID: String, chatSessionID: String?) -> String {
+        instanceID + "." + (chatSessionID ?? "__detached__")
+    }
+
+    /// Existing live client for this (instance, chat session), if any.
+    func existingClient(instanceID: String, chatSessionID: String?) -> CCPocketClient? {
         lock.lock()
         defer { lock.unlock() }
-        return clients[instanceID]
+        return clients[storeKey(instanceID: instanceID, chatSessionID: chatSessionID)]
     }
 
     /// Keep a client for later reuse. Caller must have connected it.
-    func retain(_ client: CCPocketClient, instanceID: String) {
+    func retain(_ client: CCPocketClient, instanceID: String, chatSessionID: String?) {
         lock.lock()
         defer { lock.unlock() }
-        clients[instanceID]?.disconnect()
-        clients[instanceID] = client
+        let key = storeKey(instanceID: instanceID, chatSessionID: chatSessionID)
+        clients[key]?.disconnect()
+        clients[key] = client
     }
 
     /// Drop the cached connection (e.g. on settings change / disconnect).
-    func release(instanceID: String) {
+    func release(instanceID: String, chatSessionID: String?) {
         lock.lock()
         defer { lock.unlock() }
-        clients[instanceID]?.disconnect()
-        clients.removeValue(forKey: instanceID)
+        let key = storeKey(instanceID: instanceID, chatSessionID: chatSessionID)
+        clients[key]?.disconnect()
+        clients.removeValue(forKey: key)
     }
 }

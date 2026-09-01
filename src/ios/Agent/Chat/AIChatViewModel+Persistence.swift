@@ -811,7 +811,11 @@ extension AIChatViewModel {
         Task { [weak self] in
             guard let self else { return }
             defer { self.remoteBackfillInFlight = false }
-            guard let history = await AIChatViewModel.fetchRemoteHistory(instance: instance) else { return }
+            guard let history = await AIChatViewModel.fetchRemoteHistory(
+                instance: instance,
+                chatSessionID: sessionId,
+                allowLegacyMappingFallback: true
+            ) else { return }
             // Rebuild through the production conversion chain — the exact
             // same path loadSession uses for persisted messages.
             var rebuilt: [ChatMessage] = []

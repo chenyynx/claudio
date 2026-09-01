@@ -46,6 +46,14 @@ final class CCPocketClient: @unchecked Sendable {
     /// message still resumes the same conversation next launch.
     var mappingInstanceID: String?
 
+    /// [Per-session mapping] Chat session (claudio conversation) this
+    /// connection is bound to. Set by the provider once the Bridge session
+    /// is started/resumed/reused for a turn. The factory only reuses a
+    /// connection whose binding matches — every chat conversation owns its
+    /// Bridge session (official: ChatSessionCubit holds `final sessionId`,
+    /// input carries it, messages route per session).
+    var boundChatSessionID: String?
+
     /// Bridge session id (short, 8 chars) — routes `input` (the Bridge
     /// resolves it exactly) and identifies this runtime session.
     private(set) var sessionId: String?
@@ -341,7 +349,7 @@ final class CCPocketClient: @unchecked Sendable {
     /// local cache — offline semantics match the official client).
     func requestHistory(claudeId: String, timeout: TimeInterval = 15) async -> [CCPocketProtocol.ServerMessage]? {
         // Resolve Bridge session id: mapping first, then session_list.
-        var bridgeId = loadMapping(instanceID: mappingInstanceID ?? "")?.bridgeId
+        var bridgeId = loadMapping(instanceID: mappingInstanceID ?? "", chatSessionID: boundChatSessionID)?.bridgeId
         if bridgeId == nil || bridgeId?.isEmpty == true {
             for _ in 0..<12 {
                 bridgeId = knownBridgeSessions?.first { $0.claudeSessionId == claudeId }?.id
@@ -576,7 +584,7 @@ final class CCPocketClient: @unchecked Sendable {
             // conversation → the official client showed a new session per
             // reply).
             if let mappingInstanceID {
-                saveMapping(instanceID: mappingInstanceID)
+                saveMapping(instanceID: mappingInstanceID, chatSessionID: boundChatSessionID)
             }
         }
         // `session_list` carries the authoritative claudeSessionId per
@@ -704,27 +712,32 @@ final class CCPocketClient: @unchecked Sendable {
     /// Persist this instance's session identity (bridge id + claude id) so a
     /// relaunch resumes the same conversation. `claudeId` is the resume key;
     /// a stale short value (8-char bridge id written by M1) is dropped.
-    func saveMapping(instanceID: String) {
+    /// Persist this chat conversation's session identity (bridge id +
+    /// claude id) so a relaunch resumes the same conversation. Keyed per
+    /// chat session; a detached client (title generation etc., chatSessionID
+    /// == nil) owns no conversation and must never persist an identity.
+    /// `claudeId` is the resume key; a stale short value (8-char bridge id
+    /// written by M1) is dropped.
+    func saveMapping(instanceID: String, chatSessionID: String?) {
+        guard let chatSessionID else { return }
         guard let claudeSessionId, claudeSessionId.count > 8 else { return }
         let mapping = SessionMapping(
             bridgeId: sessionId,
             claudeId: claudeSessionId,
             projectPath: projectPath
         )
-        let key = Self.mappingKeyPrefix + instanceID
+        let key = Self.mappingKeyPrefix + instanceID + "." + chatSessionID
         if let data = try? JSONEncoder().encode(mapping) {
             UserDefaults.standard.set(data, forKey: key)
-            logger.info("[CCPocket] saved session mapping instance=\(instanceID.prefix(8)) claude=\(claudeSessionId.prefix(8))...")
+            logger.info("[CCPocket] saved session mapping instance=\(instanceID.prefix(8)) chat=\(chatSessionID.prefix(8)) claude=\(claudeSessionId.prefix(8))...")
         }
     }
 
-    /// Previously saved session identity for this instance, if usable.
-    func loadMapping(instanceID: String) -> (bridgeId: String?, claudeId: String?, projectPath: String?)? {
-        let key = Self.mappingKeyPrefix + instanceID
+    /// Decode + validate a stored mapping. A short claudeId is a stale M1
+    /// bridge id — useless (and harmful) for resume; drop it.
+    private static func decodeMapping(key: String) -> (bridgeId: String?, claudeId: String?, projectPath: String?)? {
         guard let data = UserDefaults.standard.data(forKey: key),
               let mapping = try? JSONDecoder().decode(SessionMapping.self, from: data) else { return nil }
-        // A short claudeId is a stale M1 bridge id — useless (and harmful)
-        // for resume; drop it.
         guard let claudeId = mapping.claudeId, claudeId.count > 8 else {
             UserDefaults.standard.removeObject(forKey: key)
             return nil
@@ -732,14 +745,42 @@ final class CCPocketClient: @unchecked Sendable {
         return (mapping.bridgeId, claudeId, mapping.projectPath)
     }
 
+    /// Previously saved session identity for this chat conversation, if
+    /// usable. Detached clients (chatSessionID == nil) never see one.
+    /// Legacy migration: pre-per-session builds stored one identity per
+    /// provider instance; only the explicit load path opts in
+    /// (`allowLegacyFallback`) — a brand-new draft session must never claim
+    /// it (that was the cross-session bleed bug).
+    func loadMapping(instanceID: String, chatSessionID: String?, allowLegacyFallback: Bool = false) -> (bridgeId: String?, claudeId: String?, projectPath: String?)? {
+        guard let chatSessionID else { return nil }
+        if let hit = Self.decodeMapping(key: Self.mappingKeyPrefix + instanceID + "." + chatSessionID) {
+            return hit
+        }
+        guard allowLegacyFallback,
+              let legacy = Self.decodeMapping(key: Self.mappingKeyPrefix + instanceID) else { return nil }
+        if let data = try? JSONEncoder().encode(SessionMapping(bridgeId: legacy.bridgeId, claudeId: legacy.claudeId, projectPath: legacy.projectPath)) {
+            UserDefaults.standard.set(data, forKey: Self.mappingKeyPrefix + instanceID + "." + chatSessionID)
+        }
+        logger.info("[CCPocket] migrated legacy per-instance mapping to chat session \(chatSessionID.prefix(8))")
+        return legacy
+    }
+
     /// Bridge session id persisted at the last save. Used for cold-start
     /// reuse, independent of claudeId validity — a stale/cleared claudeId
     /// must not block reusing a still-live Bridge runtime session.
-    func loadPersistedBridgeId(instanceID: String) -> String? {
-        let key = Self.mappingKeyPrefix + instanceID
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let mapping = try? JSONDecoder().decode(SessionMapping.self, from: data) else { return nil }
-        return mapping.bridgeId
+    func loadPersistedBridgeId(instanceID: String, chatSessionID: String?, allowLegacyFallback: Bool = false) -> String? {
+        guard let chatSessionID else { return nil }
+        if let data = UserDefaults.standard.data(forKey: Self.mappingKeyPrefix + instanceID + "." + chatSessionID),
+           let mapping = try? JSONDecoder().decode(SessionMapping.self, from: data),
+           let bridgeId = mapping.bridgeId {
+            return bridgeId
+        }
+        // Same legacy migration as loadMapping (load path only).
+        guard allowLegacyFallback,
+              let data = UserDefaults.standard.data(forKey: Self.mappingKeyPrefix + instanceID),
+              let mapping = try? JSONDecoder().decode(SessionMapping.self, from: data),
+              let bridgeId = mapping.bridgeId else { return nil }
+        return bridgeId
     }
 
     /// Cold-start reuse of a still-live Bridge session. The Bridge keeps the

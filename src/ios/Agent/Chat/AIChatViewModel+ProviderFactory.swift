@@ -9,15 +9,23 @@ extension AIChatViewModel {
     // MARK: - Provider Factory
 
     /// Construct an AgentProvider from a ModelEntry by looking up its ProviderInstance and credential.
+    /// [Per-session mapping] Carries this VM's chat session identity into
+    /// the remote provider. Legacy mapping migration only on the load path:
+    /// a draft VM (draftId != nil) is a brand-new conversation and must
+    /// never claim the pre-per-session legacy identity (cross-session bleed).
     func makeAgentProvider(for entry: ModelEntry) async -> AgentProvider {
-        return await Self.makeAgentProvider(for: entry)
+        return await Self.makeAgentProvider(
+            for: entry,
+            chatSessionID: sessionId,
+            allowLegacyMappingFallback: draftId == nil
+        )
     }
 
     /// Static variant — used by sub-task call sites (title generation, etc.)
     /// that don't have a viewmodel context. Same lookup logic as the instance
     /// method, since the resolution depends only on global state
     /// (ProviderConfigStore + LLMProviderFactory).
-    static func makeAgentProvider(for entry: ModelEntry) async -> AgentProvider {
+    static func makeAgentProvider(for entry: ModelEntry, chatSessionID: String? = nil, allowLegacyMappingFallback: Bool = false) async -> AgentProvider {
         let store = ProviderConfigStore.shared
         guard let instance = store.instance(for: entry.providerInstanceId) else {
             logger.error("No ProviderInstance found for entry \(entry.id)")
@@ -41,7 +49,12 @@ extension AIChatViewModel {
         case .kimiCode:
             return OpenAIAgentProvider(provider: LLMProviderFactory.makeKimiProvider(instance: instance, model: entry.model))
         case .remoteAgent:
-            return await makeRemoteAgentProvider(instance: instance, model: entry.model)
+            return await makeRemoteAgentProvider(
+                instance: instance,
+                model: entry.model,
+                chatSessionID: chatSessionID,
+                allowLegacyMappingFallback: allowLegacyMappingFallback
+            )
         case .unsupported:
             logger.error("\(instance.providerType) has no agent provider; returning placeholder")
             return AnthropicAgentProvider(provider: AnthropicProvider(apiKey: "", model: entry.model))
@@ -51,7 +64,7 @@ extension AIChatViewModel {
     /// Build a RemoteAgentProvider for a CC Pocket Bridge instance. Reuses a
     /// live connection from RemoteAgentStore when available so multi-turn chat
     /// keeps one Bridge session (and its agent context).
-    static func makeRemoteAgentProvider(instance: ProviderInstance, model: LLMModel) async -> AgentProvider {
+    static func makeRemoteAgentProvider(instance: ProviderInstance, model: LLMModel, chatSessionID: String?, allowLegacyMappingFallback: Bool) async -> AgentProvider {
         let placeholder = AnthropicAgentProvider(provider: AnthropicProvider(apiKey: "", model: model))
         guard let urlString = instance.effectiveCustomBaseURL,
               let baseURL = URL(string: urlString) else {
@@ -64,13 +77,22 @@ extension AIChatViewModel {
         let client = CCPocketClient(baseURL: baseURL, token: token)
         client.mappingInstanceID = instance.id
 
-        // [Fix] Resume identity: the persisted per-instance mapping holds
-        // the Claude session id of *this* instance's conversation (never a
-        // stale id from an earlier version — stale ids caused cross-session
-        // bleed by resuming another client's conversation).
-        let restoreClaudeId = client.loadMapping(instanceID: instance.id)?.claudeId
+        // [Fix] Resume identity: the persisted mapping holds the Claude
+        // session id of *this chat conversation* (keyed per chat session;
+        // official: every ChatSessionCubit owns its session id). A new draft
+        // conversation resolves to no mapping and simply starts fresh — the
+        // official pending -> session_created semantics.
+        let restoreClaudeId = client.loadMapping(
+            instanceID: instance.id,
+            chatSessionID: chatSessionID,
+            allowLegacyFallback: allowLegacyMappingFallback
+        )?.claudeId
 
-        if let existing = RemoteAgentStore.shared.existingClient(instanceID: instance.id) {
+        // [Per-session mapping] Only this conversation's own live connection
+        // is reusable — a different conversation's connection is never
+        // touched (and never evicted).
+        if let chatSessionID,
+           let existing = RemoteAgentStore.shared.existingClient(instanceID: instance.id, chatSessionID: chatSessionID) {
             // [Fix] Never reuse a dead connection. A failed/idle client fails
             // every send, and the reconnect path re-runs `start`, which makes
             // the Bridge spawn a fresh agent process per message (orphaned
@@ -80,10 +102,17 @@ extension AIChatViewModel {
             if existing.state == .connected {
                 // In-memory claude id wins (fresher); fall back to persisted.
                 let resumeId = existing.claudeSessionId ?? restoreClaudeId
-                return RemoteAgentProvider(model: model, client: existing, instanceID: instance.id, restoreClaudeId: resumeId)
+                return RemoteAgentProvider(
+                    model: model,
+                    client: existing,
+                    instanceID: instance.id,
+                    chatSessionID: chatSessionID,
+                    allowLegacyMappingFallback: allowLegacyMappingFallback,
+                    restoreClaudeId: resumeId
+                )
             }
             logger.warning("remoteAgent: discarding stale client state=\(existing.state)")
-            RemoteAgentStore.shared.release(instanceID: instance.id)
+            RemoteAgentStore.shared.release(instanceID: instance.id, chatSessionID: chatSessionID)
         }
         do {
             try await client.connect(
@@ -91,11 +120,23 @@ extension AIChatViewModel {
                 provider: connection?.provider ?? "claude",
                 permissionMode: connection?.permissionMode ?? "bypassPermissions"
             )
-            RemoteAgentStore.shared.retain(client, instanceID: instance.id)
+            // [Per-session mapping] Detached clients (title generation, sub-
+            // tasks) are never retained — they would evict a conversation's
+            // live connection.
+            if let chatSessionID {
+                RemoteAgentStore.shared.retain(client, instanceID: instance.id, chatSessionID: chatSessionID)
+            }
         } catch {
             logger.error("remoteAgent: connect failed for instance \(instance.id): \(error.localizedDescription)")
         }
-        return RemoteAgentProvider(model: model, client: client, instanceID: instance.id, restoreClaudeId: restoreClaudeId)
+        return RemoteAgentProvider(
+            model: model,
+            client: client,
+            instanceID: instance.id,
+            chatSessionID: chatSessionID,
+            allowLegacyMappingFallback: allowLegacyMappingFallback,
+            restoreClaudeId: restoreClaudeId
+        )
     }
 
     /// [A-plan v1] Fetch the remote conversation history from the Bridge —
@@ -104,7 +145,7 @@ extension AIChatViewModel {
     /// client when one exists so the fetch rides the same connection as
     /// chat turns; otherwise opens a throwaway connection (NOT retained in
     /// RemoteAgentStore — history fetches must never own the slot).
-    static func fetchRemoteHistory(instance: ProviderInstance) async -> [AgentMessage]? {
+    static func fetchRemoteHistory(instance: ProviderInstance, chatSessionID: String?, allowLegacyMappingFallback: Bool = true) async -> [AgentMessage]? {
         guard let urlString = instance.effectiveCustomBaseURL,
               let baseURL = URL(string: urlString) else {
             logger.error("[HistoryBackfill] no wss URL for instance \(instance.id)")
@@ -114,7 +155,10 @@ extension AIChatViewModel {
         let connection = RemoteAgentConnection.load(instanceID: instance.id)
         let projectPath = connection?.projectPath ?? ""
         let client: CCPocketClient
-        if let existing = RemoteAgentStore.shared.existingClient(instanceID: instance.id),
+        // [Per-session mapping] Only ride this conversation's own live
+        // connection; never hijack another conversation's socket.
+        if let chatSessionID,
+           let existing = RemoteAgentStore.shared.existingClient(instanceID: instance.id, chatSessionID: chatSessionID),
            existing.state == .connected {
             client = existing
         } else {
@@ -133,8 +177,13 @@ extension AIChatViewModel {
             client = fresh
         }
         // Claude id: in-memory first (freshest), then the persisted mapping
-        // (same precedence as makeRemoteAgentProvider).
-        let claudeId = client.claudeSessionId ?? client.loadMapping(instanceID: instance.id)?.claudeId
+        // for THIS chat conversation (same precedence as
+        // makeRemoteAgentProvider). Never another conversation's identity.
+        let claudeId = client.claudeSessionId ?? client.loadMapping(
+            instanceID: instance.id,
+            chatSessionID: chatSessionID,
+            allowLegacyFallback: allowLegacyMappingFallback
+        )?.claudeId
         guard let claudeId else {
             logger.info("[HistoryBackfill] no claude session id for instance \(instance.id)")
             return nil

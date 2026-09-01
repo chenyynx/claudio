@@ -43,10 +43,19 @@ final class RemoteAgentProvider: AgentProvider {
     /// thinking blocks only exist in memory during streaming.
     private var thinkingAccumulator = ""
 
-    init(model: LLMModel, client: CCPocketClient, instanceID: String, restoreClaudeId: String?) {
+    /// [Per-session mapping] The chat conversation this provider serves.
+    /// nil = detached sub-task (title generation etc.) — no mapping reads,
+    /// no store retention, no identity persistence.
+    let chatSessionID: String?
+    /// Legacy per-instance mapping migration is opt-in from the load path.
+    let allowLegacyMappingFallback: Bool
+
+    init(model: LLMModel, client: CCPocketClient, instanceID: String, chatSessionID: String?, allowLegacyMappingFallback: Bool, restoreClaudeId: String?) {
         self.model = model
         self.client = client
         self.instanceID = instanceID
+        self.chatSessionID = chatSessionID
+        self.allowLegacyMappingFallback = allowLegacyMappingFallback
         self.restoreClaudeId = restoreClaudeId
     }
 
@@ -100,9 +109,13 @@ final class RemoteAgentProvider: AgentProvider {
             // resume, no new runtime session in the official client's
             // running list (aligned with the official client). Fall back to
             // resume/start only when the old session is gone.
-            if let bridgeId = client.loadPersistedBridgeId(instanceID: instanceID),
+            if let bridgeId = client.loadPersistedBridgeId(
+                    instanceID: instanceID,
+                    chatSessionID: chatSessionID,
+                    allowLegacyFallback: allowLegacyMappingFallback),
                await client.reuseBridgeSession(bridgeId: bridgeId) {
                 sessionStarted = true
+                client.boundChatSessionID = chatSessionID
                 logger.info("[RemoteAgent] reused live bridge session on cold start")
             } else {
                 await ensureSessionStarted()
@@ -136,7 +149,7 @@ final class RemoteAgentProvider: AgentProvider {
                     self.client.onMessage = nil
                     // Turn ended — persist the session mapping so a relaunch
                     // resumes this conversation.
-                    self.client.saveMapping(instanceID: self.instanceID)
+                    self.client.saveMapping(instanceID: self.instanceID, chatSessionID: self.chatSessionID)
                 }
             }
             Task {
@@ -162,6 +175,7 @@ final class RemoteAgentProvider: AgentProvider {
                 try await client.resumeSession(claudeId: restoreClaudeId)
                 logger.info("[RemoteAgent] resumed session claude=\(restoreClaudeId.prefix(8))...")
                 sessionStarted = true
+                client.boundChatSessionID = chatSessionID
                 return
             } catch {
                 logger.warning("[RemoteAgent] resume failed (\(error.localizedDescription)) — starting fresh")
@@ -171,6 +185,7 @@ final class RemoteAgentProvider: AgentProvider {
             try await client.startSession()
             logger.info("[RemoteAgent] started fresh session")
             sessionStarted = true
+            client.boundChatSessionID = chatSessionID
         } catch {
             logger.error("[RemoteAgent] start failed: \(error.localizedDescription)")
         }
