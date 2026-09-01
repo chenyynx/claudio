@@ -40,6 +40,17 @@ jobs:
             deps/ish/build-ios
           key: deps-${{ runner.os }}-${{ hashFiles('deps/build_lame.sh', 'deps/build_ffmpeg.sh', 'deps/build_ish.sh', 'deps/build_proot.sh') }}
 
+      - name: Cache xcodebuild DerivedData
+        # Swift compile artifacts: with SWIFT_COMPILATION_MODE default (WMO)
+        # restored, only files touched since the last build recompile, so a
+        # warm cache turns a full 15-min build into ~5-8 min. Keyed on the
+        # source tree hash — any source change invalidates it.
+        uses: actions/cache@v4
+        with:
+          path: src/ios/build/DerivedData
+          key: deriveddata-${{ runner.os }}-${{ hashFiles('src/ios/**') }}
+          restore-keys: deriveddata-${{ runner.os }}-
+
       - name: Build native deps (lame → ffmpeg → ish)
         run: |
           # VDSO needs lld; meson picks `clang` from PATH, so brew LLVM must lead.
