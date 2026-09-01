@@ -3175,6 +3175,15 @@ struct AIChatView: View {
         }, isVoiceActive: voiceInputActive)
     }
 
+    /// [Stop-session] Long-press action for the composer stop button:
+    /// haptic confirmation + destroy the Bridge runtime session (official
+    /// _StopButton long-press semantics). Extracted from the view body per
+    /// swiftui-pro views.md (button actions out of view bodies).
+    private func performStopRemoteSession() {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        vm.stopRemoteSession()
+    }
+
     /// Send / Enqueue / Stop circular button.
     @ViewBuilder
     private var sendButton: some View {
@@ -3198,8 +3207,7 @@ struct AIChatView: View {
             // harmless (the turn ends either way).
             .simultaneousGesture(
                 LongPressGesture(minimumDuration: 0.6).onEnded { _ in
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    vm.stopRemoteSession()
+                    self.performStopRemoteSession()
                 }
             )
         } else {
