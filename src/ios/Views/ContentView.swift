@@ -784,9 +784,32 @@ private enum SessionMenuAction {
 /// call site (view body contextMenu construction) is already on MainActor.
 @MainActor
 fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
-    guard let entry = ProviderConfigStore.shared.entry(for: session.modelId),
-          let instance = ProviderConfigStore.shared.instance(for: entry.providerInstanceId) else { return false }
-    return instance.providerType == .remoteAgent
+    let store = ProviderConfigStore.shared
+    // [Stop-session] Resolve the session's provider through its model binding —
+    // the same source of truth used when sending. session.modelId holds the
+    // bare model id (updateSessionModelId writes entry.model.id), which
+    // entry(for:) — a composite-key lookup — can never resolve, so the old
+    // guard here always returned nil and the sidebar Stop Session item never
+    // appeared.
+    if let binding = store.binding(for: session.id) {
+        let entryId: String?
+        switch binding.primarySource {
+        case .directEntry(let modelEntryId, _): entryId = modelEntryId
+        case .group(_, let resolvedEntryId): entryId = resolvedEntryId
+        }
+        if let entryId,
+           let entry = store.entry(for: entryId),
+           let instance = store.instance(for: entry.providerInstanceId) {
+            return instance.providerType == .remoteAgent
+        }
+    }
+    // Legacy fallback: rows written by older builds may carry a composite or
+    // legacy ref in modelId that entry(for:) still understands.
+    if let entry = store.entry(for: session.modelId),
+       let instance = store.instance(for: entry.providerInstanceId) {
+        return instance.providerType == .remoteAgent
+    }
+    return false
 }
 
 #if DEBUG
