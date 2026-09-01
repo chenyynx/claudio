@@ -782,7 +782,6 @@ private enum SessionMenuAction {
 /// Memory-only lookup (ProviderConfigStore) — safe to call per row.
 /// @MainActor: ProviderConfigStore lookups are main-actor isolated; every
 /// call site (view body contextMenu construction) is already on MainActor.
-@MainActor
 /// [Stop-session] Resolve a session's remote-agent provider instance id
 /// through its model binding — the same source of truth used when sending.
 /// session.modelId holds the bare model id (updateSessionModelId writes
