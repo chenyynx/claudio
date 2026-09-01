@@ -133,7 +133,7 @@ final class CCPocketClient: @unchecked Sendable {
     /// id is present in this list iff its SDK process is still resident on
     /// the Bridge, so input can route to it without resuming (no new
     /// runtime session in the official client's running list).
-    private var knownBridgeSessions: [ServerSession]?
+    private var knownBridgeSessions: [CCPocketProtocol.ServerSession]?
 
     init(baseURL: URL, token: String) {
         self.baseURL = baseURL
