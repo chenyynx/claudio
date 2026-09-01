@@ -110,6 +110,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_DEBUG_DYLIB=NO \
             SWIFT_NUM_THREADS=2 \
+            SWIFT_COMPILATION_MODE=incremental \
+            'OTHER_SWIFT_FLAGS=-Xfrontend -disable-batch-mode' \
             -derivedDataPath build/DerivedData
           mkdir -p build/Payload
           cp -r build/DerivedData/Build/Products/Release-iphoneos/Minis.app build/Payload/
