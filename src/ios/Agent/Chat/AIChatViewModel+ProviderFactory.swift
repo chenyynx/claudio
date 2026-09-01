@@ -198,6 +198,81 @@ extension AIChatViewModel {
         return history
     }
 
+    /// [Stop-session] Destroy the Bridge runtime session hosting this chat
+    /// conversation (official stop_session, websocket.ts:4751). A live
+    /// connection for THIS conversation sends the stop and is torn down with
+    /// the session; otherwise a throwaway connection delivers it. The
+    /// per-chat mapping is deliberately kept: claudeId remains the resume
+    /// key, so the session resumes on next load (official recent-session
+    /// semantics).
+    static func stopRemoteChatSession(instance: ProviderInstance, chatSessionID: String, allowLegacyFallback: Bool = true) async {
+        guard let urlString = instance.effectiveCustomBaseURL,
+              let baseURL = URL(string: urlString) else {
+            logger.error("[StopSession] no wss URL for instance \(instance.id)")
+            return
+        }
+        let store = RemoteAgentStore.shared
+
+        if let existing = store.existingClient(instanceID: instance.id, chatSessionID: chatSessionID),
+           existing.state == .connected {
+            let bridgeId = existing.sessionId ?? existing.loadPersistedBridgeId(
+                instanceID: instance.id,
+                chatSessionID: chatSessionID,
+                allowLegacyFallback: allowLegacyFallback)
+            if let bridgeId {
+                await existing.sendStopSession(bridgeId: bridgeId)
+                logger.info("[StopSession] stop_session sent on live connection bridge=\(bridgeId.prefix(8))")
+            }
+            existing.disconnect()
+            store.release(instanceID: instance.id, chatSessionID: chatSessionID)
+            return
+        }
+
+        let probe = CCPocketClient(baseURL: baseURL, token: "")
+        guard let bridgeId = probe.loadPersistedBridgeId(
+                instanceID: instance.id,
+                chatSessionID: chatSessionID,
+                allowLegacyFallback: allowLegacyFallback) else {
+            logger.info("[StopSession] no persisted bridge id for chat \(chatSessionID.prefix(8)) — nothing to stop")
+            return
+        }
+        let token = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+        let connection = RemoteAgentConnection.load(instanceID: instance.id)
+        let fresh = CCPocketClient(baseURL: baseURL, token: token)
+        fresh.mappingInstanceID = instance.id
+        do {
+            try await fresh.connect(
+                projectPath: connection?.projectPath ?? "",
+                provider: connection?.provider ?? "claude",
+                permissionMode: connection?.permissionMode ?? "bypassPermissions"
+            )
+            await fresh.sendStopSession(bridgeId: bridgeId)
+            logger.info("[StopSession] stop_session sent on throwaway connection bridge=\(bridgeId.prefix(8))")
+        } catch {
+            logger.warning("[StopSession] connect failed: \(error.localizedDescription)")
+        }
+        fresh.disconnect()
+    }
+
+    /// [Stop-session] True when the session's model resolves to a remoteAgent
+    /// provider (a Bridge conversation with a stoppable runtime process).
+    static func sessionIsRemote(_ session: ChatSession) -> Bool {
+        guard let entry = ProviderConfigStore.shared.entry(for: session.modelId),
+              let instance = ProviderConfigStore.shared.instance(for: entry.providerInstanceId) else { return false }
+        return instance.providerType == .remoteAgent
+    }
+
+    /// [Stop-session] Long-press on the composer stop button (official
+    /// _StopButton semantics: tap = interrupt, long-press = stop session).
+    func stopRemoteSession() {
+        guard let sid = sessionId else { return }
+        Task { @MainActor in
+            let instances = ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
+            guard instances.count == 1, let instance = instances.first else { return }
+            await AIChatViewModel.stopRemoteChatSession(instance: instance, chatSessionID: sid)
+        }
+    }
+
     /// Build an AnthropicAgentProvider for cache keep-alive warmup, reusing the
     /// same entry that was used in the last agent loop.
     func makeAnthropicProviderForWarmup() -> AnthropicAgentProvider? {

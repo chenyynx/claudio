@@ -337,6 +337,17 @@ final class CCPocketClient: @unchecked Sendable {
     /// True while a turn's stream handler is installed (a turn is in flight).
     private var hasActiveTurn: Bool { onMessage != nil }
 
+    /// [Stop-session] Ask the Bridge to destroy a runtime session (official
+    /// stop_session, websocket.ts:4751). Disk history is not touched; the
+    /// per-chat mapping stays so the next load resumes the same Claude
+    /// conversation (the reuse probe fails on the dead bridge id and falls
+    /// back to resume — both paths already in place).
+    func sendStopSession(bridgeId: String) async {
+        guard state == .connected else { return }
+        let request = CCPocketProtocol.StopSessionRequest(sessionId: bridgeId)
+        try? await send(CCPocketProtocol.encode(request))
+    }
+
     // MARK: - Reconnect
 
     /// App returned to foreground: if the socket died while suspended

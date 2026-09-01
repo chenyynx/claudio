@@ -774,6 +774,16 @@ private enum SessionMenuAction {
     case select(String)
     case moveToFolder(String)
     case delete(String)
+    case stopRemoteSession(String)
+}
+
+/// [Stop-session] True when the session's model resolves to a remoteAgent
+/// provider (a Bridge conversation with a stoppable runtime process).
+/// Memory-only lookup (ProviderConfigStore) — safe to call per row.
+fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
+    guard let entry = ProviderConfigStore.shared.entry(for: session.modelId),
+          let instance = ProviderConfigStore.shared.instance(for: entry.providerInstanceId) else { return false }
+    return instance.providerType == .remoteAgent
 }
 
 #if DEBUG
@@ -2726,7 +2736,7 @@ struct ContentView: View {
                                 // [T-ios-crash-contextmenu-uaf] Value-only menu view,
                                 // no closure captures — see SessionContextMenu.
                                 SessionContextMenu(
-                                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title),
+                                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session)),
                                     actions: menuActions
                                 )
                                 .equatable()
@@ -3624,6 +3634,13 @@ struct ContentView: View {
                 let filed = sessions.first(where: { $0.id == sid })?.isFiled ?? false
                 folderPickerRequest = FolderPickerRequest(
                     sessionIds: [sid], fromMultiSelect: false, anyFiled: filed)
+            case .stopRemoteSession(let sid):
+                Task { @MainActor in
+                    let instances = ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
+                    guard instances.count == 1, let instance = instances.first else { return }
+                    await AIChatViewModel.stopRemoteChatSession(instance: instance, chatSessionID: sid)
+                    refreshSessionList()
+                }
             case .delete(let sid):
                 print("[DELETE] Context menu tapped for session: \(sid)")
                 let info = Self.computeDeleteInfo(for: [sid], totalSessions: sessions.count)
@@ -5997,6 +6014,13 @@ private struct SessionContextMenu: View, Equatable {
         } label: {
             Label("Report Content", systemImage: "exclamationmark.bubble")
         }
+        if key.isRemote {
+            Button(role: .destructive) {
+                actions.send(.stopRemoteSession(key.sid))
+            } label: {
+                Label("Stop Session", systemImage: "stop.circle")
+            }
+        }
         Button(role: .destructive) {
             actions.send(.delete(key.sid))
         } label: {
@@ -6019,6 +6043,7 @@ private struct MenuKey: Equatable {
     let sid: String
     let pinned: Bool
     let title: String?
+    let isRemote: Bool
 }
 
 // MARK: - Session Row

@@ -62,6 +62,16 @@ enum CCPocketProtocol {
         var sessionId: String?
     }
 
+    /// `stop_session` — destroy a Bridge runtime session (official
+    /// websocket.ts:4751): the Bridge broadcasts `result subtype=stopped`
+    /// for it, destroys the session (kills the SDK agent process) and
+    /// refreshes the session list. Claude conversation history on disk is
+    /// untouched — the session resumes later via `resume_session`.
+    struct StopSessionRequest: Encodable {
+        let type = "stop_session"
+        var sessionId: String
+    }
+
     /// `get_history` — full conversation history replay for a Bridge session.
     /// Official semantics: the Bridge is the authoritative source for remote
     /// session restore; the reply (`history_snapshot` / `history_delta`)

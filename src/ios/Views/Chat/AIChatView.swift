@@ -3191,6 +3191,17 @@ struct AIChatView: View {
                     .font(.system(size: 34))
                     .foregroundStyle(.red)
             }
+            // [Stop-session] Official _StopButton semantics: tap = interrupt
+            // (cancel), long-press = stop session (destroy the Bridge runtime
+            // process, haptic confirmed). The tap also fires on release after
+            // a long press — acceptable: interrupting before destroying is
+            // harmless (the turn ends either way).
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.6).onEnded { _ in
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    vm.stopRemoteSession()
+                }
+            )
         } else {
             Button { performSend() } label: {
                 Image(systemName: "arrow.up.circle.fill")
