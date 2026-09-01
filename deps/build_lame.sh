@@ -46,7 +46,10 @@ fi
 # ============================================================================
 # Download source
 # ============================================================================
-if [ ! -d "$LAME_SRC_DIR" ]; then
+# [Fix] File-level check (not directory): a CI deps cache restore can
+# recreate the (empty) source dir, which made `-d` skip the download and
+# then fail on missing configure. Only a real source file counts.
+if [ ! -f "$LAME_SRC_DIR/configure" ]; then
     log_info "Downloading LAME ${LAME_VERSION}..."
     cd "$SCRIPT_DIR"
     if [ ! -f "$LAME_TARBALL" ]; then

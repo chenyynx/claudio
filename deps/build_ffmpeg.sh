@@ -101,7 +101,10 @@ check_prerequisites() {
 
     # The FFmpeg source tree is not tracked in git (it is upstream source, not
     # ours), so fetch it on first run instead of failing on a fresh clone.
-    if [ ! -d "$FFMPEG_DIR" ]; then
+    # [Fix] File-level check (not directory): a CI deps cache restore can
+    # recreate the (empty) source dir, which made `-d` skip the download and
+    # then fail on missing ffmpeg.c. Only a real source file counts.
+    if [ ! -f "$FFMPEG_DIR/fftools/ffmpeg.c" ]; then
         fetch_ffmpeg_source
     fi
 

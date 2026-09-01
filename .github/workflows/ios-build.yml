@@ -27,6 +27,19 @@ jobs:
           cd src/ios
           cp Configs/ProviderCustomization.xcconfig.example Configs/ProviderCustomization.xcconfig
 
+      - name: Cache native deps build artifacts
+        # [Fix] Re-designed after 8e41c86 rollback: cache PRODUCT dirs only
+        # (never source trees). Source-presence checks in build_ffmpeg.sh /
+        # build_lame.sh are now file-level (ffmpeg.c / configure), so a
+        # restored empty source dir no longer skips the download.
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps/lame-build
+            deps/frameworks
+            deps/ish/build-ios
+          key: deps-${{ runner.os }}-${{ hashFiles('deps/build_lame.sh', 'deps/build_ffmpeg.sh', 'deps/build_ish.sh', 'deps/build_proot.sh') }}
+
       - name: Build native deps (lame → ffmpeg → ish)
         run: |
           # VDSO needs lld; meson picks `clang` from PATH, so brew LLVM must lead.
