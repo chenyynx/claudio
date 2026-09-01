@@ -1626,6 +1626,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// off the previous iteration's still-playing speech. One turn = one
     /// read-aloud context; iterations append and play back-to-back.
     var hasClearedTTSForCurrentTurn = false
+    /// [A-plan v1] Remote history backfill in-flight guard (one fetch per
+    /// loadSession; re-entry re-runs loadSession and may refetch).
+    var remoteBackfillInFlight = false
 
     /// Create an AVSpeechUtterance with the user's speech settings applied.
     private func makeUtterance(_ text: String) -> AVSpeechUtterance {

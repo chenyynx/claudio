@@ -351,6 +351,87 @@ final class RemoteAgentProvider: AgentProvider {
         return false
     }
 
+    /// [A-plan v1] Map one Bridge wire message onto an engine message — the
+    /// replay counterpart of the live mapping in `handle(_:continuation:)`.
+    /// Official semantics: history and live messages share one consumption
+    /// pipeline (chat_session_cubit.dart:289-316); our equivalent is
+    /// producing AgentMessages that ride buildRawMessage → toChatMessage.
+    /// Thinking blocks fold into reasoningContent AND the uiSequence (so the
+    /// per-block order survives the reload), user text stays .user.
+    static func agentMessage(fromServer m: CCPocketProtocol.ServerMessage) -> AgentMessage? {
+        switch m.type {
+        case "assistant", "user":
+            guard case .assistant(let am) = m.message, let blocks = am.content else { return nil }
+            var parts: [AgentContentPart] = []
+            var uiSeq: [UIBlockSnapshot] = []
+            var thinking: [String] = []
+            for b in blocks {
+                switch b.type {
+                case "text":
+                    let t = b.text ?? ""
+                    if t.isEmpty { continue }
+                    parts.append(.text(t))
+                    uiSeq.append(UIBlockSnapshot(kind: "text", text: t, toolId: nil))
+                case "thinking":
+                    let t = b.text ?? ""
+                    if t.isEmpty { continue }
+                    thinking.append(t)
+                    uiSeq.append(UIBlockSnapshot(kind: "thinking", text: t, toolId: nil))
+                case "tool_use":
+                    guard let id = b.id else { continue }
+                    let name = b.name ?? "unknown"
+                    let args = Self.jsonArgs(from: b.input)
+                    parts.append(.toolUse(id: id, name: name, input: args))
+                    uiSeq.append(UIBlockSnapshot(kind: "tool", text: nil, toolId: id))
+                default:
+                    break
+                }
+            }
+            if parts.isEmpty && thinking.isEmpty { return nil }
+            let isUser = (am.role ?? "assistant") == "user"
+            var msg = AgentMessage(role: isUser ? .user : .assistant, parts: parts)
+            msg.uiSequence = uiSeq
+            if !thinking.isEmpty {
+                msg.reasoningContent = thinking.joined(separator: "\n")
+            }
+            return msg
+        case "tool_result":
+            // Same interrupted/error sniffing as the live path — placeholders
+            // must be visible to the merge step, never rendered as success.
+            guard let id = m.toolUseId else { return nil }
+            let out = m.content ?? ""
+            let isError = out.hasPrefix("Tool execution was interrupted")
+                || out.hasPrefix("Error:")
+            return AgentMessage(
+                role: .user,
+                parts: [.toolResult(id: id, name: m.toolName ?? "", content: out, isError: isError)]
+            )
+        default:
+            // system / result / error / session_list ... carry no replayable content
+            return nil
+        }
+    }
+
+    /// [A-plan v1] Bridge wire messages → engine messages, in seq order.
+    static func historyAgentMessages(from serverMessages: [CCPocketProtocol.ServerMessage]) -> [AgentMessage] {
+        serverMessages.compactMap { agentMessage(fromServer: $0) }
+    }
+
+    /// Same conversion rules as the live `assistant` case in
+    /// `handle(_:continuation:)`: only string / number / bool survive as
+    /// tool input args (nested shapes dropped — the live path does the same).
+    private static func jsonArgs(from input: [String: JSONValue]?) -> [String: Any] {
+        guard let input else { return [:] }
+        return input.compactMapValues { value -> Any? in
+            switch value {
+            case .string(let s): return s
+            case .number(let n): return n
+            case .bool(let b): return b
+            default: return nil
+            }
+        }
+    }
+
     /// Open a `.text` content block before the first text delta of a turn.
     /// Without it the engine's stream consumer never accumulates deltas
     /// (currentTextBlockIdx stays nil) and the final text is dropped.

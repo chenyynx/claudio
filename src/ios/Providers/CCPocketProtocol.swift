@@ -62,6 +62,16 @@ enum CCPocketProtocol {
         var sessionId: String?
     }
 
+    /// `get_history` — full conversation history replay for a Bridge session.
+    /// Official semantics: the Bridge is the authoritative source for remote
+    /// session restore; the reply (`history_snapshot` / `history_delta`)
+    /// carries entries that ride the SAME pipeline as live messages
+    /// (chat_session_cubit.dart:289-316 — history and live share one path).
+    struct GetHistoryRequest: Encodable {
+        let type = "get_history"
+        var sessionId: String
+    }
+
     // MARK: - Server -> Client (lenient parse)
 
     /// Raw server message. Decoded with all-optional fields so unknown
@@ -109,6 +119,12 @@ enum CCPocketProtocol {
         let toolCalls: Int?
         // history
         let messages: [ServerMessage]?
+        // history_snapshot / history_delta payload (bridge = authoritative
+        // source for remote restore; entries replay through the live pipeline)
+        let fromSeq: Int?
+        let toSeq: Int?
+        let reason: String?
+        let entries: [HistoryEntry]?
         // session_list
         let sessions: [ServerSession]?
         // resume flow
@@ -125,6 +141,15 @@ enum CCPocketProtocol {
         let userMessageUuid: String?
         let clientMessageId: String?
         let baseSeq: Int?
+    }
+
+    /// One seq-tagged entry of a `history_snapshot` / `history_delta`
+    /// payload. `message` is the original wire message (assistant / user /
+    /// tool_result / ...) — replayed through the live pipeline, never a
+    /// separate render path (official: _runtimeStore.applyServerMessage).
+    struct HistoryEntry: Decodable {
+        let seq: Int?
+        let message: ServerMessage?
     }
 
     /// `message` is polymorphic across server message types: an assistant

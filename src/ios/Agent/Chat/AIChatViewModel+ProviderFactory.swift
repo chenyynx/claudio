@@ -98,6 +98,57 @@ extension AIChatViewModel {
         return RemoteAgentProvider(model: model, client: client, instanceID: instance.id, restoreClaudeId: restoreClaudeId)
     }
 
+    /// [A-plan v1] Fetch the remote conversation history from the Bridge —
+    /// the Bridge is the authoritative source for remote session restore
+    /// (spec: docs/specs/remote-history-restore.md §3). Reuses the live
+    /// client when one exists so the fetch rides the same connection as
+    /// chat turns; otherwise opens a throwaway connection (NOT retained in
+    /// RemoteAgentStore — history fetches must never own the slot).
+    static func fetchRemoteHistory(instance: ProviderInstance) async -> [AgentMessage]? {
+        guard let urlString = instance.effectiveCustomBaseURL,
+              let baseURL = URL(string: urlString) else {
+            logger.error("[HistoryBackfill] no wss URL for instance \(instance.id)")
+            return nil
+        }
+        let token = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+        let connection = RemoteAgentConnection.load(instanceID: instance.id)
+        let projectPath = connection?.projectPath ?? ""
+        let client: CCPocketClient
+        if let existing = RemoteAgentStore.shared.existingClient(instanceID: instance.id),
+           existing.state == .connected {
+            client = existing
+        } else {
+            let fresh = CCPocketClient(baseURL: baseURL, token: token)
+            fresh.mappingInstanceID = instance.id
+            do {
+                try await fresh.connect(
+                    projectPath: projectPath,
+                    provider: connection?.provider ?? "claude",
+                    permissionMode: connection?.permissionMode ?? "bypassPermissions"
+                )
+            } catch {
+                logger.warning("[HistoryBackfill] connect failed: \(error.localizedDescription)")
+                return nil
+            }
+            client = fresh
+        }
+        // Claude id: in-memory first (freshest), then the persisted mapping
+        // (same precedence as makeRemoteAgentProvider).
+        let claudeId = client.claudeSessionId ?? client.loadMapping(instanceID: instance.id)?.claudeId
+        guard let claudeId else {
+            logger.info("[HistoryBackfill] no claude session id for instance \(instance.id)")
+            return nil
+        }
+        guard let wireMessages = await client.requestHistory(claudeId: claudeId) else { return nil }
+        let history = RemoteAgentProvider.historyAgentMessages(from: wireMessages)
+        if history.isEmpty {
+            logger.info("[HistoryBackfill] bridge history mapped to 0 engine messages")
+            return nil
+        }
+        logger.info("[HistoryBackfill] mapped \(history.count) engine messages from bridge")
+        return history
+    }
+
     /// Build an AnthropicAgentProvider for cache keep-alive warmup, reusing the
     /// same entry that was used in the last agent loop.
     func makeAnthropicProviderForWarmup() -> AnthropicAgentProvider? {

@@ -128,6 +128,13 @@ final class CCPocketClient: @unchecked Sendable {
     /// re-spawning a Bridge session (process pile-up).
     private let reconnectLock = NSLock()
 
+    /// [A-plan v1] Pending continuation for a `get_history` reply
+    /// (`history_snapshot` / `history_delta`). One fetch at a time; the
+    /// reply resumes the waiter and is NOT forwarded to `onMessage` (a
+    /// history fetch runs outside any turn — the turn-scoped consumer must
+    /// never see replay traffic).
+    private var historyWaiter: CheckedContinuation<CCPocketProtocol.ServerMessage?, Never>?
+
     /// Last `session_list` payload from the Bridge (sent on every
     /// connection). Used for cold-start reuse: our persisted bridge session
     /// id is present in this list iff its SDK process is still resident on
@@ -326,6 +333,59 @@ final class CCPocketClient: @unchecked Sendable {
 
     /// App returned to foreground: if the socket died while suspended
     /// (receive loop exited, state != connected) reconnect immediately.
+    /// [A-plan v1] Request a full history replay for the Bridge session that
+    /// hosts `claudeId`. Resolves the Bridge session id from the persisted
+    /// mapping first (survives relaunch), falling back to the latest
+    /// `session_list` payload. Returns the replayed wire messages in seq
+    /// order, or nil on timeout / unknown session (caller falls back to the
+    /// local cache — offline semantics match the official client).
+    func requestHistory(claudeId: String, timeout: TimeInterval = 15) async -> [CCPocketProtocol.ServerMessage]? {
+        // Resolve Bridge session id: mapping first, then session_list.
+        var bridgeId = loadMapping(instanceID: mappingInstanceID ?? "")?.bridgeId
+        if bridgeId == nil || bridgeId?.isEmpty == true {
+            for _ in 0..<12 {
+                bridgeId = knownBridgeSessions?.first { $0.claudeSessionId == claudeId }?.id
+                if bridgeId != nil { break }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+        guard let bridgeId, !bridgeId.isEmpty else {
+            logger.warning("[CCPocket] history: no Bridge session id for claude \(claudeId.prefix(8))...")
+            return nil
+        }
+        let req = CCPocketProtocol.GetHistoryRequest(sessionId: bridgeId)
+        guard let payload = try? CCPocketProtocol.encode(req) else { return nil }
+        do {
+            try await send(payload, allowsReconnect: false)
+        } catch {
+            logger.warning("[CCPocket] history: send failed \(error.localizedDescription)")
+            return nil
+        }
+        // Await the reply (timeout guard resumes nil).
+        let message: CCPocketProtocol.ServerMessage? = await withCheckedContinuation { c in
+            historyWaiter = c
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(timeout))
+                guard let self else { return }
+                if let w = self.historyWaiter {
+                    self.historyWaiter = nil
+                    w.resume(returning: nil)
+                }
+            }
+        }
+        guard let message else {
+            logger.warning("[CCPocket] history: timeout after \(timeout)s")
+            return nil
+        }
+        let entries = message.entries ?? []
+        if entries.isEmpty {
+            logger.info("[CCPocket] history: empty reply (reason=\(message.reason ?? "nil"))")
+            return nil
+        }
+        logger.info("[CCPocket] history: \(entries.count) entries [\(message.fromSeq ?? 0)-\(message.toSeq ?? 0)]")
+        return entries.compactMap { $0.message }
+    }
+
     func ensureConnected() {
         guard state != .connected, state != .connecting else { return }
         guard reconnectTask == nil else { return }
@@ -439,6 +499,18 @@ final class CCPocketClient: @unchecked Sendable {
         if message.type == "input_ack",
            let clientMessageId = message.clientMessageId {
             removePending(clientMessageId: clientMessageId)
+        }
+
+        // [A-plan v1] History replay reply — resume the fetch waiter.
+        // Request/response with the Bridge is 1:1 (no broadcast observed for
+        // history replies), so no session filter here; the waiter only
+        // exists while a fetch is in flight.
+        if message.type == "history_snapshot" || message.type == "history_delta" {
+            if let w = historyWaiter {
+                historyWaiter = nil
+                w.resume(returning: message)
+            }
+            return
         }
 
         onMessage?(message)

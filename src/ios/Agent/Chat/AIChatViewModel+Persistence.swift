@@ -786,6 +786,69 @@ extension AIChatViewModel {
         let totalElapsed = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
         let totalSinceAppear = (CFAbsoluteTimeGetCurrent() - Self.onAppearTimestamp) * 1000
         logger.info("[SessionLoad] \(sessionId) — TOTAL: \(String(format: "%.1f", totalElapsed))ms T+\(String(format: "%.0f", totalSinceAppear))ms [DB: \(String(format: "%.1f", dbElapsed)) | Build: \(String(format: "%.1f", buildElapsed)) | Snapshots: \(String(format: "%.1f", snapshotElapsed)) | Mount: \(String(format: "%.1f", mountElapsed))]")
+        // [A-plan v1] Remote history backfill — the Bridge is the
+        // authoritative source for remote sessions (spec:
+        // docs/specs/remote-history-restore.md §3). The snapshot path stays
+        // for LOCAL agents; remote sessions replay Bridge history and
+        // rebuild rendering in memory. v1 does not re-persist (cache
+        // write-back is step 2). Offline / failure falls back to local
+        // rendering silently — official client semantics.
+        scheduleRemoteHistoryBackfill(resolver: resolver)
+    }
+
+    /// [A-plan v1] Fire-and-forget backfill: fetch Bridge history for remote
+    /// sessions and rebuild the in-memory message list when the Bridge is at
+    /// least as complete as the local cache. Reuses the existing conversion
+    /// chain (buildRawMessage → toChatMessage) and the loadSession merge
+    /// rules (user tool-result batches apply onto the preceding assistant).
+    private func scheduleRemoteHistoryBackfill(resolver: @escaping (MediaRef) -> URL) {
+        guard remoteBackfillInFlight == false else { return }
+        let instances = ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
+        // v1: exactly one remote instance supported (multi-instance needs a
+        // session→instance mapping that does not exist yet — see spec §5).
+        guard instances.count == 1, let instance = instances.first else { return }
+        remoteBackfillInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.remoteBackfillInFlight = false }
+            guard let history = await AIChatViewModel.fetchRemoteHistory(instance: instance) else { return }
+            // Rebuild through the production conversion chain — the exact
+            // same path loadSession uses for persisted messages.
+            var rebuilt: [ChatMessage] = []
+            var currentAssistant: ChatMessage?
+            for agentMsg in history {
+                guard let raw = await self.buildRawMessage(agentMsg, reasoningContent: agentMsg.reasoningContent) else { continue }
+                if raw.role == .user && raw.isToolResultOnly {
+                    if let cur = currentAssistant {
+                        Self.applyToolResults(from: raw, to: cur, mediaResolver: resolver)
+                    }
+                    continue
+                }
+                let msg = raw.toChatMessage(mediaResolver: resolver, showThinking: true)
+                rebuilt.append(msg)
+                if raw.role == .assistant {
+                    currentAssistant = msg
+                }
+            }
+            // Guard against a trimmed Bridge (cleaned session files) wiping a
+            // richer local cache: only replace when Bridge >= local.
+            let bridgeAssistantCount = history.filter { $0.role == .assistant }.count
+            let localAssistantCount = await MainActor.run {
+                self.agentHistory.filter { $0.role == .assistant }.count
+            }
+            guard bridgeAssistantCount >= localAssistantCount, !rebuilt.isEmpty else {
+                await MainActor.run {
+                    logger.info("[HistoryBackfill] bridge(\(bridgeAssistantCount)) < local(\(localAssistantCount)) — keeping local cache")
+                }
+                return
+            }
+            await MainActor.run {
+                self.messages = rebuilt
+                self.agentHistory = history
+                self.scrollToBottomSignal.send()
+            }
+            logger.info("[HistoryBackfill] rendered \(rebuilt.count) messages from bridge history (assistant \(bridgeAssistantCount) >= local \(localAssistantCount))")
+        }
     }
 
     /// [T-ios-paused-badge-desync] Lightweight interrupted-loop tail check.
