@@ -2492,14 +2492,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-				2737D6A9962B7438372594DB /* RemoteAgentSetupView.swift in Sources */,
-				7FE7829374980EEEC86F28A6 /* BridgeSessionRegistry.swift in Sources */,
-				57408012353F31A55425B660 /* ConnectionStatusStore.swift in Sources */,
-				E89DDC8B7F793606FAC36381 /* ConnectionStatusDot.swift in Sources */,
 		BB1000030F700000000000AA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E89DDC8B7F793606FAC36381 /* ConnectionStatusDot.swift in Sources */,
+				57408012353F31A55425B660 /* ConnectionStatusStore.swift in Sources */,
+				7FE7829374980EEEC86F28A6 /* BridgeSessionRegistry.swift in Sources */,
+				2737D6A9962B7438372594DB /* RemoteAgentSetupView.swift in Sources */,
 				BB1000120F700000000000AA /* ContextPolicy.swift in Sources */,
 				E5LD00002 /* ToolLoopDetector.swift in Sources */,
 				E5GWF0004 /* GeminiWireFormat.swift in Sources */,
