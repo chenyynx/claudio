@@ -128,6 +128,13 @@ final class CCPocketClient: @unchecked Sendable {
     /// re-spawning a Bridge session (process pile-up).
     private let reconnectLock = NSLock()
 
+    /// Last `session_list` payload from the Bridge (sent on every
+    /// connection). Used for cold-start reuse: our persisted bridge session
+    /// id is present in this list iff its SDK process is still resident on
+    /// the Bridge, so input can route to it without resuming (no new
+    /// runtime session in the official client's running list).
+    private var knownBridgeSessions: [ServerSession]?
+
     init(baseURL: URL, token: String) {
         self.baseURL = baseURL
         self.token = token
@@ -504,11 +511,14 @@ final class CCPocketClient: @unchecked Sendable {
         // Bridge session — match by our Bridge session id.
         // [Style] Two-step binding (no guard/if-let chain with a trailing
         // closure) per project Swift rules.
-        if let sessions = message.sessions, let sessionId {
-            let match = sessions.first { $0.id == sessionId }
-            if let claudeId = match?.claudeSessionId, claudeId != claudeSessionId {
-                claudeSessionId = claudeId
-                logger.info("[CCPocket] captured claudeSessionId from session_list=\(claudeId.prefix(8))...")
+        if let sessions = message.sessions {
+            knownBridgeSessions = sessions
+            if let sessionId {
+                let match = sessions.first { $0.id == sessionId }
+                if let claudeId = match?.claudeSessionId, claudeId != claudeSessionId {
+                    claudeSessionId = claudeId
+                    logger.info("[CCPocket] captured claudeSessionId from session_list=\(claudeId.prefix(8))...")
+                }
             }
         }
     }
@@ -648,6 +658,43 @@ final class CCPocketClient: @unchecked Sendable {
             return nil
         }
         return (mapping.bridgeId, claudeId, mapping.projectPath)
+    }
+
+    /// Bridge session id persisted at the last save. Used for cold-start
+    /// reuse, independent of claudeId validity — a stale/cleared claudeId
+    /// must not block reusing a still-live Bridge runtime session.
+    func loadPersistedBridgeId(instanceID: String) -> String? {
+        let key = Self.mappingKeyPrefix + instanceID
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let mapping = try? JSONDecoder().decode(SessionMapping.self, from: data) else { return nil }
+        return mapping.bridgeId
+    }
+
+    /// Cold-start reuse of a still-live Bridge session. The Bridge keeps the
+    /// runtime session (and its SDK process) alive after our app process
+    /// died, so input routed to the old bridge session id reaches it without
+    /// spawning anything new — no new entry in the official client's running
+    /// list (aligned with the official client's reconnect semantics: never
+    /// re-run resume while the session survives).
+    /// Returns true once the old id shows up in the Bridge's `session_list`;
+    /// on failure the caller falls back to resume/start.
+    func reuseBridgeSession(bridgeId: String) async -> Bool {
+        guard !started, sessionId == nil else { return false }
+        sessionId = bridgeId
+        started = true
+        for _ in 0..<50 { // up to 5 s for the session_list broadcast
+            if let sessions = knownBridgeSessions, sessions.contains(where: { $0.id == bridgeId }) {
+                logger.info("[CCPocket] reused live bridge session \(bridgeId.prefix(8))")
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        // Old session is gone (Bridge restarted / process evicted) — roll
+        // back so the caller can resume/start fresh.
+        started = false
+        sessionId = nil
+        logger.info("[CCPocket] bridge session \(bridgeId.prefix(8)) no longer alive — will resume")
+        return false
     }
 
     // MARK: - Teardown

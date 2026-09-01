@@ -94,7 +94,19 @@ final class RemoteAgentProvider: AgentProvider {
         // [Fix] `connect` no longer auto-starts; the agent process is only
         // spawned when a turn actually begins.
         if !sessionStarted {
-            await ensureSessionStarted()
+            // [Fix] Cold-start reuse: the Bridge keeps the runtime session
+            // (and its SDK process) alive after our app process died, so
+            // route input straight to the persisted bridge session id — no
+            // resume, no new runtime session in the official client's
+            // running list (aligned with the official client). Fall back to
+            // resume/start only when the old session is gone.
+            if let bridgeId = client.loadPersistedBridgeId(instanceID: instanceID),
+               await client.reuseBridgeSession(bridgeId: bridgeId) {
+                sessionStarted = true
+                logger.info("[RemoteAgent] reused live bridge session on cold start")
+            } else {
+                await ensureSessionStarted()
+            }
         }
         guard client.isStarted, let bridgeSessionId = client.sessionId else {
             logger.error("[RemoteAgent] FAIL: no bridge session id after start — aborting send to avoid cross-session bleed")
