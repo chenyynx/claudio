@@ -365,6 +365,15 @@ struct AIChatView: View {
     /// True while unsent share-extension content is in the input bar.
     @State private var hasInjectedShareContent = false
     @State private var showModelPicker = false
+
+    /// [Remote session options] Remote (Bridge) sessions open the session
+    /// options sheet (permission/sandbox live switches) from the top bar
+    /// instead of the model picker — their model is fixed at session start.
+    private var isRemoteChatSession: Bool {
+        guard let entry = vm.resolveCurrentEntry() else { return false }
+        return ProviderConfigStore.shared.instance(for: entry.providerInstanceId)?
+            .providerType == .remoteAgent
+    }
     @State private var showThinkingLevelSheet = false
     @State private var showSessionSkills = false
     @State private var showSessionMCPs = false
@@ -983,12 +992,20 @@ struct AIChatView: View {
             })
         }
         .sheet(isPresented: $showModelPicker) {
-            NavigationStack {
-                SessionModelPicker(sessionId: vm.sessionId) {
-                    await vm.ensureSessionReturningId()
+            if isRemoteChatSession {
+                RemoteSessionOptionsSheet(
+                    chatSessionID: vm.sessionId,
+                    instanceID: vm.resolveCurrentEntry()?.providerInstanceId,
+                    currentModelName: vm.resolveCurrentEntry().map { $0.model.displayName ?? $0.model.id }
+                )
+            } else {
+                NavigationStack {
+                    SessionModelPicker(sessionId: vm.sessionId) {
+                        await vm.ensureSessionReturningId()
+                    }
                 }
+                .presentationDetents([.large])
             }
-            .presentationDetents([.large])
         }
         .sheet(isPresented: $showTokenUsage) {
             TokenUsageSheet(vm: cached.vm)

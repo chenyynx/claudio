@@ -123,10 +123,32 @@ enum CCPocketProtocol {
         var sessionId: String
     }
 
-    /// [Session sync] Request the Bridge's recent-session index
-    /// (sessions-index.json — includes sessions from other clients).
-    struct ListSessionsRequest: Encodable {
-        let type = "list_sessions"
+    /// [Session sync] Request the Bridge's recent-session index. NOTE:
+    /// `list_sessions` merely re-sends the LIVE session list — the disk
+    /// index (all clients' sessions, incl. WeChat-bridge ones) comes from
+    /// `list_recent_sessions` (official messages.dart:4724), paged via
+    /// limit/offset with hasMore on the reply.
+    struct ListRecentSessionsRequest: Encodable {
+        let type = "list_recent_sessions"
+        var limit: Int?
+        var offset: Int?
+    }
+
+    /// [Remote session options] Mid-session permission-mode switch
+    /// (official messages.dart:4515 — mode: default/acceptEdits/plan/auto/
+    /// bypassPermissions; plan mode derives from mode == "plan").
+    struct SetPermissionModeRequest: Encodable {
+        let type = "set_permission_mode"
+        var mode: String
+        var sessionId: String?
+    }
+
+    /// [Remote session options] Mid-session sandbox switch
+    /// (official messages.dart:4585 — sandboxMode: "on"/"off").
+    struct SetSandboxModeRequest: Encodable {
+        let type = "set_sandbox_mode"
+        var sandboxMode: String
+        var sessionId: String?
     }
 
     // MARK: - Server -> Client (lenient parse)
@@ -202,8 +224,9 @@ enum CCPocketProtocol {
         let toSeq: Int?
         let reason: String?
         let entries: [HistoryEntry]?
-        // session_list
+        // session_list / recent_sessions
         let sessions: [ServerSession]?
+        let hasMore: Bool?
         // resume flow
         let sourceSessionId: String?
         let resumeRequestId: String?

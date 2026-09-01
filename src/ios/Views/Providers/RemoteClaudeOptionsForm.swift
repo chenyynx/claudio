@@ -77,7 +77,6 @@ struct RemoteClaudeOptionsForm: View {
                 }
             } label: {
                 optionRow(
-                    icon: "hand.raised",
                     title: "Permission Mode",
                     value: localized(Self.permissionOptions.first { $0.value == options.permissionMode }?.title ?? "Default"),
                     detail: Self.permissionOptions.first { $0.value == options.permissionMode }?.detail ?? ""
@@ -95,7 +94,6 @@ struct RemoteClaudeOptionsForm: View {
                 }
             } label: {
                 optionRow(
-                    icon: "shield",
                     title: "Sandbox Mode",
                     value: options.sandboxMode == "on" ? "Sandbox (Safe Mode)" : "Standard",
                     detail: ""
@@ -117,7 +115,7 @@ struct RemoteClaudeOptionsForm: View {
                     }
                 }
             } label: {
-                optionRow(icon: "cpu", title: "Model", value: options.model ?? "Default", detail: "")
+                optionRow(title: "Model", value: options.model ?? "Default", detail: "")
             }
 
             rowDivider
@@ -135,7 +133,7 @@ struct RemoteClaudeOptionsForm: View {
                     }
                 }
             } label: {
-                optionRow(icon: "gauge", title: "Effort", value: options.effort ?? "normal", detail: "")
+                optionRow(title: "Effort", value: options.effort ?? "normal", detail: "")
             }
         }
     }
@@ -145,7 +143,7 @@ struct RemoteClaudeOptionsForm: View {
             Toggle("Use Worktree", isOn: $options.useWorktree)
                 .font(.system(size: 15))
                 .foregroundStyle(ClaudePalette.textPrimary)
-                .tint(ClaudePalette.accent)
+                .tint(ClaudePalette.selectionBlue)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
 
@@ -204,7 +202,6 @@ struct RemoteClaudeOptionsForm: View {
                 }
             } label: {
                 optionRow(
-                    icon: "arrow.triangle.2.circlepath",
                     title: "Fallback Model",
                     value: options.fallbackModel ?? "Default",
                     detail: ""
@@ -216,7 +213,7 @@ struct RemoteClaudeOptionsForm: View {
             Toggle("Fork Session", isOn: $options.forkSession)
                 .font(.system(size: 15))
                 .foregroundStyle(ClaudePalette.textPrimary)
-                .tint(ClaudePalette.accent)
+                .tint(ClaudePalette.selectionBlue)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
 
@@ -225,7 +222,7 @@ struct RemoteClaudeOptionsForm: View {
             Toggle("Persist Session", isOn: $options.persistSession)
                 .font(.system(size: 15))
                 .foregroundStyle(ClaudePalette.textPrimary)
-                .tint(ClaudePalette.accent)
+                .tint(ClaudePalette.selectionBlue)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
         }
@@ -236,29 +233,22 @@ struct RemoteClaudeOptionsForm: View {
     private func card<Content: View>(header: LocalizedStringKey, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(header)
-                .font(.system(size: 12, weight: .semibold))
-                .textCase(.uppercase)
+                .font(.subheadline)
                 .foregroundStyle(ClaudePalette.textSecondary)
-                .padding(.leading, 4)
+                .padding(.leading, 6)
             VStack(spacing: 0) { content() }
-                .background(RoundedRectangle(cornerRadius: 14).fill(ClaudePalette.card))
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(ClaudePalette.border, lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(ClaudePalette.cardFill))
         }
     }
 
     private var rowDivider: some View {
         Divider()
             .overlay(ClaudePalette.border)
-            .padding(.leading, 56)
+            .padding(.leading, 16)
     }
 
-    private func optionRow(icon: String, title: String, value: String, detail: String) -> some View {
+    private func optionRow(title: String, value: String, detail: String) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(ClaudePalette.accent)
-                .frame(width: 30, height: 30)
-                .background(RoundedRectangle(cornerRadius: 8).fill(ClaudePalette.iconMuted))
             VStack(alignment: .leading, spacing: 2) {
                 Text(localized(title))
                     .font(.system(size: 15))

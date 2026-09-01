@@ -811,6 +811,12 @@ fileprivate func remoteAgentInstanceID(for session: ChatSession) -> String? {
        let instance = store.instance(for: entry.providerInstanceId) {
         return instance.providerType == .remoteAgent ? instance.id : nil
     }
+    // [Session sync] Synced/materialized rows carry the MODEL id (not the
+    // entry id) — match the way resolveCurrentEntry step 2 does.
+    if let entry = store.modelEntries.first(where: { $0.model.id == session.modelId }),
+       let instance = store.instance(for: entry.providerInstanceId) {
+        return instance.providerType == .remoteAgent ? instance.id : nil
+    }
     return nil
 }
 
@@ -3401,12 +3407,6 @@ struct ContentView: View {
                 let titleLabel = Text(soulName)
                     .font(.system(size: 18.5, weight: .semibold))
                     .foregroundStyle(.primary)
-                    .overlay(alignment: .trailing) {
-                        ConnectionStatusDot {
-                            showConnectionSheet = true
-                        }
-                        .offset(x: 30, y: 1)
-                    }
                     .overlay(alignment: .leading) {
                         if canOpenSync {
                             Button {
@@ -4046,44 +4046,50 @@ struct ContentView: View {
 
                 // On-Device section — the phone's built-in agent. The original
                 // three steps are unchanged, now grouped under their own header.
+                // [Claude restyle] One borderless warm-gray card with inset
+                // hairline dividers, mirroring the official settings groups.
                 VStack(alignment: .leading, spacing: 10) {
                     emptyStateSectionLabel("On-Device")
 
-                    // Step 1 – Add Provider
-                    setupStep(
-                        number: 1,
-                        title: "Add a Provider",
-                        subtitle: hasProviders ? "Done" : "Connect a model provider.",
-                        isDone: hasProviders
-                    ) {
-                        if !hasProviders {
-                            showAddProvider = true
+                    VStack(spacing: 0) {
+                        setupStep(
+                            number: 1,
+                            title: "Add a Provider",
+                            subtitle: hasProviders ? "Done" : "Connect a model provider.",
+                            isDone: hasProviders
+                        ) {
+                            if !hasProviders {
+                                showAddProvider = true
+                            }
                         }
-                    }
 
-                    // Step 2 – Select Models
-                    setupStep(
-                        number: 2,
-                        title: "Select Models",
-                        subtitle: hasGroups ? "Done" : (hasProviders ? "Pick the models you want to use." : "Complete step 1 first"),
-                        isDone: hasGroups
-                    ) {
-                        if hasProviders && !hasGroups {
-                            showSelectModels = true
-                        }
-                    }
+                        stepDivider
 
-                    // Step 3 – Start chatting
-                    setupStep(
-                        number: 3,
-                        title: "Start a Conversation",
-                        subtitle: hasGroups ? "Say hello to your agent." : "Complete step 2 first",
-                        isDone: false
-                    ) {
-                        if hasGroups {
-                            openSession(Self.makeNewSessionId())
+                        setupStep(
+                            number: 2,
+                            title: "Select Models",
+                            subtitle: hasGroups ? "Done" : (hasProviders ? "Pick the models you want to use." : "Complete step 1 first"),
+                            isDone: hasGroups
+                        ) {
+                            if hasProviders && !hasGroups {
+                                showSelectModels = true
+                            }
+                        }
+
+                        stepDivider
+
+                        setupStep(
+                            number: 3,
+                            title: "Start a Conversation",
+                            subtitle: hasGroups ? "Say hello to your agent." : "Complete step 2 first",
+                            isDone: false
+                        ) {
+                            if hasGroups {
+                                openSession(Self.makeNewSessionId())
+                            }
                         }
                     }
+                    .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(ClaudePalette.cardFill))
                 }
                 .frame(maxWidth: 400)
 
@@ -4097,6 +4103,7 @@ struct ContentView: View {
                     cloudEntryStep(isDone: hasRemote) {
                         showConnectComputer = true
                     }
+                    .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(ClaudePalette.cardFill))
                 }
                 .frame(maxWidth: 400)
 
@@ -4104,6 +4111,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, 32)
         }
+        .background(ClaudePalette.background.ignoresSafeArea())
         .sheet(isPresented: $showAddProvider) {
             NavigationStack {
                 AddProviderView()
@@ -4137,29 +4145,30 @@ struct ContentView: View {
     ) -> some View {
         Button(action: action) {
             HStack(spacing: 14) {
-                // Step indicator
+                // Step indicator — charcoal pending / official-blue done;
+                // no per-row card fill (the section card provides it).
                 ZStack {
                     Circle()
-                        .fill(isDone ? Color.green : Color.accentColor)
-                        .frame(width: 32, height: 32)
+                        .fill(isDone ? ClaudePalette.selectionBlue : ClaudePalette.ctaBackground)
+                        .frame(width: 30, height: 30)
                     if isDone {
                         Image(systemName: "checkmark")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(ClaudePalette.ctaForeground)
                     } else {
                         Text("\(number)")
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
-                            .foregroundColor(.white)
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundColor(ClaudePalette.ctaForeground)
                     }
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.body.weight(.medium))
-                        .foregroundStyle(isDone ? .secondary : .primary)
+                        .foregroundStyle(isDone ? ClaudePalette.textSecondary : ClaudePalette.textPrimary)
                     Text(subtitle)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ClaudePalette.textSecondary)
                 }
 
                 Spacer()
@@ -4167,14 +4176,12 @@ struct ContentView: View {
                 if !isDone {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(ClaudePalette.textSecondary.opacity(0.6))
                 }
             }
-            .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(UIColor.secondarySystemGroupedBackground))
-            )
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(isDone)
@@ -4184,9 +4191,16 @@ struct ContentView: View {
     /// the sidebar's group headers (small semibold secondary label).
     private func emptyStateSectionLabel(_ title: LocalizedStringKey) -> some View {
         Text(title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(Color(UIColor.secondaryLabel))
-            .padding(.leading, 4)
+            .font(.subheadline)
+            .foregroundStyle(ClaudePalette.textSecondary)
+            .padding(.leading, 6)
+    }
+
+    /// Inset hairline divider between rows of a Claude-style section card.
+    private var stepDivider: some View {
+        Divider()
+            .overlay(ClaudePalette.border)
+            .padding(.leading, 58)
     }
 
     /// Cloud (remote agent) entry card in the first-launch empty state.
@@ -4201,26 +4215,26 @@ struct ContentView: View {
             HStack(spacing: 14) {
                 ZStack {
                     Circle()
-                        .fill(isDone ? Color.green : Color.accentColor)
-                        .frame(width: 32, height: 32)
+                        .fill(isDone ? ClaudePalette.selectionBlue : ClaudePalette.ctaBackground)
+                        .frame(width: 30, height: 30)
                     if isDone {
                         Image(systemName: "checkmark")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(ClaudePalette.ctaForeground)
                     } else {
                         Image(systemName: "desktopcomputer")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.white)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(ClaudePalette.ctaForeground)
                     }
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Connect Your Computer")
                         .font(.body.weight(.medium))
-                        .foregroundStyle(isDone ? .secondary : .primary)
+                        .foregroundStyle(isDone ? ClaudePalette.textSecondary : ClaudePalette.textPrimary)
                     Text("Control Claude Code from your phone.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ClaudePalette.textSecondary)
                 }
 
                 Spacer()
@@ -4228,14 +4242,12 @@ struct ContentView: View {
                 if !isDone {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(ClaudePalette.textSecondary.opacity(0.6))
                 }
             }
-            .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(UIColor.secondarySystemGroupedBackground))
-            )
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

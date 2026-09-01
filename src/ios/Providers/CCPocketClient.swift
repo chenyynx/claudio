@@ -154,7 +154,8 @@ final class CCPocketClient: @unchecked Sendable {
 
     /// [Session sync] Pending continuation for a `recent_sessions` reply
     /// (mirror of the history waiter — request/response, never broadcast).
-    private var recentWaiter: CheckedContinuation<[CCPocketProtocol.ServerSession]?, Never>?
+    /// Returns the whole message so the caller can read hasMore for paging.
+    private var recentWaiter: CheckedContinuation<CCPocketProtocol.ServerMessage?, Never>?
 
     /// Last `session_list` payload from the Bridge (sent on every
     /// connection). Used for cold-start reuse: our persisted bridge session
@@ -366,6 +367,37 @@ final class CCPocketClient: @unchecked Sendable {
     /// per-chat mapping stays so the next load resumes the same Claude
     /// conversation (the reuse probe fails on the dead bridge id and falls
     /// back to resume — both paths already in place).
+    // MARK: - [Remote session options] Mid-session switches
+
+    /// Bridge `set_permission_mode` — live permission-mode switch for the
+    /// current session. Requires a started session; callers fall back to
+    /// the start defaults when the session has not begun.
+    func setPermissionMode(_ mode: String) async throws {
+        guard isStarted, let bridgeId = sessionId else {
+            throw CCPocketError.sessionNotStarted
+        }
+        let req = CCPocketProtocol.SetPermissionModeRequest(mode: mode, sessionId: bridgeId)
+        try await sendEncoded(req)
+    }
+
+    /// Bridge `set_sandbox_mode` — live sandbox switch (see setPermissionMode).
+    func setSandboxMode(_ mode: String) async throws {
+        guard isStarted, let bridgeId = sessionId else {
+            throw CCPocketError.sessionNotStarted
+        }
+        let req = CCPocketProtocol.SetSandboxModeRequest(sandboxMode: mode, sessionId: bridgeId)
+        try await sendEncoded(req)
+    }
+
+    private func sendEncoded<T: Encodable>(_ req: T) async throws {
+        // Encode failure is practically impossible for these flat structs;
+        // the session guard above is the real gate.
+        guard let payload = try? CCPocketProtocol.encode(req) else {
+            throw CCPocketError.sessionNotStarted
+        }
+        try await send(payload, allowsReconnect: true)
+    }
+
     func sendStopSession(bridgeId: String) async {
         guard state == .connected else { return }
         let request = CCPocketProtocol.StopSessionRequest(sessionId: bridgeId)
@@ -407,6 +439,19 @@ final class CCPocketClient: @unchecked Sendable {
                 bridgeId = knownBridgeSessions?.first { $0.claudeSessionId == claudeId }?.id
                 if bridgeId != nil { break }
                 try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+        // [Session sync] Recent-index sessions are NOT live — their bridge id
+        // is in neither the mapping nor the broadcast. Resume spawns the
+        // runtime process (official recent-session open semantics) and
+        // yields the bridge id the history fetch needs.
+        if bridgeId == nil || bridgeId?.isEmpty == true {
+            do {
+                try await resumeSession(claudeId: claudeId)
+                bridgeId = sessionId
+                logger.info("[CCPocket] history: resume fallback spawned bridge session \(sessionId?.prefix(8) ?? "?")")
+            } catch {
+                logger.warning("[CCPocket] history: resume fallback failed \(error.localizedDescription)")
             }
         }
         guard let bridgeId, !bridgeId.isEmpty else {
@@ -578,7 +623,7 @@ final class CCPocketClient: @unchecked Sendable {
         if message.type == "recent_sessions" {
             if let w = recentWaiter {
                 recentWaiter = nil
-                w.resume(returning: message.sessions)
+                w.resume(returning: message)
             }
             return
         }
@@ -885,31 +930,48 @@ final class CCPocketClient: @unchecked Sendable {
         return isoFormatter.date(from: raw) ?? isoFractionalFormatter.date(from: raw)
     }
 
-    /// Request the Bridge's recent-session index (`list_sessions` →
+    /// Request the Bridge's recent-session index (`list_recent_sessions` →
     /// `recent_sessions`). The reply resumes the waiter and is NOT
     /// forwarded to `onMessage` (mirror of the history fetch pattern).
+    /// Paged: the Bridge returns ~20 entries per page with hasMore — loop
+    /// until exhausted (bounded at 3 pages / 600 entries).
     func fetchRecentSessions(timeout: TimeInterval = 15) async -> [CCPocketProtocol.ServerSession]? {
         guard task != nil else { return nil }
         guard recentWaiter == nil else { return nil }
-        let req = CCPocketProtocol.ListSessionsRequest()
-        guard let payload = try? CCPocketProtocol.encode(req) else { return nil }
-        do {
-            try await send(payload, allowsReconnect: false)
-        } catch {
-            logger.warning("[CCPocket] list_sessions send failed \(error.localizedDescription)")
-            return nil
-        }
-        return await withCheckedContinuation { c in
-            recentWaiter = c
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(timeout))
-                guard let self else { return }
-                if let w = self.recentWaiter {
-                    self.recentWaiter = nil
-                    w.resume(returning: nil)
+        var collected: [CCPocketProtocol.ServerSession] = []
+        let pageLimit = 200
+        var offset = 0
+        for _ in 0..<3 {
+            let req = CCPocketProtocol.ListRecentSessionsRequest(limit: pageLimit, offset: offset)
+            guard let payload = try? CCPocketProtocol.encode(req) else { break }
+            do {
+                try await send(payload, allowsReconnect: false)
+            } catch {
+                logger.warning("[CCPocket] list_recent_sessions send failed \(error.localizedDescription)")
+                break
+            }
+            // Await the reply (timeout guard resumes nil).
+            let message: CCPocketProtocol.ServerMessage? = await withCheckedContinuation { c in
+                recentWaiter = c
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(timeout))
+                    guard let self else { return }
+                    if let w = self.recentWaiter {
+                        self.recentWaiter = nil
+                        w.resume(returning: nil)
+                    }
                 }
             }
+            guard let message else {
+                logger.warning("[CCPocket] recent_sessions timeout after \(timeout)s")
+                break
+            }
+            let page = message.sessions ?? []
+            collected.append(contentsOf: page)
+            if message.hasMore != true || page.isEmpty { break }
+            offset += page.count
         }
+        return collected.isEmpty ? nil : collected
     }
 
     /// One-shot Bridge inventory refresh for the session list: connect,
