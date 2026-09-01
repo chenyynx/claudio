@@ -841,6 +841,33 @@ fileprivate func syntheticClaudeId(of session: ChatSession) -> String? {
     return claudeId.isEmpty ? nil : claudeId
 }
 
+/// [Session sync] Best-effort topic category for synced remote rows. The
+/// LLM title/category flow only runs after an in-app turn, which synced
+/// sessions never had — without this they sat on the unset gray avatar
+/// forever. Conservative keyword mapping over the bridge's title/preview;
+/// defaults to "chat" so remote rows always render colored.
+fileprivate func inferRemoteSessionCategory(from text: String?) -> String {
+    guard let text, !text.isEmpty else { return "chat" }
+    let t = text.lowercased()
+    let rules: [(keywords: [String], category: String)] = [
+        (["代码", "code", "bug", "报错", "终端", "脚本", "script", "swift", "python",
+          "compile", "编译", "deploy", "部署", "server", "服务器"], "code"),
+        (["翻译", "translate"], "translation"),
+        (["文章", "文案", "blog", "essay", "起草", "润色"], "writing"),
+        (["画一", "画个", "生成图", "logo", "海报", "设计图"], "creative"),
+        (["分析", "统计", "报告", "data", "report", "研究"], "analysis"),
+        (["数学", "计算", "math", "方程"], "math"),
+        (["教程", "学习", "讲解", "learn", "course"], "education"),
+        (["旅行", "行程", "trip", "travel", "攻略"], "travel"),
+        (["预算", "投资", "记账", "finance", "账单"], "finance"),
+        (["预约", "提醒", "日程", "reminder", "schedule"], "productivity"),
+    ]
+    for rule in rules where rule.keywords.contains(where: { t.contains($0) }) {
+        return rule.category
+    }
+    return "chat"
+}
+
 /// Merge local rows with Bridge-only sessions (live broadcast + recent
 /// index), skipping entries already bound to a local row (by Claude id).
 /// Synthetic rows carry the remote instance's model id so the existing
@@ -867,7 +894,7 @@ fileprivate func mergedWithRemoteRows(_ local: [ChatSession]) -> [ChatSession] {
         rows.append(ChatSession(
             id: remoteSyntheticIdPrefix + e.claudeId,
             title: title,
-            category: nil,
+            category: inferRemoteSessionCategory(from: e.name ?? e.preview),
             modelId: entry.model.id,
             createdAt: e.updatedAt ?? .distantPast,
             updatedAt: e.updatedAt ?? .distantPast,
@@ -902,8 +929,16 @@ fileprivate func materializeSyntheticRemoteId(_ id: String) async -> String {
         .first { $0.claudeId == claudeId }
     let created = await ChatStore.shared.createSession(
         modelId: entry.model.id,
-        title: source?.name ?? source?.preview.map { String($0.prefix(48)) },
         source: "remoteBridge"
+    )
+    // Title + heuristic topic category (avatar color) — createSession has
+    // no category param; updateSessionTitle sets both and posts
+    // .sessionDidUpdate itself (swaps the synthetic row for the real one).
+    let materialTitle = source?.name ?? source?.preview.map { String($0.prefix(48)) }
+    await ChatStore.shared.updateSessionTitle(
+        created.id,
+        title: materialTitle ?? String(localized: "Remote Session"),
+        category: inferRemoteSessionCategory(from: source?.name ?? source?.preview)
     )
     CCPocketClient.saveExplicitMapping(
         instanceID: instance.id,
@@ -912,9 +947,6 @@ fileprivate func materializeSyntheticRemoteId(_ id: String) async -> String {
         claudeId: claudeId,
         projectPath: source?.projectPath
     )
-    // The sidebar reloads on this notification (createSession does not post
-    // it itself) — swaps the synthetic row for the materialized real row.
-    NotificationCenter.default.post(name: .sessionDidUpdate, object: created.id)
     return created.id
 }
 
