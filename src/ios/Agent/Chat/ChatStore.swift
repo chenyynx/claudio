@@ -376,6 +376,10 @@ struct RawMessage: Identifiable, Codable, Hashable {
     /// turn. Mirrors ChatMessage.error; persisted to the messages.error_info
     /// column so the error indicator survives reload. nil = no error.
     var errorInfo: String? = nil
+    /// UI block sequence snapshot (thinking/tool/text in exact original
+    /// order). Restores the interleaving across a relaunch — aligned with
+    /// the official client's content-array rendering. nil = legacy message.
+    var uiSequence: [UIBlockSnapshot]? = nil
 
     /// True if this message contains only tool results (no user text).
     /// These are internal agent loop messages that shouldn't render as user bubbles.
@@ -598,6 +602,7 @@ actor ChatStore {
         addColumnIfMissing(table: "sessions", column: "source", definition: "TEXT")
         addColumnIfMissing(table: "messages", column: "reasoning_content", definition: "TEXT")
         addColumnIfMissing(table: "messages", column: "stream_interrupt_count", definition: "INTEGER NOT NULL DEFAULT 0")
+        addColumnIfMissing(table: "messages", column: "ui_sequence", definition: "TEXT")
         addColumnIfMissing(table: "sessions", column: "memory_enabled", definition: "INTEGER NOT NULL DEFAULT 1")
         addColumnIfMissing(table: "sessions", column: "last_synced_at", definition: "REAL")
         addColumnIfMissing(table: "sessions", column: "remote_origin_device_id", definition: "TEXT")
@@ -2601,8 +2606,8 @@ actor ChatStore {
         logger.info("[Store] appendMessages enter count=\(messages.count) dbOpen=\(dbOK) sid=\(firstSid)")
 
         let sql = """
-            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, ui_sequence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
         exec("BEGIN TRANSACTION")
@@ -2644,6 +2649,13 @@ actor ChatStore {
                 sqlite3_bind_double(stmt, 10, message.createdAt.timeIntervalSince1970)
                 bindOptionalText(stmt, index: 11, value: message.errorInfo)  // [T-error-persist-ios]
                 sqlite3_bind_int64(stmt, 12, Int64(partFlags))  // [T-ios-listsessions-part-flags]
+                let uiSeqJSON: String?
+                if let seq = message.uiSequence {
+                    uiSeqJSON = (try? JSONEncoder().encode(seq)).flatMap { String(data: $0, encoding: .utf8) }
+                } else {
+                    uiSeqJSON = nil
+                }
+                bindOptionalText(stmt, index: 13, value: uiSeqJSON)
                 let stepRC = sqlite3_step(stmt)
                 if stepRC != SQLITE_DONE {
                     let errMsg = String(cString: sqlite3_errmsg(db))
@@ -2705,7 +2717,7 @@ actor ChatStore {
     func loadMessages(sessionId: String) -> [RawMessage] {
         let totalStart = CFAbsoluteTimeGetCurrent()
         let sql = """
-            SELECT id, session_id, role, parts_json, created_at, token_usage, reasoning_content, stream_interrupt_count, sort_order, error_info
+            SELECT id, session_id, role, parts_json, created_at, token_usage, reasoning_content, stream_interrupt_count, sort_order, error_info, ui_sequence
             FROM messages WHERE session_id = ? ORDER BY sort_order ASC, created_at ASC, id ASC
         """
         var stmt: OpaquePointer?
@@ -2747,6 +2759,13 @@ actor ChatStore {
                 let streamInterruptCount = Int(sqlite3_column_int64(stmt, 7))
                 let sortOrder = Int(sqlite3_column_int64(stmt, 8))
                 let errorInfo = sqlite3_column_text(stmt, 9).map { String(cString: $0) }  // [T-error-persist-ios]
+                let uiSequence: [UIBlockSnapshot]?
+                if let uiSeqStr = sqlite3_column_text(stmt, 10).map({ String(cString: $0) }),
+                   let uiSeqData = uiSeqStr.data(using: .utf8) {
+                    uiSequence = try? JSONDecoder().decode([UIBlockSnapshot].self, from: uiSeqData)
+                } else {
+                    uiSequence = nil
+                }
                 var msg = RawMessage(
                     id: id, sessionId: sessId, role: role, parts: parts,
                     createdAt: createdAt, tokenUsage: tokenUsage,
@@ -2755,6 +2774,7 @@ actor ChatStore {
                 )
                 msg.sortOrder = sortOrder
                 msg.errorInfo = errorInfo
+                msg.uiSequence = uiSequence
                 messages.append(msg)
             }
         } else {
@@ -4543,6 +4563,67 @@ extension RawMessage {
         /// get_readable (which don't carry a url arg) can inherit it.
         var lastBrowserURL: String?
 
+        // [Fix] UI sequence snapshot path: rebuild blocks in the EXACT
+        // original order (multiple thinking segments interleaved with tool
+        // calls) — aligned with the official client's content-array
+        // rendering. The merged reasoningContent path below cannot restore
+        // the interleaving. Legacy messages (no snapshot) fall through.
+        if let seq = uiSequence, !seq.isEmpty, role == .assistant {
+            let toolUses = parts.compactMap { part -> ToolUse? in
+                if case .toolUse(let tu) = part { return tu }
+                return nil
+            }
+            for item in seq {
+                switch item.kind {
+                case "thinking":
+                    if let t = item.text, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        blocks.append(AssistantBlock(kind: .thinking, content: t))
+                    }
+                case "text":
+                    if let t = item.text, !t.isEmpty {
+                        let visible = Self.stripSystemReminders(t)
+                        if !visible.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            textContent += (textContent.isEmpty ? "" : "\n") + visible
+                            for segment in Self.splitLongAssistantText(visible) {
+                                blocks.append(AssistantBlock(kind: .text, content: segment))
+                            }
+                        }
+                    }
+                case "tool":
+                    if let tid = item.toolId,
+                       let tu = toolUses.first(where: { $0.toolUseId == tid }) {
+                        let block = Self.makeToolBlock(from: tu, lastBrowserURL: &lastBrowserURL)
+                        blocks.append(block)
+                    }
+                default:
+                    break
+                }
+            }
+            // Pair persisted tool results onto the rebuilt tool blocks.
+            for part in parts {
+                if case .toolResult(let tr) = part {
+                    if let blockIdx = blocks.lastIndex(where: { $0.toolUseId == tr.toolUseId }) {
+                        Self.applyPersistedToolResult(tr, to: blocks[blockIdx], mediaResolver: mediaResolver, lastBrowserURL: &lastBrowserURL)
+                    }
+                }
+            }
+            let msg = ChatMessage(role: uiRole, content: textContent, blocks: blocks)
+            if let usage = tokenUsage {
+                msg.usage = TokenUsage(
+                    inputTokens: usage.inputTokens,
+                    outputTokens: usage.outputTokens,
+                    cacheCreationTokens: usage.cacheCreationTokens,
+                    cacheReadTokens: usage.cacheReadTokens,
+                    latestContextTokens: usage.latestContextTokens ?? 0
+                )
+            }
+            msg.streamInterruptCount = streamInterruptCount
+            if let e = errorInfo, !e.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                msg.error = e
+            }
+            return msg
+        }
+
         for part in parts {
             switch part {
             case .text(let s):
@@ -4683,82 +4764,12 @@ extension RawMessage {
                 }
 
             case .toolUse(let tu):
-                let kind: AssistantBlockKind
-                let content: String
-                switch tu.name {
-                case "shell_execute":
-                    let cmd = extractCommandFromJSON(tu.input)
-                    kind = .shellTool(command: cmd)
-                    content = "$ \(cmd)"
-                case "file_read":
-                    let path = extractStringParam("path", from: tu.input)
-                    kind = .fileReadTool(path: path)
-                    content = "Reading \(path)..."
-                case "file_write":
-                    let path = extractStringParam("path", from: tu.input)
-                    kind = .fileWriteTool(path: path)
-                    content = "Writing \(path)..."
-                case "file_edit":
-                    let path = extractStringParam("path", from: tu.input)
-                    kind = .fileEditTool(path: path)
-                    content = "Editing \(path)..."
-                case "browser_use":
-                    let action = extractStringParam("action", from: tu.input)
-                    kind = .browserTool(action: action)
-                    content = "Browser: \(action)"
-                    // Restore browserURL from args or inherit from preceding browser block
-                    let argURL = extractStringParam("url", from: tu.input)
-                    if !argURL.isEmpty {
-                        lastBrowserURL = argURL
-                    }
-                case "read_image":
-                    let path = extractStringParam("path", from: tu.input)
-                    kind = .readImageTool(path: path)
-                    content = "Reading image \(path)..."
-                case "memory_write", "memory_get":
-                    kind = .memoryTool(action: tu.name)
-                    content = tu.name == "memory_write" ? "Writing memory..." : "Reading memory..."
-                default:
-                    kind = .shellTool(command: tu.name)
-                    content = tu.name
-                }
-                // Seed as .running so applyToolResults (called when the paired
-                // tool_result user message is processed) can recognize this block as
-                // "not yet finalized". loadSession finalizes any blocks still left in
-                // .running / .streaming after all messages are processed — those are
-                // orphaned tool_uses (app killed / run cancelled before the result
-                // was persisted) and are marked .cancelled.
-                let block = AssistantBlock(kind: kind, content: content, toolStatus: .running, toolUseId: tu.toolUseId)
-                block.toolSummary = tu.description
-                block.toolInputArgs = tu.input
-                // Restore browserURL: use arg URL or inherit from last browser block
-                if case .browserTool = kind {
-                    block.browserURL = lastBrowserURL
-                }
-                blocks.append(block)
+                blocks.append(Self.makeToolBlock(from: tu, lastBrowserURL: &lastBrowserURL))
 
             case .toolResult(let tr):
                 // Match this result to its preceding toolUse block and update it.
                 if let blockIdx = blocks.lastIndex(where: { $0.toolUseId == tr.toolUseId }) {
-                    blocks[blockIdx].content = tr.output
-                    // Prefer the explicit persisted status (distinguishes cancelled from failed);
-                    // fall back to the success bool for rows written before the status field existed.
-                    switch tr.status {
-                    case "cancelled": blocks[blockIdx].toolStatus = .cancelled
-                    case "failed":    blocks[blockIdx].toolStatus = .failed(message: "")
-                    case "success":   blocks[blockIdx].toolStatus = .success
-                    default:          blocks[blockIdx].toolStatus = tr.success ? .success : .failed(message: "")
-                    }
-                    // Restore screenshot image from persisted mediaRef
-                    let ref = tr.mediaRef ?? tr.snapshot?.mediaRef
-                    if let ref {
-                        blocks[blockIdx].imageFilePath = mediaResolver(ref).path
-                    }
-                    // Restore browserURL from persisted pageURL
-                    if let pageURL = tr.pageURL, !pageURL.isEmpty {
-                        blocks[blockIdx].browserURL = pageURL
-                        lastBrowserURL = pageURL
-                    }
+                    Self.applyPersistedToolResult(tr, to: blocks[blockIdx], mediaResolver: mediaResolver, lastBrowserURL: &lastBrowserURL)
                 } else {
                     if !textContent.isEmpty { textContent += "\n" }
                     textContent += tr.output
@@ -4793,6 +4804,83 @@ extension RawMessage {
             msg.error = e
         }
         return msg
+    }
+
+    /// Build an assistant tool block from a persisted ToolUse. Shared by the
+    /// parts-based path and the uiSequence snapshot path so the two never
+    /// drift apart.
+    fileprivate static func makeToolBlock(from tu: ToolUse, lastBrowserURL: inout String?) -> AssistantBlock {
+        let kind: AssistantBlockKind
+        let content: String
+        switch tu.name {
+        case "shell_execute":
+            let cmd = extractCommandFromJSON(tu.input)
+            kind = .shellTool(command: cmd)
+            content = "$ \(cmd)"
+        case "file_read":
+            let path = extractStringParam("path", from: tu.input)
+            kind = .fileReadTool(path: path)
+            content = "Reading \(path)..."
+        case "file_write":
+            let path = extractStringParam("path", from: tu.input)
+            kind = .fileWriteTool(path: path)
+            content = "Writing \(path)..."
+        case "file_edit":
+            let path = extractStringParam("path", from: tu.input)
+            kind = .fileEditTool(path: path)
+            content = "Editing \(path)..."
+        case "browser_use":
+            let action = extractStringParam("action", from: tu.input)
+            kind = .browserTool(action: action)
+            content = "Browser: \(action)"
+            let argURL = extractStringParam("url", from: tu.input)
+            if !argURL.isEmpty {
+                lastBrowserURL = argURL
+            }
+        case "read_image":
+            let path = extractStringParam("path", from: tu.input)
+            kind = .readImageTool(path: path)
+            content = "Reading image \(path)..."
+        case "memory_write", "memory_get":
+            kind = .memoryTool(action: tu.name)
+            content = tu.name == "memory_write" ? "Writing memory..." : "Reading memory..."
+        default:
+            kind = .shellTool(command: tu.name)
+            content = tu.name
+        }
+        // Seed as .running so applyToolResults can recognize this block as
+        // "not yet finalized"; loadSession finalizes leftovers as .cancelled.
+        let block = AssistantBlock(kind: kind, content: content, toolStatus: .running, toolUseId: tu.toolUseId)
+        block.toolSummary = tu.description
+        block.toolInputArgs = tu.input
+        if case .browserTool = kind {
+            block.browserURL = lastBrowserURL
+        }
+        return block
+    }
+
+    /// Apply a persisted ToolResult onto a tool block. Shared by both paths.
+    fileprivate static func applyPersistedToolResult(
+        _ tr: ToolResult,
+        to block: AssistantBlock,
+        mediaResolver: (MediaRef) -> URL,
+        lastBrowserURL: inout String?
+    ) {
+        block.content = tr.output
+        switch tr.status {
+        case "cancelled": block.toolStatus = .cancelled
+        case "failed":    block.toolStatus = .failed(message: "")
+        case "success":   block.toolStatus = .success
+        default:          block.toolStatus = tr.success ? .success : .failed(message: "")
+        }
+        let ref = tr.mediaRef ?? tr.snapshot?.mediaRef
+        if let ref {
+            block.imageFilePath = mediaResolver(ref).path
+        }
+        if let pageURL = tr.pageURL, !pageURL.isEmpty {
+            block.browserURL = pageURL
+            lastBrowserURL = pageURL
+        }
     }
 
     /// Strip model-facing attachment markers from user display text.
@@ -4918,6 +5006,7 @@ extension RawMessage {
 
         var msg = AgentMessage(role: agentRole, parts: agentParts)
         msg.reasoningContent = reasoningContent
+        msg.uiSequence = uiSequence
         return msg
     }
 

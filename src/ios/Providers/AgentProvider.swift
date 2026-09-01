@@ -97,11 +97,27 @@ struct ReasoningEcho: @unchecked Sendable {
     }
 }
 
+/// One entry of the UI block sequence snapshot. Preserves the exact
+/// thinking/tool/text interleaving and per-thinking-block content across a
+/// relaunch — the local equivalent of the official client's content-array
+/// rendering (chat_session_cubit renders `message.content` in order).
+struct UIBlockSnapshot: Codable, Hashable, Sendable {
+    let kind: String      // "thinking" | "tool" | "text"
+    let text: String?     // content for thinking/text blocks
+    let toolId: String?   // toolUseId for tool blocks (content comes from parts)
+}
+
 /// A message in the agent conversation.
 struct AgentMessage: @unchecked Sendable {
     enum Role: String, Sendable { case user, assistant }
     let role: Role
     var parts: [AgentContentPart]
+    /// UI block sequence snapshot (see UIBlockSnapshot). Persisted so a
+    /// relaunch rebuilds blocks in the exact original order (multiple
+    /// thinking segments interleaved with tool calls stay intact — the
+    /// merged `reasoningContent` alone cannot). nil = legacy message
+    /// (fall back to parts-based reconstruction).
+    var uiSequence: [UIBlockSnapshot]? = nil
     /// True when this assistant message was interrupted mid-stream (e.g. network drop).
     /// tool_use blocks inside may have incomplete/empty inputs (partialJson never finished).
     /// Placeholder tool_results must NOT be injected for interrupted messages, because

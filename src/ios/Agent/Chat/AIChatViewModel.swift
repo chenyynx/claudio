@@ -4215,6 +4215,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                         if !thinkingText.isEmpty {
                             assistantMsg.reasoningContent = thinkingText
                         }
+                        assistantMsg.uiSequence = Self.uiSequenceSnapshot(from: last.blocks)
                         let asstIdx = agentHistory.count
                         agentHistory.append(assistantMsg)
                         Task { @MainActor [weak self] in
@@ -4314,6 +4315,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                     if !thinkingText.isEmpty {
                         assistantMsg.reasoningContent = thinkingText
                     }
+                    assistantMsg.uiSequence = Self.uiSequenceSnapshot(from: last.blocks)
                     let asstIdx = agentHistory.count
                     agentHistory.append(assistantMsg)
                     Task { @MainActor [weak self] in
@@ -5300,6 +5302,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             assistantMessage.isInterrupted = streamResult.isStreamInterrupted
             assistantMessage.reasoningContent = streamResult.reasoningContent
             assistantMessage.reasoningEcho = streamResult.reasoningEcho
+            assistantMessage.uiSequence = streamResult.uiSequence
             let assistantAgentIdx = agentHistory.count
             agentHistory.append(assistantMessage)
 

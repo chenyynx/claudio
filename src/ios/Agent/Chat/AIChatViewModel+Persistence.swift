@@ -1358,13 +1358,15 @@ extension AIChatViewModel {
             )
         }
 
-        return RawMessage(
+        var raw = RawMessage(
             id: UUID().uuidString, sessionId: sessionId,
             role: msg.role == .user ? .user : .assistant,
             parts: parts, createdAt: Date(), tokenUsage: storedUsage,
             reasoningContent: reasoningContent ?? msg.reasoningContent,
             streamInterruptCount: streamInterruptCount
         )
+        raw.uiSequence = msg.uiSequence
+        return raw
     }
 
     /// Phase B: Return the LLM-facing view of agentHistory.
