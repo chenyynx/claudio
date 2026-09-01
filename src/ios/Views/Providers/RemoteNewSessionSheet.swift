@@ -145,7 +145,7 @@ struct RemoteNewSessionSheet: View {
 
             bottomBar
         }
-        .presentationBackground(ClaudePalette.background)
+        .background(ClaudePalette.background)
         .presentationDetents([.medium, .large])
     }
 

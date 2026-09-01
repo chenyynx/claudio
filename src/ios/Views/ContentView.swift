@@ -882,7 +882,7 @@ fileprivate func mergedWithRemoteRows(_ local: [ChatSession]) -> [ChatSession] {
 /// resume mapping (bridge id when live + Claude id), then hand back the
 /// real id. Idempotent — an already-materialized claudeId returns its row.
 @MainActor
-fileprivate func materializeSyntheticRemoteId(_ id: String) -> String {
+fileprivate func materializeSyntheticRemoteId(_ id: String) async -> String {
     guard id.hasPrefix(remoteSyntheticIdPrefix) else { return id }
     let claudeId = String(id.dropFirst(remoteSyntheticIdPrefix.count))
     let store = ProviderConfigStore.shared
@@ -894,7 +894,7 @@ fileprivate func materializeSyntheticRemoteId(_ id: String) -> String {
     }
     let source = BridgeSessionRegistry.shared.inventoryByInstance[instance.id]?
         .first { $0.claudeId == claudeId }
-    let created = ChatStore.shared.createSession(
+    let created = await ChatStore.shared.createSession(
         modelId: entry.model.id,
         title: source?.name ?? source?.preview.map { String($0.prefix(48)) },
         source: "remoteBridge"
@@ -906,7 +906,39 @@ fileprivate func materializeSyntheticRemoteId(_ id: String) -> String {
         claudeId: claudeId,
         projectPath: source?.projectPath
     )
+    // The sidebar reloads on this notification (createSession does not post
+    // it itself) — swaps the synthetic row for the materialized real row.
+    NotificationCenter.default.post(name: .sessionDidUpdate, object: created.id)
     return created.id
+}
+
+/// [Session sync] Hosts a synthetic remote row's chat: materializes the
+/// real session row + resume mapping (ChatStore is an actor, so the work
+/// awaits in .task — a ViewBuilder closure cannot do async work inline),
+/// then shows the normal chat view for the real id.
+private struct RemoteSyntheticSessionView: View {
+    let syntheticId: String
+    @State private var realId: String?
+
+    var body: some View {
+        Group {
+            if let realId {
+                AIChatView(sessionId: realId, draftId: nil, initialGroupId: nil)
+                    .id(realId)
+            } else {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text("Remote Session")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .task {
+                    realId = await materializeSyntheticRemoteId(syntheticId)
+                }
+            }
+        }
+    }
 }
 
 #if DEBUG
@@ -2162,30 +2194,31 @@ struct ContentView: View {
                     }
                 }
                 .navigationDestination(for: String.self) { incomingId in
-                    // [Session sync] Materialize synthetic remote rows on
-                    // open: create the real row + resume mapping, then
-                    // navigate to the real id (idempotent).
-                    let id = materializeSyntheticRemoteId(incomingId)
-                    if id != incomingId {
-                        Task { @MainActor in refreshSessionList() }
-                    }
                     // `.id(id)` mirrors detailView (iPad): navigationDestination
                     // views are identified by stack depth, not path value, so
                     // replacing the top element in place (menu "New Chat" swaps
                     // [current] → [draft]) would otherwise reuse the old view's
                     // @StateObject vm and nothing visibly changes.
-                    if id.hasPrefix("remote:") {
-                        let parts = id.split(separator: ":", maxSplits: 2)
+                    if incomingId.hasPrefix(remoteSyntheticIdPrefix) {
+                        // [Session sync] Synthetic remote row: materialize the
+                        // real row + resume mapping inside the wrapper's .task
+                        // (ChatStore is an actor — no sync call, no bare Task
+                        // statement in a ViewBuilder), then host the normal
+                        // chat view for the real id.
+                        RemoteSyntheticSessionView(syntheticId: incomingId)
+                            .id(incomingId)
+                    } else if incomingId.hasPrefix("remote:") {
+                        let parts = incomingId.split(separator: ":", maxSplits: 2)
                         if parts.count == 3 {
                             AIChatView(sessionId: String(parts[2]), remoteDeviceId: String(parts[1]))
-                                .id(id)
+                                .id(incomingId)
                         }
                     } else {
-                        AIChatView(sessionId: Self.isNewSessionId(id) ? nil : id, draftId: Self.isNewSessionId(id) ? id : nil, initialGroupId: Self.extractGroupId(from: id))
-                            .id(id)
+                        AIChatView(sessionId: Self.isNewSessionId(incomingId) ? nil : incomingId, draftId: Self.isNewSessionId(incomingId) ? incomingId : nil, initialGroupId: Self.extractGroupId(from: incomingId))
+                            .id(incomingId)
                             .onAppear {
-                                if currentStackSessionId != id {
-                                    currentStackSessionId = id
+                                if currentStackSessionId != incomingId {
+                                    currentStackSessionId = incomingId
                                     // [T-ios-stacknav-transition-attributegraph-race]
                                     // Keep the outgoing-id tracker in lockstep.
                                     // This branch fires exactly when the two
@@ -2202,12 +2235,12 @@ struct ContentView: View {
                                     // the vm actually on screen: the wrong vm
                                     // stalls and the real outgoing one keeps
                                     // publishing into its teardown.
-                                    previousStackSessionId = id
+                                    previousStackSessionId = incomingId
                                 }
-                                SessionBadgeStore.shared.remove(.unread, for: id)
-                                shareLog.info("🔄SESSION stackNav APPEAR id=\(id)")
+                                SessionBadgeStore.shared.remove(.unread, for: incomingId)
+                                shareLog.info("🔄SESSION stackNav APPEAR id=\(incomingId)")
                             }
-                            .onDisappear { shareLog.info("🔄SESSION stackNav DISAPPEAR id=\(id)") }
+                            .onDisappear { shareLog.info("🔄SESSION stackNav DISAPPEAR id=\(incomingId)") }
                     }
                 }
         }

@@ -357,6 +357,35 @@ struct ToolLiveSheet: View {
     /// blocks (next/prev tool) re-collapses to the initial batch.
     @State private var revealedForBlockId: UUID?
 
+    /// [T-tool-preview-switch-jank] Cache of the DETAIL (non-live) line split
+    /// per block. Switching tools used to re-run `chunkedLines` over the full
+    /// output on every body pass (content view + the onChange reset — O(n)
+    /// string work per switch, visible jank on large tool results). Keyed by
+    /// block id; a content-count mismatch invalidates the entry.
+    @State private var detailChunkCache: [UUID: DetailChunkCacheEntry] = [:]
+
+    private struct DetailChunkCacheEntry {
+        let contentCount: Int
+        let chunks: [(id: Int, text: String)]
+    }
+
+    /// Cached split for the non-live detail view (see detailChunkCache).
+    private func detailChunks(for block: AssistantBlock) -> [(id: Int, text: String)] {
+        let text = block.content.isEmpty ? " " : block.content
+        if let hit = detailChunkCache[block.id], hit.contentCount == text.count {
+            return hit.chunks
+        }
+        let chunks = Self.chunkedLines(text)
+        // Simple bound: a burst of distinct blocks clears the cache instead of
+        // growing it — re-splitting a dozen entries is cheap relative to the
+        // jank this removes.
+        if detailChunkCache.count > 12 {
+            detailChunkCache.removeAll(keepingCapacity: true)
+        }
+        detailChunkCache[block.id] = DetailChunkCacheEntry(contentCount: text.count, chunks: chunks)
+        return chunks
+    }
+
     /// Lines per chunk — must match chunkedLines' default.
     private static let lazyRenderChunkLines = 40
     /// Initial reveal: ~200 lines = 5 chunks.
@@ -1642,7 +1671,7 @@ struct ToolLiveSheet: View {
                     // Shell: command header + chunked output (cap at 500 lines while streaming)
                     let allChunks = isLive
                         ? Self.liveChunkedLines(block.content.isEmpty ? " " : block.content)
-                        : Self.chunkedLines(block.content.isEmpty ? " " : block.content)
+                        : detailChunks(for: block)
                     // [T-ios-tool-result-lazy-render] In the detail (non-live)
                     // view reveal only an initial window and grow on scroll.
                     let chunks = isLive ? allChunks : Array(allChunks.prefix(max(revealedChunkCount, 1)))
@@ -1707,7 +1736,7 @@ struct ToolLiveSheet: View {
 
                         let allChunks = isLive
                             ? Self.liveChunkedLines(block.content.isEmpty ? " " : block.content)
-                            : Self.chunkedLines(block.content.isEmpty ? " " : block.content)
+                            : detailChunks(for: block)
                         // [T-ios-tool-result-lazy-render] Reveal an initial
                         // window in the detail view; grow on scroll / tap.
                         let chunks = isLive ? allChunks : Array(allChunks.prefix(max(revealedChunkCount, 1)))
@@ -1744,7 +1773,7 @@ struct ToolLiveSheet: View {
             // (next/prev) re-collapses the lazy window to its initial batch.
             .onChange(of: block.id) { _ in
                 guard !isLive else { return }
-                let chunks = Self.chunkedLines(block.content.isEmpty ? " " : block.content)
+                let chunks = detailChunks(for: block)
                 revealedForBlockId = block.id
                 revealedChunkCount = Self.initialRevealCount(chunks)
             }

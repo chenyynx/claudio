@@ -935,13 +935,37 @@ extension AIChatViewModel {
                 result.toolResults.append((id: id, name: name, output: output, isError: isError))
                 await MainActor.run {
                     guard msgIdx < messages.count else { return }
-                    if let blockIdx = messages[msgIdx].blocks.firstIndex(where: { $0.toolUseId == id }) {
-                        let block = messages[msgIdx].blocks[blockIdx]
-                        block.toolStatus = isError ? .failed(message: String(output.prefix(500))) : .success
-                        if block.content.isEmpty {
-                            block.content = String(output.prefix(4000))
-                        }
+                    // [T-tool-result-empty-preview] Pairing hardening. The old
+                    // exact-id-only lookup silently dropped results whose block
+                    // carried no toolUseId (or a dedupe-renamed one): the output
+                    // reached persistence but never the live block, so the tool
+                    // preview stayed empty until the next relaunch rebuilt the
+                    // block from the DB. Fallback chain: exact unfinished match
+                    // → exact match → block with no toolUseId → any
+                    // running/streaming block → last tool block.
+                    let blocks = messages[msgIdx].blocks
+                    let isPending: (AssistantBlock) -> Bool = { blk in
+                        if case .running = blk.toolStatus { return true }
+                        if case .streaming = blk.toolStatus { return true }
+                        return false
                     }
+                    let blockIdx: Int? =
+                        blocks.firstIndex(where: { $0.toolUseId == id && !isPending($0) })
+                        ?? blocks.firstIndex(where: { $0.toolUseId == id })
+                        ?? blocks.firstIndex(where: { $0.toolUseId == nil && $0.toolStatus != nil })
+                        ?? blocks.firstIndex(where: isPending)
+                        ?? blocks.indices.last(where: { blocks[$0].toolStatus != nil })
+                    guard let blockIdx else { return }
+                    let block = messages[msgIdx].blocks[blockIdx]
+                    if block.toolUseId == nil {
+                        block.toolUseId = id
+                    }
+                    block.toolStatus = isError ? .failed(message: String(output.prefix(500))) : .success
+                    // The result output is authoritative — always overwrite the
+                    // streaming preview so the in-memory block matches what a
+                    // reload rebuilds from the persisted toolResult part (the
+                    // detail view lazy-renders large outputs; no truncation).
+                    block.content = output
                 }
 
             case .thinkingDelta(let text):
