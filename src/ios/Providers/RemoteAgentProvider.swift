@@ -253,6 +253,10 @@ final class RemoteAgentProvider: AgentProvider {
                             }
                         }
                         continuation.yield(.contentBlockStart(.toolUse(id: toolId, name: toolName)))
+                        // [Fix] After tool_use the engine resets its text block index and waits for
+                        // the provider to open a fresh `contentBlockStart(.text)`. Reset the flag
+                        // so the next text section opens a new block instead of being silently dropped.
+                        textBlockStarted = false
                         continuation.yield(.toolCallComplete(id: toolId, name: toolName, args: args, metadata: nil))
                     default:
                         break
