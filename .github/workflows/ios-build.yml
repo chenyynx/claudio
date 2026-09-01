@@ -5,6 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# [doris] GITHUB_TOKEN defaults to read-only — release upload needs
+# contents:write (HTTP 403 "Resource not accessible by integration" without it).
+permissions:
+  contents: write
+
 jobs:
   build:
     # Project targets iOS 26.2 / Swift 6.0 — macos-15's Xcode 16.4 (iOS 18.5
