@@ -1,4 +1,4 @@
-import Foundation
+import Combine
 
 /// Connection state of the remote-agent (Bridge) provider, aggregated for
 /// the sidebar title's connection dot. Sources: configured remoteAgent

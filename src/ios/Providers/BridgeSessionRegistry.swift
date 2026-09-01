@@ -1,4 +1,4 @@
-import Foundation
+import Combine
 
 /// Aggregates the Bridge's broadcast `session_list` payloads into one
 /// observable source for the session-list UI. Every CCPocketClient reports
