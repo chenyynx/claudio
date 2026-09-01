@@ -26,14 +26,63 @@ struct ClaudeSessionOptions: Equatable {
     var persistSession: Bool = true
 }
 
+/// Official Anthropic design tokens, extracted from the live anthropic.com
+/// stylesheet (2026-09-02): ivory-light #FAF9F5 (page background), slate-dark
+/// #141413 (text + primary button), cloud-dark #87867F (secondary text),
+/// borders slate @10%, and the app-level accent orange #D97757. Dark-mode
+/// surfaces follow the Claude app (#262624 background / #30302E cards).
+enum ClaudePalette {
+    static let background = dynamic(0xFAF9F5, 0x262624)
+    static let card = dynamic(0xFFFFFF, 0x30302E)
+    static let textPrimary = dynamic(0x141413, 0xFAF9F5)
+    static let textSecondary = dynamic(0x87867F, 0xB0AEA5)
+    static let accent = Color(UIColor(hex: 0xD97757))
+    static let ctaBackground = dynamic(0x141413, 0xFAF9F5)
+    static let ctaForeground = dynamic(0xFAF9F5, 0x141413)
+
+    static var border: Color {
+        adaptive(0x141413, alpha: 0.1, darkHex: 0xFAF9F5, darkAlpha: 0.14)
+    }
+
+    static var iconMuted: Color {
+        adaptive(0xD97757, alpha: 0.12, darkHex: 0xD97757, darkAlpha: 0.22)
+    }
+
+    private static func dynamic(_ light: UInt32, _ dark: UInt32) -> Color {
+        Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(hex: dark) : UIColor(hex: light) })
+    }
+
+    private static func adaptive(_ light: UInt32, alpha: Double, darkHex: UInt32, darkAlpha: Double) -> Color {
+        Color(UIColor { trait in
+            trait.userInterfaceStyle == .dark
+                ? UIColor(hex: darkHex, alpha: darkAlpha)
+                : UIColor(hex: light, alpha: alpha)
+        })
+    }
+}
+
+private extension UIColor {
+    convenience init(hex: UInt32, alpha: Double = 1) {
+        self.init(
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255,
+            alpha: alpha
+        )
+    }
+}
+
 /// New-session sheet: three tabs (On-Device / Claude / Codex) behind a
 /// native segmented control, bottom sheet with medium/large detents.
-/// Codex is disabled until the bridge-side Codex path lands.
+/// Codex shows a "coming soon" placeholder and cannot start a session,
+/// but the tab stays selectable so users can always switch back.
 struct RemoteNewSessionSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @ObservedObject private var providerStore = ProviderConfigStore.shared
+    enum Tab: Int {
+        case onDevice, claude, codex
+    }
 
-    @State private var tab: Int = 0
+    @Environment(\.dismiss) private var dismiss
+    @State private var tab: Tab
     @State private var claudeOptions: ClaudeSessionOptions
 
     private let onStart: (RemoteNewSessionResult) -> Void
@@ -53,116 +102,97 @@ struct RemoteNewSessionSheet: View {
             forkSession: saved.forkSession,
             persistSession: saved.persistSession
         ))
-        _tab = State(initialValue: saved.provider == "codex" ? 2 : (saved.provider == "claude" ? 1 : 0))
+        let initialTab: Tab
+        switch saved.provider {
+        case "codex": initialTab = .codex
+        case "claude": initialTab = .claude
+        default: initialTab = .onDevice
+        }
+        _tab = State(initialValue: initialTab)
     }
 
     private var canStart: Bool {
         switch tab {
-        case 0: return true
-        case 1: return !claudeOptions.projectPath.isEmpty
-        default: return false
+        case .onDevice: true
+        case .claude: !claudeOptions.projectPath.isEmpty
+        case .codex: false
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Drag handle
-            Capsule()
-                .fill(Color(UIColor.tertiaryLabel))
-                .frame(width: 36, height: 5)
-                .padding(.top, 10)
-                .padding(.bottom, 8)
-
             Picker("", selection: $tab) {
-                Text("On-Device").tag(0)
-                Text("Claude").tag(1)
-                Text("Codex").tag(2)
+                Text("On-Device").tag(Tab.onDevice)
+                Text("Claude").tag(Tab.claude)
+                Text("Codex").tag(Tab.codex)
             }
             .pickerStyle(.segmented)
-            .disabled(tab == 2)
             .padding(.horizontal, 20)
+            .padding(.top, 6)
             .padding(.bottom, 12)
 
-            Divider()
+            Divider().overlay(ClaudePalette.border)
 
             ScrollView {
                 switch tab {
-                case 0: onDeviceTab
-                case 1: RemoteClaudeOptionsForm(options: $claudeOptions)
-                default: codexTab
+                case .onDevice: OnDevicePlaceholder()
+                case .claude: RemoteClaudeOptionsForm(options: $claudeOptions)
+                case .codex: CodexPlaceholder()
                 }
             }
 
-            Divider()
+            Divider().overlay(ClaudePalette.border)
 
-            // Bottom actions
-            HStack(spacing: 12) {
-                Button("Cancel") { dismiss() }
-                    .buttonStyle(.bordered)
-                Button {
-                    start()
-                } label: {
-                    Text(startLabel)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!canStart)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
+            bottomBar
         }
-        .background(Color(.systemGroupedBackground))
+        .presentationBackground(ClaudePalette.background)
         .presentationDetents([.medium, .large])
     }
 
     private var startLabel: String {
         switch tab {
-        case 0: return "Start On-Device"
-        case 1: return "Start with Claude"
-        default: return "Start"
+        case .onDevice: String(localized: "Start On-Device")
+        case .claude: String(localized: "Start with Claude")
+        case .codex: String(localized: "Start")
         }
     }
 
-    private var onDeviceTab: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "iphone")
-                .font(.system(size: 40))
-                .foregroundStyle(.tint)
-                .padding(.top, 32)
-            Text("On-Device Agent")
-                .font(.title3.bold())
-            Text("Runs right on this phone. Zero setup, your data stays on-device.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-        }
-        .frame(maxWidth: .infinity)
-    }
+    private var bottomBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                dismiss()
+            } label: {
+                Text("Cancel")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(ClaudePalette.textPrimary)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 14)
+                    .background(Capsule().strokeBorder(ClaudePalette.border, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
 
-    private var codexTab: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "hammer")
-                .font(.system(size: 36))
-                .foregroundStyle(.tertiary)
-                .padding(.top, 48)
-            Text("Codex")
-                .font(.title3.bold())
-                .foregroundStyle(.secondary)
-            Text("Coming soon")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
+            Button(action: start) {
+                Text(startLabel)
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+            }
+            .foregroundStyle(canStart ? ClaudePalette.ctaForeground : ClaudePalette.textSecondary)
+            .background(Capsule().fill(canStart ? ClaudePalette.ctaBackground : ClaudePalette.border))
+            .disabled(!canStart)
+            .buttonStyle(.plain)
         }
-        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
     }
 
     private func start() {
         switch tab {
-        case 0:
+        case .onDevice:
             dismiss()
             onStart(.onDevice)
-        case 1:
+        case .claude:
             var opts = claudeOptions
             opts.projectPath = opts.projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
             // Persist defaults (official: saved after each start).
@@ -181,8 +211,58 @@ struct RemoteNewSessionSheet: View {
             ))
             dismiss()
             onStart(.claude(opts))
-        default:
+        case .codex:
             break
         }
+    }
+}
+
+/// On-device tab hero: the local agent needs no configuration.
+private struct OnDevicePlaceholder: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            emblem
+            Text("On-Device Agent")
+                .font(.title3.bold())
+                .foregroundStyle(ClaudePalette.textPrimary)
+            Text("Runs right on this phone. Zero setup, your data stays on-device.")
+                .font(.subheadline)
+                .foregroundStyle(ClaudePalette.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 52)
+        .padding(.bottom, 24)
+    }
+
+    private var emblem: some View {
+        Image(systemName: "iphone")
+            .font(.system(size: 30, weight: .medium))
+            .foregroundStyle(ClaudePalette.accent)
+            .frame(width: 64, height: 64)
+            .background(Circle().fill(ClaudePalette.iconMuted))
+    }
+}
+
+/// Codex tab placeholder: the bridge-side Codex path has not landed yet.
+private struct CodexPlaceholder: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "hammer")
+                .font(.system(size: 26, weight: .medium))
+                .foregroundStyle(ClaudePalette.textSecondary)
+                .frame(width: 64, height: 64)
+                .background(Circle().fill(ClaudePalette.border))
+            Text("Codex")
+                .font(.title3.bold())
+                .foregroundStyle(ClaudePalette.textPrimary)
+            Text("Coming soon")
+                .font(.subheadline)
+                .foregroundStyle(ClaudePalette.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 52)
+        .padding(.bottom, 24)
     }
 }

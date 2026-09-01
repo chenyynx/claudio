@@ -1,15 +1,9 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "" : {
-
-    },
-    "—" : {
-
-    },
-    "." : {
-
-    },
+    "" : {},
+    "—" : {},
+    "." : {},
     "… %lld chars …" : {
       "comment" : "Compact voice buffered char count",
       "localizations" : {
@@ -63,9 +57,7 @@
         }
       }
     },
-    "·" : {
-
-    },
+    "·" : {},
     "· Migration backlog" : {
       "localizations" : {
         "en" : {
@@ -115,9 +107,7 @@
         }
       }
     },
-    "“%@” already exists" : {
-
-    },
+    "“%@” already exists" : {},
     "\"%@\" already has a value. Replace it with \"%@\"?" : {
       "localizations" : {
         "de" : {
@@ -326,9 +316,7 @@
         }
       }
     },
-    "(%@)" : {
-
-    },
+    "(%@)" : {},
     "(empty reply)" : {
       "localizations" : {
         "en" : {
@@ -361,12 +349,8 @@
         }
       }
     },
-    "/" : {
-
-    },
-    "/%@" : {
-
-    },
+    "/" : {},
+    "/%@" : {},
     "/var/minis/mounts/%@" : {
       "localizations" : {
         "de" : {
@@ -488,9 +472,7 @@
         }
       }
     },
-    "%@" : {
-
-    },
+    "%@" : {},
     "%@\n%@ → %@" : {
       "localizations" : {
         "en" : {
@@ -1118,9 +1100,7 @@
         }
       }
     },
-    "%lld" : {
-
-    },
+    "%lld" : {},
     "%lld / %lld" : {
       "localizations" : {
         "de" : {
@@ -2455,9 +2435,7 @@
         }
       }
     },
-    "%lld%%" : {
-
-    },
+    "%lld%%" : {},
     "%lld×%lld" : {
       "localizations" : {
         "en" : {
@@ -2468,9 +2446,7 @@
         }
       }
     },
-    "%lldK" : {
-
-    },
+    "%lldK" : {},
     "%lldms" : {
       "localizations" : {
         "de" : {
@@ -2523,9 +2499,7 @@
         }
       }
     },
-    "•" : {
-
-    },
+    "•" : {},
     "• Reset: Delete everything\n• Backup: Save /root directory\n• Restore: Recover saved data" : {
       "localizations" : {
         "de" : {
@@ -2630,9 +2604,7 @@
         }
       }
     },
-    "×" : {
-
-    },
+    "×" : {},
     "<1 min" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2719,9 +2691,7 @@
         }
       }
     },
-    "⚠️ %@" : {
-
-    },
+    "⚠️ %@" : {},
     "⚠️ Live sync warning: this is a V2 zone that this device may currently be writing to. Any in-flight backup, new chat data, or attachment upload could fail or appear corrupted on this device and its peers until the next full sync rebuilds state." : {
       "localizations" : {
         "de" : {
@@ -3087,9 +3057,7 @@
         }
       }
     },
-    "$$%@" : {
-
-    },
+    "$$%@" : {},
     "0 chars" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3227,9 +3195,7 @@
         }
       }
     },
-    "1 MB" : {
-
-    },
+    "1 MB" : {},
     "1 minute" : {
       "localizations" : {
         "de" : {
@@ -3386,15 +3352,9 @@
         }
       }
     },
-    "1. Open the verification page\n2. Enter this code to authorize Minis" : {
-
-    },
-    "4 MB" : {
-
-    },
-    "5 MB" : {
-
-    },
+    "1. Open the verification page\n2. Enter this code to authorize Minis" : {},
+    "4 MB" : {},
+    "5 MB" : {},
     "5 minutes" : {
       "localizations" : {
         "de" : {
@@ -3447,9 +3407,7 @@
         }
       }
     },
-    "10 MB" : {
-
-    },
+    "10 MB" : {},
     "10 minutes" : {
       "localizations" : {
         "de" : {
@@ -3554,9 +3512,7 @@
         }
       }
     },
-    "16 MB" : {
-
-    },
+    "16 MB" : {},
     "30 seconds" : {
       "localizations" : {
         "de" : {
@@ -3612,12 +3568,8 @@
     "32K" : {
       "extractionState" : "manual"
     },
-    "50 MB" : {
-
-    },
-    "64 MB" : {
-
-    },
+    "50 MB" : {},
+    "64 MB" : {},
     "64K" : {
       "extractionState" : "manual"
     },
@@ -3627,27 +3579,17 @@
     "200K" : {
       "extractionState" : "manual"
     },
-    "256 KB" : {
-
-    },
+    "256 KB" : {},
     "256K" : {
       "extractionState" : "manual"
     },
     "400K" : {
       "extractionState" : "manual"
     },
-    "512 KB" : {
-
-    },
-    "128000" : {
-
-    },
-    "A" : {
-
-    },
-    "A group named “%@” already exists. Choose a different name, or move this group's chats into it." : {
-
-    },
+    "512 KB" : {},
+    "128000" : {},
+    "A" : {},
+    "A group named “%@” already exists. Choose a different name, or move this group's chats into it." : {},
     "A mount with this name already exists." : {
       "localizations" : {
         "de" : {
@@ -7074,9 +7016,7 @@
         }
       }
     },
-    "An http(s) Redirect URI must use localhost, e.g. %@." : {
-
-    },
+    "An http(s) Redirect URI must use localhost, e.g. %@." : {},
     "An unknown error occurred while deleting iCloud data." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -8139,9 +8079,7 @@
         }
       }
     },
-    "Arguments truncated in transit — result may be incomplete" : {
-
-    },
+    "Arguments truncated in transit — result may be incomplete" : {},
     "Ascending" : {
       "localizations" : {
         "de" : {
@@ -8471,9 +8409,7 @@
         }
       }
     },
-    "audio" : {
-
-    },
+    "audio" : {},
     "Audio" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -8925,24 +8861,12 @@
         }
       }
     },
-    "Authorization" : {
-
-    },
-    "Authorization Endpoint (https://…/authorize)" : {
-
-    },
-    "Authorization Endpoint must be a valid https URL." : {
-
-    },
-    "Authorization failed: %@" : {
-
-    },
-    "Authorization was cancelled." : {
-
-    },
-    "Authorize…" : {
-
-    },
+    "Authorization" : {},
+    "Authorization Endpoint (https://…/authorize)" : {},
+    "Authorization Endpoint must be a valid https URL." : {},
+    "Authorization failed: %@" : {},
+    "Authorization was cancelled." : {},
+    "Authorize…" : {},
     "Authorized" : {
       "localizations" : {
         "de" : {
@@ -9739,9 +9663,7 @@
         }
       }
     },
-    "Backfilling pre-v2 history into v2's shared zone. Already-uploaded records stay on iCloud if you cancel.\n\nIf migration is stuck and retrying doesn't help, Reset Migration Progress clears the local progress so it can start over. Your iCloud data is not deleted." : {
-
-    },
+    "Backfilling pre-v2 history into v2's shared zone. Already-uploaded records stay on iCloud if you cancel.\n\nIf migration is stuck and retrying doesn't help, Reset Migration Progress clears the local progress so it can start over. Your iCloud data is not deleted." : {},
     "Background" : {
       "localizations" : {
         "de" : {
@@ -10408,9 +10330,7 @@
         }
       }
     },
-    "Blocked: arguments were truncated in transit" : {
-
-    },
+    "Blocked: arguments were truncated in transit" : {},
     "Boolean toggle" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -14240,18 +14160,10 @@
         }
       }
     },
-    "Clears this device's migration progress so it can start over — the phase, the pushed-record ledger and the backfill position.\n\nYour iCloud data is NOT deleted and the v1 zone is untouched. Records already uploaded may be re-sent, which iCloud absorbs harmlessly. Use this when migration is stuck and retrying doesn't help." : {
-
-    },
-    "Client ID" : {
-
-    },
-    "Client ID is required." : {
-
-    },
-    "Client Secret (optional)" : {
-
-    },
+    "Clears this device's migration progress so it can start over — the phase, the pushed-record ledger and the backfill position.\n\nYour iCloud data is NOT deleted and the v1 zone is untouched. Records already uploaded may be re-sent, which iCloud absorbs harmlessly. Use this when migration is stuck and retrying doesn't help." : {},
+    "Client ID" : {},
+    "Client ID is required." : {},
+    "Client Secret (optional)" : {},
     "Clipboard" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -15757,9 +15669,7 @@
         }
       }
     },
-    "Contacting Kimi…" : {
-
-    },
+    "Contacting Kimi…" : {},
     "Contacts" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -18038,9 +17948,7 @@
         }
       }
     },
-    "Could not build the authorization URL." : {
-
-    },
+    "Could not build the authorization URL." : {},
     "Could not import this provider configuration." : {
       "localizations" : {
         "de" : {
@@ -18145,9 +18053,7 @@
         }
       }
     },
-    "Could not present the authorization page." : {
-
-    },
+    "Could not present the authorization page." : {},
     "Could not read file" : {
       "localizations" : {
         "de" : {
@@ -26972,9 +26878,7 @@
         }
       }
     },
-    "FB" : {
-
-    },
+    "FB" : {},
     "Feedback" : {
       "localizations" : {
         "de" : {
@@ -31315,12 +31219,8 @@
         }
       }
     },
-    "HTTP" : {
-
-    },
-    "https://…" : {
-
-    },
+    "HTTP" : {},
+    "https://…" : {},
     "I Understand & Agree" : {
       "localizations" : {
         "de" : {
@@ -32022,9 +31922,7 @@
         }
       }
     },
-    "image" : {
-
-    },
+    "image" : {},
     "Image" : {
       "localizations" : {
         "en" : {
@@ -34614,9 +34512,7 @@
         }
       }
     },
-    "Keep Current Progress" : {
-
-    },
+    "Keep Current Progress" : {},
     "Keep Editing" : {
       "localizations" : {
         "de" : {
@@ -34931,9 +34827,7 @@
         }
       }
     },
-    "Kimi Code Login" : {
-
-    },
+    "Kimi Code Login" : {},
     "Kind" : {
       "localizations" : {
         "de" : {
@@ -35606,9 +35500,7 @@
         }
       }
     },
-    "LB" : {
-
-    },
+    "LB" : {},
     "Leave Context Window empty to use auto-detected value. Leave Max Output Tokens empty to follow the provider default." : {
       "localizations" : {
         "de" : {
@@ -46791,9 +46683,7 @@
         }
       }
     },
-    "Not authorized" : {
-
-    },
+    "Not authorized" : {},
     "not installed" : {
       "comment" : "voice pack not downloaded"
     },
@@ -47320,9 +47210,7 @@
         }
       }
     },
-    "npx" : {
-
-    },
+    "npx" : {},
     "OAuth" : {
       "localizations" : {
         "de" : {
@@ -47704,9 +47592,7 @@
         }
       }
     },
-    "On" : {
-
-    },
+    "On" : {},
     "On it — opening Minis." : {
       "localizations" : {
         "de" : {
@@ -48331,9 +48217,7 @@
         }
       }
     },
-    "Open verification page" : {
-
-    },
+    "Open verification page" : {},
     "OpenAI / Compatible API" : {
       "localizations" : {
         "de" : {
@@ -50214,9 +50098,7 @@
         }
       }
     },
-    "Paused — reopen Minis to continue" : {
-
-    },
+    "Paused — reopen Minis to continue" : {},
     "PDF input" : {
       "localizations" : {
         "de" : {
@@ -53498,9 +53380,7 @@
         }
       }
     },
-    "Re-authorize" : {
-
-    },
+    "Re-authorize" : {},
     "Re-import from File…" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -54909,9 +54789,7 @@
         }
       }
     },
-    "Redirect URI is invalid." : {
-
-    },
+    "Redirect URI is invalid." : {},
     "Refresh" : {
       "localizations" : {
         "de" : {
@@ -55016,9 +54894,7 @@
         }
       }
     },
-    "Refresh Tools" : {
-
-    },
+    "Refresh Tools" : {},
     "Regenerate Title" : {
       "localizations" : {
         "de" : {
@@ -57022,12 +56898,8 @@
         }
       }
     },
-    "Reset Migration Progress" : {
-
-    },
-    "Reset Migration Progress?" : {
-
-    },
+    "Reset Migration Progress" : {},
+    "Reset Migration Progress?" : {},
     "Reset Model Settings" : {
       "localizations" : {
         "de" : {
@@ -57080,9 +56952,7 @@
         }
       }
     },
-    "Reset Progress" : {
-
-    },
+    "Reset Progress" : {},
     "Reset Rootfs" : {
       "localizations" : {
         "de" : {
@@ -59656,9 +59526,7 @@
         }
       }
     },
-    "Run ${task} in Minis" : {
-
-    },
+    "Run ${task} in Minis" : {},
     "Run a quick test matching this model's main capability." : {
       "localizations" : {
         "de" : {
@@ -60603,9 +60471,7 @@
         }
       }
     },
-    "Scopes (space-separated)" : {
-
-    },
+    "Scopes (space-separated)" : {},
     "Screenshot" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -61494,12 +61360,8 @@
         }
       }
     },
-    "Send ${prompt} to ${session}" : {
-
-    },
-    "Send ${prompt} to Minis" : {
-
-    },
+    "Send ${prompt} to ${session}" : {},
+    "Send ${prompt} to Minis" : {},
     "Send a value when thinking is off" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -64532,9 +64394,7 @@
         }
       }
     },
-    "Sign in with Kimi Code" : {
-
-    },
+    "Sign in with Kimi Code" : {},
     "Sign in with OpenAI" : {
       "localizations" : {
         "de" : {
@@ -64687,12 +64547,8 @@
         }
       }
     },
-    "Sign in with your Kimi Code / Coding Plan subscription" : {
-
-    },
-    "Sign in with your Kimi Code / Coding Plan subscription." : {
-
-    },
+    "Sign in with your Kimi Code / Coding Plan subscription" : {},
+    "Sign in with your Kimi Code / Coding Plan subscription." : {},
     "Sign in with your OpenRouter account" : {
       "localizations" : {
         "en" : {
@@ -64777,9 +64633,7 @@
         }
       }
     },
-    "Signed in to Kimi Code" : {
-
-    },
+    "Signed in to Kimi Code" : {},
     "Size" : {
       "localizations" : {
         "de" : {
@@ -66447,9 +66301,7 @@
         }
       }
     },
-    "Standard OAuth Authorization Code + PKCE with your own app credentials. Register %@ as the Redirect URI in your OAuth client (Google: create a \"Web application\" or \"Desktop\" client — localhost redirects are accepted). Client Secret and tokens are stored in the device Keychain only — they never sync to iCloud, so other devices authorize separately." : {
-
-    },
+    "Standard OAuth Authorization Code + PKCE with your own app credentials. Register %@ as the Redirect URI in your OAuth client (Google: create a \"Web application\" or \"Desktop\" client — localhost redirects are accepted). Client Secret and tokens are stored in the device Keychain only — they never sync to iCloud, so other devices authorize separately." : {},
     "Standard OpenAI Chat Completions shape." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -66826,9 +66678,7 @@
         }
       }
     },
-    "State mismatch in the OAuth callback." : {
-
-    },
+    "State mismatch in the OAuth callback." : {},
     "Status" : {
       "localizations" : {
         "de" : {
@@ -66881,9 +66731,7 @@
         }
       }
     },
-    "STDIO" : {
-
-    },
+    "STDIO" : {},
     "Steps, heart rate, sleep, and other health records" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -70935,9 +70783,7 @@
         }
       }
     },
-    "The terminal engine isn't running yet. Open a chat or the terminal once, then retry." : {
-
-    },
+    "The terminal engine isn't running yet. Open a chat or the terminal once, then retry." : {},
     "The terminal shows a QR code. Scan it with the button below." : {
       "localizations" : {
         "en" : {
@@ -74292,18 +74138,10 @@
         }
       }
     },
-    "Token Endpoint (https://…/token)" : {
-
-    },
-    "Token Endpoint must be a valid https URL." : {
-
-    },
-    "Token endpoint returned no access_token." : {
-
-    },
-    "Token exchange failed: %@" : {
-
-    },
+    "Token Endpoint (https://…/token)" : {},
+    "Token Endpoint must be a valid https URL." : {},
+    "Token endpoint returned no access_token." : {},
+    "Token exchange failed: %@" : {},
     "Token Usage" : {
       "localizations" : {
         "de" : {
@@ -74599,9 +74437,7 @@
         }
       }
     },
-    "Tools" : {
-
-    },
+    "Tools" : {},
     "Total Input (incl. Cache)" : {
       "localizations" : {
         "de" : {
@@ -75501,9 +75337,7 @@
         }
       }
     },
-    "Unexpected CLI output (no JSON result). Check the server's connectivity." : {
-
-    },
+    "Unexpected CLI output (no JSON result). Check the server's connectivity." : {},
     "Unknown" : {
       "comment" : "Location permission status",
       "localizations" : {
@@ -77476,9 +77310,7 @@
         }
       }
     },
-    "v%@" : {
-
-    },
+    "v%@" : {},
     "v1 records are deleted in batches of 100 as their v2 counterparts are confirmed saved, so iCloud usage doesn't double-up during migration." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -78173,9 +78005,7 @@
         }
       }
     },
-    "video" : {
-
-    },
+    "video" : {},
     "wss://your-computer:8766" : {
       "localizations" : {
         "en" : {
@@ -79203,9 +79033,7 @@
         }
       }
     },
-    "Waiting for authorization…" : {
-
-    },
+    "Waiting for authorization…" : {},
     "Waiting for other tasks to complete..." : {
       "localizations" : {
         "de" : {
@@ -82067,6 +81895,70 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "設置鬧鐘"
+          }
+        }
+      }
+    },
+    "Options" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Options"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选项"
+          }
+        }
+      }
+    },
+    "Worktree" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Worktree"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Worktree"
+          }
+        }
+      }
+    },
+    "Codex" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codex"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codex"
+          }
+        }
+      }
+    },
+    "Remote Session" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remote Session"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "远端会话"
           }
         }
       }

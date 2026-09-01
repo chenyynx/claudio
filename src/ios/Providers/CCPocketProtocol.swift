@@ -123,6 +123,12 @@ enum CCPocketProtocol {
         var sessionId: String
     }
 
+    /// [Session sync] Request the Bridge's recent-session index
+    /// (sessions-index.json — includes sessions from other clients).
+    struct ListSessionsRequest: Encodable {
+        let type = "list_sessions"
+    }
+
     // MARK: - Server -> Client (lenient parse)
 
     /// Raw server message. Decoded with all-optional fields so unknown
@@ -136,6 +142,24 @@ enum CCPocketProtocol {
         let claudeSessionId: String?
         let projectPath: String?
         let status: String?
+        // [Session sync] Rich fields, all optional so older bridges never
+        // break the lenient parse. Live broadcast entries (SessionInfo)
+        // carry id/claudeSessionId/name/lastActivityAt...; recent-index
+        // entries (sessions-index.json) carry sessionId (the provider
+        // session id — the Claude session id for Claude), summary,
+        // firstPrompt/lastPrompt, created/modified.
+        let name: String?
+        let provider: String?
+        let lastMessage: String?
+        let lastActivityAt: String?
+        let createdAt: String?
+        let sessionId: String?
+        let summary: String?
+        let firstPrompt: String?
+        let lastPrompt: String?
+        let created: String?
+        let modified: String?
+        let isSidechain: Bool?
     }
 
     struct ServerMessage: Decodable {

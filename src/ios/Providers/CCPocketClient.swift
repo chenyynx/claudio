@@ -152,6 +152,10 @@ final class CCPocketClient: @unchecked Sendable {
     /// never see replay traffic).
     private var historyWaiter: CheckedContinuation<CCPocketProtocol.ServerMessage?, Never>?
 
+    /// [Session sync] Pending continuation for a `recent_sessions` reply
+    /// (mirror of the history waiter — request/response, never broadcast).
+    private var recentWaiter: CheckedContinuation<[CCPocketProtocol.ServerSession]?, Never>?
+
     /// Last `session_list` payload from the Bridge (sent on every
     /// connection). Used for cold-start reuse: our persisted bridge session
     /// id is present in this list iff its SDK process is still resident on
@@ -569,6 +573,16 @@ final class CCPocketClient: @unchecked Sendable {
             return
         }
 
+        // [Session sync] `recent_sessions` reply — resume the inventory
+        // waiter (mirror of the history fetch pattern; never broadcast).
+        if message.type == "recent_sessions" {
+            if let w = recentWaiter {
+                recentWaiter = nil
+                w.resume(returning: message.sessions)
+            }
+            return
+        }
+
         onMessage?(message)
     }
 
@@ -641,6 +655,14 @@ final class CCPocketClient: @unchecked Sendable {
         // closure) per project Swift rules.
         if let sessions = message.sessions {
             knownBridgeSessions = sessions
+            // [Session sync] Full live entries → registry inventory so the
+            // sidebar can merge remote-only rows (broadcast is idempotent).
+            if let instanceID = mappingInstanceID {
+                let entries = sessions.compactMap { Self.remoteInventoryEntry(from: $0, isLive: true) }
+                Task { @MainActor in
+                    BridgeSessionRegistry.shared.setLive(instanceID: instanceID, entries: entries)
+                }
+            }
             // [Running dot] The Bridge broadcasts the same global
             // session_list to every connection; surface it to the sidebar
             // registry so remote rows can draw their green/grey dot.
@@ -826,6 +848,142 @@ final class CCPocketClient: @unchecked Sendable {
     /// conversation, without a live client (used by the session-list
     /// running dot). Instance-path legacy fallback lives in
     /// `loadPersistedBridgeId` below; the dot only needs the per-chat key.
+    // MARK: - [Session sync] Remote inventory
+
+    /// Map one wire session entry to a registry inventory entry. Live
+    /// broadcast entries (SessionInfo) carry claudeSessionId; recent-index
+    /// entries (sessions-index.json) carry sessionId (the provider session
+    /// id — the Claude session id for Claude). Non-Claude providers and
+    /// sidechain entries are skipped: the resume path is Claude-only today.
+    static func remoteInventoryEntry(from s: CCPocketProtocol.ServerSession, isLive: Bool) -> BridgeRemoteSessionEntry? {
+        if let provider = s.provider, provider != "claude" { return nil }
+        if s.isSidechain == true { return nil }
+        guard let claudeId = s.claudeSessionId ?? s.sessionId, claudeId.count > 8 else { return nil }
+        return BridgeRemoteSessionEntry(
+            bridgeId: isLive ? s.id : nil,
+            claudeId: claudeId,
+            name: s.name,
+            preview: s.lastMessage ?? s.summary ?? s.lastPrompt ?? s.firstPrompt,
+            projectPath: s.projectPath,
+            updatedAt: parseBridgeDate(s.lastActivityAt)
+                ?? parseBridgeDate(s.modified)
+                ?? parseBridgeDate(s.createdAt)
+                ?? parseBridgeDate(s.created),
+            isLive: isLive
+        )
+    }
+
+    private static let isoFormatter = ISO8601DateFormatter()
+    private static let isoFractionalFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static func parseBridgeDate(_ raw: String?) -> Date? {
+        guard let raw, !raw.isEmpty else { return nil }
+        return isoFormatter.date(from: raw) ?? isoFractionalFormatter.date(from: raw)
+    }
+
+    /// Request the Bridge's recent-session index (`list_sessions` →
+    /// `recent_sessions`). The reply resumes the waiter and is NOT
+    /// forwarded to `onMessage` (mirror of the history fetch pattern).
+    func fetchRecentSessions(timeout: TimeInterval = 15) async -> [CCPocketProtocol.ServerSession]? {
+        guard task != nil else { return nil }
+        guard recentWaiter == nil else { return nil }
+        let req = CCPocketProtocol.ListSessionsRequest()
+        guard let payload = try? CCPocketProtocol.encode(req) else { return nil }
+        do {
+            try await send(payload, allowsReconnect: false)
+        } catch {
+            logger.warning("[CCPocket] list_sessions send failed \(error.localizedDescription)")
+            return nil
+        }
+        return await withCheckedContinuation { c in
+            recentWaiter = c
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(timeout))
+                guard let self else { return }
+                if let w = self.recentWaiter {
+                    self.recentWaiter = nil
+                    w.resume(returning: nil)
+                }
+            }
+        }
+    }
+
+    /// One-shot Bridge inventory refresh for the session list: connect,
+    /// pull `recent_sessions` (disk index — includes sessions started from
+    /// other clients), push into the registry, disconnect. No agent session
+    /// is started; safe to call repeatedly (registry merge is idempotent).
+    static func refreshBridgeInventory(instanceID: String) async {
+        guard let instance = ProviderConfigStore.shared.instances.first(where: {
+            $0.id == instanceID && $0.providerType == .remoteAgent && $0.isEnabled
+        }) else { return }
+        guard let urlString = instance.effectiveCustomBaseURL,
+              let baseURL = URL(string: urlString) else { return }
+        let token = ProviderKeychainHelper.loadAPIKey(instanceId: instanceID) ?? ""
+        let projectPath = RemoteAgentConnection.load(instanceID: instanceID)?.projectPath ?? "/tmp"
+        let client = CCPocketClient(baseURL: baseURL, token: token)
+        client.mappingInstanceID = instanceID
+        do {
+            try await client.connect(projectPath: projectPath)
+            if let sessions = await client.fetchRecentSessions() {
+                let entries = sessions.compactMap { Self.remoteInventoryEntry(from: $0, isLive: false) }
+                await MainActor.run {
+                    BridgeSessionRegistry.shared.setRecent(instanceID: instanceID, entries: entries)
+                }
+            }
+            client.disconnect()
+        } catch {
+            client.disconnect()
+        }
+    }
+
+    /// [Session sync] Claude + Bridge ids already bound to a local chat row
+    /// for this instance (mapping enumeration) — the sidebar dedup key set.
+    static func boundRemoteIds(instanceID: String) -> (claudeIds: Set<String>, bridgeIds: Set<String>) {
+        let prefix = mappingKeyPrefix + instanceID + "."
+        var claudeIds: Set<String> = []
+        var bridgeIds: Set<String> = []
+        for key in UserDefaults.standard.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
+            guard let data = UserDefaults.standard.data(forKey: key),
+                  let mapping = try? JSONDecoder().decode(SessionMapping.self, from: data) else { continue }
+            if let claudeId = mapping.claudeId, claudeId.count > 8 {
+                claudeIds.insert(claudeId)
+            }
+            if let bridgeId = mapping.bridgeId, !bridgeId.isEmpty {
+                bridgeIds.insert(bridgeId)
+            }
+        }
+        return (claudeIds, bridgeIds)
+    }
+
+    /// [Session sync] Reverse lookup: the local chat row bound to this
+    /// Claude session id, if any.
+    static func boundChatSessionID(instanceID: String, claudeId: String) -> String? {
+        let prefix = mappingKeyPrefix + instanceID + "."
+        for key in UserDefaults.standard.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
+            guard let data = UserDefaults.standard.data(forKey: key),
+                  let mapping = try? JSONDecoder().decode(SessionMapping.self, from: data),
+                  mapping.claudeId == claudeId else { continue }
+            return String(key.dropFirst(prefix.count))
+        }
+        return nil
+    }
+
+    /// [Session sync] Write a mapping for a synthetic row being
+    /// materialized (the normal saveMapping path only runs on the live
+    /// client after a turn, which has not happened for these rows yet).
+    static func saveExplicitMapping(instanceID: String, chatSessionID: String, bridgeId: String?, claudeId: String, projectPath: String?) {
+        guard claudeId.count > 8 else { return }
+        let mapping = SessionMapping(bridgeId: bridgeId, claudeId: claudeId, projectPath: projectPath)
+        let key = mappingKeyPrefix + instanceID + "." + chatSessionID
+        if let data = try? JSONEncoder().encode(mapping) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
     static func persistedBridgeId(instanceID: String, chatSessionID: String?) -> String? {
         guard let chatSessionID else { return nil }
         let key = Self.mappingKeyPrefix + instanceID + "." + chatSessionID

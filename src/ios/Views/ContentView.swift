@@ -819,6 +819,96 @@ fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
     remoteAgentInstanceID(for: session) != nil
 }
 
+// MARK: - [Session sync] Remote-bridge synthetic rows
+
+private let remoteSyntheticIdPrefix = "rbrid."
+
+/// A synthetic list row for a Bridge session that has no local row yet
+/// (sessions started from other clients, e.g. the WeChat bridge).
+fileprivate func isSyntheticRemoteSession(_ session: ChatSession) -> Bool {
+    session.source == "remoteBridge" && session.id.hasPrefix(remoteSyntheticIdPrefix)
+}
+
+fileprivate func syntheticClaudeId(of session: ChatSession) -> String? {
+    guard isSyntheticRemoteSession(session) else { return nil }
+    let claudeId = String(session.id.dropFirst(remoteSyntheticIdPrefix.count))
+    return claudeId.isEmpty ? nil : claudeId
+}
+
+/// Merge local rows with Bridge-only sessions (live broadcast + recent
+/// index), skipping entries already bound to a local row (by Claude id).
+/// Synthetic rows carry the remote instance's model id so the existing
+/// `sessionIsRemote` resolution (model → entry → instance) marks them as
+/// remote for the ☁ badge / routing without a stored binding.
+@MainActor
+fileprivate func mergedWithRemoteRows(_ local: [ChatSession]) -> [ChatSession] {
+    let store = ProviderConfigStore.shared
+    guard let instance = store.instances.first(where: {
+        $0.providerType == .remoteAgent && $0.isEnabled
+    }), let entry = store.visibleEntries(for: instance.id).first else { return local }
+    let inventory = BridgeSessionRegistry.shared.inventoryByInstance[instance.id] ?? []
+    guard !inventory.isEmpty else { return local }
+    var seen = CCPocketClient.boundRemoteIds(instanceID: instance.id).claudeIds
+    var rows: [ChatSession] = []
+    for e in inventory {
+        guard !seen.contains(e.claudeId) else { continue }
+        seen.insert(e.claudeId)
+        let fallbackTitle = e.projectPath.map { ($0 as NSString).lastPathComponent }
+        let title = e.name
+            ?? e.preview.map { String($0.prefix(48)) }
+            ?? fallbackTitle
+            ?? String(localized: "Remote Session")
+        rows.append(ChatSession(
+            id: remoteSyntheticIdPrefix + e.claudeId,
+            title: title,
+            category: nil,
+            modelId: entry.model.id,
+            createdAt: e.updatedAt ?? .distantPast,
+            updatedAt: e.updatedAt ?? .distantPast,
+            lastMessage: e.preview,
+            source: "remoteBridge",
+            lastSyncedAt: nil,
+            remoteDeviceId: nil,
+            remoteDeviceName: nil,
+            pinnedAt: nil,
+            folderId: nil
+        ))
+    }
+    guard !rows.isEmpty else { return local }
+    return (local + rows).sorted { $0.updatedAt > $1.updatedAt }
+}
+
+/// Open a synthetic remote row: create the real ChatSession row, write the
+/// resume mapping (bridge id when live + Claude id), then hand back the
+/// real id. Idempotent — an already-materialized claudeId returns its row.
+@MainActor
+fileprivate func materializeSyntheticRemoteId(_ id: String) -> String {
+    guard id.hasPrefix(remoteSyntheticIdPrefix) else { return id }
+    let claudeId = String(id.dropFirst(remoteSyntheticIdPrefix.count))
+    let store = ProviderConfigStore.shared
+    guard let instance = store.instances.first(where: {
+        $0.providerType == .remoteAgent && $0.isEnabled
+    }), let entry = store.visibleEntries(for: instance.id).first else { return id }
+    if let existing = CCPocketClient.boundChatSessionID(instanceID: instance.id, claudeId: claudeId) {
+        return existing
+    }
+    let source = BridgeSessionRegistry.shared.inventoryByInstance[instance.id]?
+        .first { $0.claudeId == claudeId }
+    let created = ChatStore.shared.createSession(
+        modelId: entry.model.id,
+        title: source?.name ?? source?.preview.map { String($0.prefix(48)) },
+        source: "remoteBridge"
+    )
+    CCPocketClient.saveExplicitMapping(
+        instanceID: instance.id,
+        chatSessionID: created.id,
+        bridgeId: source?.bridgeId,
+        claudeId: claudeId,
+        projectPath: source?.projectPath
+    )
+    return created.id
+}
+
 #if DEBUG
 // TEMPORARY: SessionRow height probe to confirm List cell-height estimation
 // jitter. Logs each distinct measured row height once (deduped) so we know
@@ -1625,7 +1715,18 @@ struct ContentView: View {
             }
         }
         .task {
-            sessions = await ChatStore.shared.listSessions()
+            sessions = mergedWithRemoteRows(await ChatStore.shared.listSessions())
+            // [Session sync] Pull the Bridge's recent-session index so
+            // remote-only sessions appear in the list (live ones arrive via
+            // the session_list broadcast on any connection). Fire-and-forget:
+            // must not block the first-paint loads below.
+            if let instance = ProviderConfigStore.shared.instances.first(where: {
+                $0.providerType == .remoteAgent && $0.isEnabled
+            }) {
+                Task {
+                    await CCPocketClient.refreshBridgeInventory(instanceID: instance.id)
+                }
+            }
             // Folders must load WITH the first session batch: groupedSessionIDs
             // treats a folder_id whose folder isn't loaded as an orphan and
             // renders the session ungrouped, so a first paint with sessions
@@ -2038,6 +2139,11 @@ struct ContentView: View {
         // injection is not its cause), so per-column injection is safe here.
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sessionList(useNavigationLinks: false)
+                .onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
+                    Task { @MainActor in
+                        sessions = mergedWithRemoteRows(await ChatStore.shared.listSessions())
+                    }
+                }
                 .appFontScale()
         } detail: {
             detailView
@@ -2050,7 +2156,19 @@ struct ContentView: View {
     private var stackLayout: some View {
         NavigationStack(path: $navigationPath) {
             sessionList(useNavigationLinks: true)
-                .navigationDestination(for: String.self) { id in
+                .onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
+                    Task { @MainActor in
+                        sessions = mergedWithRemoteRows(await ChatStore.shared.listSessions())
+                    }
+                }
+                .navigationDestination(for: String.self) { incomingId in
+                    // [Session sync] Materialize synthetic remote rows on
+                    // open: create the real row + resume mapping, then
+                    // navigate to the real id (idempotent).
+                    let id = materializeSyntheticRemoteId(incomingId)
+                    if id != incomingId {
+                        Task { @MainActor in refreshSessionList() }
+                    }
                     // `.id(id)` mirrors detailView (iPad): navigationDestination
                     // views are identified by stack depth, not path value, so
                     // replacing the top element in place (menu "New Chat" swaps
@@ -2786,7 +2904,7 @@ struct ContentView: View {
                                 // [T-ios-crash-contextmenu-uaf] Value-only menu view,
                                 // no closure captures — see SessionContextMenu.
                                 SessionContextMenu(
-                                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session)),
+                                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session) && !isSyntheticRemoteSession(session)),
                                     actions: menuActions
                                 )
                                 .equatable()
@@ -2938,7 +3056,7 @@ struct ContentView: View {
                                         : session.id
                                     if let menuSid {
                                         SessionContextMenu(
-                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session)),
+                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session) && !isSyntheticRemoteSession(session)),
                                             actions: menuActions
                                         )
                                         .equatable()
@@ -3239,19 +3357,23 @@ struct ContentView: View {
                 // attached here gets torn down and re-created constantly and can
                 // drop a .soulMdChanged notification that arrives during the gap.
                 // This Text now only READS `soulName`.
-                let titleLabel = HStack(spacing: 2) {
-                    Text(soulName)
-                        .font(.system(size: 18.5, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    // [Connection dot] Remote-agent (Bridge) connection
-                    // indicator — green/connecting/grey, tap opens the
-                    // connection flow (setup or edit). Sheet state lives
-                    // on ContentView (toolbar principal rebuilds often).
-                    ConnectionStatusDot {
-                        showConnectionSheet = true
+                // [Connection dot] Remote-agent (Bridge) connection indicator —
+                // green/connecting/grey, tap opens the connection flow (setup
+                // or edit). Sheet state lives on ContentView (toolbar principal
+                // rebuilds often). [Title centering] The dot's 44pt tap frame in
+                // the old HStack widened the principal item, so SwiftUI centred
+                // the item and pushed the title off-centre; the dot now hangs
+                // off the Text as a trailing overlay (no layout footprint) and
+                // the title stays centred.
+                let titleLabel = Text(soulName)
+                    .font(.system(size: 18.5, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .overlay(alignment: .trailing) {
+                        ConnectionStatusDot {
+                            showConnectionSheet = true
+                        }
+                        .offset(x: 30, y: 1)
                     }
-                    .offset(y: 1)
-                }
                     .overlay(alignment: .leading) {
                         if canOpenSync {
                             Button {
@@ -4167,7 +4289,7 @@ struct ContentView: View {
         }
         sessionRefreshInFlight = true
         Task(priority: .utility) { @MainActor in
-            sessions = await ChatStore.shared.listSessions()
+            sessions = mergedWithRemoteRows(await ChatStore.shared.listSessions())
             folders = await ChatStore.shared.listFolders()
             sessionRefreshInFlight = false
             if sessionRefreshPending {
@@ -6410,16 +6532,22 @@ private struct SessionRow: View, Equatable {
     @ViewBuilder
     private var runningDot: some View {
         let instanceID = remoteAgentInstanceID(for: session)
-        let bridgeId = instanceID.flatMap {
-            CCPocketClient.persistedBridgeId(instanceID: $0, chatSessionID: session.id)
+        if let instanceID {
+            if let bridgeId = CCPocketClient.persistedBridgeId(instanceID: instanceID, chatSessionID: session.id) {
+                runningDotView(isActive: bridgeRegistry.isActive(instanceID: instanceID, bridgeId: bridgeId))
+            } else if let claudeId = syntheticClaudeId(of: session) {
+                // [Session sync] Synthetic remote rows resolve liveness
+                // through the inventory (no persisted mapping yet).
+                runningDotView(isActive: bridgeRegistry.isClaudeLive(instanceID: instanceID, claudeId: claudeId))
+            }
         }
-        if let instanceID, let bridgeId {
-            let isActive = bridgeRegistry.isActive(instanceID: instanceID, bridgeId: bridgeId)
-            Circle()
-                .fill(isActive ? Color.green : Color(UIColor.systemGray3))
-                .frame(width: 8, height: 8)
-                .accessibilityLabel(isActive ? "Running" : "Stopped")
-        }
+    }
+
+    private func runningDotView(isActive: Bool) -> some View {
+        Circle()
+            .fill(isActive ? Color.green : Color(UIColor.systemGray3))
+            .frame(width: 8, height: 8)
+            .accessibilityLabel(isActive ? "Running" : "Stopped")
     }
 
     /// The transient badge to render for this row, after suppressing states that

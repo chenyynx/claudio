@@ -21,20 +21,25 @@ struct ConnectionStatusDot: View {
 
     var body: some View {
         Button(action: onTap) {
+            // Cloud glyph (not a bare dot) — matches the ☁ remote-session
+            // badge language in the session list: filled = connected,
+            // outline = no live connection.
             Group {
                 switch connectionStore.status {
                 case .connecting:
                     ProgressView()
                         .controlSize(.mini)
                 case .connected:
-                    Circle()
-                        .fill(Color.green)
+                    Image(systemName: "cloud.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color(UIColor.systemGreen))
                 case .notConfigured, .disconnected:
-                    Circle()
-                        .fill(Color(UIColor.systemGray3))
+                    Image(systemName: "cloud")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color(UIColor.systemGray3))
                 }
             }
-            .frame(width: 10, height: 10)
+            .frame(width: 44, height: 44)
             // 44pt minimum tap target around the 10pt dot.
             .frame(width: 44, height: 44)
             .contentShape(Rectangle())
