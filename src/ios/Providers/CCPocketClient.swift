@@ -119,9 +119,16 @@ final class CCPocketClient: @unchecked Sendable {
         let sessionId: String?
         let clientMessageId: String
         let createdAt: Date
+        /// 离线队列重放时带上的图片 base64 数组（png/jpeg/gif/webp 内联）。
+        var images: [[String: String]]?
     }
     private var pendingInputs: [PendingInput] = []
     private let pendingLock = NSLock()
+
+    /// RPC continuation 等 file_upload_ready/error/complete 等 RPC 响应。
+    /// 按 requestId 关联；WS 接收循环在 decode 前拦截匹配的 requestId。
+    private var rpcWaiters: [String: CheckedContinuation<[String: Any], Error>] = [:]
+    private let rpcLock = NSLock()
     private static let pendingKeyPrefix = "ccpocket.pending.v1."
 
     /// Per-instance session mapping: bridge id + claude id for this
@@ -304,7 +311,7 @@ final class CCPocketClient: @unchecked Sendable {
 
     // MARK: - Sending
 
-    func sendInput(_ text: String, sessionId: String? = nil) async throws {
+    func sendInput(_ text: String, sessionId: String? = nil, images: [[String: String]]? = nil) async throws {
         // [Fix] Replay anything queued from an earlier dead socket first
         // (only when no turn is in flight — replaying mid-turn would make
         // the Bridge interrupt the running turn).
@@ -315,20 +322,42 @@ final class CCPocketClient: @unchecked Sendable {
         let input = CCPocketProtocol.InputRequest(
             text: text,
             sessionId: sessionId,
-            clientMessageId: clientMessageId
+            clientMessageId: clientMessageId,
+            images: images
         )
         do {
-            // [Fix] allowsReconnect: false — `send`'s retry would re-send the
-            // old encoded payload whose baked-in sessionId is dead after a
-            // reconnect. Fail fast; the offline queue replays with a fresh
-            // encoding once reconnected.
             try await send(CCPocketProtocol.encode(input), allowsReconnect: false)
         } catch {
-            // Socket died underneath us — queue the message; the reconnect
-            // flow replays it so the user's message is never lost.
             logger.warning("[CCPocket] sendInput failed, queuing (\(error.localizedDescription))")
-            enqueuePending(PendingInput(text: text, sessionId: sessionId, clientMessageId: clientMessageId, createdAt: Date.now))
+            enqueuePending(PendingInput(text: text, sessionId: sessionId, clientMessageId: clientMessageId, createdAt: Date.now, images: images))
             throw error
+        }
+    }
+
+    /// 发一个 RPC 请求（带 requestId）并等待对应响应。
+    /// 用于 prepare_file_upload / finalize_file_upload 等请求-响应消息。
+    /// 返回原始 JSON dict（含 uploadUrl/uploadToken/errorCode 等字段）。
+    func sendAndWaitRPC(_ payload: [String: Any]) async throws -> [String: Any] {
+        let requestId = (payload["requestId"] as? String) ?? UUID().uuidString
+        var req = payload
+        req["requestId"] = requestId
+        let json = try JSONSerialization.data(withJSONObject: req)
+        let str = String(data: json, encoding: .utf8) ?? "{}"
+        return try await withCheckedThrowingContinuation { cont in
+            rpcLock.lock()
+            rpcWaiters[requestId] = cont
+            rpcLock.unlock()
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.send(str, allowsReconnect: false)
+                } catch {
+                    self.rpcLock.lock()
+                    self.rpcWaiters.removeValue(forKey: requestId)
+                    self.rpcLock.unlock()
+                    cont.resume(throwing: error)
+                }
+            }
         }
     }
 
@@ -561,11 +590,45 @@ final class CCPocketClient: @unchecked Sendable {
                     let message = try await self.task?.receive()
                     switch message {
                     case .string(let text):
-                        if let data = text.data(using: .utf8),
-                           let serverMessage = CCPocketProtocol.decodeServerMessage(data) {
-                            self.handleIncoming(serverMessage)
+                        if let data = text.data(using: .utf8) {
+                            // RPC 响应拦截：有 requestId 且在 rpcWaiters 里 → resume + 跳过 handleIncoming
+                            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                               let reqId = json["requestId"] as? String {
+                                self.rpcLock.lock()
+                                let waiter = self.rpcWaiters.removeValue(forKey: reqId)
+                                self.rpcLock.unlock()
+                                if let waiter {
+                                    if json["type"] as? String == "error" {
+                                        let code = (json["errorCode"] as? String) ?? "rpc_error"
+                                        let msg = (json["message"] as? String) ?? "RPC error"
+                                        waiter.resume(throwing: RemoteUploadError(code: code, message: msg))
+                                    } else {
+                                        waiter.resume(returning: json)
+                                    }
+                                    continue
+                                }
+                            }
+                            if let serverMessage = CCPocketProtocol.decodeServerMessage(data) {
+                                self.handleIncoming(serverMessage)
+                            }
                         }
                     case .data(let data):
+                        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let reqId = json["requestId"] as? String {
+                            self.rpcLock.lock()
+                            let waiter = self.rpcWaiters.removeValue(forKey: reqId)
+                            self.rpcLock.unlock()
+                            if let waiter {
+                                if json["type"] as? String == "error" {
+                                    let code = (json["errorCode"] as? String) ?? "rpc_error"
+                                    let msg = (json["message"] as? String) ?? "RPC error"
+                                    waiter.resume(throwing: RemoteUploadError(code: code, message: msg))
+                                } else {
+                                    waiter.resume(returning: json)
+                                }
+                                continue
+                            }
+                        }
                         if let serverMessage = CCPocketProtocol.decodeServerMessage(data) {
                             self.handleIncoming(serverMessage)
                         }
@@ -824,6 +887,7 @@ final class CCPocketClient: @unchecked Sendable {
         for input in queued {
             let message = CCPocketProtocol.InputRequest(
                 text: input.text,
+                images: input.images,
                 sessionId: input.sessionId ?? sessionId,
                 clientMessageId: input.clientMessageId
             )

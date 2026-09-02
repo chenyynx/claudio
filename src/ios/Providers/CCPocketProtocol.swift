@@ -81,6 +81,8 @@ enum CCPocketProtocol {
         var text: String
         var sessionId: String?
         var clientMessageId: String?
+        /// Claude Code 内联图片 base64（png/jpeg/gif/webp）。nil = 不带图。
+        var images: [[String: String]]?
     }
 
     /// `resume_session` — restore a past agent session (official client flow).
