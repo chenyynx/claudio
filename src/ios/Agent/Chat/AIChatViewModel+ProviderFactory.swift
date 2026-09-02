@@ -639,23 +639,13 @@ extension AIChatViewModel {
             }
         }
 
-        // 3. Try default group — but never let a LOCAL (unbound) session land on
-        //    remoteAgent (Claude Code) via the default group. remoteAgent is
-        //    opt-in per-session: only the Claude tab binds/modelId it. The
-        //    default-group fallback is local-intent → exclude remote here so a
-        //    fresh on-device session can never leak into the cloud agent.
+        // 3. Try default group
         let resolveId = sessionId ?? "__resolve__"
         if let groupId = store.defaultPrimaryGroupId,
            let group = store.group(for: groupId),
-           let entryId = ModelGroupRouter.resolve(group: group, sessionId: resolveId, store: store),
-           let groupEntry = store.entry(for: entryId) {
-            let isRemote = store.instance(for: groupEntry.providerInstanceId)?.providerType == .remoteAgent
-            if isRemote {
-                logger.warning("🔀RESOLVE default group resolved to remoteAgent — excluded (local intent never routes to cloud)")
-            } else {
-                logger.info("🔀RESOLVE via default group=\(groupId) → entry=\(entryId)")
-                return groupEntry
-            }
+           let entryId = ModelGroupRouter.resolve(group: group, sessionId: resolveId, store: store) {
+            logger.info("🔀RESOLVE via default group=\(groupId) → entry=\(entryId)")
+            return store.entry(for: entryId)
         }
 
         // 4. No config — return nil

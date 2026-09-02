@@ -112,17 +112,8 @@ struct RemoteNewSessionSheet: View {
     init(onStart: @escaping (RemoteNewSessionResult) -> Void) {
         self.onStart = onStart
         let saved = RemoteSessionDefaultsStore.load()
-        // ① 项目路径默认预填：优先上次保存值；为空则取启用中远端实例最近一次
-        // 连接报告的工作目录（桥广播 projectPath），避免首次必须手填。
-        var prefillProjectPath = saved.projectPath
-        if prefillProjectPath.isEmpty {
-            let pstore = ProviderConfigStore.shared
-            if let inst = pstore.instances.first(where: { $0.providerType == .remoteAgent && $0.isEnabled }) {
-                prefillProjectPath = RemoteAgentConnection.load(instanceID: inst.id).projectPath
-            }
-        }
         _claudeOptions = State(initialValue: ClaudeSessionOptions(
-            projectPath: prefillProjectPath,
+            projectPath: saved.projectPath,
             permissionMode: saved.permissionMode,
             executionMode: saved.executionMode,
             planMode: saved.planMode,
@@ -145,7 +136,7 @@ struct RemoteNewSessionSheet: View {
     private var canStart: Bool {
         switch tab {
         case .onDevice: true
-        case .claude: true
+        case .claude: !claudeOptions.projectPath.isEmpty
         case .codex: false
         }
     }
@@ -177,7 +168,6 @@ struct RemoteNewSessionSheet: View {
             bottomBar
         }
         .background(ClaudePalette.background)
-        .onChange(of: claudeOptions) { saveClaudeDefaults($0) }
         .presentationDetents([.medium, .large])
     }
 
@@ -216,23 +206,6 @@ struct RemoteNewSessionSheet: View {
         .padding(.bottom, 6)
     }
 
-    /// ② 任何选项改动即持久化（关闭弹层/切 tab 也不丢，官方：saved after each start）。
-    private func saveClaudeDefaults(_ opts: ClaudeSessionOptions) {
-        RemoteSessionDefaultsStore.save(RemoteSessionDefaults(
-            projectPath: opts.projectPath,
-            provider: "claude",
-            permissionMode: opts.permissionMode,
-            executionMode: opts.executionMode,
-            planMode: opts.planMode,
-            model: opts.model,
-            effort: opts.effort,
-            fallbackModel: opts.fallbackModel,
-            forkSession: opts.forkSession,
-            persistSession: opts.persistSession,
-            sandboxMode: opts.sandboxMode
-        ))
-    }
-
     private func start() {
         switch tab {
         case .onDevice:
@@ -241,7 +214,20 @@ struct RemoteNewSessionSheet: View {
         case .claude:
             var opts = claudeOptions
             opts.projectPath = opts.projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            saveClaudeDefaults(opts)
+            // Persist defaults (official: saved after each start).
+            RemoteSessionDefaultsStore.save(RemoteSessionDefaults(
+                projectPath: opts.projectPath,
+                provider: "claude",
+                permissionMode: opts.permissionMode,
+                executionMode: opts.executionMode,
+                planMode: opts.planMode,
+                model: opts.model,
+                effort: opts.effort,
+                fallbackModel: opts.fallbackModel,
+                forkSession: opts.forkSession,
+                persistSession: opts.persistSession,
+                sandboxMode: opts.sandboxMode
+            ))
             dismiss()
             onStart(.claude(opts))
         case .codex:
