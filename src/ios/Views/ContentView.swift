@@ -1711,6 +1711,14 @@ struct ContentView: View {
                 handleNewSessionResult(result)
             }
         }
+        .alert("Can't Start Session", isPresented: Binding(
+            get: { sessionStartNotice != nil },
+            set: { if !$0 { sessionStartNotice = nil } }
+        )) {
+            Button("OK", role: .cancel) { sessionStartNotice = nil }
+        } message: {
+            Text(sessionStartNotice ?? "")
+        }
         .sheet(isPresented: $showAlarmList, onDismiss: { fetchAlarmsIfNeeded() }) {
             AlarmListView()
         }
@@ -3802,12 +3810,33 @@ struct ContentView: View {
     private func handleNewSessionResult(_ result: RemoteNewSessionResult) {
         switch result {
         case .onDevice:
-            openSession(Self.makeNewSessionId())
+            // 本机 agent 会话：显式绑定一个非 remoteAgent 的启用模型，绝不落
+            // 默认组拼到云端（Claude Code）。绝对隔离：远端只能经 Claude tab 进入。
+            let localEntry = providerStore.modelEntries.first(where: { entry in
+                guard !entry.isHidden,
+                      let inst = providerStore.instance(for: entry.providerInstanceId) else { return false }
+                return inst.providerType != .remoteAgent && inst.isEnabled
+            })
+            guard let localEntry else {
+                sessionStartNotice = NSLocalizedString("No local model configured — add a provider in Settings.", comment: "")
+                return
+            }
+            let onDeviceId = Self.makeNewSessionId()
+            Task { @MainActor in
+                await ChatStore.shared.updateSessionModelId(onDeviceId, modelId: localEntry.model.id)
+                openSession(onDeviceId)
+            }
         case .claude:
             guard let instance = providerStore.instances.first(where: {
                 $0.providerType == .remoteAgent && $0.isEnabled
-            }) else { return }
-            guard let entry = providerStore.visibleEntries(for: instance.id).first else { return }
+            }) else {
+                sessionStartNotice = NSLocalizedString("No enabled remote agent — connect one in Settings first.", comment: "")
+                return
+            }
+            guard let entry = providerStore.visibleEntries(for: instance.id).first else {
+                sessionStartNotice = NSLocalizedString("The remote agent has no models — configure a model first.", comment: "")
+                return
+            }
             let newId = Self.makeNewSessionId()
             Task { @MainActor in
                 await ChatStore.shared.updateSessionModelId(newId, modelId: entry.model.id)
@@ -4162,6 +4191,8 @@ struct ContentView: View {
     @State private var showConnectComputer = false
     @State private var showConnectionSheet = false
     @State private var showNewSessionSheet = false
+    /// ③ 会话启动失败时的用户可见提示（替代之前静默 return）。
+    @State private var sessionStartNotice: String?
 
     private var emptyState: some View {
         let hasProviders = !providerStore.instances.isEmpty
