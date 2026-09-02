@@ -614,16 +614,9 @@ struct ChatMessageRow: View {
                 }
         }
         .sheet(item: $detailBlock) { block in
-            if block.kind == .thinking {
-                ThinkingDetailSheetView(
-                    block: block,
-                    isStreamingProvider: { isActiveMessage && message.blocks.last?.id == block.id }
-                )
-            } else {
-                ToolLiveSheet(toolBlocks: message.blocks.filter { $0.toolStatus != nil },
-                              initialIdx: message.blocks.filter({ $0.toolStatus != nil }).firstIndex(where: { $0.id == block.id }) ?? 0,
-                              toolSnapshots: toolSnapshots, browserPool: browserPool)
-            }
+            ToolLiveSheet(toolBlocks: message.blocks.filter { $0.toolStatus != nil },
+                          initialIdx: message.blocks.filter({ $0.toolStatus != nil }).firstIndex(where: { $0.id == block.id }) ?? 0,
+                          toolSnapshots: toolSnapshots, browserPool: browserPool)
         }
     }
 

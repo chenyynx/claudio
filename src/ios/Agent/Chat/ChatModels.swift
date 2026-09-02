@@ -322,24 +322,6 @@ final class AssistantBlock: Identifiable, ObservableObject {
     /// be silently undone by a streaming sibling's recomposition.
     @Published var thinkingUserToggled: Bool = false
 
-    /// Wall-clock thinking duration (display only; in-memory like toolDuration —
-    /// not persisted, so blocks restored from history show "Thought" w/o seconds).
-    @Published var thinkingDuration: TimeInterval?
-    /// Timestamp when this thinking segment started streaming (internal, for
-    /// computing duration; set only on live-stream creation, not on reload).
-    var thinkingStartTime: Date?
-
-    /// Final flush + duration freeze when a thinking segment ends. Called from
-    /// the stream layer at contentBlockStart (.text/.toolUse) and at `.done`;
-    /// idempotent — duration is written once.
-    func finalizeThinking() {
-        guard kind == .thinking else { return }
-        flushThinkingBuffer()
-        if thinkingDuration == nil, let start = thinkingStartTime {
-            thinkingDuration = Date.now.timeIntervalSince(start)
-        }
-    }
-
     init(kind: AssistantBlockKind, content: String, toolStatus: ToolBlockStatus? = nil, toolUseId: String? = nil) {
         self.kind = kind
         self.content = content
