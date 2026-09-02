@@ -1019,7 +1019,23 @@ struct AIChatView: View {
             // so a pre-first-message toggle binds its override to the session
             // the chat will actually persist under, instead of the "" phantom
             // key (T-ios-session-skill-override-init-timing).
-            SessionSkillsView(sessionId: vm.sessionId) {
+            SessionSkillsView(
+                sessionId: vm.sessionId,
+                remoteSkills: isRemoteChatSession
+                    ? RemoteSkillRegistry.shared.skills(for: vm.resolveCurrentEntry()?.providerInstanceId ?? "")
+                    : nil,
+                onInsertSkill: { skillName in
+                    // 官方: 斜杠命令触发 — 把 /name 插入输入框
+                    let slash = "/\(skillName) "
+                    if vm.inputText.isEmpty {
+                        vm.inputText = slash
+                    } else {
+                        let needsSep = !(vm.inputText.hasSuffix(" ") || vm.inputText.hasSuffix("\n"))
+                        vm.inputText += (needsSep ? " " : "") + slash
+                    }
+                    showSessionSkills = false
+                }
+            ) {
                 await vm.ensureSessionReturningId()
             }
         }

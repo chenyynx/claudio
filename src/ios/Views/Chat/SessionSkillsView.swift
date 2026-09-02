@@ -17,6 +17,11 @@ struct SessionSkillsView: View {
     /// Called lazily on the first toggle so a pre-first-message override binds
     /// to the session the chat will actually use. Mirrors SessionModelPicker.
     var ensureSessionId: (() async -> String)?
+    /// 非 nil = 远端（Claude Code via bridge）会话 — 显示服务器 skills，
+    /// 与本地 SkillStore 隔离；nil = 本地会话，走本地 override 逻辑。
+    let remoteSkills: [RemoteSkill]?
+    /// 点击远端 skill 时把其 `/name` 插入输入框（官方：斜杠命令触发）。nil = 不可插入。
+    var onInsertSkill: ((String) -> Void)?
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var store = SkillStore.shared
     @State private var searchQuery = ""
@@ -25,8 +30,12 @@ struct SessionSkillsView: View {
     /// of the sheet stays consistent without re-creating the session.
     @State private var resolvedSessionId: String?
 
-    init(sessionId: String?, ensureSessionId: (() async -> String)? = nil) {
+    init(sessionId: String?, remoteSkills: [RemoteSkill]? = nil,
+         onInsertSkill: ((String) -> Void)? = nil,
+         ensureSessionId: (() async -> String)? = nil) {
         self.sessionId = sessionId
+        self.remoteSkills = remoteSkills
+        self.onInsertSkill = onInsertSkill
         self.ensureSessionId = ensureSessionId
         _resolvedSessionId = State(initialValue: sessionId)
     }
@@ -90,6 +99,9 @@ struct SessionSkillsView: View {
         let _ = store.sessionOverrideVersion
 
         NavigationStack {
+            if let remoteSkills {
+                remoteSkillsList(remoteSkills)
+            } else {
             List {
                 if store.skills.isEmpty {
                     Section {
@@ -152,7 +164,50 @@ struct SessionSkillsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            }
         }
+    }
+
+    @ViewBuilder
+    private func remoteSkillsList(_ skills: [RemoteSkill]) -> some View {
+        List {
+            Section(footer: Text("Skills on the remote Claude Code server. Tap to insert /name into the input — the server runs the skill when you send it. Kept separate from local skills.")) {
+                ForEach(skills) { skill in
+                    Button {
+                        onInsertSkill?(skill.name)
+                    } label: {
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(skill.name).font(.body)
+                                if !skill.description.isEmpty {
+                                    Text(skill.description)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                                Text(skill.scopeLabel)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.up.left")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                if skills.isEmpty {
+                    Text("No server skills reported yet.")
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                }
+            }
+        }
+        .navigationTitle("Server Skills")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

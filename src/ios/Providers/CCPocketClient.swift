@@ -660,6 +660,15 @@ final class CCPocketClient: @unchecked Sendable {
                 // Mark accepted so waitForBridgeSessionId extends its window.
                 resumeAccepted = true
                 logger.info("[CCPocket] session_resume_started (waiting for session_created)")
+            } else if message.subtype == "supported_commands" {
+                // 远端技能（服务器 Claude Code）— 与本地 SkillStore 隔离。
+                // SDK 会话进程启动时推一次；按 bridge 实例缓存，冷启动可见。
+                if let instanceID = mappingInstanceID {
+                    let remoteSkills = RemoteSkillRegistry.parse(message: message)
+                    Task { @MainActor in
+                        RemoteSkillRegistry.shared.update(instanceID: instanceID, skills: remoteSkills)
+                    }
+                }
             }
         }
         // Claude id capture is also scoped to our session: broadcast messages

@@ -241,6 +241,9 @@ enum CCPocketProtocol {
         let userMessageUuid: String?
         let clientMessageId: String?
         let baseSeq: Int?
+        // system/supported_commands — 远端(服务器)技能清单
+        let skills: [String]?
+        let skillMetadata: [[String: JSONValue]]?
     }
 
     /// One seq-tagged entry of a `history_snapshot` / `history_delta`
