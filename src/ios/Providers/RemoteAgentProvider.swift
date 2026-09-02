@@ -47,6 +47,8 @@ final class RemoteAgentProvider: AgentProvider {
     /// nil = detached sub-task (title generation etc.) — no mapping reads,
     /// no store retention, no identity persistence.
     let chatSessionID: String?
+    /// 本 turn 用户带上的附件候选（vm 注入，发送时消费）。
+    var pendingRemotePayloads: [AIChatViewModel.RemotePayload] = []
     /// Legacy per-instance mapping migration is opt-in from the load path.
     let allowLegacyMappingFallback: Bool
 
@@ -154,8 +156,37 @@ final class RemoteAgentProvider: AgentProvider {
             }
             Task {
                 do {
-                    try await self.client.sendInput(lastUserText, sessionId: bridgeSessionId)
-                    logger.info("[RemoteAgent] sendInput OK session=\(bridgeSessionId)")
+                    var inputText = lastUserText
+                    var inlineImages: [[String: String]] = []
+                    let payloads = self.pendingRemotePayloads
+                    self.pendingRemotePayloads = []
+                    for payload in payloads {
+                        switch payload {
+                        case .inlineImage(let data, let mimeType):
+                            inlineImages.append(["base64": data.base64EncodedString(), "mimeType": mimeType])
+                        case .uploadFile(let fileURL, let fileName):
+                            do {
+                                let projectPath = RemoteSessionDefaultsStore.load().projectPath
+                                let result = try await RemoteFileUpload.upload(
+                                    client: self.client,
+                                    projectPath: projectPath,
+                                    fileName: fileName,
+                                    fileURL: fileURL
+                                )
+                                inputText += "
+
+[User uploaded file: \(result.fileName)]"
+                                logger.info("[RemoteAgent] uploaded \(fileName) OK sha=\(result.sha256.prefix(8))")
+                            } catch {
+                                logger.error("[RemoteAgent] upload \(fileName) failed: \(error.localizedDescription)")
+                                inputText += "
+
+[User attempted to attach \(fileName) but upload failed: \(error.localizedDescription)]"
+                            }
+                        }
+                    }
+                    try await self.client.sendInput(inputText, sessionId: bridgeSessionId, images: inlineImages.isEmpty ? nil : inlineImages)
+                    logger.info("[RemoteAgent] sendInput OK session=\(bridgeSessionId) images=\(inlineImages.count)")
                 } catch {
                     continuation.finish(throwing: error)
                 }

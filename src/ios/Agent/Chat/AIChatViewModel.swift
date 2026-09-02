@@ -688,6 +688,14 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// the interrupted-tail heuristics must not classify them as broken.
     private(set) var lastAgentProviderIsRemote = false
 
+    // MARK: 远端附件候选（Claude Code via bridge）
+    enum RemotePayload {
+        case inlineImage(data: Data, mimeType: String)
+        case uploadFile(fileURL: URL, fileName: String)
+    }
+    @Published var pendingRemotePayloads: [RemotePayload] = []
+    static let kRemoteInlineMimeTypes: Set<String> = ["image/png", "image/jpeg", "image/gif", "image/webp"]
+
     @Published var canResume = false {
         didSet {
             // [T-session-paused-badge-active-false-positive] Drive the session-
@@ -2185,6 +2193,25 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         let pendingAttachments = attachments
+        // 远端附件候选：图片(4 种 SDK 原生 mime)→原图 base64；其余→上传文件。
+        // 只在远端 provider 消费；本地 agent 走现有 local 路径，零影响。
+        pendingRemotePayloads = pendingAttachments.compactMap { attach in
+            guard attach.loadState == .ready else { return nil }
+            let mime: String
+            let ext = attach.cacheURL.pathExtension.lowercased()
+            switch ext {
+            case "png": mime = "image/png"
+            case "gif": mime = "image/gif"
+            case "webp": mime = "image/webp"
+            default: mime = "image/jpeg"
+            }
+            if attach.kind == .image,
+               Self.kRemoteInlineMimeTypes.contains(mime),
+               let data = try? Data(contentsOf: attach.cacheURL) {
+                return .inlineImage(data: data, mimeType: mime)
+            }
+            return .uploadFile(fileURL: attach.cacheURL, fileName: attach.fileName)
+        }
         #if DEBUG
         logger.info("🔑DRAFT [vm=\(self.vmInstanceId)] send() text=\(text.count)ch attachments=\(pendingAttachments.count) isProcessing=\(self.isProcessing) sessionId=\(self.sessionId ?? "nil") draftId=\(self.draftId ?? "nil") inputText='\(String(self.inputText.prefix(30)))'")
         #else
@@ -4453,6 +4480,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         }
         var provider = await makeAgentProvider(for: entry)
         lastAgentProviderIsRemote = provider is RemoteAgentProvider
+        if let remoteProvider = provider as? RemoteAgentProvider {
+            remoteProvider.pendingRemotePayloads = pendingRemotePayloads
+            pendingRemotePayloads = []
+        }
 
         // Set extended cache TTL globally for Anthropic request patching
         RequestBodyPatcher.setExtendedCacheTTL(self.enhancedCacheEnabled)
