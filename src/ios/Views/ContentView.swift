@@ -2307,6 +2307,129 @@ struct ContentView: View {
 
     // MARK: - Split Layout (iPad / wide window)
 
+    private func handleQuickActionTriggerChange(_ newValue: Int) {
+        guard newValue != consumedQuickActionTrigger else { return }
+        consumedQuickActionTrigger = newValue
+        handleNewChatRequest()
+    }
+
+    private func handleQuickActionWorkflowState(_ newState: QuickActionWorkflow.State) {
+        // Workflow advanced to pendingDispatch (either same-runloop
+        // because we were already home, or after markHome fired
+        // from a navigation change). Open the new session now.
+        if case .pendingDispatch = newState {
+            openSessionForPendingQuickAction()
+        }
+    }
+
+    private func handleColdLaunchOnAppear() {
+        if quickActionRouter.newChatTrigger != consumedQuickActionTrigger {
+            consumedQuickActionTrigger = quickActionRouter.newChatTrigger
+            // Defer one runloop so the NavigationStack body has a
+            // chance to attach `$navigationPath` before we append to
+            // it — otherwise the append on a freshly-mounted stack
+            // can be lost.
+            DispatchQueue.main.async {
+                handleNewChatRequest()
+            }
+        }
+        // The Appearance language picker wrote "pendingSettingsReopen"
+        // right before changing appLanguage, which forced the root
+        // `.id(appLanguage)` rebuild that just dropped + re-mounted us.
+        // Reopen the Settings sheet so the user lands back where they
+        // were instead of stranded on the chat list. SettingsSheet's
+        // own onAppear pushes the saved destination onto its navPath.
+        if UserDefaults.standard.string(forKey: "pendingSettingsReopen") != nil {
+            DispatchQueue.main.async {
+                activeToolSheet = .settings
+            }
+        }
+        // [T-ios-bg-nav-push-watchdog] Backstop for the scenePhase flush.
+        // `.onChange(of: scenePhase)` only fires on a TRANSITION, so a
+        // deferral that happened before this view mounted — a cold launch
+        // straight into the background, or a root remount (the
+        // `.id(appLanguage)` rebuild above) — would leave the push stranded
+        // with no later transition to release it. Deferred one runloop for
+        // the same reason the quick-action path above is: the
+        // NavigationStack must have attached `$navigationPath` first.
+        DispatchQueue.main.async {
+            flushPendingBackgroundNavigation()
+        }
+    }
+
+    private func handleSessionDidCreateDraft(_ note: Notification) {
+        guard isWideLayout, let newId = note.object as? String else { return }
+        let noteDraftId = (note.userInfo as? [String: String])?["draftId"]
+        draftLog.info("🔑DRAFT sessionDidCreate realId=\(newId) noteDraftId=\(noteDraftId ?? "nil") selId=\(selectedSessionId ?? "nil") curReal=\(newSessionRealId ?? "nil") curDraft=\(activeDraftId ?? "nil")")
+        // Verify this notification came from the currently active draft.
+        // A late notification from a previous (now-destroyed) draft must be ignored.
+        guard let selId = selectedSessionId, Self.isNewSessionId(selId),
+              noteDraftId == selId else {
+            draftLog.info("🔑DRAFT sessionDidCreate IGNORED (draftId mismatch or not a draft)")
+            // [T-ios-state-publish-offmain-crash] ChatStore (an actor) posts
+            // .sessionDidCreate/.sessionDidUpdate from its background
+            // executor; NotificationCenter delivers synchronously on that
+            // thread, so this onReceive closure can run off-main. A bare
+            // Task{} started here inherits the (background) execution context,
+            // so `sessions =` (a @State write) lands off-main → "Publishing
+            // changes from background threads" + AttributeGraph corruption of
+            // the [ChatSession]/[String:ChatSession] state it deep-compares,
+            // crashing in ChatSession.== / deinit during flushTransactions.
+            // This onReceive can be delivered off-main, so hop explicitly —
+            // refreshSessionList's @State writes must land on the main thread.
+            Task { @MainActor in
+                refreshSessionList()
+            }
+            return
+        }
+        newSessionRealId = newId
+        activeDraftId = selId
+        draftLog.info("🔑DRAFT sessionDidCreate ACCEPTED newSessionRealId=\(newId) activeDraftId=\(selId)")
+        // [T-ios-state-publish-offmain-crash] force main-thread @State write
+        Task { @MainActor in
+            refreshSessionList()
+        }
+    }
+
+    private func handleMoveInputToSession(_ note: Notification) {
+        guard let targetId = (note.userInfo as? [String: String])?["targetId"] else { return }
+        // Skip navigation if the target session is already visible
+        if isWideLayout {
+            guard selectedSessionId != targetId && newSessionRealId != targetId else { return }
+            // Wide layout replaces selection — no stack to worry about
+            openSession(targetId)
+        } else {
+            // [T-ios-moveto-transfer-race] No early-return when the target
+            // already reads as current: a swallowed push leaves
+            // `currentStackSessionId` set to a target that never appeared,
+            // and bailing here is exactly what made a retry do nothing.
+            // switchToSession is idempotent, so re-running it for a target
+            // that genuinely is on screen is harmless.
+            switchToSession(targetId)
+        }
+    }
+
+    private func handleOpenSessionFromIntent(_ note: Notification) {
+        guard let sessionId = (note.userInfo as? [String: String])?["sessionId"] else { return }
+        // [T-notification-tap-vs-launch-session] Warm path owns this
+        // navigation: drop the cold-launch buffer copy and stamp the
+        // handling time so an in-flight launch `.task` (the post can land
+        // during its `await listSessions()`) doesn't clobber the target
+        // session with the Launch Session default afterwards.
+        NotificationNavigationStore.shared.markHandled()
+        // Skip navigation if the target session is already visible
+        if isWideLayout {
+            guard selectedSessionId != sessionId && newSessionRealId != sessionId else { return }
+            openSession(sessionId)
+        } else {
+            // [T-ios-moveto-transfer-race] Same atomic replacement as the
+            // move path — the old animated-pop-then-delayed-push had the
+            // same swallowed-push failure mode here.
+            guard currentStackSessionId != sessionId else { return }
+            switchToSession(sessionId)
+        }
+    }
+
     private var splitLayout: some View {
         // [T-ios-gh29-font-scale-split-column] App-base font scale for the iPad
         // split view. `appFontScale()` is environment-based (`.dynamicTypeSize`),
@@ -8516,128 +8639,5 @@ private struct ForceSyncToastBanner: View {
         .padding(.horizontal, 16)
         .frame(maxWidth: 480)
     }
-    private func handleQuickActionTriggerChange(_ newValue: Int) {
-                guard newValue != consumedQuickActionTrigger else { return }
-                consumedQuickActionTrigger = newValue
-                handleNewChatRequest()
-    }
-
-    private func handleQuickActionWorkflowState(_ newState: QuickActionWorkflow.State) {
-                // Workflow advanced to pendingDispatch (either same-runloop
-                // because we were already home, or after markHome fired
-                // from a navigation change). Open the new session now.
-                if case .pendingDispatch = newState {
-                    openSessionForPendingQuickAction()
-                }
-    }
-
-    private func handleColdLaunchOnAppear() {
-                if quickActionRouter.newChatTrigger != consumedQuickActionTrigger {
-                    consumedQuickActionTrigger = quickActionRouter.newChatTrigger
-                    // Defer one runloop so the NavigationStack body has a
-                    // chance to attach `$navigationPath` before we append to
-                    // it — otherwise the append on a freshly-mounted stack
-                    // can be lost.
-                    DispatchQueue.main.async {
-                        handleNewChatRequest()
-                    }
-                }
-                // The Appearance language picker wrote "pendingSettingsReopen"
-                // right before changing appLanguage, which forced the root
-                // `.id(appLanguage)` rebuild that just dropped + re-mounted us.
-                // Reopen the Settings sheet so the user lands back where they
-                // were instead of stranded on the chat list. SettingsSheet's
-                // own onAppear pushes the saved destination onto its navPath.
-                if UserDefaults.standard.string(forKey: "pendingSettingsReopen") != nil {
-                    DispatchQueue.main.async {
-                        activeToolSheet = .settings
-                    }
-                }
-                // [T-ios-bg-nav-push-watchdog] Backstop for the scenePhase flush.
-                // `.onChange(of: scenePhase)` only fires on a TRANSITION, so a
-                // deferral that happened before this view mounted — a cold launch
-                // straight into the background, or a root remount (the
-                // `.id(appLanguage)` rebuild above) — would leave the push stranded
-                // with no later transition to release it. Deferred one runloop for
-                // the same reason the quick-action path above is: the
-                // NavigationStack must have attached `$navigationPath` first.
-                DispatchQueue.main.async {
-                    flushPendingBackgroundNavigation()
-                }
-    }
-
-    private func handleSessionDidCreateDraft(_ note: Notification) {
-                guard isWideLayout, let newId = note.object as? String else { return }
-                let noteDraftId = (note.userInfo as? [String: String])?["draftId"]
-                draftLog.info("🔑DRAFT sessionDidCreate realId=\(newId) noteDraftId=\(noteDraftId ?? "nil") selId=\(selectedSessionId ?? "nil") curReal=\(newSessionRealId ?? "nil") curDraft=\(activeDraftId ?? "nil")")
-                // Verify this notification came from the currently active draft.
-                // A late notification from a previous (now-destroyed) draft must be ignored.
-                guard let selId = selectedSessionId, Self.isNewSessionId(selId),
-                      noteDraftId == selId else {
-                    draftLog.info("🔑DRAFT sessionDidCreate IGNORED (draftId mismatch or not a draft)")
-                    // [T-ios-state-publish-offmain-crash] ChatStore (an actor) posts
-                    // .sessionDidCreate/.sessionDidUpdate from its background
-                    // executor; NotificationCenter delivers synchronously on that
-                    // thread, so this onReceive closure can run off-main. A bare
-                    // Task{} started here inherits the (background) execution context,
-                    // so `sessions =` (a @State write) lands off-main → "Publishing
-                    // changes from background threads" + AttributeGraph corruption of
-                    // the [ChatSession]/[String:ChatSession] state it deep-compares,
-                    // crashing in ChatSession.== / deinit during flushTransactions.
-                    // This onReceive can be delivered off-main, so hop explicitly —
-                    // refreshSessionList's @State writes must land on the main thread.
-                    Task { @MainActor in
-                        refreshSessionList()
-                    }
-                    return
-                }
-                newSessionRealId = newId
-                activeDraftId = selId
-                draftLog.info("🔑DRAFT sessionDidCreate ACCEPTED newSessionRealId=\(newId) activeDraftId=\(selId)")
-                // [T-ios-state-publish-offmain-crash] force main-thread @State write
-                Task { @MainActor in
-                    refreshSessionList()
-                }
-    }
-
-    private func handleMoveInputToSession(_ note: Notification) {
-                guard let targetId = (note.userInfo as? [String: String])?["targetId"] else { return }
-                // Skip navigation if the target session is already visible
-                if isWideLayout {
-                    guard selectedSessionId != targetId && newSessionRealId != targetId else { return }
-                    // Wide layout replaces selection — no stack to worry about
-                    openSession(targetId)
-                } else {
-                    // [T-ios-moveto-transfer-race] No early-return when the target
-                    // already reads as current: a swallowed push leaves
-                    // `currentStackSessionId` set to a target that never appeared,
-                    // and bailing here is exactly what made a retry do nothing.
-                    // switchToSession is idempotent, so re-running it for a target
-                    // that genuinely is on screen is harmless.
-                    switchToSession(targetId)
-                }
-    }
-
-    private func handleOpenSessionFromIntent(_ note: Notification) {
-                guard let sessionId = (note.userInfo as? [String: String])?["sessionId"] else { return }
-                // [T-notification-tap-vs-launch-session] Warm path owns this
-                // navigation: drop the cold-launch buffer copy and stamp the
-                // handling time so an in-flight launch `.task` (the post can land
-                // during its `await listSessions()`) doesn't clobber the target
-                // session with the Launch Session default afterwards.
-                NotificationNavigationStore.shared.markHandled()
-                // Skip navigation if the target session is already visible
-                if isWideLayout {
-                    guard selectedSessionId != sessionId && newSessionRealId != sessionId else { return }
-                    openSession(sessionId)
-                } else {
-                    // [T-ios-moveto-transfer-race] Same atomic replacement as the
-                    // move path — the old animated-pop-then-delayed-push had the
-                    // same swallowed-push failure mode here.
-                    guard currentStackSessionId != sessionId else { return }
-                    switchToSession(sessionId)
-                }
-    }
-
 }
 
