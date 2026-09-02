@@ -171,16 +171,19 @@ enum SyncV2Bootstrap {
         // 3. Wire transports (cheap — no network yet).
         // [Fix: cloud-sync crash loop] ICloudSharedZoneTransport.init() calls
         // CKContainer(identifier:) which throws an ObjC NSException via
-        // CKSDKVersion when this build has no valid iCloud entitlement
-        // (e.g. unsigned sideloaded ipa). Swift do-catch cannot catch ObjC
-        // exceptions → SIGABRT → launch crash loop while the enabled flag
-        // persists. Pre-check the ubiquity identity token: nil means iCloud
-        // is unavailable for this build, so skip the CloudKit transport
-        // entirely (sync stays enabled but does nothing until a signed build
-        // with the entitlement restores it). Does not affect a properly
-        // signed+entitled build where the token is present.
-        guard FileManager.default.ubiquityIdentityToken != nil else {
-            logger.warning("[SyncCore] v2 iCloud unavailable on this build (no ubiquity identity token) — skipping CloudKit transport to avoid launch crash loop")
+        // CKSDKVersion when this build's signing doesn't include the iCloud
+        // container entitlement (sideloaded ipa 常见:签名时 entitlement 被剥).
+        // Swift do-catch 抓不住 ObjC 异常 → SIGABRT → 启动崩溃循环.
+        // ubiquityIdentityToken 只查"用户有无 iCloud 账号"(不准:有账号但
+        // App 没 entitlement 还是崩). 改读 embedded.mobileprovision 确认
+        // iCloud 容器 ID 在不在签名 entitlement 里 — 不在就跳过 transport.
+        // 合法签名包 entitlement 在 → 正常同步;sideload 剥了 → 安全跳过不崩.
+        let containerID = ICloudSharedZoneTransport.containerIdentifier
+        guard let provisionURL = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let provisionData = try? Data(contentsOf: provisionURL),
+              let provisionString = String(data: provisionData, encoding: .isoLatin1),
+              provisionString.contains(containerID) else {
+            logger.warning("[SyncCore] v2 iCloud container '\(containerID)' not in provisioning profile — skipping CloudKit transport (sideloaded build likely stripped entitlement)")
             return
         }
         let transport = ICloudSharedZoneTransport()
