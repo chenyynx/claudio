@@ -203,7 +203,7 @@
 		E5F200001 /* MarkdownPrepRegex.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F200011 /* MarkdownPrepRegex.swift */; };
 		E5F200002 /* MinisMediaViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F200012 /* MinisMediaViews.swift */; };
 		E5F200003 /* AssistantBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F200013 /* AssistantBlockView.swift */; };
-		E5F2A0003 /* ThinkingGrokViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F2A0001 /* ThinkingGrokViews.swift */ };
+		E5F2A0003 /* ThinkingGrokViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F2A0001 /* ThinkingGrokViews.swift */; };
 		E5F200004 /* ChatMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F200014 /* ChatMessageViews.swift */; };
 		E5F200005 /* ChatInputBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F200015 /* ChatInputBar.swift */; };
 		E5F200006 /* ModelSelectionEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F200016 /* ModelSelectionEntity.swift */; };
