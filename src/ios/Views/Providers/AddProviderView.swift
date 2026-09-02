@@ -1170,6 +1170,8 @@ struct AddProviderView: View {
             return AppLocalized("Sign in with your OpenRouter account")
         case (.openAIResponses, .oauth):
             return "" // Not reachable — API key only
+        case (.remoteAgent, .oauth):
+            return "" // Not reachable — API key only
         case (.xAI, .oauth):
             return AppLocalized("Sign in with your SuperGrok / X Premium+ subscription. xAI may restrict API access on some plans — if you hit HTTP 403, switch to an API key.")
         case (.kimiCode, .oauth):
