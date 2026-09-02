@@ -1255,14 +1255,24 @@ extension CollectionViewMessageListV3 {
                 .sink { [weak self] block in
                     guard let self else { return }
                     if let block {
-                        let toolBlocks = message.blocks.filter { $0.toolStatus != nil }
-                        self.sheetPresenter.sheetData = ToolSheetPresenter.SheetData(
-                            id: block.id,
-                            block: block,
-                            toolBlocks: toolBlocks,
-                            toolSnapshots: bridge.toolSnapshots,
-                            browserPool: bridge.browserPool
-                        )
+                        if block.kind == .thinking {
+                            // Grok 式思考块 → 专属弹层通道（衬线全文 sheet）
+                            self.sheetPresenter.thinkingDetail = block
+                            self.sheetPresenter.thinkingStreamProvider = { [weak self] in
+                                guard let self else { return false }
+                                return self.vm?.isProcessing == true
+                                    && message.blocks.last?.id == block.id
+                            }
+                        } else {
+                            let toolBlocks = message.blocks.filter { $0.toolStatus != nil }
+                            self.sheetPresenter.sheetData = ToolSheetPresenter.SheetData(
+                                id: block.id,
+                                block: block,
+                                toolBlocks: toolBlocks,
+                                toolSnapshots: bridge.toolSnapshots,
+                                browserPool: bridge.browserPool
+                            )
+                        }
                     }
                     // Dismiss is handled by sheetPresenter.onDismiss (set in attach)
                 }
@@ -5080,6 +5090,10 @@ private final class ToolSheetPresenter: ObservableObject {
     }
 
     @Published var sheetData: SheetData?
+    /// Thinking detail channel（Grok 式弹层）— 与工具 sheet 分流，工具过滤逻辑不动。
+    @Published var thinkingDetail: AssistantBlock?
+    /// 打开时刻捕获的流式判定；时长冻结后视图优先用 thinkingDuration。
+    var thinkingStreamProvider: (() -> Bool)?
     var onDismiss: (() -> Void)?
 }
 
@@ -5115,6 +5129,18 @@ private struct SheetOverlayView: View {
             }
             .onChange(of: toolPresenter.sheetData?.id) { newVal in
                 if newVal == nil {
+                    toolPresenter.onDismiss?()
+                }
+            }
+            .sheet(item: $toolPresenter.thinkingDetail) { block in
+                ThinkingDetailSheetView(
+                    block: block,
+                    isStreamingProvider: toolPresenter.thinkingStreamProvider ?? { false }
+                )
+            }
+            .onChange(of: toolPresenter.thinkingDetail?.id) { newVal in
+                if newVal == nil {
+                    toolPresenter.thinkingStreamProvider = nil
                     toolPresenter.onDismiss?()
                 }
             }

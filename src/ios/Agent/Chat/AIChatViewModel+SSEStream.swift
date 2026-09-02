@@ -430,7 +430,7 @@ extension AIChatViewModel {
                         await MainActor.run {
                             guard msgIdx < messages.count,
                                   thinkIdx < messages[msgIdx].blocks.count else { return }
-                            messages[msgIdx].blocks[thinkIdx].flushThinkingBuffer()
+                            messages[msgIdx].blocks[thinkIdx].finalizeThinking()
                         }
                         currentThinkingBlockIdx = nil
                         result.thinkingText = ""
@@ -464,7 +464,7 @@ extension AIChatViewModel {
                         await MainActor.run {
                             guard msgIdx < messages.count,
                                   thinkIdx < messages[msgIdx].blocks.count else { return }
-                            messages[msgIdx].blocks[thinkIdx].flushThinkingBuffer()
+                            messages[msgIdx].blocks[thinkIdx].finalizeThinking()
                         }
                         currentThinkingBlockIdx = nil
                         result.thinkingText = ""
@@ -975,9 +975,9 @@ extension AIChatViewModel {
                 if currentThinkingBlockIdx == nil {
                     let idx = await MainActor.run { () -> Int in
                         guard msgIdx < messages.count else { return -1 }
-                        messages[msgIdx].blocks.append(
-                            AssistantBlock(kind: .thinking, content: "")
-                        )
+                        let thinkingBlock = AssistantBlock(kind: .thinking, content: "")
+                        thinkingBlock.thinkingStartTime = Date.now
+                        messages[msgIdx].blocks.append(thinkingBlock)
                         return messages[msgIdx].blocks.count - 1
                     }
                     guard idx >= 0 else { continue }
@@ -1035,12 +1035,16 @@ extension AIChatViewModel {
 
             case .done(let reason):
                 // Final flush of thinking block content
-                if let thinkIdx = currentThinkingBlockIdx, !result.thinkingText.isEmpty {
+                if let thinkIdx = currentThinkingBlockIdx {
                     let finalThinking = result.thinkingText
                     await MainActor.run {
                         guard msgIdx < messages.count,
                               thinkIdx < messages[msgIdx].blocks.count else { return }
-                        messages[msgIdx].blocks[thinkIdx].content = finalThinking
+                        let thinkingBlock = messages[msgIdx].blocks[thinkIdx]
+                        if !finalThinking.isEmpty {
+                            thinkingBlock.content = finalThinking
+                        }
+                        thinkingBlock.finalizeThinking()
                     }
                 }
                 result.stopReason = reason
