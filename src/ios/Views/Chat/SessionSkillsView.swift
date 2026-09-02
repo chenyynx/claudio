@@ -111,7 +111,7 @@ struct SessionSkillsView: View {
                     }
                 } else if filteredSkills.isEmpty {
                     Section {
-                        Text(String(localized: "No skills match \"\(searchQuery)\"."))
+                        Text(AppLocalized("No skills match \"\(searchQuery)\"."))
                             .foregroundStyle(.secondary)
                             .font(.subheadline)
                     }
@@ -146,7 +146,7 @@ struct SessionSkillsView: View {
             .navigationTitle("Skills in Session")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchQuery, placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: Text(String(localized: "Search skills")))
+                        prompt: Text(AppLocalized("Search skills")))
             .onAppear { store.reload() }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
