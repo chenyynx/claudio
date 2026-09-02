@@ -1982,6 +1982,43 @@ actor ChatStore {
         NotificationCenter.default.post(name: .sessionDidUpdate, object: id)
     }
 
+    /// Like updateSessionTitle but does NOT bump updated_at — used when a
+    /// session's list position must reflect real activity, not bookkeeping
+    /// (materializing a broadcast row: clicking must not float it to the
+    /// top). Posts .sessionDidUpdate so the sidebar refresh picks up the
+    /// new row with its stamped timestamp.
+    func updateSessionTitlePreservingActivity(_ id: String, title: String, category: String? = nil) {
+        invalidateSessionListCache()
+        let sql = "UPDATE sessions SET title = ?, category = COALESCE(?, category) WHERE id = ?"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, (title as NSString).utf8String, -1, nil)
+            bindOptionalText(stmt, index: 2, value: category)
+            sqlite3_bind_text(stmt, 3, (id as NSString).utf8String, -1, nil)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+        markDirty(recordType: "Session", recordId: id)
+        NotificationCenter.default.post(name: .sessionDidUpdate, object: id)
+    }
+
+    /// Rewrite a session's updated_at — stamps a materialized broadcast row
+    /// with its REAL last-activity time (createSession uses `now`, which
+    /// would float a just-clicked remote session to the top of the list).
+    /// Does not post (callers post via the subsequent title write or
+    /// appendMessages).
+    func setSessionActivity(_ id: String, updatedAt: Date) {
+        invalidateSessionListCache()
+        let sql = "UPDATE sessions SET updated_at = ? WHERE id = ?"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_double(stmt, 1, updatedAt.timeIntervalSince1970)
+            sqlite3_bind_text(stmt, 2, (id as NSString).utf8String, -1, nil)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+    }
+
     /// Toggle pin state for a session. Returns the new pinned state.
     @discardableResult
     func toggleSessionPin(_ id: String) -> Bool {

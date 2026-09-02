@@ -238,6 +238,14 @@ extension AIChatViewModel {
             // Still mount minis even for empty sessions so /var/minis works in terminal
             logger.info("🔍MOUNT loadSession empty-session fallback, still mounting for \(sessionId)")
             mountMinis(for: sessionId)
+            // [Fix] Remote broadcast sessions materialize as EMPTY local
+            // sessions (materializeSyntheticRemoteId creates a fresh row).
+            // The bridge-history backfill at the tail of loadSession is
+            // unreachable after this early return, so a just-materialized
+            // remote session stayed blank forever. Schedule the same
+            // backfill here; local sessions no-op (no claude mapping).
+            let resolver = await ChatStore.shared.mediaFileURLResolver()
+            scheduleRemoteHistoryBackfill(resolver: resolver)
             return
         }
 

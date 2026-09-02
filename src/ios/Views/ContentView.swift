@@ -787,8 +787,8 @@ private enum SessionMenuAction {
 /// session.modelId holds the bare model id (updateSessionModelId writes
 /// entry.model.id), which entry(for:) — a composite-key lookup — can never
 /// resolve, so the old guard here always returned nil and the sidebar Stop
-/// Session item never appeared. Shared by sessionIsRemote, the remote
-/// badge, and the running dot. @MainActor: ProviderConfigStore is
+/// Session item never appeared. Shared by sessionIsRemote and the remote
+/// badge. @MainActor: ProviderConfigStore is
 /// main-actor-isolated (doris 4e57a28).
 @MainActor
 fileprivate func remoteAgentInstanceID(for session: ChatSession) -> String? {
@@ -833,12 +833,6 @@ private let remoteSyntheticIdPrefix = "rbrid."
 /// (sessions started from other clients, e.g. the WeChat bridge).
 fileprivate func isSyntheticRemoteSession(_ session: ChatSession) -> Bool {
     session.source == "remoteBridge" && session.id.hasPrefix(remoteSyntheticIdPrefix)
-}
-
-fileprivate func syntheticClaudeId(of session: ChatSession) -> String? {
-    guard isSyntheticRemoteSession(session) else { return nil }
-    let claudeId = String(session.id.dropFirst(remoteSyntheticIdPrefix.count))
-    return claudeId.isEmpty ? nil : claudeId
 }
 
 /// [Session sync] Best-effort topic category for synced remote rows. The
@@ -886,29 +880,113 @@ fileprivate func mergedWithRemoteRows(_ local: [ChatSession]) -> [ChatSession] {
     for e in inventory {
         guard !seen.contains(e.claudeId) else { continue }
         seen.insert(e.claudeId)
-        let fallbackTitle = e.projectPath.map { ($0 as NSString).lastPathComponent }
-        let title = e.name
-            ?? e.preview.map { String($0.prefix(48)) }
-            ?? fallbackTitle
-            ?? String(localized: "Remote Session")
-        rows.append(ChatSession(
-            id: remoteSyntheticIdPrefix + e.claudeId,
-            title: title,
-            category: inferRemoteSessionCategory(from: e.name ?? e.preview),
-            modelId: entry.model.id,
-            createdAt: e.updatedAt ?? .distantPast,
-            updatedAt: e.updatedAt ?? .distantPast,
-            lastMessage: e.preview,
-            source: "remoteBridge",
-            lastSyncedAt: nil,
-            remoteDeviceId: nil,
-            remoteDeviceName: nil,
-            pinnedAt: nil,
-            folderId: nil
-        ))
+        rows.append(syntheticRow(from: e, modelId: entry.model.id))
     }
     guard !rows.isEmpty else { return local }
     return (local + rows).sorted { $0.updatedAt > $1.updatedAt }
+}
+
+/// Build a synthetic sidebar row for a Bridge-only session (live broadcast
+/// or recent-index entry). Shared by the initial full merge and the
+/// incremental broadcast merge so both produce identical rows.
+@MainActor
+fileprivate func syntheticRow(from info: BridgeRemoteSessionEntry, modelId: String) -> ChatSession {
+    let fallbackTitle = info.projectPath.map { ($0 as NSString).lastPathComponent }
+    let title = info.name
+        ?? info.preview.map { String($0.prefix(48)) }
+        ?? fallbackTitle
+        ?? String(localized: "Remote Session")
+    return ChatSession(
+        id: remoteSyntheticIdPrefix + info.claudeId,
+        title: title,
+        category: inferRemoteSessionCategory(from: info.name ?? info.preview),
+        modelId: modelId,
+        createdAt: info.updatedAt ?? .distantPast,
+        updatedAt: info.updatedAt ?? .distantPast,
+        lastMessage: info.preview,
+        source: "remoteBridge",
+        lastSyncedAt: nil,
+        remoteDeviceId: nil,
+        remoteDeviceName: nil,
+        pinnedAt: nil,
+        folderId: nil
+    )
+}
+
+/// [Session sync] Incremental broadcast merge — the sidebar flash fix.
+/// Every Bridge session_list broadcast used to trigger a full
+/// `ChatStore.listSessions()` + re-merge + re-sort of the whole sidebar
+/// (hundreds of rows), recreating every synthetic row with a fresh
+/// `updatedAt` and churning the entire List diff → visible flashing under
+/// load. This only diffs the synthetic rows: replaced in place when their
+/// rendered fields (title/category/preview) changed, dropped when gone
+/// from the inventory or materialized into a local row, new ones
+/// prepended. Local rows are untouched and the array order is otherwise
+/// preserved, so a broadcast cannot churn the List. (Official semantics:
+/// broadcast auto-updates only the running list; the recent index is not
+/// rebuilt per broadcast.)
+@MainActor
+fileprivate func applyRemoteInventoryToSessions(_ current: [ChatSession]) -> [ChatSession] {
+    let store = ProviderConfigStore.shared
+    guard let instance = store.instances.first(where: {
+        $0.providerType == .remoteAgent && $0.isEnabled
+    }), let entry = store.visibleEntries(for: instance.id).first else { return current }
+    let inventory = BridgeSessionRegistry.shared.inventoryByInstance[instance.id] ?? []
+    guard !inventory.isEmpty else { return current }
+    var byClaude: [String: BridgeRemoteSessionEntry] = [:]
+    for info in inventory { byClaude[info.claudeId] = info }
+    let bound = CCPocketClient.boundRemoteIds(instanceID: instance.id).claudeIds
+    var result: [ChatSession] = []
+    var seen: Set<String> = []
+    var changed = false
+    for session in current {
+        if session.source == "remoteBridge", session.id.hasPrefix(remoteSyntheticIdPrefix) {
+            let claudeId = String(session.id.dropFirst(remoteSyntheticIdPrefix.count))
+            if bound.contains(claudeId) {
+                // Materialized into a local row — drop the synthetic twin.
+                changed = true
+                continue
+            }
+            guard let info = byClaude[claudeId] else {
+                // Gone from the inventory (stopped / aged out).
+                changed = true
+                continue
+            }
+            seen.insert(claudeId)
+            let fresh = syntheticRow(from: info, modelId: session.modelId)
+            if fresh.title != session.title || fresh.category != session.category || fresh.lastMessage != session.lastMessage {
+                // Keep the first-sight timestamps so the row never jumps
+                // between date buckets on later broadcasts.
+                result.append(ChatSession(
+                    id: fresh.id,
+                    title: fresh.title,
+                    category: fresh.category,
+                    modelId: fresh.modelId,
+                    createdAt: session.createdAt,
+                    updatedAt: session.updatedAt,
+                    lastMessage: fresh.lastMessage,
+                    source: fresh.source,
+                    lastSyncedAt: fresh.lastSyncedAt,
+                    remoteDeviceId: fresh.remoteDeviceId,
+                    remoteDeviceName: fresh.remoteDeviceName,
+                    pinnedAt: fresh.pinnedAt,
+                    folderId: fresh.folderId
+                ))
+                changed = true
+            } else {
+                result.append(session)
+            }
+        } else {
+            result.append(session)
+        }
+    }
+    // Inventory rows not yet present (and not bound to a local row).
+    for info in inventory {
+        guard !seen.contains(info.claudeId), !bound.contains(info.claudeId) else { continue }
+        result.insert(syntheticRow(from: info, modelId: entry.model.id), at: 0)
+        changed = true
+    }
+    return changed ? result : current
 }
 
 /// Open a synthetic remote row: create the real ChatSession row, write the
@@ -931,11 +1009,21 @@ fileprivate func materializeSyntheticRemoteId(_ id: String) async -> String {
         modelId: entry.model.id,
         source: "remoteBridge"
     )
+    // [Fix] Clicking a broadcast row must NOT float it to the top: stamp
+    // the new row with the session's REAL last-activity time from the
+    // broadcast inventory (createSession uses `now`), and use the
+    // title-preserving variant so the title/category write doesn't bump
+    // updated_at either. Only a sent message (appendMessages →
+    // touchSession) moves the row up the list.
+    if let source {
+        await ChatStore.shared.setSessionActivity(created.id, updatedAt: source.updatedAt ?? Date())
+    }
     // Title + heuristic topic category (avatar color) — createSession has
-    // no category param; updateSessionTitle sets both and posts
-    // .sessionDidUpdate itself (swaps the synthetic row for the real one).
+    // no category param; updateSessionTitlePreservingActivity sets both and
+    // posts .sessionDidUpdate itself (swaps the synthetic row for the real
+    // one) without touching updated_at.
     let materialTitle = source?.name ?? source?.preview.map { String($0.prefix(48)) }
-    await ChatStore.shared.updateSessionTitle(
+    await ChatStore.shared.updateSessionTitlePreservingActivity(
         created.id,
         title: materialTitle ?? String(localized: "Remote Session"),
         category: inferRemoteSessionCategory(from: source?.name ?? source?.preview)
@@ -2210,8 +2298,10 @@ struct ContentView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sessionList(useNavigationLinks: false)
                 .onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
+                    // [Session sync] Incremental merge only (no full DB
+                    // re-fetch / re-sort) — see applyRemoteInventoryToSessions.
                     Task { @MainActor in
-                        sessions = mergedWithRemoteRows(await ChatStore.shared.listSessions())
+                        sessions = applyRemoteInventoryToSessions(sessions)
                     }
                 }
                 .appFontScale()
@@ -2227,8 +2317,10 @@ struct ContentView: View {
         NavigationStack(path: $navigationPath) {
             sessionList(useNavigationLinks: true)
                 .onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
+                    // [Session sync] Incremental merge only (no full DB
+                    // re-fetch / re-sort) — see applyRemoteInventoryToSessions.
                     Task { @MainActor in
-                        sessions = mergedWithRemoteRows(await ChatStore.shared.listSessions())
+                        sessions = applyRemoteInventoryToSessions(sessions)
                     }
                 }
                 .navigationDestination(for: String.self) { incomingId in
@@ -2409,7 +2501,14 @@ struct ContentView: View {
         let key = SidebarGroupsMemoKey(
             sessions: list.map {
                 SidebarSessionKey(
-                    id: $0.id, updatedAt: $0.updatedAt, pinnedAt: $0.pinnedAt,
+                    id: $0.id,
+                    // [Session sync] Synthetic rows keep their first-sight
+                    // updatedAt (see applyRemoteInventoryToSessions);
+                    // normalize it out of the key so a broadcast can never
+                    // bust the grouping memo via a fresh timestamp and
+                    // re-churn the whole list.
+                    updatedAt: isSyntheticRemoteSession($0) ? .distantPast : $0.updatedAt,
+                    pinnedAt: $0.pinnedAt,
                     isPinned: $0.isPinned, folderId: $0.folderId,
                     category: $0.category, title: $0.title)
             },
@@ -6559,10 +6658,6 @@ private struct SessionRow: View, Equatable {
     // queue changes. The custom Equatable above gates only the parent-push
     // path; @ObservedObject still drives in-place re-eval on store changes.
     @ObservedObject private var badgeStore = SessionBadgeStore.shared
-    // [Running dot] Observe the Bridge live-session registry so a remote
-    // row's green/grey dot flips in place when the Bridge broadcasts a new
-    // session_list (e.g. right after Stop Session).
-    @ObservedObject private var bridgeRegistry = BridgeSessionRegistry.shared
     // Observe App Base font scale so the row re-evaluates when the user moves
     // the slider. The row's fonts use hardcoded `.system(size:)` which ignore
     // Dynamic Type, so we must explicitly multiply by the App Base scale.
@@ -6599,32 +6694,6 @@ private struct SessionRow: View, Equatable {
     /// purpose for the rest of the session.
     private var isVisuallyLocked: Bool {
         lockStore.isVisuallyLocked(session.id)
-    }
-
-    /// [Running dot] Remote rows show a green dot while the session's Bridge
-    /// runtime session is in the Bridge's broadcast live-session list, grey
-    /// once it is gone (stopped / finished). Local rows get nothing — their
-    /// running state already has the SpinningRing. Persisted bridge id comes
-    /// from the per-chat mapping (same key the Stop Session path uses).
-    @ViewBuilder
-    private var runningDot: some View {
-        let instanceID = remoteAgentInstanceID(for: session)
-        if let instanceID {
-            if let bridgeId = CCPocketClient.persistedBridgeId(instanceID: instanceID, chatSessionID: session.id) {
-                runningDotView(isActive: bridgeRegistry.isActive(instanceID: instanceID, bridgeId: bridgeId))
-            } else if let claudeId = syntheticClaudeId(of: session) {
-                // [Session sync] Synthetic remote rows resolve liveness
-                // through the inventory (no persisted mapping yet).
-                runningDotView(isActive: bridgeRegistry.isClaudeLive(instanceID: instanceID, claudeId: claudeId))
-            }
-        }
-    }
-
-    private func runningDotView(isActive: Bool) -> some View {
-        Circle()
-            .fill(isActive ? Color.green : Color(UIColor.systemGray3))
-            .frame(width: 8, height: 8)
-            .accessibilityLabel(isActive ? "Running" : "Stopped")
     }
 
     /// The transient badge to render for this row, after suppressing states that
@@ -6683,13 +6752,6 @@ private struct SessionRow: View, Equatable {
                             .offset(x: 2, y: 2)
                     } else if session.source == "shortcut" {
                         badgeCircle(icon: "bolt.fill", color: .orange)
-                            .offset(x: 2, y: 2)
-                    } else if remoteAgentInstanceID(for: session) != nil {
-                        // [Remote badge] Cloud-glyph for remote-agent
-                        // (Bridge) sessions — grey to stay distinct from the
-                        // blue iCloud-cross-device badge below. This is the
-                        // same source of truth as the Stop Session menu.
-                        badgeCircle(icon: "cloud.fill", color: .gray, iconSize: 7)
                             .offset(x: 2, y: 2)
                     } else if session.isRemote {
                         badgeCircle(icon: "icloud.fill", color: .blue, iconSize: 7)
@@ -6757,8 +6819,6 @@ private struct SessionRow: View, Equatable {
             .modifier(LockedRowEffect(isLocked: isVisuallyLocked))
 
             Spacer(minLength: 1)
-
-            runningDot
 
             VStack(alignment: .trailing, spacing: 4) {
                 // Date
@@ -6881,11 +6941,25 @@ private struct SessionRow: View, Equatable {
 
     @ViewBuilder
     private var providerIcon: some View {
-        let icon = categoryIcon
-        let size: CGFloat = (icon.systemName == "bubble.left.fill" || icon.systemName == "terminal.fill") ? 18 : 20
-        Image(systemName: icon.systemName)
-            .font(.system(size: size))
-            .foregroundStyle(icon.color)
+        // [Remote agent avatar] Remote (Bridge) agent sessions render the
+        // app icon as their avatar so they read as "the app's own agent"
+        // at a glance, circular to match the row's avatar slot. Same asset
+        // lookup chain as AboutView (single-size 1024 AppIcon set, with
+        // the legacy 60pt name as fallback).
+        if remoteAgentInstanceID(for: session) != nil,
+           let appIcon = UIImage(named: "AppIcon60x60") ?? UIImage(named: "AppIcon") {
+            Image(uiImage: appIcon)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 44, height: 44)
+                .clipShape(Circle())
+        } else {
+            let icon = categoryIcon
+            let size: CGFloat = (icon.systemName == "bubble.left.fill" || icon.systemName == "terminal.fill") ? 18 : 20
+            Image(systemName: icon.systemName)
+                .font(.system(size: size))
+                .foregroundStyle(icon.color)
+        }
     }
 
     private var iconBackgroundColor: Color {
@@ -7346,10 +7420,11 @@ private struct AppearanceSettingsView: View {
     /// toggled OFF keep their stored false; users who never opened the
     /// toggle get the new ON default via @AppStorage's fallback.
     @AppStorage("chat.autoFocusAfterReply") private var autoFocusAfterReply: Bool = true
-    /// [T-thinking-auto-expand-toggle] When true (default, historical
-    /// behavior) a NEW streaming thinking block auto-expands while reasoning
-    /// streams. When false it stays collapsed until tapped. Read at
-    /// block-mount time in ThinkingBlockView.
+    /// [T-thinking-auto-expand-toggle] Historic auto-expand switch for the
+    /// inline thinking block. INACTIVE since the Grok-style thinking redesign
+    /// (2026-09-02): thinking now renders as a collapsed row + detail sheet,
+    /// so there is nothing to auto-expand. Settings toggle removal pending
+    /// pp decision.
     @AppStorage("chat.autoExpandThinking") private var autoExpandThinking: Bool = true
     @ObservedObject private var fontSettings = FontSettings.shared
 
