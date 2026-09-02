@@ -3225,7 +3225,7 @@ struct ContentView: View {
                                 // [T-ios-crash-contextmenu-uaf] Value-only menu view,
                                 // no closure captures — see SessionContextMenu.
                                 SessionContextMenu(
-                                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session) && !isSyntheticRemoteSession(session)),, filed: session.isFiled)
+                                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session) && !isSyntheticRemoteSession(session), filed: session.isFiled)
                                     actions: menuActions
                                 )
                                 .equatable()
@@ -3377,7 +3377,7 @@ struct ContentView: View {
                                         : session.id
                                     if let menuSid {
                                         SessionContextMenu(
-                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session) && !isSyntheticRemoteSession(session)),, filed: session.isFiled)
+                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session) && !isSyntheticRemoteSession(session), filed: session.isFiled)
                                             actions: menuActions
                                         )
                                         .equatable()

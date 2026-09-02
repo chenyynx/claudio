@@ -922,7 +922,7 @@ struct AddProviderView: View {
         // string to the Keychain (hasAnyCredential treats empty as absent).
         if !trimmedKey.isEmpty {
             ProviderKeychainHelper.saveAPIKey(trimmedKey, instanceId: instance.id)
-        ProviderKeychainHelper.saveAPIKey(trimmedKey, instanceId: instance.id)
+        }
         if effectiveType == .remoteAgent {
             let trimmedPath = projectPathInput.trimmingCharacters(in: .whitespacesAndNewlines)
             RemoteAgentConnection.save(
