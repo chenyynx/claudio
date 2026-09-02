@@ -173,15 +173,11 @@ final class RemoteAgentProvider: AgentProvider {
                                     fileName: fileName,
                                     fileURL: fileURL
                                 )
-                                inputText += "
-
-[User uploaded file: \(result.fileName)]"
+                                inputText += "\n\n[User uploaded file: \(result.fileName)]"
                                 logger.info("[RemoteAgent] uploaded \(fileName) OK sha=\(result.sha256.prefix(8))")
                             } catch {
                                 logger.error("[RemoteAgent] upload \(fileName) failed: \(error.localizedDescription)")
-                                inputText += "
-
-[User attempted to attach \(fileName) but upload failed: \(error.localizedDescription)]"
+                                inputText += "\n\n[User attempted to attach \(fileName) but upload failed: \(error.localizedDescription)]"
                             }
                         }
                     }
