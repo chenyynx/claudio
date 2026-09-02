@@ -25,7 +25,7 @@ jobs:
         run: |
           # lld is a separate Homebrew formula since LLVM was split (2026).
           # brew meson instead of pip3: runner Python is PEP-668 managed.
-          brew install meson ninja llvm lld libarchive pkg-config
+          brew install meson ninja llvm lld libarchive pkg-config go
 
       - name: Prepare xcconfig
         run: |
@@ -43,7 +43,7 @@ jobs:
             deps/lame-build
             deps/frameworks
             deps/ish/build-ios
-          key: deps-${{ runner.os }}-${{ hashFiles('deps/build_lame.sh', 'deps/build_ffmpeg.sh', 'deps/build_ish.sh', 'deps/build_proot.sh') }}
+          key: deps-${{ runner.os }}-${{ hashFiles('deps/build_lame.sh', 'deps/build_ffmpeg.sh', 'deps/build_ish.sh', 'deps/build_rclone_ios.sh') }}
 
       - name: Cache xcodebuild DerivedData
         # Swift compile artifacts: with SWIFT_COMPILATION_MODE default (WMO)
@@ -63,6 +63,7 @@ jobs:
           ./deps/build_lame.sh
           ./deps/build_ffmpeg.sh
           ./deps/build_ish.sh
+          ./deps/build_rclone_ios.sh
           # Real Alpine rootfs (alpine-rootfs.zip) — iSH sandbox needs it at
           # boot; requires the ish build above (fakefsify). Stub zip breaks
           # sandbox init with "Failed to open zip archive".
