@@ -887,9 +887,9 @@ final class CCPocketClient: @unchecked Sendable {
         for input in queued {
             let message = CCPocketProtocol.InputRequest(
                 text: input.text,
-                images: input.images,
                 sessionId: input.sessionId ?? sessionId,
-                clientMessageId: input.clientMessageId
+                clientMessageId: input.clientMessageId,
+                images: input.images
             )
             // Fire-and-forget within the reconnect flow; failures re-queue
             // so a message is never dropped.
