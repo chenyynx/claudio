@@ -829,6 +829,14 @@ fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
 
 private let remoteSyntheticIdPrefix = "rbrid."
 
+/// [Session sync] Master switch for merging Bridge-only remote rows (live
+/// broadcast + recent index) into the sidebar. TEMPORARILY DISABLED
+/// (pp 2026-09-02): the sync feature shipped with known bugs (blank chat
+/// on broadcast rows, click-jumps-to-top, list flashing). Re-enable when
+/// the fixes land; already-materialized remote sessions (real local rows)
+/// keep working — only new synthetic rows stop appearing.
+private let remoteSessionSyncEnabled = false
+
 /// A synthetic list row for a Bridge session that has no local row yet
 /// (sessions started from other clients, e.g. the WeChat bridge).
 fileprivate func isSyntheticRemoteSession(_ session: ChatSession) -> Bool {
@@ -869,6 +877,7 @@ fileprivate func inferRemoteSessionCategory(from text: String?) -> String {
 /// remote for the ☁ badge / routing without a stored binding.
 @MainActor
 fileprivate func mergedWithRemoteRows(_ local: [ChatSession]) -> [ChatSession] {
+    guard remoteSessionSyncEnabled else { return local }
     let store = ProviderConfigStore.shared
     guard let instance = store.instances.first(where: {
         $0.providerType == .remoteAgent && $0.isEnabled
@@ -927,6 +936,7 @@ fileprivate func syntheticRow(from info: BridgeRemoteSessionEntry, modelId: Stri
 /// rebuilt per broadcast.)
 @MainActor
 fileprivate func applyRemoteInventoryToSessions(_ current: [ChatSession]) -> [ChatSession] {
+    guard remoteSessionSyncEnabled else { return current }
     let store = ProviderConfigStore.shared
     guard let instance = store.instances.first(where: {
         $0.providerType == .remoteAgent && $0.isEnabled
@@ -1877,8 +1887,10 @@ struct ContentView: View {
             // [Session sync] Pull the Bridge's recent-session index so
             // remote-only sessions appear in the list (live ones arrive via
             // the session_list broadcast on any connection). Fire-and-forget:
-            // must not block the first-paint loads below.
-            if let instance = ProviderConfigStore.shared.instances.first(where: {
+            // must not block the first-paint loads below. Skipped while the
+            // sync feature is disabled (remoteSessionSyncEnabled).
+            if remoteSessionSyncEnabled,
+               let instance = ProviderConfigStore.shared.instances.first(where: {
                 $0.providerType == .remoteAgent && $0.isEnabled
             }) {
                 Task {
@@ -6941,25 +6953,11 @@ private struct SessionRow: View, Equatable {
 
     @ViewBuilder
     private var providerIcon: some View {
-        // [Remote agent avatar] Remote (Bridge) agent sessions render the
-        // app icon as their avatar so they read as "the app's own agent"
-        // at a glance, circular to match the row's avatar slot. Same asset
-        // lookup chain as AboutView (single-size 1024 AppIcon set, with
-        // the legacy 60pt name as fallback).
-        if remoteAgentInstanceID(for: session) != nil,
-           let appIcon = UIImage(named: "AppIcon60x60") ?? UIImage(named: "AppIcon") {
-            Image(uiImage: appIcon)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 44, height: 44)
-                .clipShape(Circle())
-        } else {
-            let icon = categoryIcon
-            let size: CGFloat = (icon.systemName == "bubble.left.fill" || icon.systemName == "terminal.fill") ? 18 : 20
-            Image(systemName: icon.systemName)
-                .font(.system(size: size))
-                .foregroundStyle(icon.color)
-        }
+        let icon = categoryIcon
+        let size: CGFloat = (icon.systemName == "bubble.left.fill" || icon.systemName == "terminal.fill") ? 18 : 20
+        Image(systemName: icon.systemName)
+            .font(.system(size: size))
+            .foregroundStyle(icon.color)
     }
 
     private var iconBackgroundColor: Color {
@@ -7748,7 +7746,7 @@ private struct SettingsSheet: View {
             List {
                 Section {
                     NavigationLink {
-                        ProviderInstancesView()
+                        ProviderInstancesView().settingsPaletteBackground()
                     } label: {
                         if #available(iOS 26, *) {
                             Label("Manage Providers", systemImage: "key.circle.fill")
@@ -7758,13 +7756,13 @@ private struct SettingsSheet: View {
                     }
 
                     NavigationLink {
-                        ModelGroupsView()
+                        ModelGroupsView().settingsPaletteBackground()
                     } label: {
                         Label("Model Groups", systemImage: "gearshape.circle.fill")
                     }
 
                     NavigationLink {
-                        UsageStatsView()
+                        UsageStatsView().settingsPaletteBackground()
                     } label: {
                         Label("Token Usage", systemImage: "chart.line.uptrend.xyaxis.circle.fill")
                     }
@@ -7776,7 +7774,7 @@ private struct SettingsSheet: View {
 
                 Section("Appearance") {
                     NavigationLink {
-                        AppearanceSettingsView()
+                        AppearanceSettingsView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("Appearance")
@@ -7792,7 +7790,7 @@ private struct SettingsSheet: View {
 
                 Section("Agent Runtime") {
                     NavigationLink {
-                        SkillsManagementView()
+                        SkillsManagementView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("Skills")
@@ -7805,7 +7803,7 @@ private struct SettingsSheet: View {
                         }
                     }
                     NavigationLink {
-                        SoulSettingsView()
+                        SoulSettingsView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("Soul")
@@ -7818,7 +7816,7 @@ private struct SettingsSheet: View {
                         }
                     }
                     NavigationLink {
-                        MemoryManagementView()
+                        MemoryManagementView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("Memory")
@@ -7831,7 +7829,7 @@ private struct SettingsSheet: View {
                         }
                     }
                     NavigationLink {
-                        MCPIntegrationsView()
+                        MCPIntegrationsView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("MCP Integrations")
@@ -7844,7 +7842,7 @@ private struct SettingsSheet: View {
                         }
                     }
                     NavigationLink {
-                        EnvironmentVariablesView()
+                        EnvironmentVariablesView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("Environment Variables")
@@ -7860,7 +7858,7 @@ private struct SettingsSheet: View {
 
                 Section("Storage") {
                     NavigationLink {
-                        StorageManagementView()
+                        StorageManagementView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("Storage")
@@ -7873,7 +7871,7 @@ private struct SettingsSheet: View {
                         }
                     }
                     NavigationLink {
-                        SharedFoldersSettingsView()
+                        SharedFoldersSettingsView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("Shared Folders")
@@ -7886,7 +7884,7 @@ private struct SettingsSheet: View {
                         }
                     }
                     NavigationLink {
-                        MountedFoldersSettingsView()
+                        MountedFoldersSettingsView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("Mount External Folders")
@@ -7902,7 +7900,7 @@ private struct SettingsSheet: View {
                         NavigationLink {
                             // v2 is the default sync engine; legacy v1
                             // settings page is unreachable from here.
-                            CloudSyncSettingsV2View()
+                            CloudSyncSettingsV2View().settingsPaletteBackground()
                         } label: {
                             Label {
                                 Text("iCloud Sync")
@@ -7919,7 +7917,7 @@ private struct SettingsSheet: View {
 
                 Section("Permissions") {
                     NavigationLink {
-                        OffloadPermissionSettingsView()
+                        OffloadPermissionSettingsView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("Permissions")
@@ -7952,7 +7950,7 @@ private struct SettingsSheet: View {
 
                 Section("Logs") {
                     NavigationLink {
-                        LogManagementView()
+                        LogManagementView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("Logs")
@@ -7968,7 +7966,7 @@ private struct SettingsSheet: View {
 
                 Section("About") {
                     NavigationLink {
-                        AboutView()
+                        AboutView().settingsPaletteBackground()
                     } label: {
                         Label {
                             Text("About Minis")
@@ -8030,51 +8028,56 @@ private struct SettingsSheet: View {
             .navigationDestination(for: SettingsDestination.self) { dest in
                 switch dest {
                 case .providers:
-                    ProviderInstancesView()
+                    ProviderInstancesView().settingsPaletteBackground()
                 case .providerDetail(let id):
-                    ProviderInstanceDetailView(instanceId: id)
+                    ProviderInstanceDetailView(instanceId: id).settingsPaletteBackground()
                 case .modelGroups:
-                    ModelGroupsView()
+                    ModelGroupsView().settingsPaletteBackground()
                 case .modelGroupDetail(let id):
-                    ModelGroupDetailView(groupId: id)
+                    ModelGroupDetailView(groupId: id).settingsPaletteBackground()
                 case .usage:
-                    UsageStatsView()
+                    UsageStatsView().settingsPaletteBackground()
                 case .skills:
-                    SkillsManagementView()
+                    SkillsManagementView().settingsPaletteBackground()
                 case .memory:
-                    MemoryManagementView()
+                    MemoryManagementView().settingsPaletteBackground()
                 case .storage:
-                    StorageManagementView()
+                    StorageManagementView().settingsPaletteBackground()
                 case .mountedFolders:
-                    MountedFoldersSettingsView()
+                    MountedFoldersSettingsView().settingsPaletteBackground()
                 case .sharedFolders:
-                    SharedFoldersSettingsView()
+                    SharedFoldersSettingsView().settingsPaletteBackground()
                 case .logs:
                     // Pull a one-shot tab hint from the deep link router
                     // (e.g. `?tab=config-audit`). LogManagementView clears
                     // its local state independently; the published value
                     // here is consumed once and reset to nil.
-                    LogManagementView(initialTab: deepLink.pendingLogsTab ?? "logs")
+                    LogManagementView(initialTab: deepLink.pendingLogsTab ?? "logs").settingsPaletteBackground()
                         .onAppear { deepLink.pendingLogsTab = nil }
                 case .appearance:
-                    AppearanceSettingsView()
+                    AppearanceSettingsView().settingsPaletteBackground()
                 case .background:
-                    EnhancedBackgroundSettingsView()
+                    EnhancedBackgroundSettingsView().settingsPaletteBackground()
                 case .about:
-                    AboutView()
+                    AboutView().settingsPaletteBackground()
                 case .environments:
-                    EnvironmentVariablesView()
+                    EnvironmentVariablesView().settingsPaletteBackground()
                 case .permissions:
-                    OffloadPermissionSettingsView()
+                    OffloadPermissionSettingsView().settingsPaletteBackground()
                 // [T-mcp-oauth-deeplink] Detail = the list view told to open
                 // the server's edit sheet on appear; a deleted/unknown server
                 // just lands on the list (no crash, sensible fallback).
                 case .mcpIntegrations:
-                    MCPIntegrationsView()
+                    MCPIntegrationsView().settingsPaletteBackground()
                 case .mcpServerDetail(let serverId):
-                    MCPIntegrationsView(initialEditServerId: serverId)
+                    MCPIntegrationsView(initialEditServerId: serverId).settingsPaletteBackground()
                 }
             }
+            // [Fix] Settings page background = session-open sheet background
+            // (ClaudePalette.background, pp 2026-09-02) — hide the system
+            // grouped gray so the sheet reads as one ivory surface.
+            .scrollContentBackground(.hidden)
+            .background(ClaudePalette.background)
             .onAppear {
                 applyPendingDeepLink()
                 // Legacy flags — kept so older call sites keep working.
