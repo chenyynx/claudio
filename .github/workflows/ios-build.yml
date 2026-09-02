@@ -69,14 +69,15 @@ jobs:
           # sandbox init with "Failed to open zip archive".
           ./deps/prepare_alpine_rootfs.sh
 
-      - name: Pin Xcode 26.4.1 (stable)
-        # macos-26 default Xcode moved 26.5 -> 26.6 on 2026-07-21 (runner-images
-        # #14344). On this codebase xcodebuild under 26.6 dies SILENTLY mid-build
-        # (no error output, ibtoold orphans — OOM signature). Pin the last
-        # stable release so the build is reproducible across runner-image
-        # rollouts. 3 consecutive failures on 2026-09-01 (3e78947) with 26.6.
+      - name: Pin Xcode 26.6 (latest stable, retest 2026-09-03)
+        # [doris 2026-09-03] v1.13 merge type-check 30min 超时（f94d271），
+        # 升 26.6 看新编译器是否解决。上次 3e78947 失败是 8 月初 OOM，
+        # 中间可能已修复；若再 OOM 即回退 26.2 + 走拆 ContentView 方案。
+        # 历史：macos-26 default 26.5 -> 26.6 on 2026-07-21 (runner-images
+        # #14344)；3 consecutive failures on 2026-09-01 (3e78947) with 26.6
+        # 是 ibtoold OOM（8.6k 行 ContentView WMO 撞上限）。
         run: |
-          sudo xcode-select -s /Applications/Xcode_26.2.app
+          sudo xcode-select -s /Applications/Xcode_26.6.app
           xcodebuild -version
 
       - name: Signing diagnostics
