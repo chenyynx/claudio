@@ -27,21 +27,23 @@ struct ClaudeSessionOptions: Equatable {
 }
 
 /// Official Anthropic design tokens, extracted from the live anthropic.com
-/// stylesheet (2026-09-02): ivory-light #FAF9F5 (page background), slate-dark
-/// #141413 (text + primary button), cloud-dark #87867F (secondary text),
+/// stylesheet (2026-09-02; light surfaces hue-neutralized same day per pp —
+/// the ivory read too yellow on device): page bg #F7F7F5, slate-dark
+/// #141413 (text + primary button), cloud-dark #868684 (secondary text),
 /// borders slate @10%, and the app-level accent orange #D97757. Dark-mode
 /// surfaces follow the Claude app (#262624 background / #30302E cards).
 enum ClaudePalette {
-    static let background = dynamic(0xFAF9F5, 0x262624)
+    static let background = dynamic(0xF7F7F5, 0x262624)
     static let card = dynamic(0xFFFFFF, 0x30302E)
     static let textPrimary = dynamic(0x141413, 0xFAF9F5)
-    static let textSecondary = dynamic(0x87867F, 0xB0AEA5)
+    static let textSecondary = dynamic(0x868684, 0xB0AEA5)
     static let accent = Color(UIColor(hex: 0xD97757))
     static let ctaBackground = dynamic(0x141413, 0xFAF9F5)
     static let ctaForeground = dynamic(0xFAF9F5, 0x141413)
-    /// Official card fill — one step darker than the page ivory, flat and
-    /// borderless (anthropic.com ivory-medium #F0EEE6).
-    static let cardFill = dynamic(0xF0EEE6, 0x30302E)
+    /// Card fill — one step darker than the page background, flat and
+    /// borderless (was anthropic.com ivory-medium #F0EEE6; hue neutralized —
+    /// pp: too yellow on device, 2026-09-02).
+    static let cardFill = dynamic(0xF0F0EE, 0x30302E)
     /// Selection/link blue — the official app marks the chosen row and
     /// inline links with a calm blue rather than the brand orange.
     static let selectionBlue = dynamic(0x4A90D9, 0x6FB1E8)
