@@ -1856,147 +1856,7 @@ struct ContentView: View {
             }
         }
         .task {
-            sessions = mergedWithRemoteRows(await ChatStore.shared.listSessions())
-            // [Session sync] Pull the Bridge's recent-session index so
-            // remote-only sessions appear in the list (live ones arrive via
-            // the session_list broadcast on any connection). Fire-and-forget:
-            // must not block the first-paint loads below. Skipped while the
-            // sync feature is disabled (remoteSessionSyncEnabled).
-            if remoteSessionSyncEnabled,
-               let instance = ProviderConfigStore.shared.instances.first(where: {
-                $0.providerType == .remoteAgent && $0.isEnabled
-            }) {
-                Task {
-                    await CCPocketClient.refreshBridgeInventory(instanceID: instance.id)
-                }
-            }
-            // Folders must load WITH the first session batch: groupedSessionIDs
-            // treats a folder_id whose folder isn't loaded as an orphan and
-            // renders the session ungrouped, so a first paint with sessions
-            // but no folders shows a flat list and the folder cards only
-            // "appear after a while" (whenever refreshSessionList next ran —
-            // the exact symptom reported from the Mac build).
-            folders = await ChatStore.shared.listFolders()
-            let shareAlreadyHandled = shareCoordinator.bufferVersion > 0
-            // A Home Screen Quick Action that fired during launch will
-            // open the right session itself via `quickActionRouter.newChatTrigger`.
-            // Skip the Launch Session logic so we don't open a second,
-            // conflicting session (the "last session" / "new chat"
-            // launchScreen branch races the shortcut and the user ends
-            // up watching one view replaced by the other).
-            // Two signals indicate a quick-action launch is in flight:
-            //   1. Router bumped newChatTrigger but ContentView hasn't
-            //      consumed it yet (race: .task runs before .onAppear).
-            //   2. QuickActionWorkflow is past .idle — router already
-            //      called start(), workflow owns the next session to
-            //      open. Even if (1) flipped because .onAppear already
-            //      ran and consumed the trigger, the workflow is still
-            //      mid-flight and the launch session would clobber it.
-            let workflowActive: Bool = {
-                if case .idle = QuickActionWorkflow.shared.state { return false }
-                return true
-            }()
-            let quickActionPending = quickActionRouter.newChatTrigger != consumedQuickActionTrigger || workflowActive
-            shareLog.info("[Share] .task: hasPendingShare=\(shareCoordinator.hasPendingShare) launchScreen=\(launchScreen) sessions=\(sessions.count) bufferVersion=\(shareCoordinator.bufferVersion) shareAlreadyHandled=\(shareAlreadyHandled) quickActionPending=\(quickActionPending) workflowActive=\(workflowActive)")
-
-            // [T-notification-tap-vs-launch-session] A notification tap's
-            // explicit target session outranks every launch-screen default.
-            // Cold launch: didReceive fired before our .onReceive subscriber
-            // existed, so the post was lost — the buffered copy is the only
-            // surviving signal. Consume it and navigate. Warm-ish overlap: the
-            // post arrived while this .task was awaiting listSessions() and
-            // .onReceive already navigated — handledRecently suppresses the
-            // launch-screen default so it can't clobber that navigation.
-            if let notificationTarget = NotificationNavigationStore.shared.takePending() {
-                shareLog.info("[Share] .task: notification tap target=\(notificationTarget.prefix(8)) — overriding launchScreen logic")
-                var tx = Transaction()
-                tx.disablesAnimations = true
-                withTransaction(tx) { openSession(notificationTarget) }
-            } else if NotificationNavigationStore.shared.handledRecently {
-                shareLog.info("[Share] .task: notification navigation just handled — skipping launchScreen logic")
-            } else if quickActionPending {
-                shareLog.info("[Share] .task: quick action pending — deferring launchScreen logic to QuickActionRouter")
-            } else if shareAlreadyHandled {
-                // onChange(hasPendingShare) already processed the share and
-                // opened a new session before .task ran. Skip normal launch
-                // screen logic so we don't clobber it with a different session.
-                shareLog.info("[Share] .task: share already handled by onChange — skipping launchScreen logic")
-            } else if shareCoordinator.hasPendingShare {
-                // onChange hasn't fired yet (e.g. onOpenURL arrived during await).
-                // Process share here and open a new session for it.
-                shareLog.info("[Share] .task: processing pending share")
-                processPendingShare()
-                shareLog.info("[Share] .task: buffer stored, bufferVersion=\(shareCoordinator.bufferVersion) buffer=\(shareCoordinator.pendingShareBuffer != nil)")
-                // [T-share-routes-to-background-session] Cold launch: nothing is
-                // on screen yet (this branch runs before any launch-screen
-                // navigation), so the "foreground session" the warm path looks
-                // for does not exist and a new session IS the right
-                // destination. It is still stamped onto the buffer, which is
-                // what stops a session restored moments later — e.g. the
-                // Launch-Session default, or a chat resuming an agent loop —
-                // from mounting first and swallowing the share.
-                let target = Self.makeNewSessionId()
-                shareCoordinator.setBufferTarget(target)
-                shareLog.info("[Share] .task: cold launch — opening new session \(target.prefix(16)) for share")
-                var tx = Transaction()
-                tx.disablesAnimations = true
-                withTransaction(tx) { openSession(target) }
-            } else if CrashReporter.shared.shouldBypassSessionRestore {
-                // [T-ios-session-crash-loop] The last two launches both died in
-                // the foreground within a minute of each other — the signature
-                // of a session that faults while loading and is then re-opened
-                // automatically on the next launch, which the user cannot
-                // escape from inside the app (they can reach neither Settings
-                // to change the launch screen nor the list to delete it).
-                //
-                // Open nothing: fall through to the session list so the app is
-                // usable again. Deliberately placed AFTER the notification-tap
-                // and share branches — those are explicit, just-expressed user
-                // intent, and a stale crash flag must not swallow them.
-                CrashReporter.shared.clearCrashLoopFlag()
-                shareLog.warning("[Share] .task: crash-loop detected — skipping session restore, landing on the session list")
-            } else {
-                // No share — normal launch screen behavior
-                switch launchScreen {
-                case 1:
-                    if let latest = sessions.first {
-                        var tx = Transaction()
-                        tx.disablesAnimations = true
-                        withTransaction(tx) { openSession(latest.id) }
-                    }
-                case 2:
-                    var tx = Transaction()
-                    tx.disablesAnimations = true
-                    withTransaction(tx) { openSession(Self.makeNewSessionId()) }
-                case 3:
-                    break
-                default:
-                    if !sessions.isEmpty,
-                       let latest = sessions.first,
-                       Date().timeIntervalSince(latest.updatedAt) > 15 * 60 {
-                        var tx = Transaction()
-                        tx.disablesAnimations = true
-                        withTransaction(tx) { openSession(Self.makeNewSessionId()) }
-                    } else if isWideLayout, let latest = sessions.first {
-                        var tx = Transaction()
-                        tx.disablesAnimations = true
-                        withTransaction(tx) { openSession(latest.id) }
-                    }
-                }
-            }
-            // iPad split launch: every launchScreen branch above has resolved
-            // by now, so if the restored selection lives inside a collapsed
-            // folder, expand that folder (accordion — closes the others) so
-            // the selected row is actually visible in the sidebar instead of
-            // hidden behind a collapsed card.
-            if isWideLayout, let sid = selectedSessionId,
-               let fid = sessions.first(where: { $0.id == sid })?.folderId,
-               collapsedFolderIds.contains(fid) {
-                toggleFolderCollapsed(fid)
-            }
-            didInitialLoad = true
-            fetchAlarmsIfNeeded()
-            await refreshRemoteDeviceSessions()
+            await performInitialLoad()
         }
         .onReceive(NotificationCenter.default.publisher(for: .cloudSyncDidFetchChanges)) { _ in
             // [T-ios-state-publish-offmain-crash] cloud-sync fetch fires off-main;
@@ -2013,209 +1873,13 @@ struct ContentView: View {
             rebuildSessionsByIdCache()
         }
         .onChange(of: selectedSessionId) { newValue in
-            // [T-ios-session-switch-attributegraph-race] Hosting-view race
-            // mitigation: when the user switches between two sessions while
-            // both vms are mid-stream, the outgoing AIChatView's UIHostingView
-            // subgraph is being torn down at the same instant the new
-            // session's hosting views are mounting. A concurrent mutation on
-            // the outgoing vm (any @Published delta, scroll signal, etc.)
-            // races with `AG::Subgraph::NodeCache::~NodeCache` on the same
-            // AsyncRenderer thread → EXC_BAD_ACCESS (build-48 crash
-            // Minis-2026-06-01-134710.ips). Suspend the outgoing vm here,
-            // then schedule a resume on a short delay so when the user comes
-            // back to that session everything catches up. Run before the
-            // redirect/tracking-clear logic so we always pin the right id.
-            // [T-ios-session-coldload-listsessions-block] Were we leaving a real
-            // (persisted, non-new) session? Only then can its list-row preview
-            // have drifted and need a navigation-time refresh. Captured before
-            // previousSelectedSessionId is overwritten below.
-            let hadOutgoingRealSession: Bool = {
-                guard let outgoing = previousSelectedSessionId, outgoing != newValue else { return false }
-                return !Self.isNewSessionId(outgoing)
-            }()
-            if let outgoingId = previousSelectedSessionId, outgoingId != newValue {
-                if let outgoingVm = ViewModelCache.shared.get(for: outgoingId) {
-                    outgoingVm.setSuspendedForTransition(true)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak outgoingVm] in
-                        outgoingVm?.setSuspendedForTransition(false)
-                    }
-                }
-            }
-            previousSelectedSessionId = newValue
-            if let sid = newValue {
-                SessionBadgeStore.shared.remove(.unread, for: sid)
-                AIChatViewModel.activeSessionId = sid
-            } else {
-                AIChatViewModel.activeSessionId = nil
-            }
-            draftLog.info("🔑DRAFT onChange(selectedSessionId) newValue=\(newValue ?? "nil") realId=\(newSessionRealId ?? "nil") draftId=\(activeDraftId ?? "nil")")
-            // If user taps the real session row that was created from a draft,
-            // redirect back to the draft ID to preserve the AIChatView instance.
-            if let realId = newSessionRealId, newValue == realId,
-               let draftId = activeDraftId {
-                draftLog.info("🔑DRAFT onChange REDIRECT to draftId=\(draftId)")
-                selectedSessionId = draftId
-                return
-            }
-            // Clear new-session tracking when navigating to a different session
-            if !Self.isNewSessionId(newValue) {
-                draftLog.info("🔑DRAFT onChange CLEAR tracking (non-draft)")
-                newSessionRealId = nil
-                activeDraftId = nil
-            }
-            // iPad: detail cleared (newValue == nil) — if a quick-action
-            // workflow is ensuring-home, advance it now.
-            if newValue == nil, case .ensuringHome = QuickActionWorkflow.shared.state {
-                QuickActionWorkflow.shared.markHome()
-            }
-            // [T-ios-search-focus-sticky] iPad split: selecting a session (or
-            // new chat) with an empty search drops the sticky search bar.
-            if newValue != nil {
-                dismissSearchIfEmptyOnNavigate()
-            }
-            // [T-ios-session-coldload-listsessions-block] Only refresh the list
-            // when LEAVING a real session — that outgoing session's preview may
-            // have changed while the user was inside it. Entering never changes
-            // existing rows. Even so, this listSessions() is a ~1.4s full scan
-            // on a large DB and, on the serialized ChatStore actor, is
-            // non-preemptible — if it starts before the incoming session's
-            // loadSession() reaches its 2nd actor hop (getMemoryEnabled →
-            // loadMessages), that hop waits the whole scan out and the spinner
-            // hangs ~1.5s. So DELAY the outgoing-preview refresh well past the
-            // incoming load (which completes in ~50-150ms) instead of racing it
-            // onto the actor. Content changes are already covered by
-            // .sessionDidUpdate / .sessionDidCreate / .cloudSyncDidFetchChanges
-            // / pin / delete / edit, so this delayed refresh is belt-and-braces.
-            if hadOutgoingRealSession {
-                scheduleOutgoingPreviewRefresh()
-            }
+            handleSelectedSessionChange(newValue)
         }
         .onChange(of: navigationPath) { _ in
-            // [T-ios-stacknav-transition-attributegraph-race] The SAME hosting-
-            // view teardown race the `selectedSessionId` observer above guards
-            // — but that observer only fires in the SPLIT (iPad / wide) layout.
-            // iPhone drives navigation through `navigationPath`, so the
-            // outgoing chat's vm was NEVER suspended for a push/pop, and the
-            // mitigation added for the 2026-06-01 build-48 crash simply did not
-            // exist on the compact path.
-            //
-            // Crash 2026-08-10 19:23 (Minis 1.12(1), iOS 26.5.2, iPhone18,1 —
-            // a STACK-layout device): EXC_BAD_ACCESS at 0xffffffff00000000 in
-            // AG::Subgraph::~Subgraph → NodeCache::~NodeCache, reached from
-            // `NavigationStackCoordinator.navigationController(_:willShow:)` →
-            // `ejectDeferred/sanitize` → `replaceRootViewWhenSafe` → a
-            // synchronous `ViewGraph.updateOutputs` inside the UIKit
-            // transition-completion callback. The device log shows exactly the
-            // documented precondition: the agent loop kept streaming straight
-            // through the transition and PAST the view's teardown —
-            //
-            //   19:23:26.731  chat slides offscreen (x=402…804, transition starts)
-            //   19:23:26.735  [TOOL:STREAMING] shell_execute …
-            //   19:23:27.138  [TOOL:STREAMING] …
-            //   19:23:27.213  AIChatView.onDisappear vm.isProcessing=true
-            //   19:23:27.349  [TOOL:STREAMING] …   (still mutating after teardown)
-            //
-            // so @Published deltas were feeding a subgraph while UIKit was
-            // invalidating it. Suspend the outgoing vm for the transition,
-            // exactly as the split path does, and resume on the same 0.4s
-            // delay so the session catches up when the user returns.
-            //
-            // The outgoing id is tracked separately (`previousStackSessionId`)
-            // rather than read from `currentStackSessionId` — see that
-            // property's doc-comment for why the latter is already the INCOMING
-            // id by the time this observer runs.
-            // The incoming id is `currentStackSessionId` only while the path is
-            // NON-empty; a pop to the session list leaves it momentarily stale
-            // (it is cleared further down in this same handler), so an empty
-            // path means "incoming = nothing" and the outgoing vm must still be
-            // suspended. Getting this wrong would skip the pop — which is the
-            // exact transition the crash log captured.
-            let incomingStackId: String? = navigationPath.isEmpty ? nil : currentStackSessionId
-            let outgoingStackId = previousStackSessionId
-            previousStackSessionId = incomingStackId
-            if let outgoingId = outgoingStackId,
-               outgoingId != incomingStackId,
-               let outgoingVm = ViewModelCache.shared.get(for: outgoingId) {
-                outgoingVm.setSuspendedForTransition(true)
-                // Unconditional resume on the same 0.4s delay the split path
-                // uses. `weak` so a deallocated vm simply drops it, and
-                // `setSuspendedForTransition` is guarded on an actual change,
-                // so overlapping transitions cannot leave the flag stuck.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak outgoingVm] in
-                    outgoingVm?.setSuspendedForTransition(false)
-                }
-            }
-            // [T-ios-search-focus-sticky] iPhone stack: pushing into a session
-            // (or new chat) with an empty search drops the sticky search bar.
-            // Only on push (path non-empty) — popping back must NOT clear an
-            // active search the user is returning to.
-            if !navigationPath.isEmpty {
-                dismissSearchIfEmptyOnNavigate()
-            }
-            if navigationPath.isEmpty {
-                currentStackSessionId = nil
-                AIChatViewModel.activeSessionId = nil
-                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                // If a quick-action workflow asked us to ensure-home,
-                // we're there now — let it advance to pendingDispatch.
-                if case .ensuringHome = QuickActionWorkflow.shared.state {
-                    QuickActionWorkflow.shared.markHome()
-                }
-            }
-            // [T-ios-session-coldload-listsessions-block] Only refresh when
-            // popping back to home (path emptied) — that's when a preview that
-            // changed inside the session the user just left needs to show. On
-            // PUSH (entering a session, the cold-open hot path) this scan only
-            // head-of-line-blocked loadSession on the ChatStore actor. Delayed
-            // so it never races the incoming load's actor hops.
-            if navigationPath.isEmpty {
-                scheduleOutgoingPreviewRefresh()
-            }
-            fetchAlarmsIfNeeded()
+            handleNavigationPathChange()
         }
         .onChange(of: shareCoordinator.hasPendingShare) { hasPending in
-            if hasPending {
-                let hadRecord = SharedContainerStore.loadPendingShare() != nil
-                processPendingShare()
-                // [T-share-double-raise] Only navigate when this raise actually
-                // carried content. A duplicate raise finds the record already
-                // consumed; opening a second blank session for it would replace
-                // the one the first pass just populated.
-                //
-                // [T-share-routes-to-background-session] Route to the chat the
-                // user is LOOKING AT, and only open a new session when there
-                // isn't one.
-                //
-                // The bug this fixes was never "a share reached an open chat" —
-                // it was a share reaching a chat the user was NOT looking at.
-                // Device log 2026-08-18 23:55:42: the file landed in session
-                // 87B79110, mid-agent-run in the BACKGROUND, purely because
-                // that view happened to be mounted; nothing checked whether the
-                // share was meant for it.
-                //
-                // So the destination is decided here, explicitly, and stamped
-                // onto the buffer — a foreground chat when there is one, a
-                // fresh session otherwise — and only that destination's view is
-                // allowed to consume it (see injectPendingShareIfNeeded).
-                // `navigationPath.isEmpty ? nil : currentStackSessionId` is the
-                // same "what is actually on screen" test the outgoing-session
-                // tracker at line ~1879 uses.
-                if hadRecord {
-                    let foreground: String? = navigationPath.isEmpty ? nil : currentStackSessionId
-                    if let foreground {
-                        // Already on screen — stamp it and navigate nowhere.
-                        shareCoordinator.setBufferTarget(foreground)
-                        shareLog.info("[Share] onChange: routing share into the foreground session \(foreground.prefix(16)) (no navigation needed)")
-                    } else {
-                        let target = Self.makeNewSessionId()
-                        shareCoordinator.setBufferTarget(target)
-                        shareLog.info("[Share] onChange: no session on screen — opening new session \(target.prefix(16)) for share")
-                        var tx = Transaction()
-                        tx.disablesAnimations = true
-                        withTransaction(tx) { openSession(target) }
-                    }
-                }
-            }
+            handlePendingShareChange(hasPending)
         }
         .onChange(of: deepLink.showEnvironmentVariables) { show in
             if show {
@@ -2258,50 +1922,7 @@ struct ContentView: View {
             deepLink.pendingSessionId = nil
         }
         .onChange(of: scenePhase) { phase in
-            // [T-ios-scenephase-active-sigkill] Defer ALL .active work off the
-            // synchronous callback. Writing @Published (SyncCore.isAppInBackground)
-            // here triggers objectWillChange → SwiftUI view invalidation in the
-            // same runloop tick as the foreground view-graph re-evaluation → SIGTRAP.
-            if phase == .active {
-                Task { @MainActor in
-                    await Task.yield()
-                    // Guard against rapid bg→fg→bg: if scenePhase already
-                    // changed back, skip the stale .active work.
-                    guard scenePhase == .active else { return }
-                    // [T-ios-bg-nav-push-watchdog] Commit any push that arrived
-                    // while backgrounded. Runs here — after the `Task.yield()`
-                    // that keeps .active work off the synchronous callback — so
-                    // the pushed screen's first layout pass lands on its own
-                    // runloop turn with a full frame budget, never inside the
-                    // foreground-transition tick.
-                    flushPendingBackgroundNavigation()
-                    fetchAlarmsIfNeeded()
-                    if #available(iOS 17.0, *) {
-                        SyncCore.shared.isAppInBackground = false
-                    }
-                    #if DEBUG
-                    UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
-                    #endif
-                    // [T-home-fab-keyboard-inset] Defense-in-depth behind the
-                    // structural .ignoresSafeArea immunity on the session lists:
-                    // on foreground return with the HOME screen actually showing
-                    // (no pushed chat on compact, no selected session on split —
-                    // a split chat column may legitimately hold composer focus)
-                    // and the inline search bar not focused, no responder is
-                    // legitimate. Resign whatever UIKit resurrected during the
-                    // background snapshot pass so its stale keyboard inset can't
-                    // inflate the window's bottom safe area.
-                    if !searchFocused, navigationPath.isEmpty, selectedSessionId == nil {
-                        UIApplication.shared.sendAction(
-                            #selector(UIResponder.resignFirstResponder),
-                            to: nil, from: nil, for: nil)
-                    }
-                }
-            } else {
-                if #available(iOS 17.0, *) {
-                    SyncCore.shared.isAppInBackground = (phase != .active)
-                }
-            }
+            handleScenePhaseChange(phase)
         }
     }
 
@@ -2427,6 +2048,405 @@ struct ContentView: View {
             // same swallowed-push failure mode here.
             guard currentStackSessionId != sessionId else { return }
             switchToSession(sessionId)
+        }
+    }
+
+    private func performInitialLoad() async {
+        sessions = mergedWithRemoteRows(await ChatStore.shared.listSessions())
+        // [Session sync] Pull the Bridge's recent-session index so
+        // remote-only sessions appear in the list (live ones arrive via
+        // the session_list broadcast on any connection). Fire-and-forget:
+        // must not block the first-paint loads below. Skipped while the
+        // sync feature is disabled (remoteSessionSyncEnabled).
+        if remoteSessionSyncEnabled,
+           let instance = ProviderConfigStore.shared.instances.first(where: {
+            $0.providerType == .remoteAgent && $0.isEnabled
+        }) {
+            Task {
+                await CCPocketClient.refreshBridgeInventory(instanceID: instance.id)
+            }
+        }
+        // Folders must load WITH the first session batch: groupedSessionIDs
+        // treats a folder_id whose folder isn't loaded as an orphan and
+        // renders the session ungrouped, so a first paint with sessions
+        // but no folders shows a flat list and the folder cards only
+        // "appear after a while" (whenever refreshSessionList next ran —
+        // the exact symptom reported from the Mac build).
+        folders = await ChatStore.shared.listFolders()
+        let shareAlreadyHandled = shareCoordinator.bufferVersion > 0
+        // A Home Screen Quick Action that fired during launch will
+        // open the right session itself via `quickActionRouter.newChatTrigger`.
+        // Skip the Launch Session logic so we don't open a second,
+        // conflicting session (the "last session" / "new chat"
+        // launchScreen branch races the shortcut and the user ends
+        // up watching one view replaced by the other).
+        // Two signals indicate a quick-action launch is in flight:
+        //   1. Router bumped newChatTrigger but ContentView hasn't
+        //      consumed it yet (race: .task runs before .onAppear).
+        //   2. QuickActionWorkflow is past .idle — router already
+        //      called start(), workflow owns the next session to
+        //      open. Even if (1) flipped because .onAppear already
+        //      ran and consumed the trigger, the workflow is still
+        //      mid-flight and the launch session would clobber it.
+        let workflowActive: Bool = {
+            if case .idle = QuickActionWorkflow.shared.state { return false }
+            return true
+        }()
+        let quickActionPending = quickActionRouter.newChatTrigger != consumedQuickActionTrigger || workflowActive
+        shareLog.info("[Share] .task: hasPendingShare=\(shareCoordinator.hasPendingShare) launchScreen=\(launchScreen) sessions=\(sessions.count) bufferVersion=\(shareCoordinator.bufferVersion) shareAlreadyHandled=\(shareAlreadyHandled) quickActionPending=\(quickActionPending) workflowActive=\(workflowActive)")
+
+        // [T-notification-tap-vs-launch-session] A notification tap's
+        // explicit target session outranks every launch-screen default.
+        // Cold launch: didReceive fired before our .onReceive subscriber
+        // existed, so the post was lost — the buffered copy is the only
+        // surviving signal. Consume it and navigate. Warm-ish overlap: the
+        // post arrived while this .task was awaiting listSessions() and
+        // .onReceive already navigated — handledRecently suppresses the
+        // launch-screen default so it can't clobber that navigation.
+        if let notificationTarget = NotificationNavigationStore.shared.takePending() {
+            shareLog.info("[Share] .task: notification tap target=\(notificationTarget.prefix(8)) — overriding launchScreen logic")
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) { openSession(notificationTarget) }
+        } else if NotificationNavigationStore.shared.handledRecently {
+            shareLog.info("[Share] .task: notification navigation just handled — skipping launchScreen logic")
+        } else if quickActionPending {
+            shareLog.info("[Share] .task: quick action pending — deferring launchScreen logic to QuickActionRouter")
+        } else if shareAlreadyHandled {
+            // onChange(hasPendingShare) already processed the share and
+            // opened a new session before .task ran. Skip normal launch
+            // screen logic so we don't clobber it with a different session.
+            shareLog.info("[Share] .task: share already handled by onChange — skipping launchScreen logic")
+        } else if shareCoordinator.hasPendingShare {
+            // onChange hasn't fired yet (e.g. onOpenURL arrived during await).
+            // Process share here and open a new session for it.
+            shareLog.info("[Share] .task: processing pending share")
+            processPendingShare()
+            shareLog.info("[Share] .task: buffer stored, bufferVersion=\(shareCoordinator.bufferVersion) buffer=\(shareCoordinator.pendingShareBuffer != nil)")
+            // [T-share-routes-to-background-session] Cold launch: nothing is
+            // on screen yet (this branch runs before any launch-screen
+            // navigation), so the "foreground session" the warm path looks
+            // for does not exist and a new session IS the right
+            // destination. It is still stamped onto the buffer, which is
+            // what stops a session restored moments later — e.g. the
+            // Launch-Session default, or a chat resuming an agent loop —
+            // from mounting first and swallowing the share.
+            let target = Self.makeNewSessionId()
+            shareCoordinator.setBufferTarget(target)
+            shareLog.info("[Share] .task: cold launch — opening new session \(target.prefix(16)) for share")
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) { openSession(target) }
+        } else if CrashReporter.shared.shouldBypassSessionRestore {
+            // [T-ios-session-crash-loop] The last two launches both died in
+            // the foreground within a minute of each other — the signature
+            // of a session that faults while loading and is then re-opened
+            // automatically on the next launch, which the user cannot
+            // escape from inside the app (they can reach neither Settings
+            // to change the launch screen nor the list to delete it).
+            //
+            // Open nothing: fall through to the session list so the app is
+            // usable again. Deliberately placed AFTER the notification-tap
+            // and share branches — those are explicit, just-expressed user
+            // intent, and a stale crash flag must not swallow them.
+            CrashReporter.shared.clearCrashLoopFlag()
+            shareLog.warning("[Share] .task: crash-loop detected — skipping session restore, landing on the session list")
+        } else {
+            // No share — normal launch screen behavior
+            switch launchScreen {
+            case 1:
+                if let latest = sessions.first {
+                    var tx = Transaction()
+                    tx.disablesAnimations = true
+                    withTransaction(tx) { openSession(latest.id) }
+                }
+            case 2:
+                var tx = Transaction()
+                tx.disablesAnimations = true
+                withTransaction(tx) { openSession(Self.makeNewSessionId()) }
+            case 3:
+                break
+            default:
+                if !sessions.isEmpty,
+                   let latest = sessions.first,
+                   Date().timeIntervalSince(latest.updatedAt) > 15 * 60 {
+                    var tx = Transaction()
+                    tx.disablesAnimations = true
+                    withTransaction(tx) { openSession(Self.makeNewSessionId()) }
+                } else if isWideLayout, let latest = sessions.first {
+                    var tx = Transaction()
+                    tx.disablesAnimations = true
+                    withTransaction(tx) { openSession(latest.id) }
+                }
+            }
+        }
+        // iPad split launch: every launchScreen branch above has resolved
+        // by now, so if the restored selection lives inside a collapsed
+        // folder, expand that folder (accordion — closes the others) so
+        // the selected row is actually visible in the sidebar instead of
+        // hidden behind a collapsed card.
+        if isWideLayout, let sid = selectedSessionId,
+           let fid = sessions.first(where: { $0.id == sid })?.folderId,
+           collapsedFolderIds.contains(fid) {
+            toggleFolderCollapsed(fid)
+        }
+        didInitialLoad = true
+        fetchAlarmsIfNeeded()
+        await refreshRemoteDeviceSessions()
+    }
+
+    private func handleSelectedSessionChange(_ newValue: String?) {
+        // [T-ios-session-switch-attributegraph-race] Hosting-view race
+        // mitigation: when the user switches between two sessions while
+        // both vms are mid-stream, the outgoing AIChatView's UIHostingView
+        // subgraph is being torn down at the same instant the new
+        // session's hosting views are mounting. A concurrent mutation on
+        // the outgoing vm (any @Published delta, scroll signal, etc.)
+        // races with `AG::Subgraph::NodeCache::~NodeCache` on the same
+        // AsyncRenderer thread → EXC_BAD_ACCESS (build-48 crash
+        // Minis-2026-06-01-134710.ips). Suspend the outgoing vm here,
+        // then schedule a resume on a short delay so when the user comes
+        // back to that session everything catches up. Run before the
+        // redirect/tracking-clear logic so we always pin the right id.
+        // [T-ios-session-coldload-listsessions-block] Were we leaving a real
+        // (persisted, non-new) session? Only then can its list-row preview
+        // have drifted and need a navigation-time refresh. Captured before
+        // previousSelectedSessionId is overwritten below.
+        let hadOutgoingRealSession: Bool = {
+            guard let outgoing = previousSelectedSessionId, outgoing != newValue else { return false }
+            return !Self.isNewSessionId(outgoing)
+        }()
+        if let outgoingId = previousSelectedSessionId, outgoingId != newValue {
+            if let outgoingVm = ViewModelCache.shared.get(for: outgoingId) {
+                outgoingVm.setSuspendedForTransition(true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak outgoingVm] in
+                    outgoingVm?.setSuspendedForTransition(false)
+                }
+            }
+        }
+        previousSelectedSessionId = newValue
+        if let sid = newValue {
+            SessionBadgeStore.shared.remove(.unread, for: sid)
+            AIChatViewModel.activeSessionId = sid
+        } else {
+            AIChatViewModel.activeSessionId = nil
+        }
+        draftLog.info("🔑DRAFT onChange(selectedSessionId) newValue=\(newValue ?? "nil") realId=\(newSessionRealId ?? "nil") draftId=\(activeDraftId ?? "nil")")
+        // If user taps the real session row that was created from a draft,
+        // redirect back to the draft ID to preserve the AIChatView instance.
+        if let realId = newSessionRealId, newValue == realId,
+           let draftId = activeDraftId {
+            draftLog.info("🔑DRAFT onChange REDIRECT to draftId=\(draftId)")
+            selectedSessionId = draftId
+            return
+        }
+        // Clear new-session tracking when navigating to a different session
+        if !Self.isNewSessionId(newValue) {
+            draftLog.info("🔑DRAFT onChange CLEAR tracking (non-draft)")
+            newSessionRealId = nil
+            activeDraftId = nil
+        }
+        // iPad: detail cleared (newValue == nil) — if a quick-action
+        // workflow is ensuring-home, advance it now.
+        if newValue == nil, case .ensuringHome = QuickActionWorkflow.shared.state {
+            QuickActionWorkflow.shared.markHome()
+        }
+        // [T-ios-search-focus-sticky] iPad split: selecting a session (or
+        // new chat) with an empty search drops the sticky search bar.
+        if newValue != nil {
+            dismissSearchIfEmptyOnNavigate()
+        }
+        // [T-ios-session-coldload-listsessions-block] Only refresh the list
+        // when LEAVING a real session — that outgoing session's preview may
+        // have changed while the user was inside it. Entering never changes
+        // existing rows. Even so, this listSessions() is a ~1.4s full scan
+        // on a large DB and, on the serialized ChatStore actor, is
+        // non-preemptible — if it starts before the incoming session's
+        // loadSession() reaches its 2nd actor hop (getMemoryEnabled →
+        // loadMessages), that hop waits the whole scan out and the spinner
+        // hangs ~1.5s. So DELAY the outgoing-preview refresh well past the
+        // incoming load (which completes in ~50-150ms) instead of racing it
+        // onto the actor. Content changes are already covered by
+        // .sessionDidUpdate / .sessionDidCreate / .cloudSyncDidFetchChanges
+        // / pin / delete / edit, so this delayed refresh is belt-and-braces.
+        if hadOutgoingRealSession {
+            scheduleOutgoingPreviewRefresh()
+        }
+    }
+
+    private func handleNavigationPathChange() {
+        // [T-ios-stacknav-transition-attributegraph-race] The SAME hosting-
+        // view teardown race the `selectedSessionId` observer above guards
+        // — but that observer only fires in the SPLIT (iPad / wide) layout.
+        // iPhone drives navigation through `navigationPath`, so the
+        // outgoing chat's vm was NEVER suspended for a push/pop, and the
+        // mitigation added for the 2026-06-01 build-48 crash simply did not
+        // exist on the compact path.
+        //
+        // Crash 2026-08-10 19:23 (Minis 1.12(1), iOS 26.5.2, iPhone18,1 —
+        // a STACK-layout device): EXC_BAD_ACCESS at 0xffffffff00000000 in
+        // AG::Subgraph::~Subgraph → NodeCache::~NodeCache, reached from
+        // `NavigationStackCoordinator.navigationController(_:willShow:)` →
+        // `ejectDeferred/sanitize` → `replaceRootViewWhenSafe` → a
+        // synchronous `ViewGraph.updateOutputs` inside the UIKit
+        // transition-completion callback. The device log shows exactly the
+        // documented precondition: the agent loop kept streaming straight
+        // through the transition and PAST the view's teardown —
+        //
+        //   19:23:26.731  chat slides offscreen (x=402…804, transition starts)
+        //   19:23:26.735  [TOOL:STREAMING] shell_execute …
+        //   19:23:27.138  [TOOL:STREAMING] …
+        //   19:23:27.213  AIChatView.onDisappear vm.isProcessing=true
+        //   19:23:27.349  [TOOL:STREAMING] …   (still mutating after teardown)
+        //
+        // so @Published deltas were feeding a subgraph while UIKit was
+        // invalidating it. Suspend the outgoing vm for the transition,
+        // exactly as the split path does, and resume on the same 0.4s
+        // delay so the session catches up when the user returns.
+        //
+        // The outgoing id is tracked separately (`previousStackSessionId`)
+        // rather than read from `currentStackSessionId` — see that
+        // property's doc-comment for why the latter is already the INCOMING
+        // id by the time this observer runs.
+        // The incoming id is `currentStackSessionId` only while the path is
+        // NON-empty; a pop to the session list leaves it momentarily stale
+        // (it is cleared further down in this same handler), so an empty
+        // path means "incoming = nothing" and the outgoing vm must still be
+        // suspended. Getting this wrong would skip the pop — which is the
+        // exact transition the crash log captured.
+        let incomingStackId: String? = navigationPath.isEmpty ? nil : currentStackSessionId
+        let outgoingStackId = previousStackSessionId
+        previousStackSessionId = incomingStackId
+        if let outgoingId = outgoingStackId,
+           outgoingId != incomingStackId,
+           let outgoingVm = ViewModelCache.shared.get(for: outgoingId) {
+            outgoingVm.setSuspendedForTransition(true)
+            // Unconditional resume on the same 0.4s delay the split path
+            // uses. `weak` so a deallocated vm simply drops it, and
+            // `setSuspendedForTransition` is guarded on an actual change,
+            // so overlapping transitions cannot leave the flag stuck.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak outgoingVm] in
+                outgoingVm?.setSuspendedForTransition(false)
+            }
+        }
+        // [T-ios-search-focus-sticky] iPhone stack: pushing into a session
+        // (or new chat) with an empty search drops the sticky search bar.
+        // Only on push (path non-empty) — popping back must NOT clear an
+        // active search the user is returning to.
+        if !navigationPath.isEmpty {
+            dismissSearchIfEmptyOnNavigate()
+        }
+        if navigationPath.isEmpty {
+            currentStackSessionId = nil
+            AIChatViewModel.activeSessionId = nil
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            // If a quick-action workflow asked us to ensure-home,
+            // we're there now — let it advance to pendingDispatch.
+            if case .ensuringHome = QuickActionWorkflow.shared.state {
+                QuickActionWorkflow.shared.markHome()
+            }
+        }
+        // [T-ios-session-coldload-listsessions-block] Only refresh when
+        // popping back to home (path emptied) — that's when a preview that
+        // changed inside the session the user just left needs to show. On
+        // PUSH (entering a session, the cold-open hot path) this scan only
+        // head-of-line-blocked loadSession on the ChatStore actor. Delayed
+        // so it never races the incoming load's actor hops.
+        if navigationPath.isEmpty {
+            scheduleOutgoingPreviewRefresh()
+        }
+        fetchAlarmsIfNeeded()
+    }
+
+    private func handlePendingShareChange(_ hasPending: Bool) {
+        if hasPending {
+            let hadRecord = SharedContainerStore.loadPendingShare() != nil
+            processPendingShare()
+            // [T-share-double-raise] Only navigate when this raise actually
+            // carried content. A duplicate raise finds the record already
+            // consumed; opening a second blank session for it would replace
+            // the one the first pass just populated.
+            //
+            // [T-share-routes-to-background-session] Route to the chat the
+            // user is LOOKING AT, and only open a new session when there
+            // isn't one.
+            //
+            // The bug this fixes was never "a share reached an open chat" —
+            // it was a share reaching a chat the user was NOT looking at.
+            // Device log 2026-08-18 23:55:42: the file landed in session
+            // 87B79110, mid-agent-run in the BACKGROUND, purely because
+            // that view happened to be mounted; nothing checked whether the
+            // share was meant for it.
+            //
+            // So the destination is decided here, explicitly, and stamped
+            // onto the buffer — a foreground chat when there is one, a
+            // fresh session otherwise — and only that destination's view is
+            // allowed to consume it (see injectPendingShareIfNeeded).
+            // `navigationPath.isEmpty ? nil : currentStackSessionId` is the
+            // same "what is actually on screen" test the outgoing-session
+            // tracker at line ~1879 uses.
+            if hadRecord {
+                let foreground: String? = navigationPath.isEmpty ? nil : currentStackSessionId
+                if let foreground {
+                    // Already on screen — stamp it and navigate nowhere.
+                    shareCoordinator.setBufferTarget(foreground)
+                    shareLog.info("[Share] onChange: routing share into the foreground session \(foreground.prefix(16)) (no navigation needed)")
+                } else {
+                    let target = Self.makeNewSessionId()
+                    shareCoordinator.setBufferTarget(target)
+                    shareLog.info("[Share] onChange: no session on screen — opening new session \(target.prefix(16)) for share")
+                    var tx = Transaction()
+                    tx.disablesAnimations = true
+                    withTransaction(tx) { openSession(target) }
+                }
+            }
+        }
+    }
+
+    private func handleScenePhaseChange(_ phase: ScenePhase) {
+        // [T-ios-scenephase-active-sigkill] Defer ALL .active work off the
+        // synchronous callback. Writing @Published (SyncCore.isAppInBackground)
+        // here triggers objectWillChange → SwiftUI view invalidation in the
+        // same runloop tick as the foreground view-graph re-evaluation → SIGTRAP.
+        if phase == .active {
+            Task { @MainActor in
+                await Task.yield()
+                // Guard against rapid bg→fg→bg: if scenePhase already
+                // changed back, skip the stale .active work.
+                guard scenePhase == .active else { return }
+                // [T-ios-bg-nav-push-watchdog] Commit any push that arrived
+                // while backgrounded. Runs here — after the `Task.yield()`
+                // that keeps .active work off the synchronous callback — so
+                // the pushed screen's first layout pass lands on its own
+                // runloop turn with a full frame budget, never inside the
+                // foreground-transition tick.
+                flushPendingBackgroundNavigation()
+                fetchAlarmsIfNeeded()
+                if #available(iOS 17.0, *) {
+                    SyncCore.shared.isAppInBackground = false
+                }
+                #if DEBUG
+                UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
+                #endif
+                // [T-home-fab-keyboard-inset] Defense-in-depth behind the
+                // structural .ignoresSafeArea immunity on the session lists:
+                // on foreground return with the HOME screen actually showing
+                // (no pushed chat on compact, no selected session on split —
+                // a split chat column may legitimately hold composer focus)
+                // and the inline search bar not focused, no responder is
+                // legitimate. Resign whatever UIKit resurrected during the
+                // background snapshot pass so its stale keyboard inset can't
+                // inflate the window's bottom safe area.
+                if !searchFocused, navigationPath.isEmpty, selectedSessionId == nil {
+                    UIApplication.shared.sendAction(
+                        #selector(UIResponder.resignFirstResponder),
+                        to: nil, from: nil, for: nil)
+                }
+            }
+        } else {
+            if #available(iOS 17.0, *) {
+                SyncCore.shared.isAppInBackground = (phase != .active)
+            }
         }
     }
 
