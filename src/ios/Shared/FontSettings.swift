@@ -113,9 +113,9 @@ final class FontSettings: ObservableObject {
 
     /// `true` when any value differs from default.
     var isModified: Bool {
-        chatInputScale != .default
-            || messageBaseScale != .default
-            || appBaseScale != .default
+        chatInputScale != .xSmall
+            || messageBaseScale != .xSmall
+            || appBaseScale != .xSmall
     }
 
     // MARK: - Scaling helpers
@@ -139,9 +139,17 @@ final class FontSettings: ObservableObject {
 
     private init() {
         let ud = UserDefaults.standard
-        chatInputScale = FontScaleLevel(rawValue: ud.integer(forKey: Keys.chatInput)) ?? .default
-        messageBaseScale = FontScaleLevel(rawValue: ud.integer(forKey: Keys.messageBase)) ?? .default
-        appBaseScale = FontScaleLevel(rawValue: ud.integer(forKey: Keys.appBase)) ?? .default
+        // 默认字体 = 最小值 XS（0.88×）。integer(forKey:) 对缺失 key 返回 0 会
+        // 构造成 .default，所以用 object(forKey:) 判「从未设置」时才走 xSmall。
+        chatInputScale = ud.object(forKey: Keys.chatInput) == nil
+            ? .xSmall
+            : FontScaleLevel(rawValue: ud.integer(forKey: Keys.chatInput)) ?? .xSmall
+        messageBaseScale = ud.object(forKey: Keys.messageBase) == nil
+            ? .xSmall
+            : FontScaleLevel(rawValue: ud.integer(forKey: Keys.messageBase)) ?? .xSmall
+        appBaseScale = ud.object(forKey: Keys.appBase) == nil
+            ? .xSmall
+            : FontScaleLevel(rawValue: ud.integer(forKey: Keys.appBase)) ?? .xSmall
         // Defer to after first window is available
         DispatchQueue.main.async { [weak self] in self?.applyAppScaleToAllWindows() }
     }
@@ -177,9 +185,9 @@ final class FontSettings: ObservableObject {
     // MARK: - Reset
 
     func resetToDefaults() {
-        chatInputScale = .default
-        messageBaseScale = .default
-        appBaseScale = .default
+        chatInputScale = .xSmall
+        messageBaseScale = .xSmall
+        appBaseScale = .xSmall
     }
 
     // MARK: - Notification
