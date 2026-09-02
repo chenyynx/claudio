@@ -10,7 +10,7 @@ import SwiftUI
 // 文本命令触发（官方桥只把结构化 skills 字段喂给 Codex 进程），故不做
 // 开关注入。按 bridge 实例分桶、UserDefaults 持久化，冷启动未重连前也能看到。
 
-struct RemoteSkill: Identifiable, Equatable {
+struct RemoteSkill: Identifiable, Equatable, Codable {
     let name: String
     let description: String
     let scope: String        // "project" 项目级 | "user" 用户级（官方 metadata）
