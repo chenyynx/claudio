@@ -749,7 +749,10 @@ struct ThinkingBlockView: View {
                     .resizable()
                     .frame(width: 14, height: 14)
                     .foregroundStyle(.blue)
-                Text(String(localized: "Deep Thinking"))
+                // [Fix] verbatim: always show English "Deep Thinking" —
+                // String(localized:) rendered 深度思考 on zh devices
+                // (pp 2026-09-02: keep the header English).
+                Text(verbatim: "Deep Thinking")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.blue)
                 if isStreaming {
@@ -929,11 +932,13 @@ struct ThinkingBlockView: View {
         .onDisappear {
             ThinkingHitchMonitor.shared.stop(owner: block.id)
         }
-        .background(Color.blue.opacity(0.06))
+        // [Fix] Thinking block background: blue tint → palette card fill,
+        // matching the session-open/settings ivory surfaces (pp 2026-09-02).
+        .background(ClaudePalette.cardFill)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.blue.opacity(0.15), lineWidth: 0.5)
+                .stroke(ClaudePalette.border, lineWidth: 0.5)
         )
         .task(id: block.id) {
             // One-shot per-block auto-expand. Runs when this cell first hosts
