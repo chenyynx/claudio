@@ -848,7 +848,7 @@ fileprivate func isSyntheticRemoteSession(_ session: ChatSession) -> Bool {
 /// sessions never had — without this they sat on the unset gray avatar
 /// forever. Conservative keyword mapping over the bridge's title/preview;
 /// defaults to "chat" so remote rows always render colored.
-fileprivate func inferRemoteSessionCategory(from text: String?) -> String {
+func inferRemoteSessionCategory(from text: String?) -> String {
     guard let text, !text.isEmpty else { return "chat" }
     let t = text.lowercased()
     let rules: [(keywords: [String], category: String)] = [

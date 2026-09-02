@@ -171,48 +171,59 @@ extension AIChatViewModel {
             }
             return cmd
         }
-        // Append enabled skills as slash entries.
-        // - id is namespaced ("skill:<uuid>") so it never collides with a
-        //   built-in id.
-        // - title is the raw skill name (used both as the displayed label
-        //   and as the literal that gets typed into the composer).
-        // - subtitle is the skill description (or version fallback).
-        // Session-scoped enable wins over the global default — a user can
-        // re-enable a skill for THIS chat even when it's globally off, and
-        // vice versa. Mirrors SkillStore.isEnabledForSession's precedence:
-        // session override → global isEnabled. Falls back to the global
-        // value for draft / not-yet-persisted sessions (sessionId == nil).
-        // [T-session-skill-toggle-override-global-ios]
+        // Append skills as slash entries. ABSOLUTE ISOLATION: 远端会话
+        // 永远只看到 RemoteSkillRegistry 的 server skills,本地会话永远
+        // 只看到本地 SkillStore — 跟 SessionSkillsView 同源分流,不混。
         let currentSessionId = self.sessionId
-        let skillRows: [SlashCommand] = SkillStore.shared.skills
-            .filter { skill in
-                guard let sid = currentSessionId else { return skill.isEnabled }
-                return SkillStore.shared.isEnabledForSession(skill.id, sessionId: sid)
-            }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            .map { skill in
-                // [T-skill-yaml-block-scalar] Strip residual YAML block
-                // scalar indicators (`>-`, `|-`, `>+`, `|+`, bare `>` /
-                // `|`) that older SkillStore.parse versions left in the
-                // stored description. Without this, existing cached
-                // skills with `description: >-` continue to render the
-                // raw token in the slash picker until re-imported.
-                var desc = skill.description.trimmingCharacters(in: .whitespacesAndNewlines)
-                if desc.first == "|" || desc.first == ">" {
-                    let rest = desc.dropFirst()
-                    if rest.isEmpty || rest.allSatisfy({ $0 == "-" || $0 == "+" || $0.isNumber }) {
-                        desc = ""
-                    }
-                }
-                let sub = desc.isEmpty ? "Skill · v\(skill.version)" : desc
+        let instanceID = resolveCurrentEntry()?.providerInstanceId
+        let isRemoteSession = instanceID.flatMap { ProviderConfigStore.shared.instance(for: $0) }?
+            .providerType == .remoteAgent
+        let skillRows: [SlashCommand]
+        if isRemoteSession, let iid = instanceID {
+            // 远端:用服务器 skills(按 name 排序,无 description 时不显示版本)
+            let rskills = RemoteSkillRegistry.shared.skills(for: iid)
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            skillRows = rskills.map { skill in
+                let sub = skill.description.isEmpty ? "Server skill" : skill.description
                 return SlashCommand(
-                    id: "skill:\(skill.id)",
+                    id: "rskill:\(skill.name)",
                     icon: "puzzlepiece.extension",
                     title: skill.name,
                     subtitle: sub,
                     isSkill: true
                 )
             }
+        } else {
+            // 本地:原 SkillStore 逻辑(override → global, 描述清洗)
+            // [T-session-skill-toggle-override-global-ios]
+            skillRows = SkillStore.shared.skills
+                .filter { skill in
+                    guard let sid = currentSessionId else { return skill.isEnabled }
+                    return SkillStore.shared.isEnabledForSession(skill.id, sessionId: sid)
+                }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                .map { skill in
+                    // [T-skill-yaml-block-scalar] Strip residual YAML block
+                    // scalar indicators (`>-`, `|-`, `>+`, `|+`, bare `>` /
+                    // `|`) that older SkillStore.parse versions left in the
+                    // stored description.
+                    var desc = skill.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if desc.first == "|" || desc.first == ">" {
+                        let rest = desc.dropFirst()
+                        if rest.isEmpty || rest.allSatisfy({ $0 == "-" || $0 == "+" || $0.isNumber }) {
+                            desc = ""
+                        }
+                    }
+                    let sub = desc.isEmpty ? "Skill · v\(skill.version)" : desc
+                    return SlashCommand(
+                        id: "skill:\(skill.id)",
+                        icon: "puzzlepiece.extension",
+                        title: skill.name,
+                        subtitle: sub,
+                        isSkill: true
+                    )
+                }
+        }
         commands.append(contentsOf: skillRows)
 
         // [T-mcp-integration-ios] MCP server rows. Like skills, these are a

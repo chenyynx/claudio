@@ -216,8 +216,10 @@ extension AIChatViewModel {
             logger.warning("[TitleGen] Fallback unavailable — first user message empty after cleanup; session stays untitled (attempt \(attempt))")
             return
         }
-        await ChatStore.shared.updateSessionTitle(sessionId, title: fallback, category: nil)
-        logger.info("[TitleGen] Applied fallback title from first user message: \"\(fallback)\" (attempt \(attempt))")
+        // 兜底标题也带关键词分类 → 远端会话也能换头像(不调 LLM/不依赖本地 agent)
+        let category = inferRemoteSessionCategory(from: firstUserRaw)
+        await ChatStore.shared.updateSessionTitle(sessionId, title: fallback, category: category)
+        logger.info("[TitleGen] Applied fallback title \"\(fallback)\" + category \"\(category)\" (attempt \(attempt))")
     }
 
     /// Build a lightweight provider for the sub model and call it to generate a title and category.
