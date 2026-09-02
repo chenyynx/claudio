@@ -79,7 +79,7 @@ final class RemoteFileUpload {
     /// HTTP PUT 文件（URLSession fromFile 零内存）+ 分块流式 SHA-256。
     private static func httpPutAndHash(url: URL, fileURL: URL) async throws -> String {
         // SHA-256 流式
-        let sha = SHA256()
+        var sha = SHA256()
         let handle = try FileHandle(forReadingFrom: fileURL)
         defer { try? handle.close() }
         let chunkSize = 64 * 1024
