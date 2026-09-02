@@ -19,7 +19,7 @@ struct RemoteUploadResult {
     let sha256: String
 }
 
-@MainActor
+
 final class RemoteFileUpload {
 
     /// 完整上传一个文件到 bridge 项目目录；返回结果或抛 RemoteUploadError。
