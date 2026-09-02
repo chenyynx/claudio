@@ -60,7 +60,7 @@ struct MountedFoldersSettingsView: View {
                             MountDetailView(
                                 context: detailContext(for: entry),
                                 onDismiss: { model.refresh() }
-                            )
+                            ).settingsPaletteBackground()
                         } label: {
                             MountedFolderRow(
                                 entry: entry,

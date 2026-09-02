@@ -65,6 +65,24 @@ enum ClaudePalette {
     }
 }
 
+/// Settings-page surface: hides the system grouped gray and paints the
+/// session-open palette background so every settings screen reads as one
+/// ivory surface (pp 2026-09-02: settings background = session-open
+/// background, everywhere).
+struct SettingsPaletteBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .scrollContentBackground(.hidden)
+            .background(ClaudePalette.background)
+    }
+}
+
+extension View {
+    func settingsPaletteBackground() -> some View {
+        modifier(SettingsPaletteBackground())
+    }
+}
+
 private extension UIColor {
     convenience init(hex: UInt32, alpha: Double = 1) {
         self.init(
@@ -132,7 +150,7 @@ struct RemoteNewSessionSheet: View {
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 20)
-            .padding(.top, 6)
+            .padding(.top, 18)
             .padding(.bottom, 12)
 
             Divider().overlay(ClaudePalette.border)

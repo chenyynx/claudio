@@ -133,7 +133,7 @@ struct StorageManagementView: View {
                 } else {
                     ForEach(vm.sessions) { session in
                         NavigationLink {
-                            SessionStorageDetailView(session: session, onFilesCleared: { vm.load() })
+                            SessionStorageDetailView(session: session, onFilesCleared: { vm.load() }).settingsPaletteBackground()
                         } label: {
                             HStack {
                                 Text(session.title ?? "Untitled")
@@ -203,7 +203,7 @@ struct SessionStorageDetailView: View {
             Section("Minis Files") {
                 if currentMinisSize > 0 {
                     NavigationLink {
-                        FileBrowserView(rootPath: minisURL)
+                        FileBrowserView(rootPath: minisURL).settingsPaletteBackground()
                     } label: {
                         HStack {
                             Label("Browse Files", systemImage: "folder")

@@ -33,7 +33,7 @@ struct SharedFoldersSettingsView: View {
                         MountDetailView(
                             context: detailContext(for: entry),
                             onDismiss: { model.refresh() }
-                        )
+                        ).settingsPaletteBackground()
                     } label: {
                         SharedFolderRow(
                             entry: entry,

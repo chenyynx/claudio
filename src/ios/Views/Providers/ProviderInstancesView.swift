@@ -25,7 +25,7 @@ struct ProviderInstancesView: View {
                     Section(type.displayName) {
                         ForEach(instancesOfType) { instance in
                             NavigationLink {
-                                ProviderInstanceDetailView(instanceId: instance.id)
+                                ProviderInstanceDetailView(instanceId: instance.id).settingsPaletteBackground()
                             } label: {
                                 InstanceRow(instance: instance)
                             }
@@ -57,7 +57,7 @@ struct ProviderInstancesView: View {
                     }
                     ForEach(shadows) { shadow in
                         NavigationLink {
-                            ShadowVoiceProviderDetailView(instanceId: shadow.instanceId)
+                            ShadowVoiceProviderDetailView(instanceId: shadow.instanceId).settingsPaletteBackground()
                         } label: {
                             ShadowVoiceRow(shadow: shadow)
                         }

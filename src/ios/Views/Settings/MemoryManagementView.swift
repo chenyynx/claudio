@@ -28,7 +28,7 @@ struct MemoryManagementView: View {
 
             ForEach(memoryFiles) { file in
                 NavigationLink {
-                    MemoryFileEditView(fileName: file.name, isGlobal: file.isGlobal)
+                    MemoryFileEditView(fileName: file.name, isGlobal: file.isGlobal).settingsPaletteBackground()
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack {

@@ -35,7 +35,7 @@ struct ModelGroupsView: View {
                 Section {
                     ForEach(store.modelGroups) { group in
                         NavigationLink {
-                            ModelGroupDetailView(groupId: group.id)
+                            ModelGroupDetailView(groupId: group.id).settingsPaletteBackground()
                         } label: {
                             GroupRow(group: group)
                         }

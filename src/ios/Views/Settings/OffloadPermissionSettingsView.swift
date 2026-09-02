@@ -11,7 +11,7 @@ struct OffloadPermissionSettingsView: View {
         List {
             Section("Background") {
                 NavigationLink {
-                    EnhancedBackgroundSettingsView()
+                    EnhancedBackgroundSettingsView().settingsPaletteBackground()
                 } label: {
                     Label("Background", systemImage: "location.circle.fill")
                 }

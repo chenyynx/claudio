@@ -66,7 +66,7 @@ struct LogManagementView: View {
             .padding(.vertical, 8)
 
             if tab == "config-audit" {
-                ConfigAuditView()
+                ConfigAuditView().settingsPaletteBackground()
             } else {
                 logsBody
             }
@@ -97,7 +97,7 @@ struct LogManagementView: View {
                 } else {
                     ForEach(vm.runningFiles) { file in
                         NavigationLink {
-                            LogDetailView(url: file.url, name: file.name)
+                            LogDetailView(url: file.url, name: file.name).settingsPaletteBackground()
                         } label: {
                             HStack {
                                 Text(file.name)
@@ -122,7 +122,7 @@ struct LogManagementView: View {
                 Section("Crash Reports") {
                     ForEach(vm.crashFiles) { file in
                         NavigationLink {
-                            LogDetailView(url: file.url, name: file.name)
+                            LogDetailView(url: file.url, name: file.name).settingsPaletteBackground()
                         } label: {
                             HStack {
                                 Text("⚠️ \(file.name)")
@@ -146,7 +146,7 @@ struct LogManagementView: View {
             if #available(iOS 17.0, *) {
                 Section {
                     NavigationLink {
-                        SyncLogView()
+                        SyncLogView().settingsPaletteBackground()
                     } label: {
                         HStack {
                             Label("iCloud Sync Logs", systemImage: "icloud.fill")
@@ -175,6 +175,7 @@ struct LogManagementView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
         .toolbar {
             if !vm.logFiles.isEmpty && tab == "logs" {
                 ToolbarItem(placement: .topBarTrailing) {
