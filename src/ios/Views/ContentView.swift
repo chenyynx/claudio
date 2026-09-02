@@ -1711,6 +1711,22 @@ struct ContentView: View {
                 handleNewSessionResult(result)
             }
         }
+        // ③ 启动失败 sheet(避开 .alert 挂在大 body 链中触发 SwiftUI 类型推导超时)
+        .onChange(of: startSessionError) { newVal in
+            showStartSessionError = (newVal != nil)
+        }
+        .sheet(isPresented: $showStartSessionError) {
+            VStack(spacing: 16) {
+                Text("Can't Start Session").font(.headline)
+                Text(startSessionError ?? "").font(.subheadline).multilineTextAlignment(.center)
+                Button("OK") {
+                    showStartSessionError = false
+                    startSessionError = nil
+                }.buttonStyle(.borderedProminent)
+            }
+            .padding(32)
+            .presentationDetents([.medium])
+        }
         .sheet(isPresented: $showAlarmList, onDismiss: { fetchAlarmsIfNeeded() }) {
             AlarmListView()
         }
@@ -3802,12 +3818,42 @@ struct ContentView: View {
     private func handleNewSessionResult(_ result: RemoteNewSessionResult) {
         switch result {
         case .onDevice:
-            openSession(Self.makeNewSessionId())
+            // 本机 agent 会话: 显式绑非 remoteAgent 启用模型,绝不落默认组拼到云端。
+            // 绝对隔离:远端只能经 Claude tab 进入。用 for 替代 .first(where:),
+            // 避免长闭包让 ContentView body 的 SwiftUI 类型推导超时(已踩坑)。
+            var pickedSession: String?
+            var pickedModelId: String?
+            for entry in providerStore.modelEntries {
+                if entry.isHidden { continue }
+                guard let inst = providerStore.instance(for: entry.providerInstanceId) else { continue }
+                guard inst.providerType != .remoteAgent, inst.isEnabled else { continue }
+                pickedSession = Self.makeNewSessionId()
+                pickedModelId = entry.model.id
+                break
+            }
+            guard let sid = pickedSession, let mid = pickedModelId else {
+                startSessionError = NSLocalizedString("No local model configured — add a provider in Settings.", comment: "")
+                return
+            }
+            Task { @MainActor in
+                await ChatStore.shared.updateSessionModelId(sid, modelId: mid)
+                openSession(sid)
+            }
         case .claude:
-            guard let instance = providerStore.instances.first(where: {
-                $0.providerType == .remoteAgent && $0.isEnabled
-            }) else { return }
-            guard let entry = providerStore.visibleEntries(for: instance.id).first else { return }
+            var pickedInstance: ProviderInstance?
+            for inst in providerStore.instances where inst.providerType == .remoteAgent && inst.isEnabled {
+                pickedInstance = inst; break
+            }
+            guard let instance = pickedInstance else {
+                startSessionError = NSLocalizedString("No enabled remote agent — connect one in Settings first.", comment: "")
+                return
+            }
+            var firstVisible: ModelEntry?
+            for e in providerStore.visibleEntries(for: instance.id) { firstVisible = e; break }
+            guard let entry = firstVisible else {
+                startSessionError = NSLocalizedString("The remote agent has no models — configure a model first.", comment: "")
+                return
+            }
             let newId = Self.makeNewSessionId()
             Task { @MainActor in
                 await ChatStore.shared.updateSessionModelId(newId, modelId: entry.model.id)
@@ -4162,6 +4208,9 @@ struct ContentView: View {
     @State private var showConnectComputer = false
     @State private var showConnectionSheet = false
     @State private var showNewSessionSheet = false
+    /// ③ 启动会话失败原因: 简单 sheet 弹错(避开 .alert 修饰器 + 复杂 body 类型推导)
+    @State private var startSessionError: String?
+    @State private var showStartSessionError = false
 
     private var emptyState: some View {
         let hasProviders = !providerStore.instances.isEmpty
