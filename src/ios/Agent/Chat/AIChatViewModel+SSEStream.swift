@@ -428,21 +428,29 @@ extension AIChatViewModel {
             // flag clears on the next ordinary stream event (same rule as
             // Bridge sdk-process.ts updateStatusFromMessage: compacting →
             // running on next assistant/user/result).
-            if await MainActor.run({ remoteCompacting }) {
-                if case .remoteCompactingStarted = event {
-                    // still compacting — keep the flag (handled below)
-                } else {
-                    await MainActor.run {
-                        remoteCompacting = false
-                        // The Bridge offers no compaction-end event — the
-                        // next ordinary stream event means compaction is
-                        // done. Flip the loading row (left in place, same
-                        // as the local compact row) so it does not linger
-                        // as "Compacting conversation...".
-                        if let idx = messages.lastIndex(where: { $0.role == .systemInfo && $0.isCompactLoading }) {
-                            messages[idx].content = "Remote session context compacted."
-                            messages[idx].isCompactLoading = false
-                        }
+            // [Remote compaction] No end event on the Bridge wire — the
+            // flag clears on the next ordinary stream event (same rule as
+            // Bridge sdk-process.ts updateStatusFromMessage: compacting →
+            // running on next assistant/user/result). The read hop below
+            // uses an explicit `() -> Bool` body so the compiler doesn't
+            // mis-parse the trailing closure against a no-arg overload
+            // (the original crash: "missing argument label 'resultType:'").
+            let wasRemoteCompacting: Bool = await MainActor.run { () -> Bool in
+                remoteCompacting
+            }
+            if wasRemoteCompacting, case .remoteCompactingStarted = event {
+                // still compacting — keep the flag (handled below)
+            } else if wasRemoteCompacting {
+                await MainActor.run {
+                    remoteCompacting = false
+                    // The Bridge offers no compaction-end event — the
+                    // next ordinary stream event means compaction is
+                    // done. Flip the loading row (left in place, same
+                    // as the local compact row) so it does not linger
+                    // as "Compacting conversation...".
+                    if let idx = messages.lastIndex(where: { $0.role == .systemInfo && $0.isCompactLoading }) {
+                        messages[idx].content = "Remote session context compacted."
+                        messages[idx].isCompactLoading = false
                     }
                 }
             }
