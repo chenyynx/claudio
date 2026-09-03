@@ -2029,7 +2029,7 @@ extension AIChatViewModel {
             return
         }
 
-        let carrier = AgentMessage(role: .assistant, parts: [])
+        let carrier = AgentMessage(role: .assistant, parts: [.text("​")])
         guard let newId = await persistAgentMessage(carrier) else {
             logger.warning("[ErrorPersist] failed to persist error-carrier assistant row")
             return
