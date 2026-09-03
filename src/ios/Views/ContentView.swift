@@ -2726,7 +2726,11 @@ struct ContentView: View {
                     // normalize it out of the key so a broadcast can never
                     // bust the grouping memo via a fresh timestamp and
                     // re-churn the whole list.
-                    updatedAt: isSyntheticRemoteSession($0) ? .distantPast : $0.updatedAt,
+                    updatedAt: #if REMOTE_SESSION_SYNC
+                        isSyntheticRemoteSession($0) ? .distantPast : $0.updatedAt
+#else
+                        $0.updatedAt
+#endif,
                     pinnedAt: $0.pinnedAt,
                     isPinned: $0.isPinned, folderId: $0.folderId,
                     category: $0.category, title: $0.title)
@@ -3321,7 +3325,11 @@ struct ContentView: View {
                                 // [T-ios-crash-contextmenu-uaf] Value-only menu view,
                                 // no closure captures — see SessionContextMenu.
                                 SessionContextMenu(
-                                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session) && !isSyntheticRemoteSession(session), filed: session.isFiled),
+                                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, isRemote: #if REMOTE_SESSION_SYNC
+                                            sessionIsRemote(session) && !isSyntheticRemoteSession(session)
+#else
+                                            sessionIsRemote(session)
+#endif, filed: session.isFiled),
                                     actions: menuActions
                                 )
                                 .equatable()
@@ -3473,7 +3481,11 @@ struct ContentView: View {
                                         : session.id
                                     if let menuSid {
                                         SessionContextMenu(
-                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session) && !isSyntheticRemoteSession(session), filed: session.isFiled),
+                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, isRemote: #if REMOTE_SESSION_SYNC
+                                            sessionIsRemote(session) && !isSyntheticRemoteSession(session)
+#else
+                                            sessionIsRemote(session)
+#endif, filed: session.isFiled),
                                             actions: menuActions
                                         )
                                         .equatable()
