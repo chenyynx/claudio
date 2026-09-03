@@ -215,6 +215,11 @@ protocol AgentProvider {
     var model: LLMModel { get }
     /// Default max output tokens for this provider.
     var defaultMaxTokens: Int { get }
+    /// True for providers that drive a remote agent (e.g. CC Pocket Bridge).
+    /// Declared in the protocol to ensure dynamic dispatch (protocol
+    /// extension members are statically dispatched — a conformer override
+    /// would be ignored when accessed through the protocol type).
+    var isRemoteAgent: Bool { get }
 
     /// Provider-specific streaming implementation. Receives a thinking level
     /// that has already been clamped to the model's effective max by the

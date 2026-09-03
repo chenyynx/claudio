@@ -2473,7 +2473,7 @@ struct ContentView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sessionList(useNavigationLinks: false)
                 #if REMOTE_SESSION_SYNC
-.onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
+                .onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
                     // [Session sync] Incremental merge only (no full DB
                     // re-fetch / re-sort) — see applyRemoteInventoryToSessions.
                     Task { @MainActor in
@@ -2494,7 +2494,7 @@ struct ContentView: View {
         NavigationStack(path: $navigationPath) {
             sessionList(useNavigationLinks: true)
                 #if REMOTE_SESSION_SYNC
-.onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
+                .onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
                     // [Session sync] Incremental merge only (no full DB
                     // re-fetch / re-sort) — see applyRemoteInventoryToSessions.
                     Task { @MainActor in
