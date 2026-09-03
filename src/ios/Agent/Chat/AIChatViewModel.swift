@@ -2845,7 +2845,13 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // results — identical to the blind trim in the normal case (tail is empty/
         // partial text + in-flight tools), but it never removes committed output.
         AppLogger(category: "RetryDiag").info("[RetryDiag] retry() pre-trim committedBlockCount=\(self.committedBlockCount) blocks=\(lastMsg.blocks.count) kinds=[\(lastMsg.blocks.map { $0.kind == .text ? "t\($0.content.isEmpty ? "0" : "\($0.content.count)")" : "tool(\($0.toolStatus.map { String(describing: $0) } ?? "nil"))" }.joined(separator: ","))]")
-        Self.clearUncommittedStreamTail(lastMsg, committedBlockCount: committedBlockCount)
+        // [Fix] Remote agent: bridge history is the single source of truth;
+        // in-memory blocks are a display cache. Trimming them on retry discards
+        // committed post-tool text when committedBlockCount lags (StreamStall
+        // skips the update path). Local agent keeps the shared trim behavior.
+        if !lastAgentProviderIsRemote {
+            Self.clearUncommittedStreamTail(lastMsg, committedBlockCount: committedBlockCount)
+        }
         // Also remove any trailing empty text blocks left by prior iterations
         lastMsg.blocks.removeAll { $0.kind == .text && $0.content.isEmpty }
 
@@ -2997,8 +3003,14 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // clearUncommittedStreamTail preserves non-empty text + terminal tools while
         // still dropping the uncommitted partial/streaming tail.
         if committedBlockCount < lastMsg.blocks.count {
-            logger.info("⏹️[StopDiag] resume() pre-trim committed=\(self.committedBlockCount) blocks=\(lastMsg.blocks.count) — preserving committed text/tools via clearUncommittedStreamTail")
-            Self.clearUncommittedStreamTail(lastMsg, committedBlockCount: committedBlockCount)
+            // [Fix] Remote agent: bridge history is single source of truth;
+            // do not trim in-memory display cache on resume (see retry()).
+            if !lastAgentProviderIsRemote {
+                logger.info("⏹️[StopDiag] resume() pre-trim committed=\(self.committedBlockCount) blocks=\(lastMsg.blocks.count) — preserving committed text/tools via clearUncommittedStreamTail")
+                Self.clearUncommittedStreamTail(lastMsg, committedBlockCount: committedBlockCount)
+            } else {
+                logger.info("⏹️[StopDiag] resume() skip-trim (remote agent — bridge history is single source of truth)")
+            }
         } else {
             logger.info("⏹️[StopDiag] resume() no trim (committed=\(self.committedBlockCount) >= blocks=\(lastMsg.blocks.count))")
         }
@@ -5518,7 +5530,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 // Mirror resume()/Stop's `removeSubrange(committedBlockCount...)` boundary.
                 await MainActor.run {
                     guard msgIdx < messages.count else { return }
-                    Self.clearUncommittedStreamTail(messages[msgIdx], committedBlockCount: committedBlockCount)
+                    if !lastAgentProviderIsRemote {
+                        Self.clearUncommittedStreamTail(messages[msgIdx], committedBlockCount: committedBlockCount)
+                    } else {
+                        AppLogger(category: "RetryDiag").info("[RetryDiag] runAgentLoop retry skip-trim (remote agent — bridge history is single source of truth) blocks=\(messages[msgIdx].blocks.count)")
+                    }
                     messages[msgIdx].streamInterruptCount += 1
                 }
                 // If group uses "always" fallback strategy, skip auto-retry and go straight
@@ -5600,7 +5616,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                             // [T-ios-stream-retry-text-disappear] Same committed-tail
                             // guard as the outer catch — preserve persisted prior-round
                             // blocks, clear only the failed in-flight tail.
-                            Self.clearUncommittedStreamTail(messages[msgIdx], committedBlockCount: committedBlockCount)
+                            if !lastAgentProviderIsRemote {
+                                Self.clearUncommittedStreamTail(messages[msgIdx], committedBlockCount: committedBlockCount)
+                            } else {
+                                AppLogger(category: "RetryDiag").info("[RetryDiag] runAgentLoop retry-exhausted skip-trim (remote agent)")
+                            }
                             messages[msgIdx].streamInterruptCount += 1
                         }
                         // Re-resync after MainActor.run before the messages[msgIdx]
@@ -5664,6 +5684,25 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 // content to the UI before streaming ends. If this is skipped or
                 // deferred (e.g. streamingUIUpdatesSuspended), the cell stays empty.
                 logger.info("[StreamEnd] FINAL FLUSH text len=\(assistantText.count) blockContent len=\(messages[msgIdx].blocks[textBlockIdx].content.count) uiSuspended=\(streamingUIUpdatesSuspended) appState=\(UIApplication.shared.applicationState.rawValue)")
+                // [Fix: background-content-swallow] While UI is suspended, FINAL FLUSH
+                // deltas sit in the deferred buffer instead of block.content, and
+                // PERSIST below would persist an EMPTY block (recovery previously
+                // depended on the suspend lifting before process death). Flush the
+                // buffer into the block, then force-apply the terminal text via
+                // applyStreamingTextBlockContent (bypasses the suspended branch so
+                // the real content is persisted), then keep the original
+                // setStreamingTextBlockContent for its scroll/hang-logger side
+                // effects. Re-applying the same text is idempotent.
+                flushDeferredStreamingTextUpdateIfNeeded()
+                if msgIdx >= 0, msgIdx < messages.count,
+                   let forceIdx = messages[msgIdx].blocks.indices.last(where: { messages[msgIdx].blocks[$0].kind == .text }) {
+                    applyStreamingTextBlockContent(
+                        messages[msgIdx].blocks[forceIdx],
+                        text: assistantText,
+                        parsedMarkdown: MarkdownContent(prepareMarkdownForRender(assistantText)),
+                        cacheAttributedString: true
+                    )
+                }
                 setStreamingTextBlockContent(
                     msgIdx: msgIdx,
                     blockIdx: textBlockIdx,
@@ -5887,6 +5926,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 if !remainingSpeak.isEmpty { speakQueued(remainingSpeak) }
                 let interruptCount = await MainActor.run { messages[msgIdx].streamInterruptCount }
                 let uiBlockCount = await MainActor.run { msgIdx < messages.count ? messages[msgIdx].blocks.count : -1 }
+                // [DIAG-NOTE] agentParts vs uiBlocks are intentionally different
+                // accounting: thinking blocks exist only in uiBlocks (they live in
+                // reasoningContent on the agent side), and toolUse+toolResult count
+                // as TWO agent parts vs ONE ui tool block. A mismatch here is
+                // EXPECTED, not a bug— do not chase it as content loss.
                 logger.info("[BlocksLost] PERSIST final (no-tool) sid=\(sessionId?.prefix(8) ?? "nil") agentParts=\(assistantMessage.parts.count) uiBlocks=\(uiBlockCount)")
                 if turnCount > 0 && streamResult.assistantText.count < 10 {
                     // [T-log-noise-privacy 2026-07-18] Content excerpt dropped —
@@ -6107,6 +6151,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
             // Batch-persist the deferred assistant message + tool results in one transaction
             let uiBlockCountMid = await MainActor.run { msgIdx < messages.count ? messages[msgIdx].blocks.count : -1 }
+            // [DIAG-NOTE] Same accounting as PERSIST final: thinking blocks are UI-only,
+            // toolUse+toolResult = 2 agent parts vs 1 UI block. Mismatch expected.
             logger.info("[BlocksLost] PERSIST mid-loop (tool) sid=\(sessionId?.prefix(8) ?? "nil") agentParts=\(assistantMessage.parts.count) uiBlocks=\(uiBlockCountMid)")
             if let toolResultRaw = await buildRawMessage(toolResultMessage, snapshots: pendingSnapshots, toolStatuses: toolStatusStrings) {
                 var batch: [RawMessage] = []

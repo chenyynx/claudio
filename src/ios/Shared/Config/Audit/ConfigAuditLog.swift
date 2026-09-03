@@ -59,13 +59,35 @@ final class ConfigAuditLog: ObservableObject {
             )
         """)
         // Idempotent migration for databases created before `caption`
-        // existed. SQLite has no `ADD COLUMN IF NOT EXISTS`; the second
-        // run errors with "duplicate column name", which `exec` swallows
-        // by logging — that's the desired no-op.
-        exec("ALTER TABLE config_audit ADD COLUMN caption TEXT")
+        // existed. SQLite has no `ADD COLUMN IF NOT EXISTS`; check
+        // PRAGMA table_info first so re-runs skip the ALTER instead of
+        // emitting a noisy "duplicate column name" error into the log.
+        if !columnExists(table: "config_audit", column: "caption") {
+            exec("ALTER TABLE config_audit ADD COLUMN caption TEXT")
+        }
         exec("CREATE INDEX IF NOT EXISTS idx_audit_at ON config_audit(at DESC)")
         exec("CREATE INDEX IF NOT EXISTS idx_audit_scope ON config_audit(scope, at DESC)")
         exec("CREATE INDEX IF NOT EXISTS idx_audit_revert_of ON config_audit(revert_of)")
+    }
+
+    /// Whether `column` already exists on `table` (PRAGMA table_info scan).
+    /// Makes ALTER TABLE migrations idempotent — SQLite has no
+    /// `ADD COLUMN IF NOT EXISTS`, so a blind re-run would log a noisy
+    /// "duplicate column name" error. Mirrors ChatStore.columnExists.
+    private func columnExists(table: String, column: String) -> Bool {
+        guard let db else { return false }
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        let sql = "PRAGMA table_info(\(table))"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            // table_info columns: cid(0), name(1), type(2), notnull(3), dflt_value(4), pk(5)
+            if let cName = sqlite3_column_text(stmt, 1),
+               String(cString: cName) == column {
+                return true
+            }
+        }
+        return false
     }
 
     private func exec(_ sql: String) {

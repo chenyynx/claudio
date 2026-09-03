@@ -459,6 +459,23 @@ final class CloudSyncEngine: ObservableObject {
         }
         guard syncEngine == nil else { return }
 
+        // [Fix: cloud-sync crash] Sideloaded ipa strips the iCloud container
+        // entitlement; accessing container.privateCloudDatabase / initing
+        // CKSyncEngine then throws an ObjC CKException (CKErrorCode=8,
+        // com.apple.developer.icloud-services="*") that Swift do-catch
+        // cannot intercept -> SIGABRT -> crash loop. Mirror SyncV2Bootstrap's
+        // guard: read embedded.mobileprovision and skip CKSyncEngine init
+        // when the container ID is absent from the signing profile.
+        let containerID = "iCloud.com.claudio.app"
+        guard let provisionURL = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let provisionData = try? Data(contentsOf: provisionURL),
+              let provisionString = String(data: provisionData, encoding: .isoLatin1),
+              provisionString.contains(containerID) else {
+            logger.warning("[CloudSync] iCloud container '\(containerID)' not in provisioning profile — skipping CKSyncEngine init (sideloaded build likely stripped entitlement)")
+            syncStatus = .disabled
+            return
+        }
+
         logger.info("[CloudSync] Starting sync engine for device \(DeviceIdentity.zoneName)")
 
         // Set zone name on ChatStore so markDirty() works
