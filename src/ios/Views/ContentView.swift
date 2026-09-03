@@ -2517,14 +2517,14 @@ struct ContentView: View {
                         // chat view for the real id.
                         RemoteSyntheticSessionView(syntheticId: incomingId)
                             .id(incomingId)
-                    } else
-#endif
-                        if incomingId.hasPrefix("remote:") {
+                    } else if incomingId.hasPrefix("remote:") {
+
                         let parts = incomingId.split(separator: ":", maxSplits: 2)
                         if parts.count == 3 {
                             AIChatView(sessionId: String(parts[2]), remoteDeviceId: String(parts[1]))
                                 .id(incomingId)
                         }
+
                     } else {
                         AIChatView(sessionId: Self.isNewSessionId(incomingId) ? nil : incomingId, draftId: Self.isNewSessionId(incomingId) ? incomingId : nil, initialGroupId: Self.extractGroupId(from: incomingId))
                             .id(incomingId)
@@ -2553,7 +2553,44 @@ struct ContentView: View {
                                 shareLog.info("🔄SESSION stackNav APPEAR id=\(incomingId)")
                             }
                             .onDisappear { shareLog.info("🔄SESSION stackNav DISAPPEAR id=\(incomingId)") }
-                    }
+                    }#else
+                    if incomingId.hasPrefix("remote:") {
+
+                        let parts = incomingId.split(separator: ":", maxSplits: 2)
+                        if parts.count == 3 {
+                            AIChatView(sessionId: String(parts[2]), remoteDeviceId: String(parts[1]))
+                                .id(incomingId)
+                        }
+
+                    } else {
+                        AIChatView(sessionId: Self.isNewSessionId(incomingId) ? nil : incomingId, draftId: Self.isNewSessionId(incomingId) ? incomingId : nil, initialGroupId: Self.extractGroupId(from: incomingId))
+                            .id(incomingId)
+                            .onAppear {
+                                if currentStackSessionId != incomingId {
+                                    currentStackSessionId = incomingId
+                                    // [T-ios-stacknav-transition-attributegraph-race]
+                                    // Keep the outgoing-id tracker in lockstep.
+                                    // This branch fires exactly when the two
+                                    // have DIVERGED — the "swallowed push left
+                                    // currentStackSessionId set to a target
+                                    // that never appeared" case documented on
+                                    // the .moveInputToSession handler — and it
+                                    // mounts a chat WITHOUT a navigationPath
+                                    // change, so the observer that normally
+                                    // maintains previousStackSessionId does not
+                                    // run. Left unsynced, the next real
+                                    // transition would suspend whichever id the
+                                    // last observer pass recorded instead of
+                                    // the vm actually on screen: the wrong vm
+                                    // stalls and the real outgoing one keeps
+                                    // publishing into its teardown.
+                                    previousStackSessionId = incomingId
+                                }
+                                SessionBadgeStore.shared.remove(.unread, for: incomingId)
+                                shareLog.info("🔄SESSION stackNav APPEAR id=\(incomingId)")
+                            }
+                            .onDisappear { shareLog.info("🔄SESSION stackNav DISAPPEAR id=\(incomingId)") }
+                    }#endif
                 }
         }
     }
