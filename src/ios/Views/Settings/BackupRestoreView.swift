@@ -92,7 +92,7 @@ struct BackupRestoreView: View {
         .modifier(StandaloneTitle(title: AppLocalized("Restore"),
                                  active: !embedded))
         .fileImporter(isPresented: $showPicker,
-                      allowedContentTypes: [BackupDelivery.contentType, .data],
+                      allowedContentTypes: [BackupDelivery.contentType, .data, .folder],
                       allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):

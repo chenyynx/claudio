@@ -84,37 +84,6 @@ struct BackupAndRestoreView: View {
 /// is deliberately not shared from there because that copy is `private` to its
 /// file and this needed no changes to it.
 ///
-/// This IS the "pick a network drive, browse into a directory, save here" flow
-/// the feature calls for: servers connected in the Files app (SMB, WebDAV) and
-/// cloud accounts all appear in this picker as browsable locations, and iOS
-/// handles their protocols and credentials. Writing our own server browser
-/// would mean shipping SMB/WebDAV clients to duplicate that.
-struct BackupFolderPicker: UIViewControllerRepresentable {
-    let onPick: (URL) -> Void
-
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
-        picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = false
-        return picker
-    }
-
-    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: (URL) -> Void
-        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
-
-        func documentPicker(_ controller: UIDocumentPickerViewController,
-                            didPickDocumentsAt urls: [URL]) {
-            guard let url = urls.first else { return }
-            onPick(url)
-        }
-    }
-}
-
 /// Applies a navigation title only when a view is presented standalone.
 ///
 /// `.navigationTitle("")` is NOT a no-op — an empty title is still a title, and

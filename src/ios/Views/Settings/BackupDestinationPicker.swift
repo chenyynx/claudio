@@ -58,15 +58,22 @@ struct BackupDestinationPicker: View {
                     onChanged()
                 }
             }
-            .sheet(isPresented: $showFolderPicker) {
-                BackupFolderPicker { url in
-                    do {
-                        _ = try BackupDestinations.addDestination(pickedURL: url)
-                        reload()
-                        onChanged()
-                    } catch {
-                        errorText = error.localizedDescription
+            .fileImporter(isPresented: $showFolderPicker,
+                          allowedContentTypes: [.folder],
+                          allowsMultipleSelection: false) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first {
+                        do {
+                            _ = try BackupDestinations.addDestination(pickedURL: url)
+                            reload()
+                            onChanged()
+                        } catch {
+                            errorText = error.localizedDescription
+                        }
                     }
+                case .failure(let error):
+                    errorText = error.localizedDescription
                 }
             }
             .onAppear(perform: reload)
