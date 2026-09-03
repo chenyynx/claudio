@@ -219,10 +219,12 @@ build_ish() {
             -Dengine=asbestos \
             -Dguest_arch=arm64
     else
-        # Reconfigure both options: an existing build-ios/ from before
-        # b_ndebug was introduced would otherwise keep asserts enabled.
+        # Meson setup --reconfigure handles both the b_ndebug backport and
+        # Meson version mismatches (e.g. cached build dir from 1.11.2 running
+        # on a runner upgraded to 1.12.0); `meson configure` bails out on
+        # version drift. --reconfigure keeps the cached ninja artifacts.
         log_info "Meson already configured, reconfiguring..."
-        meson configure "$BUILD_DIR" \
+        meson setup --reconfigure "$BUILD_DIR" \
             --buildtype="$MESON_BUILDTYPE" \
             -Db_ndebug="$MESON_NDEBUG"
     fi
