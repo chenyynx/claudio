@@ -872,6 +872,7 @@ fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
     remoteAgentInstanceID(for: session) != nil
 }
 
+#if REMOTE_SESSION_SYNC
 // MARK: - [Session sync] Remote-bridge synthetic rows
 
 private let remoteSyntheticIdPrefix = "rbrid."
@@ -1124,6 +1125,7 @@ private struct RemoteSyntheticSessionView: View {
     }
 }
 
+#endif // REMOTE_SESSION_SYNC
 #if DEBUG
 // TEMPORARY: SessionRow height probe to confirm List cell-height estimation
 // jitter. Logs each distinct measured row height once (deduped) so we know
@@ -2052,12 +2054,17 @@ struct ContentView: View {
     }
 
     private func performInitialLoad() async {
+#if REMOTE_SESSION_SYNC
         sessions = mergedWithRemoteRows(await ChatStore.shared.listSessions())
+#else
+        sessions = await ChatStore.shared.listSessions()
+#endif
         // [Session sync] Pull the Bridge's recent-session index so
         // remote-only sessions appear in the list (live ones arrive via
         // the session_list broadcast on any connection). Fire-and-forget:
         // must not block the first-paint loads below. Skipped while the
         // sync feature is disabled (remoteSessionSyncEnabled).
+#if REMOTE_SESSION_SYNC
         if remoteSessionSyncEnabled,
            let instance = ProviderConfigStore.shared.instances.first(where: {
             $0.providerType == .remoteAgent && $0.isEnabled
@@ -2066,6 +2073,7 @@ struct ContentView: View {
                 await CCPocketClient.refreshBridgeInventory(instanceID: instance.id)
             }
         }
+#endif
         // Folders must load WITH the first session batch: groupedSessionIDs
         // treats a folder_id whose folder isn't loaded as an orphan and
         // renders the session ungrouped, so a first paint with sessions
@@ -2464,13 +2472,15 @@ struct ContentView: View {
         // injection is not its cause), so per-column injection is safe here.
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sessionList(useNavigationLinks: false)
-                .onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
+                #if REMOTE_SESSION_SYNC
+.onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
                     // [Session sync] Incremental merge only (no full DB
                     // re-fetch / re-sort) — see applyRemoteInventoryToSessions.
                     Task { @MainActor in
                         sessions = applyRemoteInventoryToSessions(sessions)
                     }
                 }
+#endif
                 .appFontScale()
         } detail: {
             detailView
@@ -2483,19 +2493,22 @@ struct ContentView: View {
     private var stackLayout: some View {
         NavigationStack(path: $navigationPath) {
             sessionList(useNavigationLinks: true)
-                .onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
+                #if REMOTE_SESSION_SYNC
+.onReceive(BridgeSessionRegistry.shared.$inventoryByInstance) { _ in
                     // [Session sync] Incremental merge only (no full DB
                     // re-fetch / re-sort) — see applyRemoteInventoryToSessions.
                     Task { @MainActor in
                         sessions = applyRemoteInventoryToSessions(sessions)
                     }
                 }
+#endif
                 .navigationDestination(for: String.self) { incomingId in
                     // `.id(id)` mirrors detailView (iPad): navigationDestination
                     // views are identified by stack depth, not path value, so
                     // replacing the top element in place (menu "New Chat" swaps
                     // [current] → [draft]) would otherwise reuse the old view's
                     // @StateObject vm and nothing visibly changes.
+#if REMOTE_SESSION_SYNC
                     if incomingId.hasPrefix(remoteSyntheticIdPrefix) {
                         // [Session sync] Synthetic remote row: materialize the
                         // real row + resume mapping inside the wrapper's .task
@@ -2504,7 +2517,9 @@ struct ContentView: View {
                         // chat view for the real id.
                         RemoteSyntheticSessionView(syntheticId: incomingId)
                             .id(incomingId)
-                    } else if incomingId.hasPrefix("remote:") {
+                    } else
+#endif
+                    if incomingId.hasPrefix("remote:") {
                         let parts = incomingId.split(separator: ":", maxSplits: 2)
                         if parts.count == 3 {
                             AIChatView(sessionId: String(parts[2]), remoteDeviceId: String(parts[1]))
@@ -4727,7 +4742,11 @@ struct ContentView: View {
         }
         sessionRefreshInFlight = true
         Task(priority: .utility) { @MainActor in
-            sessions = mergedWithRemoteRows(await ChatStore.shared.listSessions())
+    #if REMOTE_SESSION_SYNC
+        sessions = mergedWithRemoteRows(await ChatStore.shared.listSessions())
+#else
+        sessions = await ChatStore.shared.listSessions()
+#endif
             folders = await ChatStore.shared.listFolders()
             sessionRefreshInFlight = false
             if sessionRefreshPending {
