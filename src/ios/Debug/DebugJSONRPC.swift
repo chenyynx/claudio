@@ -1292,7 +1292,7 @@ final class DebugJSONRPC: @unchecked Sendable {
     /// counters look suspect.
     private func handleSyncAllZones() async -> Any {
         guard ICloudSharedZoneTransport.isContainerEntitled else {
-            return ["ok": false, "error": "\(NOTICE)"]
+            return ["ok": false, "error": "iCloud is not available on this build (missing iCloud container entitlement in the provisioning profile)"]
         }
         let container = CKContainer(identifier: "iCloud.com.claudio.app")
         do {
@@ -1344,7 +1344,7 @@ final class DebugJSONRPC: @unchecked Sendable {
     private func handleSyncZoneStats(params: [String: Any]) async -> Any {
         let containerId = "iCloud.com.claudio.app"
         guard ICloudSharedZoneTransport.isContainerEntitled else {
-            return ["ok": false, "error": "\(NOTICE)"]
+            return ["ok": false, "error": "iCloud is not available on this build (missing iCloud container entitlement in the provisioning profile)"]
         }
         let container = CKContainer(identifier: containerId)
         let db = container.privateCloudDatabase

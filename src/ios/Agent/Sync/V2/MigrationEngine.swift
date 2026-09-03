@@ -918,7 +918,7 @@ enum V1FetcherShim {
         guard ICloudSharedZoneTransport.isContainerEntitled else {
             logger.warning("[SyncMigration] iCloud container not entitled — countOwnZone skipped")
             throw NSError(domain: "CloudKitEntitlement", code: 1001,
-                          userInfo: [NSLocalizedDescriptionKey: "\(NOTICE)"])
+                          userInfo: [NSLocalizedDescriptionKey: "iCloud is not available on this build (missing iCloud container entitlement in the provisioning profile)"])
         }
         let myDeviceId = DeviceIdentity.deviceId
         let zoneID = CKRecordZone.ID(zoneName: "device-\(myDeviceId)")
@@ -1013,7 +1013,7 @@ enum V1FetcherShim {
             guard ICloudSharedZoneTransport.isContainerEntitled else {
                 logger.warning("[SyncMigration] iCloud container not entitled — deleteOwnZone skipped")
                 throw NSError(domain: "CloudKitEntitlement", code: 1001,
-                              userInfo: [NSLocalizedDescriptionKey: "\(NOTICE)"])
+                              userInfo: [NSLocalizedDescriptionKey: "iCloud is not available on this build (missing iCloud container entitlement in the provisioning profile)"])
             }
             let container = CKContainer(identifier: ICloudSharedZoneTransport.containerIdentifier)
             let zoneID = CKRecordZone.ID(zoneName: zoneName)
@@ -1045,7 +1045,7 @@ enum V1FetcherShim {
         guard ICloudSharedZoneTransport.isContainerEntitled else {
             logger.warning("[SyncMigration] iCloud container not entitled — listAllZones skipped")
             throw NSError(domain: "CloudKitEntitlement", code: 1001,
-                          userInfo: [NSLocalizedDescriptionKey: "\(NOTICE)"])
+                          userInfo: [NSLocalizedDescriptionKey: "iCloud is not available on this build (missing iCloud container entitlement in the provisioning profile)"])
         }
         let container = CKContainer(identifier: ICloudSharedZoneTransport.containerIdentifier)
         let zones = try await container.privateCloudDatabase.allRecordZones()
