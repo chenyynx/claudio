@@ -873,6 +873,18 @@ fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
 }
 
 #if REMOTE_SESSION_SYNC
+// MARK: - [Session sync] Compat helpers (always compiled)
+// Provide #if REMOTE_SESSION_SYNC-aware accessors for functions defined
+// inside the #if block, so call sites outside the block compile cleanly
+// when the feature flag is OFF.
+private func isSyntheticRemoteSessionCompat(_ session: ChatSession) -> Bool {
+#if REMOTE_SESSION_SYNC
+    return isSyntheticRemoteSession(session)
+#else
+    return false
+#endif
+}
+
 // MARK: - [Session sync] Remote-bridge synthetic rows
 
 private let remoteSyntheticIdPrefix = "rbrid."
@@ -2726,11 +2738,7 @@ struct ContentView: View {
                     // normalize it out of the key so a broadcast can never
                     // bust the grouping memo via a fresh timestamp and
                     // re-churn the whole list.
-                    updatedAt: #if REMOTE_SESSION_SYNC
-                        isSyntheticRemoteSession($0) ? .distantPast : $0.updatedAt
-#else
-                        $0.updatedAt
-#endif,
+                    updatedAt: isSyntheticRemoteSessionCompat($0) ? .distantPast : $0.updatedAt,
                     pinnedAt: $0.pinnedAt,
                     isPinned: $0.isPinned, folderId: $0.folderId,
                     category: $0.category, title: $0.title)
@@ -3325,11 +3333,7 @@ struct ContentView: View {
                                 // [T-ios-crash-contextmenu-uaf] Value-only menu view,
                                 // no closure captures — see SessionContextMenu.
                                 SessionContextMenu(
-                                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, isRemote: #if REMOTE_SESSION_SYNC
-                                            sessionIsRemote(session) && !isSyntheticRemoteSession(session)
-#else
-                                            sessionIsRemote(session)
-#endif, filed: session.isFiled),
+                                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session) && !isSyntheticRemoteSessionCompat(session), filed: session.isFiled),
                                     actions: menuActions
                                 )
                                 .equatable()
@@ -3481,11 +3485,7 @@ struct ContentView: View {
                                         : session.id
                                     if let menuSid {
                                         SessionContextMenu(
-                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, isRemote: #if REMOTE_SESSION_SYNC
-                                            sessionIsRemote(session) && !isSyntheticRemoteSession(session)
-#else
-                                            sessionIsRemote(session)
-#endif, filed: session.isFiled),
+                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, isRemote: sessionIsRemote(session) && !isSyntheticRemoteSessionCompat(session), filed: session.isFiled),
                                             actions: menuActions
                                         )
                                         .equatable()
