@@ -178,12 +178,8 @@ enum SyncV2Bootstrap {
         // App 没 entitlement 还是崩). 改读 embedded.mobileprovision 确认
         // iCloud 容器 ID 在不在签名 entitlement 里 — 不在就跳过 transport.
         // 合法签名包 entitlement 在 → 正常同步;sideload 剥了 → 安全跳过不崩.
-        let containerID = ICloudSharedZoneTransport.containerIdentifier
-        guard let provisionURL = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
-              let provisionData = try? Data(contentsOf: provisionURL),
-              let provisionString = String(data: provisionData, encoding: .isoLatin1),
-              provisionString.contains(containerID) else {
-            logger.warning("[SyncCore] v2 iCloud container '\(containerID)' not in provisioning profile — skipping CloudKit transport (sideloaded build likely stripped entitlement)")
+        guard ICloudSharedZoneTransport.isContainerEntitled else {
+            logger.warning("[SyncCore] v2 iCloud container '\(ICloudSharedZoneTransport.containerIdentifier)' not in provisioning profile — skipping CloudKit transport (sideloaded build likely stripped entitlement)")
             return
         }
         let transport = ICloudSharedZoneTransport()

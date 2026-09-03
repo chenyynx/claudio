@@ -1234,6 +1234,9 @@ final class DebugJSONRPC: @unchecked Sendable {
             query.sortDescriptors = [NSSortDescriptor(key: key, ascending: sortAscending)]
         }
         let zoneID = CKRecordZone.ID(zoneName: zoneName)
+        guard ICloudSharedZoneTransport.isContainerEntitled else {
+            return ["ok": false, "error": "iCloud is not available on this build (missing iCloud container entitlement in the provisioning profile)"]
+        }
         let container = CKContainer(identifier: "iCloud.com.claudio.app")
         do {
             let result = try await container.privateCloudDatabase.records(
@@ -1288,6 +1291,9 @@ final class DebugJSONRPC: @unchecked Sendable {
     /// (minis-shared / minis-devices / minis-secrets) when migration
     /// counters look suspect.
     private func handleSyncAllZones() async -> Any {
+        guard ICloudSharedZoneTransport.isContainerEntitled else {
+            return ["ok": false, "error": "\(NOTICE)"]
+        }
         let container = CKContainer(identifier: "iCloud.com.claudio.app")
         do {
             let zones = try await container.privateCloudDatabase.allRecordZones()
@@ -1337,6 +1343,9 @@ final class DebugJSONRPC: @unchecked Sendable {
     ///     list. Useful for ad-hoc probes.
     private func handleSyncZoneStats(params: [String: Any]) async -> Any {
         let containerId = "iCloud.com.claudio.app"
+        guard ICloudSharedZoneTransport.isContainerEntitled else {
+            return ["ok": false, "error": "\(NOTICE)"]
+        }
         let container = CKContainer(identifier: containerId)
         let db = container.privateCloudDatabase
 

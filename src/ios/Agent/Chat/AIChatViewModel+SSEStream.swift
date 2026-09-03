@@ -74,6 +74,7 @@ extension AIChatViewModel {
         case .thinkingDelta: return "thinkingDelta"
         case .toolResult(let id, let name, _, _): return "toolResult(\(name):\(id.prefix(12)))"
         case .permissionRequest(_, let name, _): return "permissionRequest(\(name))"
+        case .remoteCompactingStarted: return "remoteCompactingStarted"
         case .reasoningContent: return "reasoningContent"
         case .reasoningEcho: return "reasoningEcho"
         case .done(let stop): return "done(\(stop))"
@@ -423,7 +424,46 @@ extension AIChatViewModel {
                 lastEventAt = now
             }
 
+            // [Remote compaction] No end event on the Bridge wire — the
+            // flag clears on the next ordinary stream event (same rule as
+            // Bridge sdk-process.ts updateStatusFromMessage: compacting →
+            // running on next assistant/user/result).
+            if await MainActor.run({ remoteCompacting }) {
+                if case .remoteCompactingStarted = event {
+                    // still compacting — keep the flag (handled below)
+                } else {
+                    await MainActor.run {
+                        remoteCompacting = false
+                        // The Bridge offers no compaction-end event — the
+                        // next ordinary stream event means compaction is
+                        // done. Flip the loading row (left in place, same
+                        // as the local compact row) so it does not linger
+                        // as "Compacting conversation...".
+                        if let idx = messages.lastIndex(where: { $0.role == .systemInfo && $0.isCompactLoading }) {
+                            messages[idx].content = "Remote session context compacted."
+                            messages[idx].isCompactLoading = false
+                        }
+                    }
+                }
+            }
+
             switch event {
+            case .remoteCompactingStarted:
+                await MainActor.run {
+                    guard !remoteCompacting else { return }
+                    remoteCompacting = true
+                    // Mirror the local compaction presentation: a
+                    // systemInfo row in the message list ("Compacting
+                    // conversation..." — same text/icon as
+                    // AIChatViewModel+Compaction.swift). Left in place on
+                    // completion, exactly like the local compact row.
+                    let statusMsg = ChatMessage(role: .systemInfo, content: "Compacting conversation...")
+                    statusMsg.systemIcon = "arrow.down.right.and.arrow.up.left"
+                    statusMsg.isCompactLoading = true
+                    messages.append(statusMsg)
+                    scrollToBottomSignal.send()
+                }
+
             case .permissionRequest(let id, let toolName, let input):
                 // [M3] Surface the Bridge permission request; the dialog
                 // answers via respondToPermission (approve/reject/always).

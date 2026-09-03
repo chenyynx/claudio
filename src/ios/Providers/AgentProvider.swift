@@ -172,6 +172,14 @@ enum AgentStreamEvent: @unchecked Sendable {
     /// approval dialog and answers with approve / approve_always / reject
     /// (official PermissionRequestMessage + ApprovalBar).
     case permissionRequest(id: String, toolName: String, input: [String: Any])
+    /// Bridge `status:"compacting"` — the remote Claude Code session is
+    /// auto-compacting its context (Bridge relays the SDK's
+    /// `compact_boundary` event). Emitted ONLY by RemoteAgentProvider;
+    /// local providers never produce it. The Bridge wire carries no end
+    /// event — consumers clear the flag on the next ordinary stream event
+    /// (mirroring Bridge sdk-process.ts updateStatusFromMessage:
+    /// compacting → running on next assistant/user/result).
+    case remoteCompactingStarted
     /// Response finished.
     case done(stopReason: AgentStopReason)
 }

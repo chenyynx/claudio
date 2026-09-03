@@ -29,6 +29,23 @@ final class ICloudSharedZoneTransport: NSObject, SyncTransport {
 
     static let containerIdentifier = "iCloud.com.claudio.app"
 
+    /// Whether this build's provisioning profile includes the iCloud
+    /// container entitlement. Sideloaded ipa strips it; constructing
+    /// CKContainer(identifier:) on such a build throws an ObjC NSException
+    /// (via CKSDKVersion) that Swift do-catch CANNOT intercept → SIGABRT →
+    /// crash loop. EVERY CKContainer construction point must consult this
+    /// before touching CloudKit. Single source of truth — replaces the
+    /// inline mobileprovision checks that used to live in SyncV2Bootstrap /
+    /// CloudSyncEngine / MigrationEngine / DebugJSONRPC.
+    static let isContainerEntitled: Bool = {
+        guard let provisionURL = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let provisionData = try? Data(contentsOf: provisionURL),
+              let provisionString = String(data: provisionData, encoding: .isoLatin1) else {
+            return false
+        }
+        return provisionString.contains(containerIdentifier)
+    }()
+
     /// Fixed zone names. Never include device id.
     static let sharedZoneName  = "minis-shared"
     static let devicesZoneName = "minis-devices"

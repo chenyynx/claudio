@@ -466,12 +466,8 @@ final class CloudSyncEngine: ObservableObject {
         // cannot intercept -> SIGABRT -> crash loop. Mirror SyncV2Bootstrap's
         // guard: read embedded.mobileprovision and skip CKSyncEngine init
         // when the container ID is absent from the signing profile.
-        let containerID = "iCloud.com.claudio.app"
-        guard let provisionURL = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
-              let provisionData = try? Data(contentsOf: provisionURL),
-              let provisionString = String(data: provisionData, encoding: .isoLatin1),
-              provisionString.contains(containerID) else {
-            logger.warning("[CloudSync] iCloud container '\(containerID)' not in provisioning profile — skipping CKSyncEngine init (sideloaded build likely stripped entitlement)")
+        guard ICloudSharedZoneTransport.isContainerEntitled else {
+            logger.warning("[CloudSync] iCloud container '\(ICloudSharedZoneTransport.containerIdentifier)' not in provisioning profile — skipping CKSyncEngine init (sideloaded build likely stripped entitlement)")
             syncStatus = .disabled
             return
         }
@@ -719,6 +715,11 @@ final class CloudSyncEngine: ObservableObject {
     /// then re-fetch everything from iCloud and re-upload all local content.
     /// Local data (sessions, messages, skills, files) is never deleted.
     func forceFullSync() async {
+        guard ICloudSharedZoneTransport.isContainerEntitled else {
+            logger.warning("[CloudSync] iCloud container not entitled — forceFullSync skipped (sideloaded build)")
+            syncStatus = .disabled
+            return
+        }
         let prior = await ChatStore.shared.countDirtyRecords()
         logger.info("[CloudSync] forceFullSync START priorDirty total=\(prior.total) byType=\(prior.byType)")
         // Start tallying uploads by type — the .sentRecordZoneChanges delegate
@@ -1586,6 +1587,10 @@ final class CloudSyncEngine: ObservableObject {
     /// Subscribe to remote device zones so CKSyncEngine fetches their changes.
     /// Called outside delegate callbacks (e.g. from start or on foreground).
     func discoverDeviceZones() async {
+        guard ICloudSharedZoneTransport.isContainerEntitled else {
+            logger.warning("[CloudSync] iCloud container not entitled — discoverDeviceZones skipped (sideloaded build)")
+            return
+        }
         do {
             // Run the network call off MainActor to avoid resume-hop CPU spike.
             let ownZoneName = DeviceIdentity.zoneName

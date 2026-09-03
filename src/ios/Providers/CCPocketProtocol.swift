@@ -188,6 +188,11 @@ enum CCPocketProtocol {
 
     struct ServerMessage: Decodable {
         let type: String?
+        // bridge status events (`type:"status"` carries `status`; the
+        // Bridge relays the SDK's compact_boundary as status="compacting"
+        // — the only compaction signal the app receives. No end event
+        // exists on the wire.)
+        let status: String?
         // system
         let subtype: String?
         let model: String?

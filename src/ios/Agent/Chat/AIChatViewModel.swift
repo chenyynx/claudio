@@ -906,6 +906,13 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     @Published var slashMenuSelectedIndex = -1
     /// Whether a compaction is in progress.
     @Published var isCompacting = false
+    /// Remote-session context compaction in progress (Bridge status
+    /// "compacting"). Independent of `isCompacting` — that flag guards the
+    /// LOCAL compaction re-entrancy and send-queue semantics, which must
+    /// stay untouched. The remote flag is display-only and never blocks
+    /// input (the Bridge queues input while the SDK process is busy).
+    /// Cleared on the next ordinary stream event (no end event on wire).
+    @Published var remoteCompacting = false
     /// When true, shows a prompt asking user to compact before sending.
     @Published var showCompactBeforeSendPrompt = false
     /// [T-chat-auto-compact-opt-in] Global (cross-session) opt-in: when the
@@ -4920,11 +4927,27 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         if let existingMsgIdx {
             msgIdx = existingMsgIdx
             let okBounds = existingMsgIdx >= 0 && existingMsgIdx < messages.count
+            // [T-ios-typing-indicator-resume] Re-opening a past turn (resume /
+            // retry-from-last-row): the row's flag is a stale false from the
+            // previous round and its blocks are non-empty, so the typing
+            // indicator would stay hidden for the whole wait. Re-arm it — same
+            // semantics as the fresh-row path; cleared on the first
+            // contentBlockStart as usual.
+            if okBounds { messages[existingMsgIdx].isAwaitingModelResponse = true }
             let role = okBounds ? (messages[existingMsgIdx].role == .assistant ? "assistant" : "user") : "OOB"
             let blocks = okBounds ? messages[existingMsgIdx].blocks.count : -1
             AppLogger(category: "RetryDiag").info("[RetryDiag] runAgentLoop RESUME existingMsgIdx=\(existingMsgIdx) role=\(role) blocks=\(blocks) committedBlocks=\(committedBlocks ?? -1) messagesCount=\(self.messages.count)")
         } else {
-            messages.append(ChatMessage(role: .assistant, content: "", blocks: []))
+            let fresh = ChatMessage(role: .assistant, content: "", blocks: [])
+            // [T-ios-typing-indicator-send] Re-arm the typing indicator on the
+            // fresh row. send() reaches runAgentLoop before ANY provider event
+            // has arrived; without this flag shouldShowTypingIndicator only
+            // fires while blocks.isEmpty — a millisecond window on remote
+            // sessions whose first byte lands fast, so "is thinking…" flickers
+            // or never appears. (retry/resume via launchRerunAgentLoop set it;
+            // plain send() did not.)
+            fresh.isAwaitingModelResponse = true
+            messages.append(fresh)
             msgIdx = messages.count - 1
         }
         // Capture the assistant message's stable id so we can re-find it
@@ -5115,7 +5138,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                     // rest of the turn stays visible instead of streaming into a
                     // detached object.
                     AppLogger(category: "BlocksLost").warning("[BlocksLost] LOOP-REAPPEND — streaming message gone and no trailing assistant (count=\(messages.count)); appending fresh assistant message")
-                    messages.append(ChatMessage(role: .assistant, content: "", blocks: []))
+                    let fresh = ChatMessage(role: .assistant, content: "", blocks: [])
+                    fresh.isAwaitingModelResponse = true
+                    messages.append(fresh)
                     msgIdx = messages.count - 1
                     runMsgId = messages[msgIdx].id
                     committedBlockCount = 0

@@ -798,6 +798,10 @@ final class MigrationEngine {
     /// permanent failure. [T-ios-icloud-v1v2-migration-fails]
     @available(iOS 17.0, *)
     private static func countCloudSessionsV2() async -> Int? {
+        guard ICloudSharedZoneTransport.isContainerEntitled else {
+            logger.warning("[SyncMigration] iCloud container not entitled — countCloudSessionsV2 skipped")
+            return nil
+        }
         let container = CKContainer(identifier: ICloudSharedZoneTransport.containerIdentifier)
         let zoneID = CKRecordZone.ID(zoneName: ICloudSharedZoneTransport.sharedZoneName)
         let query = CKQuery(recordType: "SessionV2", predicate: NSPredicate(value: true))
@@ -911,6 +915,11 @@ enum V1FetcherShim {
     /// stay on the server. Returns 0 if the zone is gone.
     @available(iOS 17.0, *)
     static func countOwnZone() async throws -> Int {
+        guard ICloudSharedZoneTransport.isContainerEntitled else {
+            logger.warning("[SyncMigration] iCloud container not entitled — countOwnZone skipped")
+            throw NSError(domain: "CloudKitEntitlement", code: 1001,
+                          userInfo: [NSLocalizedDescriptionKey: "\(NOTICE)"])
+        }
         let myDeviceId = DeviceIdentity.deviceId
         let zoneID = CKRecordZone.ID(zoneName: "device-\(myDeviceId)")
         let container = CKContainer(identifier: ICloudSharedZoneTransport.containerIdentifier)
@@ -1001,6 +1010,11 @@ enum V1FetcherShim {
 
     static func deleteOwnZone(zoneName: String) async throws {
         if #available(iOS 17.0, *) {
+            guard ICloudSharedZoneTransport.isContainerEntitled else {
+                logger.warning("[SyncMigration] iCloud container not entitled — deleteOwnZone skipped")
+                throw NSError(domain: "CloudKitEntitlement", code: 1001,
+                              userInfo: [NSLocalizedDescriptionKey: "\(NOTICE)"])
+            }
             let container = CKContainer(identifier: ICloudSharedZoneTransport.containerIdentifier)
             let zoneID = CKRecordZone.ID(zoneName: zoneName)
             do {
@@ -1028,6 +1042,11 @@ enum V1FetcherShim {
     /// the "iCloud Zones" inventory + per-zone delete control.
     @available(iOS 17.0, *)
     static func listAllZones() async throws -> [ZoneInfo] {
+        guard ICloudSharedZoneTransport.isContainerEntitled else {
+            logger.warning("[SyncMigration] iCloud container not entitled — listAllZones skipped")
+            throw NSError(domain: "CloudKitEntitlement", code: 1001,
+                          userInfo: [NSLocalizedDescriptionKey: "\(NOTICE)"])
+        }
         let container = CKContainer(identifier: ICloudSharedZoneTransport.containerIdentifier)
         let zones = try await container.privateCloudDatabase.allRecordZones()
         let myDeviceId = DeviceIdentity.deviceId

@@ -255,6 +255,16 @@ final class RemoteAgentProvider: AgentProvider {
             // long Claude id is not a routing key.
             break
 
+        case "status":
+            // [Remote compaction] Bridge relays the SDK's compact_boundary
+            // as {type:"status", status:"compacting"} — the only compaction
+            // signal the client gets (no end event; the flag clears on the
+            // next ordinary stream event). Local agents never see this wire
+            // type, so the local path is untouched.
+            if message.status == "compacting" {
+                continuation.yield(.remoteCompactingStarted)
+            }
+
         case "permission_request":
             // [M3] Approval flow (official PermissionRequestMessage):
             // surface the request to the UI, which answers with
