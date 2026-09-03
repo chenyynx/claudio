@@ -2391,17 +2391,41 @@ private struct ToolPreviewThumbnail: View {
         case .shellTool(let cmd): return cmd.isEmpty ? "$ shell" : "$ \(cmd)"
         case .fileReadTool(let p):
             let name = (p as NSString).lastPathComponent
-            return (!p.isEmpty && name != "/" && name.contains(".")) ? name : AppLocalized("Read file")
+            // [T-tool-preview-no-extension] Drop the "name.contains(".")" gate —
+            // it hid non-extension paths (bash, hosts, .zshrc, CLAUDE) as a
+            // generic "Read file" / "Write file" label, making 3+ same-kind
+            // tool blocks indistinguishable in the preview thumbnail (pp
+            // 2026-09-03). lastPathComponent of any real path is more useful
+            // than the generic fallback.
+            return (!p.isEmpty && name != "/") ? name : AppLocalized("Read file")
         case .fileWriteTool(let p):
             let name = (p as NSString).lastPathComponent
-            return (!p.isEmpty && name != "/" && name.contains(".")) ? name : AppLocalized("Write file")
+            // [T-tool-preview-no-extension] Drop the "name.contains(".")" gate —
+            // it hid non-extension paths (bash, hosts, .zshrc, CLAUDE) as a
+            // generic "Read file" / "Write file" label, making 3+ same-kind
+            // tool blocks indistinguishable in the preview thumbnail (pp
+            // 2026-09-03). lastPathComponent of any real path is more useful
+            // than the generic fallback.
+            return (!p.isEmpty && name != "/") ? name : AppLocalized("Write file")
         case .fileEditTool(let p):
             let name = (p as NSString).lastPathComponent
-            return (!p.isEmpty && name != "/" && name.contains(".")) ? name : AppLocalized("Edit file")
+            // [T-tool-preview-no-extension] Drop the "name.contains(".")" gate —
+            // it hid non-extension paths (bash, hosts, .zshrc, CLAUDE) as a
+            // generic "Read file" / "Write file" label, making 3+ same-kind
+            // tool blocks indistinguishable in the preview thumbnail (pp
+            // 2026-09-03). lastPathComponent of any real path is more useful
+            // than the generic fallback.
+            return (!p.isEmpty && name != "/") ? name : AppLocalized("Edit file")
         case .browserTool(let a): return a
         case .readImageTool(let p):
             let name = (p as NSString).lastPathComponent
-            return (!p.isEmpty && name != "/" && name.contains(".")) ? name : AppLocalized("Read image")
+            // [T-tool-preview-no-extension] Drop the "name.contains(".")" gate —
+            // it hid non-extension paths (bash, hosts, .zshrc, CLAUDE) as a
+            // generic "Read file" / "Write file" label, making 3+ same-kind
+            // tool blocks indistinguishable in the preview thumbnail (pp
+            // 2026-09-03). lastPathComponent of any real path is more useful
+            // than the generic fallback.
+            return (!p.isEmpty && name != "/") ? name : AppLocalized("Read image")
         case .memoryTool(let a): return a
         default: return ""
         }
