@@ -22,6 +22,10 @@ final class RemoteAgentProvider: AgentProvider {
     var model: LLMModel
     var defaultMaxTokens: Int { 16_384 }
 
+    // [Decoupling] Protocol-level declaration — replaces runtime
+    // `provider is RemoteAgentProvider` checks in AIChatViewModel.
+    var isRemoteAgent: Bool { true }
+
     private let client: CCPocketClient
     private let instanceID: String
     /// Claude session id to resume on the first turn (nil = new session).

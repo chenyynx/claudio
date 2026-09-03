@@ -229,6 +229,13 @@ protocol AgentProvider {
 }
 
 extension AgentProvider {
+    /// True for providers that drive a remote agent (e.g. CC Pocket Bridge).
+    /// Local providers (Anthropic/Gemini/OpenAI/...) default to false via
+    /// this extension. Used by the engine core to branch trim and
+    /// tool-execution behavior WITHOUT runtime type checks
+    /// (`provider is RemoteAgentProvider`).
+    var isRemoteAgent: Bool { false }
+
     func streamAgentMessage(
         messages: [AgentMessage],
         systemPrompt: String?,

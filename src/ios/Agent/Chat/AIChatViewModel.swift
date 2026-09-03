@@ -4832,7 +4832,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             return
         }
         var provider = await makeAgentProvider(for: entry)
-        lastAgentProviderIsRemote = provider is RemoteAgentProvider
+        lastAgentProviderIsRemote = provider.isRemoteAgent
         if let remoteProvider = provider as? RemoteAgentProvider {
             remoteProvider.pendingRemotePayloads = pendingRemotePayloads
             pendingRemotePayloads = []
@@ -5858,7 +5858,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // every remote-agent turn as tool-less for execution purposes —
             // the tool_use blocks still persist for UI rendering, and the
             // Bridge's final `result` event carries the complete answer.
-            if provider is RemoteAgentProvider, !toolEntries.isEmpty {
+            if provider.isRemoteAgent, !toolEntries.isEmpty {
                 logger.info("[ToolLifecycle] SKIP local tool execution (remote agent) — \(toolEntries.count) tool(s) handled by Bridge; ending round")
                 toolEntries = []
             }
