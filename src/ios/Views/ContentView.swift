@@ -872,7 +872,6 @@ fileprivate func sessionIsRemote(_ session: ChatSession) -> Bool {
     remoteAgentInstanceID(for: session) != nil
 }
 
-#if REMOTE_SESSION_SYNC
 // MARK: - [Session sync] Compat helpers (always compiled)
 // Provide #if REMOTE_SESSION_SYNC-aware accessors for functions defined
 // inside the #if block, so call sites outside the block compile cleanly
@@ -885,6 +884,7 @@ private func isSyntheticRemoteSessionCompat(_ session: ChatSession) -> Bool {
 #endif
 }
 
+#if REMOTE_SESSION_SYNC
 // MARK: - [Session sync] Remote-bridge synthetic rows
 
 private let remoteSyntheticIdPrefix = "rbrid."
