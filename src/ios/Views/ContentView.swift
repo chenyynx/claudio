@@ -2519,7 +2519,7 @@ struct ContentView: View {
                             .id(incomingId)
                     } else
 #endif
-                    if incomingId.hasPrefix("remote:") {
+                        if incomingId.hasPrefix("remote:") {
                         let parts = incomingId.split(separator: ":", maxSplits: 2)
                         if parts.count == 3 {
                             AIChatView(sessionId: String(parts[2]), remoteDeviceId: String(parts[1]))
