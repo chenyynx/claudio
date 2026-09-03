@@ -770,6 +770,26 @@ actor ChatStore {
         }
 
 
+        // [Decoupling] Backfill: set source='remoteBridge' for existing remote
+        // sessions created before the source column was consistently set.
+        // Idempotent — only touches rows with NULL source that have a
+        // ccpocket-remote model id. Runs once (UserDefaults flag).
+        let remoteSourceBackfillKey = "chatStore.remoteSourceBackfillV1Done"
+        if !UserDefaults.standard.bool(forKey: remoteSourceBackfillKey) {
+            let backfillSQL = """
+                UPDATE sessions SET source = 'remoteBridge'
+                WHERE source IS NULL AND model_id LIKE '%ccpocket-remote%'
+            """
+            if sqlite3_exec(db, backfillSQL, nil, nil, nil) == SQLITE_OK {
+                let changed = Int(sqlite3_changes(db))
+                UserDefaults.standard.set(true, forKey: remoteSourceBackfillKey)
+                iCloudLogger.info("[remote-source] backfill done: updated \(changed) row(s)")
+            } else {
+                let err = String(cString: sqlite3_errmsg(db))
+                iCloudLogger.error("[remote-source] backfill FAILED (will retry next launch): \(err)")
+            }
+        }
+
         // iCloud sync tables
         exec("""
             CREATE TABLE IF NOT EXISTS sync_dirty_records (
@@ -3029,7 +3049,7 @@ actor ChatStore {
             WHERE m.sort_order = (
                 SELECT MAX(m2.sort_order) FROM messages m2 WHERE m2.session_id = m.session_id
             )
-              AND s.model_id NOT LIKE '%ccpocket-remote%'
+              AND (s.source IS NULL OR s.source != 'remoteBridge')
         """
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }
