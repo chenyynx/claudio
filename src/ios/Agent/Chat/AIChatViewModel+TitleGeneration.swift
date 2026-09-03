@@ -217,7 +217,11 @@ extension AIChatViewModel {
             return
         }
         // 兜底标题也带关键词分类 → 远端会话也能换头像(不调 LLM/不依赖本地 agent)
+        #if REMOTE_SESSION_SYNC
         let category = inferRemoteSessionCategory(from: firstUserRaw)
+#else
+        let category = "chat"
+#endif
         await ChatStore.shared.updateSessionTitle(sessionId, title: fallback, category: category)
         logger.info("[TitleGen] Applied fallback title \"\(fallback)\" + category \"\(category)\" (attempt \(attempt))")
     }
