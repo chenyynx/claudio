@@ -89,6 +89,17 @@ final class CCPocketClient: @unchecked Sendable {
     private var pingTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var pingFailures = 0
+    /// [Fix] Monotonic counter incremented on every `connect()`. Captured by
+    /// the receive loop at task start; any incoming message whose `taskEpoch`
+    /// doesn't match the current `connectionEpoch` is dropped silently.
+    /// Mirrors ccpocket official mobile's `_connectionEpoch` (apps/mobile/lib/
+    /// services/bridge_service.dart:273) — without this, an in-flight
+    /// `assistant/1blocks` from a stale `URLSessionWebSocketTask` resumes
+    /// after a reconnect and is dispatched to `onMessage` a second time,
+    /// producing duplicate assistant replies in the UI.
+    /// [C-ios-remote-agent-duplicate-reply] (2026-09-04) — bug observed on
+    /// session 16BAD1FB (turn 5, 13-second foreground/background storm).
+    private var connectionEpoch: Int = 0
 
     /// Set when the Bridge reports `session_resume_failed`; aborts the
     /// waiting `resumeSession()` caller immediately instead of timing out.
@@ -182,6 +193,12 @@ final class CCPocketClient: @unchecked Sendable {
     /// agent session — the provider calls `startSession()` / `resumeSession()`
     /// when a turn begins.
     func connect(projectPath: String, provider: String = "claude", permissionMode: String? = nil) async throws {
+        // [Fix] Bump epoch so any in-flight receive tasks that haven't yet
+        // seen their taskEpoch != connectionEpoch check (still inside an
+        // `await task?.receive()` suspension) drop the next message they
+        // observe. Captured below in startReceiveLoop into a task-local
+        // immutable so the comparison is stable across that task's lifetime.
+        connectionEpoch += 1
         // [Diag]
         logger.info("[CCPocket] connect url=\(baseURL.absoluteString) projectPath=\(projectPath) provider=\(provider) perm=\(permissionMode ?? "default") state=\(state == .idle ? "idle" : "busy")")
         guard state == .idle else {
@@ -583,6 +600,14 @@ final class CCPocketClient: @unchecked Sendable {
     // MARK: - Receive loop
 
     private func startReceiveLoop() {
+        // [Fix] Capture the current epoch into a local. Any message received
+        // after this task started but where connectionEpoch has since moved
+        // forward (i.e. another connect() call bumped it) is a stale-frame
+        // delivery from the old socket — drop it without dispatching to
+        // `onMessage`, preventing duplicate assistant replies in the UI.
+        // Mirrors ccpocket official mobile's `_connectionEpoch` (apps/mobile/
+        // lib/services/bridge_service.dart:273). See connectionEpoch doc.
+        let taskEpoch = connectionEpoch
         receiveTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
@@ -609,7 +634,12 @@ final class CCPocketClient: @unchecked Sendable {
                                 }
                             }
                             if let serverMessage = CCPocketProtocol.decodeServerMessage(data) {
-                                self.handleIncoming(serverMessage)
+                                // [Fix] Drop stale-frame messages (see taskEpoch comment)
+                                if taskEpoch != self.connectionEpoch {
+                                    logger.info("[CCPocket] dropping stale frame (taskEpoch=\(taskEpoch) current=\(self.connectionEpoch)) type=\(serverMessage.type ?? "?")")
+                                } else {
+                                    self.handleIncoming(serverMessage)
+                                }
                             }
                         }
                     case .data(let data):
@@ -630,7 +660,12 @@ final class CCPocketClient: @unchecked Sendable {
                             }
                         }
                         if let serverMessage = CCPocketProtocol.decodeServerMessage(data) {
-                            self.handleIncoming(serverMessage)
+                            // [Fix] Drop stale-frame messages (see taskEpoch comment)
+                                if taskEpoch != self.connectionEpoch {
+                                    logger.info("[CCPocket] dropping stale frame (taskEpoch=\(taskEpoch) current=\(self.connectionEpoch)) type=\(serverMessage.type ?? "?")")
+                                } else {
+                                    self.handleIncoming(serverMessage)
+                                }
                         }
                     case .none:
                         break
