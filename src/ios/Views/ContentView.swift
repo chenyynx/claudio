@@ -4478,7 +4478,7 @@ struct ContentView: View {
     @State private var showStartSessionError = false
 
     private var emptyState: some View {
-        let hasProviders = !providerStore.instances.isEmpty
+        let hasProviders = !providerStore.instances.filter { $0.providerType != .remoteAgent }.isEmpty
         let hasGroups = !providerStore.modelGroups.isEmpty
         let hasRemote = providerStore.instances.contains { $0.providerType == .remoteAgent && $0.isEnabled }
 

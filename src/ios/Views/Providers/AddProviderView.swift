@@ -402,6 +402,7 @@ struct AddProviderView: View {
     private var visibleProviderTypes: [ProviderType] {
         ProviderType.allCases.filter {
             $0 != .openAIResponses && $0 != .antigravity
+                && $0 != .remoteAgent  // Remote agent has its own dedicated entry (Cloud card → RemoteAgentSetupView), not through the local provider list
                 && !$0.isUnsupported
         }
     }
