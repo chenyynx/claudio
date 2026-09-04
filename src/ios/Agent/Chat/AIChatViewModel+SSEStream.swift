@@ -1030,6 +1030,23 @@ extension AIChatViewModel {
                     // reload rebuilds from the persisted toolResult part (the
                     // detail view lazy-renders large outputs; no truncation).
                     block.content = output
+                    // [T-ios-remote-typing-gap] This is the round's last word
+                    // on its tool work — re-arm the between-rounds indicator.
+                    // The next contentBlockStart (see above) clears it, so the
+                    // bracket stays exactly the dead air. Local agents never
+                    // yield .toolResult (RemoteAgentProvider-only; see the
+                    // AgentStreamEvent.toolResult doc), so this is remote-
+                    // exclusive by construction — no gate needed.
+                    //
+                    // It must be re-armed HERE rather than at the tool-result
+                    // commit point in runAgentLoop: that commit path is dead for
+                    // the Bridge, because the `provider.isRemoteAgent` branch
+                    // clears toolEntries and the following
+                    // `guard ... else { break }` ends the round. Left as-is,
+                    // isAwaitingModelResponse was only ever set on the fresh
+                    // row, so the indicator showed for the opening wait and
+                    // then never again, no matter how long each tool round ran.
+                    messages[msgIdx].isAwaitingModelResponse = true
                 }
 
             case .thinkingDelta(let text):
