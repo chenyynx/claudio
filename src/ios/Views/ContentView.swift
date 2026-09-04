@@ -8246,6 +8246,24 @@ private struct SettingsSheet: View {
                     }
                     if #available(iOS 17.0, *) {
                         NavigationLink {
+                            // [Remote Bridge Sync 09-05] 远端 session 桥同步状态
+                            // （bridge 连接状态、每个 session 同步水位、Clear Local Cache）。
+                            // 与 iCloud Sync 独立：前者管桥服务器同步，后者管多设备同步。
+                            RemoteSessionSyncView().settingsPaletteBackground()
+                        } label: {
+                            Label {
+                                Text("Remote Bridge")
+                            } icon: {
+                                Image(systemName: "antenna.radiowaves.left.and.right")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 21, height: 21)
+                                    .background(.teal, in: Circle())
+                            }
+                        }
+                    }
+                    if #available(iOS 17.0, *) {
+                        NavigationLink {
                             // v2 is the default sync engine; legacy v1
                             // settings page is unreachable from here.
                             CloudSyncSettingsV2View().settingsPaletteBackground()

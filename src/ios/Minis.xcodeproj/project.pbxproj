@@ -493,6 +493,7 @@
 		EAB000051 /* SyncMigrationDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAB000050 /* SyncMigrationDetailView.swift */; };
 		EAB000071 /* UploadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAB000070 /* UploadPolicy.swift */; };
 		EAB000081 /* CloudSyncSettingsV2View.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAB000080 /* CloudSyncSettingsV2View.swift */; };
+		4D0CC33CB17DB133D6283D61 /* RemoteSessionSyncView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E768FBF97FFD0AE4DC030A4 /* RemoteSessionSyncView.swift */; };
 		EXA000001 /* xAIModelsAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = EXA000011 /* xAIModelsAPI.swift */; };
 		EXA000002 /* XAITokenStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = EXA000012 /* XAITokenStorage.swift */; };
 		EXA000003 /* XAIOAuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EXA000013 /* XAIOAuthManager.swift */; };
@@ -1185,6 +1186,7 @@
 		EAB000050 /* SyncMigrationDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncMigrationDetailView.swift; sourceTree = "<group>"; };
 		EAB000070 /* UploadPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadPolicy.swift; sourceTree = "<group>"; };
 		EAB000080 /* CloudSyncSettingsV2View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSyncSettingsV2View.swift; sourceTree = "<group>"; };
+		1E768FBF97FFD0AE4DC030A4 /* RemoteSessionSyncView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteSessionSyncView.swift"; sourceTree = "<group>"; };
 		EXA000011 /* xAIModelsAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = xAIModelsAPI.swift; sourceTree = "<group>"; };
 		EXA000012 /* XAITokenStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XAITokenStorage.swift; sourceTree = "<group>"; };
 		EXA000013 /* XAIOAuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XAIOAuthManager.swift; sourceTree = "<group>"; };
@@ -2023,6 +2025,7 @@
 			children = (
 				EAB000050 /* SyncMigrationDetailView.swift */,
 				EAB000080 /* CloudSyncSettingsV2View.swift */,
+				1E768FBF97FFD0AE4DC030A4 /* RemoteSessionSyncView.swift */,
 			);
 			path = Sync;
 			sourceTree = "<group>";
@@ -2844,6 +2847,7 @@
 				EAB000051 /* SyncMigrationDetailView.swift in Sources */,
 				EAB000071 /* UploadPolicy.swift in Sources */,
 				EAB000081 /* CloudSyncSettingsV2View.swift in Sources */,
+				4D0CC33CB17DB133D6283D61 /* RemoteSessionSyncView.swift in Sources */,
 				E5W000032 /* WebAppPathResolver.swift in Sources */,
 				E5W000033 /* WebAppWebViewController.swift in Sources */,
 				E5W000035 /* WebAppHtmlMetadata.swift in Sources */,
