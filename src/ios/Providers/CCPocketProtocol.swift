@@ -300,6 +300,11 @@ enum CCPocketProtocol {
     struct AssistantContentBlock: Decodable {
         let type: String?
         let text: String?
+        /// Anthropic's thinking blocks store their content under the
+        /// `thinking` key (NOT `text`).  Without this field the decoder
+        /// silently drops the thinking content → reasoningContent stays
+        /// empty → backfill from bridge history loses all thinking.
+        let thinking: String?
         let id: String?
         let name: String?
         let input: [String: JSONValue]?

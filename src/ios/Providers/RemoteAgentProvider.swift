@@ -313,8 +313,12 @@ final class RemoteAgentProvider: AgentProvider {
                             continuation.yield(.textDelta(text))
                         }
                     case "thinking":
-                        if let text = block.text, !text.isEmpty, thinkingAccumulator.isEmpty {
-                            continuation.yield(.thinkingDelta(text))
+                        // [Fix] Bridge's thinking block content lives under
+                        // the `thinking` key, not `text`.  Read both for
+                        // safety (legacy Codex may use text).
+                        let text = block.thinking ?? block.text
+                        if let t = text, !t.isEmpty, thinkingAccumulator.isEmpty {
+                            continuation.yield(.thinkingDelta(t))
                         }
                     case "tool_use":
                         let toolName = block.name ?? "unknown"
@@ -448,7 +452,11 @@ final class RemoteAgentProvider: AgentProvider {
                     parts.append(.text(t))
                     uiSeq.append(UIBlockSnapshot(kind: "text", text: t, toolId: nil))
                 case "thinking":
-                    let t = b.text ?? ""
+                    // [Fix] Bridge's thinking block stores content under
+                    // the `thinking` key, not `text` (verified against live
+                    // bridge history payload).  Fall back to `text` for any
+                    // legacy Codex shape that uses text.
+                    let t = b.thinking ?? b.text ?? ""
                     if t.isEmpty { continue }
                     thinking.append(t)
                     uiSeq.append(UIBlockSnapshot(kind: "thinking", text: t, toolId: nil))
