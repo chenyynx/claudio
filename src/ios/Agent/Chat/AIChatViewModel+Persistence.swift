@@ -846,7 +846,8 @@ extension AIChatViewModel {
         let instances = ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
         guard instances.count == 1, let instance = instances.first else { return }
         remoteBackfillInFlight = true
-        let capturedSessionId = sessionId
+        // sessionId/remoteDeviceId 都是 String? — 先 guard 解包成 String
+        guard let capturedSessionId = sessionId else { return }
         let capturedRemoteDeviceId = remoteDeviceId
         Task { [weak self] in
             guard let self else { return }
@@ -974,14 +975,14 @@ extension AIChatViewModel {
     private func isBoundToRemoteAgentGroup() -> Bool {
         guard let sid = sessionId,
               let binding = ProviderConfigStore.shared.binding(for: sid) else { return false }
-        // ModelGroup 没有 provider 字段。通过 group 的 memberEntries 找到
-        // ProviderInstance，判断 providerType == .remoteAgent。
+        // ModelGroup 没有 provider 字段。通过 group 的 memberEntryIds 找到 ModelEntry，
+        // 再从 entry.providerInstanceId 找 ProviderInstance，判断 providerType == .remoteAgent。
         if case .group(let gid, _) = binding.primarySource,
            let group = ProviderConfigStore.shared.group(for: gid) {
-            for entryId in group.memberEntries {
+            for entryId in group.memberEntryIds {
                 if let entry = ProviderConfigStore.shared.entry(for: entryId),
                    let inst = ProviderConfigStore.shared.instance(for: entry.providerInstanceId),
-                   inst.providerType == .remoteAgent {
+                   inst.providerType == ProviderType.remoteAgent {
                     return true
                 }
             }
