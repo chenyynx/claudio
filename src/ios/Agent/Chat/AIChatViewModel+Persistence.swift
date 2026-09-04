@@ -839,10 +839,9 @@ extension AIChatViewModel {
     private func scheduleRemoteHistoryBackfill(resolver: @escaping (MediaRef) -> URL) {
         // [C-方案 09-05] 入口 gate：远端 session 才走（本地 agent 永不进入）。
         // 远端 session 即使 DB 非空也走（杀后台时 stream 没结束 → assistant 缺 → 补漏）。
-        // isRemoteSession() 是三重门（model binding / lastAgentProviderIsRemote / source=remoteBridge）。
-        // 由于这里不在 async context，临时把 isRemoteSession() 拆为同步部分（第一重 + 第二重）。
-        // 第三重（DB 查 source）用 Task 包一下非阻塞处理。
-        guard isPossiblyRemoteSession() else { return }
+        // isRemoteSession 是 async（需要 await ChatStore.shared.getSession 查 source），
+        // 所以在 Task 内部 await 检查，避免 sync 函数里 await。
+        // 本地 agent session 三重门全 false → 永不进入 backfill。
         guard remoteBackfillInFlight == false else { return }
         let instances = ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
         guard instances.count == 1, let instance = instances.first else { return }
@@ -852,13 +851,16 @@ extension AIChatViewModel {
         Task { [weak self] in
             guard let self else { return }
             defer { self.remoteBackfillInFlight = false }
+            // 远端 session gate（async）
+            guard await self.isRemoteSession() else { return }
             let startedAt = CFAbsoluteTimeGetCurrent()
             // 拍下当前 DB 已有 raw（用于判重）
+            // loadRemoteMessages 是 sync 签名（deviceId 是 String non-optional）
             let existingRaw: [RawMessage]
-            if let dev = capturedRemoteDeviceId {
-                existingRaw = await ChatStore.shared.loadRemoteMessages(sessionId: capturedSessionId, deviceId: dev)
+            if let dev = capturedRemoteDeviceId, !dev.isEmpty {
+                existingRaw = ChatStore.shared.loadRemoteMessages(sessionId: capturedSessionId, deviceId: dev)
             } else {
-                existingRaw = await ChatStore.shared.loadMessages(sessionId: capturedSessionId)
+                existingRaw = ChatStore.shared.loadMessages(sessionId: capturedSessionId)
             }
             let result = await RemoteHistoryBackfill.shared.backfillIfNeeded(
                 sessionId: capturedSessionId,
@@ -896,18 +898,19 @@ extension AIChatViewModel {
         case .replaced(let msgs):
             logger.info("[HistoryBackfill] applyBackfillResult=replaced count=\(msgs.count) \(String(format: "%.0f", elapsed))ms")
             self.messages = msgs
-            // agentHistory 也需要重建以便后续 turn 续接
+            // agentHistory 简化为只保留 assistant turn 文字（不做 tool 重建，UI 渲染够用，
+            // 完整 LLM 上下文续接留待下次 turn 触发时重建）。ChatMessage.id 是 UUID，
+            // AgentMessage.dbMessageId 是 String，用 uuidString 转。
             self.agentHistory = msgs.compactMap { cm in
+                guard cm.role == .assistant else { return nil }
                 var am = AgentMessage(
-                    role: cm.role == .user ? .user : .assistant,
+                    role: .assistant,
                     parts: cm.blocks.compactMap { b in
-                        if case .text(let s) = b.kind { return .text(s) }
-                        if case let .toolUse(id, name, input) = b.kind { return .toolUse(id: id, name: name, input: input) }
-                        if case let .toolResult(id, name, content, isError) = b.kind { return .toolResult(id: id, name: name, content: content, isError: isError) }
+                        if b.kind == .text { return .text(b.content) }
                         return nil
                     }
                 )
-                am.dbMessageId = cm.id
+                am.dbMessageId = cm.id.uuidString
                 return am
             }
             self.scrollToBottomSignal.send()
@@ -919,17 +922,18 @@ extension AIChatViewModel {
                     self.messages.append(m)
                 }
             }
-            // agentHistory 也增量补（用于后续 turn 的 LLM 上下文）
-            for m in msgs {
-                if m.role == .assistant, !self.agentHistory.contains(where: { $0.dbMessageId == m.id }) {
+            // agentHistory 增量补 assistant turn（用 uuidString 转 ChatMessage.id）
+            for m in msgs where m.role == .assistant {
+                let dbId = m.id.uuidString
+                if !self.agentHistory.contains(where: { $0.dbMessageId == dbId }) {
                     var am = AgentMessage(
                         role: .assistant,
                         parts: m.blocks.compactMap { b in
-                            if case .text(let s) = b.kind { return .text(s) }
+                            if b.kind == .text { return .text(b.content) }
                             return nil
                         }
                     )
-                    am.dbMessageId = m.id
+                    am.dbMessageId = dbId
                     self.agentHistory.append(am)
                 }
             }
@@ -952,7 +956,7 @@ extension AIChatViewModel {
     /// | 本机远端 session 发过消息             | .remoteAgt  | true         | remoteBridge      | true   |
     /// | iPhone A 远端 session iCloud 到 B     | .remoteAgt  | false        | remoteBridge      | true   |
     /// | B 上对 iCloud 来的远端 session 发消息 | .remoteAgt  | true         | remoteBridge      | true   |
-    private func isRemoteSession() -> Bool {
+    private func isRemoteSession() async -> Bool {
         // 第一重：model binding.provider == .remoteAgent（用户明确选了远端）
         if isBoundToRemoteAgentGroup() { return true }
         // 第二重：lastAgentProviderIsRemote（当前 vm 上次发消息用的是远端 provider）
@@ -967,25 +971,20 @@ extension AIChatViewModel {
         return false
     }
 
-/// 同步版远端判别（第一重 + 第二重，DB 查 source 留给工具类内部 async 处理）。
-    /// 用在 loadSession 的非 async 入口 gate。
-    private func isPossiblyRemoteSession() -> Bool {
-        if isBoundToRemoteAgentGroup() { return true }
-        if lastAgentProviderIsRemote { return true }
-        // 第三重 fallback：本机新建远端 session 写入时 source=remoteBridge，但 getSession 是 async。
-        // 这里保守返 false（远端 session 由调用方传进来的 chatSessionID 隐含表达）；
-        // RemoteHistoryBackfill 内部如果 DB 没数据，会从桥拉全量落库（replaced 路径），
-        // 走错的话本地 agent 不会触发（因为没有 claude mapping，fetchRemoteHistory 返 nil）。
-        return false
-    }
-
-
     private func isBoundToRemoteAgentGroup() -> Bool {
         guard let sid = sessionId,
               let binding = ProviderConfigStore.shared.binding(for: sid) else { return false }
+        // ModelGroup 没有 provider 字段。通过 group 的 memberEntries 找到
+        // ProviderInstance，判断 providerType == .remoteAgent。
         if case .group(let gid, _) = binding.primarySource,
            let group = ProviderConfigStore.shared.group(for: gid) {
-            return group.provider == .remoteAgent
+            for entryId in group.memberEntries {
+                if let entry = ProviderConfigStore.shared.entry(for: entryId),
+                   let inst = ProviderConfigStore.shared.instance(for: entry.providerInstanceId),
+                   inst.providerType == .remoteAgent {
+                    return true
+                }
+            }
         }
         return false
     }
