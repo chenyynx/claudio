@@ -29,7 +29,7 @@ final class RemoteFileUpload {
         directoryPath: String = ".",
         fileName: String,
         fileURL: URL,
-        conflictPolicy: String = "keepBoth"
+        conflictPolicy: String = "rename"
     ) async throws -> RemoteUploadResult {
         let sizeBytes = try fileSize(fileURL)
 
