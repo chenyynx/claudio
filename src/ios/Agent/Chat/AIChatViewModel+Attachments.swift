@@ -208,6 +208,7 @@ extension AIChatViewModel {
                 kind = .document
             }
             attachments.append(InputAttachment(fileName: fileName, cacheURL: destURL, kind: kind))
+            logger.info("[Attachment] addFileAttachment OK: \(fileName) -> \(destURL.lastPathComponent) kind=\(kind) total=\(attachments.count)")
         } catch {
             logger.error("Failed to cache file attachment: \(error.localizedDescription)")
         }

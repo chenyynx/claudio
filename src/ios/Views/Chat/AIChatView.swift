@@ -1225,13 +1225,24 @@ struct AIChatView: View {
             allowedContentTypes: [.image, .pdf, .plainText, .json, .sourceCode, .presentation, .spreadsheet, .data],
             allowsMultipleSelection: true
         ) { result in
-            switch result {
-            case .success(let urls):
-                for url in urls {
-                    vm.addFileAttachment(from: url)
+            // [T-ios-fileimporter-mainactor] .fileImporter's completion handler
+            // is NOT guaranteed to run on the main actor (unlike .photosPicker's
+            // .onChange which is). AIChatViewModel is @MainActor, so calling
+            // vm.addFileAttachment() from a non-main thread modifies @Published
+            // attachments off-thread → SwiftUI never refreshes the attachment
+            // grid. This was the root cause of "files picked from Files App
+            // never appeared as attachment chips" (photos worked because
+            // .onChange IS main-actor). Wrap in Task { @MainActor in } per
+            // swiftui-pro swift.md (never use DispatchQueue.main.async).
+            Task { @MainActor in
+                switch result {
+                case .success(let urls):
+                    for url in urls {
+                        vm.addFileAttachment(from: url)
+                    }
+                case .failure(let error):
+                    minisLogger.error("File import failed: \(error.localizedDescription)")
                 }
-            case .failure(let error):
-                minisLogger.error("File import failed: \(error.localizedDescription)")
             }
         }
         .onAppear {
