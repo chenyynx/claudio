@@ -832,6 +832,25 @@ final class CCPocketClient: @unchecked Sendable {
                 }
             }
         }
+        // [Model catalog] session_list 还携带 7 个远端模型字段
+        // (claudeModels / claudeModelEfforts / codexModels / ...);
+        // 每条 broadcast 都推,直接喂给 RemoteModelCatalog 刷新 UI。
+        // 桥空广播时(nil/空)Catalog 内部按"保留上次值"语义处理。
+        if let instanceID = mappingInstanceID {
+            let iid = instanceID
+            Task { @MainActor in
+                RemoteModelCatalog.shared.apply(
+                    instanceID: iid,
+                    claudeModels: message.claudeModels,
+                    claudeModelEfforts: message.claudeModelEfforts,
+                    codexModels: message.codexModels,
+                    codexModelReasoningEfforts: message.codexModelReasoningEfforts,
+                    codexModelServiceTiers: message.codexModelServiceTiers,
+                    codexProfiles: message.codexProfiles,
+                    defaultCodexProfile: message.defaultCodexProfile
+                )
+            }
+        }
     }
 
     // MARK: - Ping

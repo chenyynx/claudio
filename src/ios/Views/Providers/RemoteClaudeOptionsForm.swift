@@ -9,6 +9,9 @@ import SwiftUI
 /// official defaults.
 struct RemoteClaudeOptionsForm: View {
     @Binding var options: ClaudeSessionOptions
+    /// [Model catalog] 桥在 session_list 广播里送来的模型目录,
+    /// 远端连接时为空 → 走 fallback。
+    @ObservedObject private var catalog = RemoteModelCatalog.shared
 
     fileprivate static let modelFallback: [String] = [
         "claude-opus-4-7", "claude-opus-4-7[1m]", "claude-opus-4-6",
@@ -16,6 +19,22 @@ struct RemoteClaudeOptionsForm: View {
         "claude-sonnet-4-6", "claude-haiku-4-6",
     ]
     fileprivate static let efforts = ["low", "medium", "high", "max"]
+
+    /// 当前可用的 Claude 模型列表(桥送来的 + fallback 兜底)
+    private var availableModels: [String] {
+        let live = catalog.claudeModels()
+        return live.isEmpty ? Self.modelFallback : live
+    }
+
+    /// 当前选中 model 的 effort 档位(桥送来的);空 = 该 model 不支持
+    private var currentModelEfforts: [String] {
+        catalog.claudeModelEfforts(for: options.model)
+    }
+
+    /// model 是否支持 effort(用于 UI 决定显示 chip vs "不支持"提示)
+    private var currentModelSupportsEffort: Bool {
+        catalog.supportsEffort(model: options.model)
+    }
 
     fileprivate struct PermissionOption {
         let value: String
@@ -103,7 +122,7 @@ struct RemoteClaudeOptionsForm: View {
             rowDivider
 
             Menu {
-                ForEach(Self.modelFallback, id: \.self) { model in
+                ForEach(availableModels, id: \.self) { model in
                     Button {
                         options.model = model
                     } label: {
@@ -120,20 +139,17 @@ struct RemoteClaudeOptionsForm: View {
 
             rowDivider
 
-            Menu {
-                ForEach(Self.efforts, id: \.self) { effort in
-                    Button {
-                        options.effort = effort
-                    } label: {
-                        if options.effort == effort {
-                            Label(effort, systemImage: "checkmark")
-                        } else {
-                            Text(effort)
-                        }
-                    }
-                }
-            } label: {
-                optionRow(title: "Effort", value: options.effort ?? "normal", detail: "")
+            // [Model catalog] Effort 联动 chip 区。
+            // 当前 model 不支持 effort (如 haiku):显示提示行。
+            // 支持:渲染 chip 行(选中态 = cta 黑底白字)。
+            if !currentModelSupportsEffort {
+                optionRow(
+                    title: "Effort",
+                    value: localized("Not supported"),
+                    detail: localized("This model does not support effort levels")
+                )
+            } else {
+                effortChipSection
             }
         }
     }
@@ -163,6 +179,73 @@ struct RemoteClaudeOptionsForm: View {
         }
     }
 
+    /// [Model catalog] Effort chip 联动区。
+    /// 当前 model 支持 effort 时渲染一行可点 chip;选中态 = 黑底白字,
+    /// 未选中态 = 浅灰底深字。点 chip 写回 options.effort。
+    /// 空数组(haiku 等)由调用方 optionRow 走"Not supported"分支,
+    /// 这里不做二次判断。
+    private var effortChipSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(localized("Effort"))
+                    .font(.system(size: 15))
+                    .foregroundStyle(ClaudePalette.textPrimary)
+                Spacer()
+                if let cur = options.effort {
+                    Text(cur.capitalized)
+                        .font(.subheadline)
+                        .foregroundStyle(ClaudePalette.textSecondary)
+                } else {
+                    Text(localized("Default"))
+                        .font(.subheadline)
+                        .foregroundStyle(ClaudePalette.textSecondary)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    // "Default" chip — clear effort
+                    effortChip(label: localized("Default"),
+                               selected: options.effort == nil) {
+                        options.effort = nil
+                    }
+                    ForEach(currentModelEfforts, id: \.self) { level in
+                        effortChip(label: level.capitalized,
+                                   selected: options.effort == level) {
+                            options.effort = level
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 10)
+            }
+        }
+    }
+
+    /// 单个 chip 视图(选中态用 cta 配色,未选中态用 card 配色 + 浅边框)
+    @ViewBuilder
+    private func effortChip(label: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? ClaudePalette.ctaForeground : ClaudePalette.textPrimary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule()
+                        .fill(selected ? AnyShapeStyle(ClaudePalette.ctaBackground)
+                                       : AnyShapeStyle(ClaudePalette.cardFill))
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(selected ? Color.clear : ClaudePalette.border, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
     private var advancedSection: some View {
         card(header: "Advanced") {
             TextField("Max turns (optional)", value: $options.maxTurns, format: .number)
@@ -189,7 +272,7 @@ struct RemoteClaudeOptionsForm: View {
                 } label: {
                     if options.fallbackModel == nil { Label("Default", systemImage: "checkmark") } else { Text("Default") }
                 }
-                ForEach(Self.modelFallback, id: \.self) { model in
+                ForEach(availableModels, id: \.self) { model in
                     Button {
                         options.fallbackModel = model
                     } label: {

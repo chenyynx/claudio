@@ -251,6 +251,17 @@ enum CCPocketProtocol {
         // system/supported_commands — 远端(服务器)技能清单
         let skills: [String]?
         let skillMetadata: [[String: JSONValue]]?
+        // session_list 携带的远端可用模型清单(官方 websocket.ts:7780+
+        // 每次 session_list 广播都带)。claudio 端负责消费
+        // → RemoteModelCatalog，UI 层据此渲染 Model 下拉 + Effort
+        // chip 联动。all-optional 保持 lenient parse 兼容旧桥。
+        let claudeModels: [String]?
+        let claudeModelEfforts: [String: [String]]?
+        let codexModels: [String]?
+        let codexModelReasoningEfforts: [String: [String]]?
+        let codexModelServiceTiers: [String: [String]]?
+        let codexProfiles: [String]?
+        let defaultCodexProfile: String?
     }
 
     /// One seq-tagged entry of a `history_snapshot` / `history_delta`

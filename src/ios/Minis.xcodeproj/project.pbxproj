@@ -100,6 +100,7 @@
 		E5CPB001 /* CCPocketProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CPF001 /* CCPocketProtocol.swift */; };
 		E5CPB002 /* CCPocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CPF002 /* CCPocketClient.swift */; };
 		E5F2A0009 /* RemoteFileUpload.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F2A000B /* RemoteFileUpload.swift */; };
+		E5F2A0010 /* RemoteModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F2A0011 /* RemoteModelCatalog.swift */; };
 		E5F2A0005 /* RemoteSkillRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F2A0007 /* RemoteSkillRegistry.swift */; };
 		E5CPB003 /* RemoteAgentProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CPF003 /* RemoteAgentProvider.swift */; };
 		E5CPB004 /* RemoteAgentConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CPF004 /* RemoteAgentConnection.swift */; };
@@ -767,6 +768,7 @@
 		E5CPF001 /* CCPocketProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CCPocketProtocol.swift; sourceTree = "<group>"; };
 		E5CPF002 /* CCPocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CCPocketClient.swift; sourceTree = "<group>"; };
 		E5F2A000B /* RemoteFileUpload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteFileUpload.swift; sourceTree = "<group>"; };
+		E5F2A0011 /* RemoteModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteModelCatalog.swift; sourceTree = "<group>"; };
 		E5F2A0007 /* RemoteSkillRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSkillRegistry.swift; sourceTree = "<group>"; };
 		E5CPF003 /* RemoteAgentProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAgentProvider.swift; sourceTree = "<group>"; };
 		E5CPF004 /* RemoteAgentConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAgentConnection.swift; sourceTree = "<group>"; };
@@ -1554,6 +1556,7 @@
 				E5CPF001 /* CCPocketProtocol.swift */,
 				E5CPF002 /* CCPocketClient.swift */,
 				E5F2A000B /* RemoteFileUpload.swift */,
+				E5F2A0011 /* RemoteModelCatalog.swift */,
 				E5F2A0007 /* RemoteSkillRegistry.swift */,
 				E5CPF003 /* RemoteAgentProvider.swift */,
 				E5CPF004 /* RemoteAgentConnection.swift */,
@@ -2978,6 +2981,7 @@
 				E5CPB001 /* CCPocketProtocol.swift in Sources */,
 				E5CPB002 /* CCPocketClient.swift in Sources */,
 				E5F2A0009 /* RemoteFileUpload.swift in Sources */,
+				E5F2A0010 /* RemoteModelCatalog.swift in Sources */,
 				E5F2A0005 /* RemoteSkillRegistry.swift in Sources */,
 				E5CPB003 /* RemoteAgentProvider.swift in Sources */,
 				E5CPB004 /* RemoteAgentConnection.swift in Sources */,
