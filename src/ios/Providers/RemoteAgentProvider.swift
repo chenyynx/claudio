@@ -186,7 +186,7 @@ final class RemoteAgentProvider: AgentProvider {
                         }
                     }
                     try await self.client.sendInput(inputText, sessionId: bridgeSessionId, images: inlineImages.isEmpty ? nil : inlineImages)
-                    logger.info("[RemoteAgent] sendInput OK session=\(bridgeSessionId) images=\(inlineImages.count)")
+                    logger.info("[RemoteAgent] sendInput OK session=\(bridgeSessionId) images=\(inlineImages.count) text=\(inputText.prefix(60).replacingOccurrences(of: "\n", with: " "))")
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -337,6 +337,7 @@ final class RemoteAgentProvider: AgentProvider {
                         // so the next text section opens a new block instead of being silently dropped.
                         textBlockStarted = false
                         continuation.yield(.toolCallComplete(id: toolId, name: toolName, args: args, metadata: nil))
+                        logger.info("[RemoteAgent] tool_use: \(toolName) id=\(toolId.prefix(8)) args=\(args.keys.sorted())")
                     default:
                         break
                     }
@@ -422,6 +423,7 @@ final class RemoteAgentProvider: AgentProvider {
                 let isError = output.hasPrefix("Tool execution was interrupted")
                     || output.hasPrefix("Error:")
                 continuation.yield(.toolResult(id: toolId, name: message.toolName ?? "", output: output, isError: isError))
+                logger.info("[RemoteAgent] tool_result: id=\(toolId.prefix(8)) name=\(message.toolName ?? "?") isError=\(isError) output=\(output.prefix(80).replacingOccurrences(of: "\n", with: " "))")
             }
 
         default:

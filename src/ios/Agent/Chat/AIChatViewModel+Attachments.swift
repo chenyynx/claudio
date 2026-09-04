@@ -45,6 +45,7 @@ extension AIChatViewModel {
                 try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: url.path)
             }
             attachments.append(InputAttachment(fileName: fileName, cacheURL: url, kind: .image))
+            logger.info("[Attachment] addImageAttachment(UIImage) OK: \(fileName) size=\(image.size) total=\(attachments.count)")
         } catch {
             logger.error("Failed to cache image attachment: \(error.localizedDescription)")
         }
@@ -74,8 +75,9 @@ extension AIChatViewModel {
                 try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: url.path)
             }
             attachments.append(InputAttachment(fileName: fileName, cacheURL: url, kind: .image))
+            logger.info("[Attachment] addImageAttachment(Data) OK: \(fileName) dataSize=\(data.count) total=\(attachments.count)")
         } catch {
-            logger.error("Failed to cache image attachment data: \(error.localizedDescription)")
+            logger.error("[Attachment] addImageAttachment(Data) FAILED: \(error.localizedDescription)")
         }
     }
 
@@ -86,6 +88,7 @@ extension AIChatViewModel {
     /// before any bytes load. Returns the placeholder IDs in order so the caller
     /// can resolve each one as its concurrent load finishes.
     func addLoadingPlaceholders(kinds: [InputAttachment.Kind]) -> [UUID] {
+        logger.info("[Attachment] addLoadingPlaceholders: \(kinds.count) placeholder(s) kinds=\(kinds)")
         let placeholders = kinds.map { InputAttachment.loadingPlaceholder(id: UUID(), kind: $0) }
         attachments.append(contentsOf: placeholders)
         return placeholders.map(\.id)
@@ -120,8 +123,9 @@ extension AIChatViewModel {
             attachments[i].cacheURL = url
             attachments[i].kind = .image
             attachments[i].loadState = .ready
+            logger.info("[Attachment] finalizeImagePlaceholder OK: id=\(id) file=\(fileName) data=\(data.count)")
         } catch {
-            logger.error("Failed to cache picked image: \(error.localizedDescription)")
+            logger.error("[Attachment] finalizeImagePlaceholder FAILED: id=\(id) \(error.localizedDescription)")
             markPlaceholderFailed(id: id)
         }
     }
@@ -148,8 +152,9 @@ extension AIChatViewModel {
             attachments[i].cacheURL = destURL
             attachments[i].kind = .video
             attachments[i].loadState = .ready
+            logger.info("[Attachment] finalizeVideoPlaceholder OK: id=\(id) file=\(fileName)")
         } catch {
-            logger.error("Failed to cache picked video: \(error.localizedDescription)")
+            logger.error("[Attachment] finalizeVideoPlaceholder FAILED: id=\(id) \(error.localizedDescription)")
             markPlaceholderFailed(id: id)
         }
     }
@@ -157,7 +162,11 @@ extension AIChatViewModel {
     /// Flip a placeholder to `.failed` so its chip shows an error state the user
     /// can dismiss. Leaves successfully-loaded siblings untouched.
     func markPlaceholderFailed(id: UUID) {
-        guard let idx = attachments.firstIndex(where: { $0.id == id }) else { return }
+        guard let idx = attachments.firstIndex(where: { $0.id == id }) else {
+            logger.error("[Attachment] markPlaceholderFailed: placeholder id=\(id) not found")
+            return
+        }
+        logger.warning("[Attachment] markPlaceholderFailed: id=\(id) file=\(attachments[idx].fileName)")
         attachments[idx].loadState = .failed
     }
 
@@ -210,7 +219,7 @@ extension AIChatViewModel {
             attachments.append(InputAttachment(fileName: fileName, cacheURL: destURL, kind: kind))
             logger.info("[Attachment] addFileAttachment OK: \(fileName) -> \(destURL.lastPathComponent) kind=\(kind) total=\(attachments.count)")
         } catch {
-            logger.error("Failed to cache file attachment: \(error.localizedDescription)")
+            logger.error("[Attachment] addFileAttachment FAILED: file=\(fileName) source=\(sourceURL.path) dest=\(destURL.path) error=\(error.localizedDescription)")
         }
     }
 

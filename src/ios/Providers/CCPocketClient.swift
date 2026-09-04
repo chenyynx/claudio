@@ -732,6 +732,7 @@ final class CCPocketClient: @unchecked Sendable {
         if message.type == "input_ack",
            let clientMessageId = message.clientMessageId {
             removePending(clientMessageId: clientMessageId)
+            logger.info("[CCPocket] input_ack: clientMessageId=\(clientMessageId.prefix(8))")
         }
 
         // [A-plan v1] History replay reply — resume the fetch waiter.

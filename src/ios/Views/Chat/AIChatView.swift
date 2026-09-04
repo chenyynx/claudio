@@ -1165,6 +1165,7 @@ struct AIChatView: View {
                       maxSelectionCount: 50, matching: .any(of: [.images, .videos]))
         .onChange(of: selectedPhotoItems) { items in
             guard !items.isEmpty else { return }
+            minisLogger.info("[Attachment] photoPicker onChange: \(items.count) item(s) selected")
             // [T-ios-photo-pick-placeholder] 1) Insert a loading placeholder chip
             // for every picked item RIGHT NOW (one main-actor batch update), so the
             // user immediately sees how many they picked instead of watching photos
@@ -1237,6 +1238,7 @@ struct AIChatView: View {
             Task { @MainActor in
                 switch result {
                 case .success(let urls):
+                    minisLogger.info("[Attachment] fileImporter success: \(urls.count) file(s) picked: \(urls.map { $0.lastPathComponent })")
                     for url in urls {
                         vm.addFileAttachment(from: url)
                     }
