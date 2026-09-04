@@ -1221,35 +1221,23 @@ struct AIChatView: View {
                 }
             }
         }
-        .fileImporter(
-            isPresented: $showDocumentPicker,
-            // [Fix] 原列表缺 .folder/音视频/压缩包 → Files app 里文件夹、iCloud
-            // 位置文件、Keynote/Numbers 等灰色选不了。.data 是普通文件父类、
-            // .folder 是目录父类，互补后覆盖几乎所有常用文件类型。
-            allowedContentTypes: [.image, .pdf, .plainText, .json, .sourceCode,
-                                  .presentation, .spreadsheet, .data,
-                                  .folder, .directory, .archive,
-                                  .audio, .movie, .audiovisualContent],
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls):
-                minisLogger.info("[Attachment] fileImporter success: \(urls.count) file(s) picked: \(urls.map { $0.lastPathComponent })")
-                // [Fix 09-05] security-scoped URL 只能在 completion 同步期间用：
-                // 包 Task 会延迟到下一轮 runloop，iOS 已撤销授权 →
-                // addFileAttachment 内 startAccessing 返 false + copyItem 抛异常
-                // → catch 静默丢弃 → "选中了没反应"（f103bb0 包 Task 本想修
-                // @Published 主线程刷新，却正好让 scoped URL 失效）。
-                // 做法：立即复制出本地副本（非 scoped），再上主线程添加。
-                let copied = Self.captureScopedFiles(urls)
-                Task { @MainActor in
-                    for url in copied {
-                        vm.addFileAttachment(from: url)
+        // [Fix 09-05] UIKit 原生 picker 替代 .fileImporter：pp 报"能选中文件但
+        // picker 卡着不关"——SwiftUI .fileImporter 的 completion 在 picker 关闭
+        // 之后才调用，picker 卡住时代码一行没跑，无从诊断。UIDocumentPicker
+        // 的 delegate 回调明确、不依赖 SwiftUI modifier 呈现机制。
+        .sheet(isPresented: $showDocumentPicker) {
+            DocumentPickerView(
+                allowedTypes: [.image, .pdf, .plainText, .json, .sourceCode,
+                               .presentation, .spreadsheet, .data, .archive,
+                               .audio, .movie, .audiovisualContent],
+                allowsMultiple: true,
+                onPick: { urls in
+                    Task { @MainActor in
+                        for url in urls { vm.addFileAttachment(from: url) }
                     }
-                }
-            case .failure(let error):
-                minisLogger.error("[Attachment] File import failed: \(error.localizedDescription)")
-            }
+                },
+                onFail: { _ in }
+            )
         }
         .onAppear {
             let sinceInit = (CFAbsoluteTimeGetCurrent() - AIChatViewModel.onAppearTimestamp) * 1000
@@ -3127,32 +3115,79 @@ struct AIChatView: View {
         return .handled
     }
 
-    /// [Fix 09-05] .fileImporter 返回的是 security-scoped URL，访问权限仅在
-    /// completion 同步执行期间有效。若在此处包 Task/DispatchQueue 延迟处理，
-    /// iOS 已撤销授权 → startAccessing 返 false、copyItem 抛异常 →
-    /// addFileAttachment 的 catch 静默丢弃附件（表现：选中了没反应）。
-    /// 必须在同步路径上立即复制出本地副本；副本 URL 不再受 scope 约束，
-    /// 可安全传入 Task { @MainActor } 供 @Published 刷新。
-    private static func captureScopedFiles(_ urls: [URL]) -> [URL] {
-        let fm = FileManager.default
-        let dest = fm.temporaryDirectory
-        var out: [URL] = []
-        for src in urls {
-            let target = dest.appendingPathComponent(
-                UUID().uuidString.prefix(8) + "_" + src.lastPathComponent
+    /// [Fix 09-05] UIKit 原生文件选择器，替代 SwiftUI .fileImporter。
+    ///
+    /// 为什么不用 .fileImporter：pp 报"能选中文件，但选完后 Files 选择器卡着
+    /// 不关"。SwiftUI .fileImporter 的 completion handler 在 picker 关闭之后
+    /// 才调用——picker 卡住时 completion 从不触发，我们的代码一行都没执行，
+    /// 既无法诊断也无法修复。改为 UIDocumentPickerViewController 后 delegate
+    /// 回调路径明确：didPickDocumentsAt 有 URL、didFailWithError 有错误、
+    /// 都没有就是系统层没走完，不会静默吞掉。
+    ///
+    /// security-scoped URL 的时效性约束不变：URL 的访问权限仅在
+    /// didPickDocumentsAt 回调同步执行期间有效，必须在此时立即复制出本地
+    /// 副本（副本非 scoped），之后再上主线程更新 @Published 附件列表。
+    private struct DocumentPickerView: UIViewControllerRepresentable {
+        let allowedTypes: [UTType]
+        let allowsMultiple: Bool
+        let onPick: ([URL]) -> Void
+        let onFail: (Error) -> Void
+
+        func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+            let vc = UIDocumentPickerViewController(
+                forOpeningContentTypes: allowedTypes, asCopy: false
             )
-            let accessed = src.startAccessingSecurityScopedResource()
-            defer { if accessed { src.stopAccessingSecurityScopedResource() } }
-            do {
-                try fm.copyItem(at: src, to: target)
-                out.append(target)
-            } catch {
-                minisLogger.error(
-                    "[Attachment] scoped copy FAILED \(src.lastPathComponent): \(error.localizedDescription) accessed=\(accessed)"
-                )
+            vc.allowsMultipleSelection = allowsMultiple
+            vc.delegate = context.coordinator
+            return vc
+        }
+
+        func updateUIViewController(_ uiViewController: UIDocumentPickerViewController,
+                                    context: Context) {}
+
+        func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+        final class Coordinator: NSObject, UIDocumentPickerDelegate {
+            let parent: DocumentPickerView
+            init(_ parent: DocumentPickerView) { self.parent = parent }
+
+            func documentPicker(_ controller: UIDocumentPickerViewController,
+                                didPickDocumentsAt urls: [URL]) {
+                minisLogger.info("[Attachment] documentPicker didPick: \(urls.count) file(s) picked: \(urls.map { $0.lastPathComponent })")
+                parent.onPick(Self.captureScoped(urls))
+            }
+
+            func documentPicker(_ controller: UIDocumentPickerViewController,
+                                didFailWithError error: Error) {
+                minisLogger.error("[Attachment] documentPicker didFail: \(error.localizedDescription)")
+                parent.onFail(error)
+            }
+
+            /// 在 delegate 回调同步期间立即复制出本地副本——security scope 仅此时有效。
+            /// copyItem 失败时打 [Attachment] scoped copy FAILED（含 accessed 布尔，
+            /// 区分授权失效 vs 磁盘问题），不再静默丢弃。
+            static func captureScoped(_ urls: [URL]) -> [URL] {
+                let fm = FileManager.default
+                let dest = fm.temporaryDirectory
+                var out: [URL] = []
+                for src in urls {
+                    let target = dest.appendingPathComponent(
+                        UUID().uuidString.prefix(8) + "_" + src.lastPathComponent
+                    )
+                    let accessed = src.startAccessingSecurityScopedResource()
+                    defer { if accessed { src.stopAccessingSecurityScopedResource() } }
+                    do {
+                        try fm.copyItem(at: src, to: target)
+                        out.append(target)
+                    } catch {
+                        minisLogger.error(
+                            "[Attachment] scoped copy FAILED \(src.lastPathComponent): \(error.localizedDescription) accessed=\(accessed)"
+                        )
+                    }
+                }
+                return out
             }
         }
-        return out
     }
 
     private func handleDropProviders(_ providers: [NSItemProvider]) {
