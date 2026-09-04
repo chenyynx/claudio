@@ -549,7 +549,12 @@ final class CCPocketClient: @unchecked Sendable {
         var seen = Set<String>()
         var unique: [CCPocketProtocol.ServerMessage] = []
         for m in flat {
-            let key = m.sessionId ?? (m.message?.sessionId) ?? ""
+            // Dedup key: ServerMessage.sessionId is the bridge session id,
+            // present on all reply wrappers.  Deeper message-level id is not
+            // available without a switch on MessagePayload (enum with no
+            // sessionId property), and the top-level id is sufficient for
+            // the past_history+history overlap case we hit in practice.
+            let key = m.sessionId ?? ""
             if !key.isEmpty && seen.contains(key) { continue }
             if !key.isEmpty { seen.insert(key) }
             unique.append(m)
