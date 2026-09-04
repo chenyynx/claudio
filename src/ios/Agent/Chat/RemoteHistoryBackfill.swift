@@ -16,6 +16,8 @@
 import Foundation
 import Combine
 
+private let backfillLogger = AppLogger(category: "HistoryBackfill")
+
 /// 远端 history 增量同步结果（供 UI 层决策如何呈现）。
 enum BackfillResult {
     case empty                                   // 本地 DB 本来就空，无 UI 变化
@@ -56,13 +58,13 @@ final class RemoteHistoryBackfill {
     ) async -> BackfillResult {
 
         let startedAt = CFAbsoluteTimeGetCurrent()
-        minisLogger.info("[HistoryBackfill] entry session=\(sessionId.prefix(8)) existing=\(existingRawMessages.count)")
+        backfillLogger.info("[HistoryBackfill] entry session=\(sessionId.prefix(8)) existing=\(existingRawMessages.count)")
 
         // === 1. 入口守卫：防重入 ===
         lock.lock()
         if inFlight.contains(sessionId) {
             lock.unlock()
-            minisLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) in-flight, noop")
+            backfillLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) in-flight, noop")
             return .noop(reason: "in-flight")
         }
         inFlight.insert(sessionId)
@@ -76,7 +78,7 @@ final class RemoteHistoryBackfill {
         // === 2. 实例守卫：必须恰好一个远端 instance ===
         let instances = ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
         guard instances.count == 1, let instance = instances.first else {
-            minisLogger.warning("[HistoryBackfill] session=\(sessionId.prefix(8)) no remote instance configured")
+            backfillLogger.warning("[HistoryBackfill] session=\(sessionId.prefix(8)) no remote instance configured")
             return .noop(reason: "no-remote-instance")
         }
 
@@ -88,15 +90,15 @@ final class RemoteHistoryBackfill {
                 chatSessionID: chatSessionID ?? sessionId,
                 allowLegacyMappingFallback: true
             ) else {
-                minisLogger.warning("[HistoryBackfill] session=\(sessionId.prefix(8)) bridge fetch failed")
+                backfillLogger.warning("[HistoryBackfill] session=\(sessionId.prefix(8)) bridge fetch failed")
                 return .noop(reason: "bridge-fetch-failed")
             }
             history = h
         } catch {
-            minisLogger.error("[HistoryBackfill] session=\(sessionId.prefix(8)) bridge fetch threw: \(error)")
+            backfillLogger.error("[HistoryBackfill] session=\(sessionId.prefix(8)) bridge fetch threw: \(error)")
             return .failed(error: error)
         }
-        minisLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) bridge returned \(history.count) messages")
+        backfillLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) bridge returned \(history.count) messages")
 
         // === 4. 判重 + 增量落库 ===
         let existingIds = Set(existingRawMessages.compactMap { $0.id.isEmpty ? nil : $0.id })
@@ -133,9 +135,9 @@ final class RemoteHistoryBackfill {
         // === 5. 落库 ===
         if !newRaws.isEmpty {
             await ChatStore.shared.appendMessages(newRaws)
-            minisLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) persisted \(newRaws.count) messages to DB")
+            backfillLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) persisted \(newRaws.count) messages to DB")
         } else {
-            minisLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) no new messages to persist")
+            backfillLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) no new messages to persist")
         }
 
         // === 6. 更新水位 ===
@@ -158,16 +160,16 @@ final class RemoteHistoryBackfill {
         let elapsedMs = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
         let skipSummary = "seq:\(skippedBySeq) id:\(skippedById)"
         if newChatMessages.isEmpty {
-            minisLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) done in \(String(format: "%.0f", elapsedMs))ms new=0 skipped=\(skipSummary)")
+            backfillLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) done in \(String(format: "%.0f", elapsedMs))ms new=0 skipped=\(skipSummary)")
             return .noop(reason: "all-skipped:\(skipSummary)")
         }
 
         // DB 空 → 全量替换；DB 有 → 增量追加
         if existingRawMessages.isEmpty {
-            minisLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) done in \(String(format: "%.0f", elapsedMs))ms replaced=\(newChatMessages.count) skipped=\(skipSummary)")
+            backfillLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) done in \(String(format: "%.0f", elapsedMs))ms replaced=\(newChatMessages.count) skipped=\(skipSummary)")
             return .replaced(messages: newChatMessages)
         } else {
-            minisLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) done in \(String(format: "%.0f", elapsedMs))ms appended=\(newChatMessages.count) skipped=\(skipSummary)")
+            backfillLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) done in \(String(format: "%.0f", elapsedMs))ms appended=\(newChatMessages.count) skipped=\(skipSummary)")
             return .appended(messages: newChatMessages)
         }
     }

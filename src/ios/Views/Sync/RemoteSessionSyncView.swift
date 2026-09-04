@@ -18,6 +18,8 @@
 import SwiftUI
 import Combine
 
+private let syncViewLogger = AppLogger(category: "RemoteSyncView")
+
 @MainActor
 struct RemoteSessionSyncView: View {
     @Environment(\.dismiss) private var dismiss
@@ -216,7 +218,7 @@ struct RemoteSessionSyncView: View {
     private func clearLocalCache(session: ChatSession) async {
         clearing.insert(session.id)
         defer { clearing.remove(session.id) }
-        minisLogger.info("[RemoteSyncView] clear local cache session=\(session.id.prefix(8))")
+        syncViewLogger.info("[RemoteSyncView] clear local cache session=\(session.id.prefix(8))")
         await ChatStore.shared.deleteMessages(sessionId: session.id)
         UserDefaults.standard.removeObject(forKey: RemoteSessionMetadata.keyPrefix + session.id)
         refreshAll()
