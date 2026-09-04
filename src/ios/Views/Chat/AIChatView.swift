@@ -1223,7 +1223,13 @@ struct AIChatView: View {
         }
         .fileImporter(
             isPresented: $showDocumentPicker,
-            allowedContentTypes: [.image, .pdf, .plainText, .json, .sourceCode, .presentation, .spreadsheet, .data],
+            // [Fix] 原列表缺 .folder/音视频/压缩包 → Files app 里文件夹、iCloud
+            // 位置文件、Keynote/Numbers 等灰色选不了。.data 是普通文件父类、
+            // .folder 是目录父类，互补后覆盖几乎所有常用文件类型。
+            allowedContentTypes: [.image, .pdf, .plainText, .json, .sourceCode,
+                                  .presentation, .spreadsheet, .data,
+                                  .folder, .directory, .archive,
+                                  .audio, .movie, .audiovisualContent],
             allowsMultipleSelection: true
         ) { result in
             // [T-ios-fileimporter-mainactor] .fileImporter's completion handler
