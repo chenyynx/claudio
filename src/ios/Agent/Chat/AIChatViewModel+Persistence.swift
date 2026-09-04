@@ -826,63 +826,168 @@ extension AIChatViewModel {
         scheduleRemoteHistoryBackfill(resolver: resolver)
     }
 
-    /// [A-plan v1] Fire-and-forget backfill: fetch Bridge history for remote
-    /// sessions and rebuild the in-memory message list when the Bridge is at
-    /// least as complete as the local cache. Reuses the existing conversion
-    /// chain (buildRawMessage → toChatMessage) and the loadSession merge
-    /// rules (user tool-result batches apply onto the preceding assistant).
+    /// [C-方案 09-05] 远端 session 异步触发 history 增量同步。
+    /// 走 RemoteHistoryBackfill.shared.backfillIfNeeded 工具类：
+    /// - 拉桥 history → 判重（bridgeSeq / id）→ 增量 appendMessages 落库
+    /// - 返回 BackfillResult：.replaced（DB 空）/ .appended（DB 有）/ .noop / .failed
+    /// 调用方负责把返回的 messages 喂给 UI。
+    ///
+    /// 设计要点：
+    /// - 本地 agent session 永不进入（loadSession 用 isRemoteSession() 三重门 gate）
+    /// - 杀后台时 stream 没结束 → 5970 没执行 → assistant 缺一条 → 这次补回
+    /// - 二次杀后台 → DB 已有 → 走 .appended/.noop（不再 .replaced 整替换）
     private func scheduleRemoteHistoryBackfill(resolver: @escaping (MediaRef) -> URL) {
+        // [C-方案 09-05] 入口 gate：远端 session 才走（本地 agent 永不进入）。
+        // 远端 session 即使 DB 非空也走（杀后台时 stream 没结束 → assistant 缺 → 补漏）。
+        // isRemoteSession() 是三重门（model binding / lastAgentProviderIsRemote / source=remoteBridge）。
+        // 由于这里不在 async context，临时把 isRemoteSession() 拆为同步部分（第一重 + 第二重）。
+        // 第三重（DB 查 source）用 Task 包一下非阻塞处理。
+        guard isPossiblyRemoteSession() else { return }
         guard remoteBackfillInFlight == false else { return }
         let instances = ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
-        // v1: exactly one remote instance supported (multi-instance needs a
-        // session→instance mapping that does not exist yet — see spec §5).
         guard instances.count == 1, let instance = instances.first else { return }
         remoteBackfillInFlight = true
+        let capturedSessionId = sessionId
+        let capturedRemoteDeviceId = remoteDeviceId
         Task { [weak self] in
             guard let self else { return }
             defer { self.remoteBackfillInFlight = false }
-            guard let history = await AIChatViewModel.fetchRemoteHistory(
-                instance: instance,
-                chatSessionID: sessionId,
-                allowLegacyMappingFallback: true
-            ) else { return }
-            // Rebuild through the production conversion chain — the exact
-            // same path loadSession uses for persisted messages.
-            var rebuilt: [ChatMessage] = []
-            var currentAssistant: ChatMessage?
-            for agentMsg in history {
-                guard let raw = await self.buildRawMessage(agentMsg, reasoningContent: agentMsg.reasoningContent) else { continue }
-                if raw.role == .user && raw.isToolResultOnly {
-                    if let cur = currentAssistant {
-                        Self.applyToolResults(from: raw, to: cur, mediaResolver: resolver)
-                    }
-                    continue
-                }
-                let msg = raw.toChatMessage(mediaResolver: resolver, showThinking: true)
-                rebuilt.append(msg)
-                if raw.role == .assistant {
-                    currentAssistant = msg
-                }
+            let startedAt = CFAbsoluteTimeGetCurrent()
+            // 拍下当前 DB 已有 raw（用于判重）
+            let existingRaw: [RawMessage]
+            if let dev = capturedRemoteDeviceId {
+                existingRaw = await ChatStore.shared.loadRemoteMessages(sessionId: capturedSessionId, deviceId: dev)
+            } else {
+                existingRaw = await ChatStore.shared.loadMessages(sessionId: capturedSessionId)
             }
-            // Guard against a trimmed Bridge (cleaned session files) wiping a
-            // richer local cache: only replace when Bridge >= local.
-            let bridgeAssistantCount = history.filter { $0.role == .assistant }.count
-            let localAssistantCount = await MainActor.run {
-                self.agentHistory.filter { $0.role == .assistant }.count
-            }
-            guard bridgeAssistantCount >= localAssistantCount, !rebuilt.isEmpty else {
-                await MainActor.run {
-                    logger.info("[HistoryBackfill] bridge(\(bridgeAssistantCount)) < local(\(localAssistantCount)) — keeping local cache")
-                }
-                return
-            }
+            let result = await RemoteHistoryBackfill.shared.backfillIfNeeded(
+                sessionId: capturedSessionId,
+                remoteDeviceId: capturedRemoteDeviceId,
+                existingRawMessages: existingRaw,
+                mediaResolver: resolver,
+                buildRawMessage: { [weak self] agentMsg in
+                    guard let self else { return nil }
+                    return await self.buildRawMessage(agentMsg, reasoningContent: agentMsg.reasoningContent)
+                },
+                toChatMessage: { raw in
+                    raw.toChatMessage(mediaResolver: resolver, showThinking: true)
+                },
+                chatSessionID: capturedSessionId
+            )
             await MainActor.run {
-                self.messages = rebuilt
-                self.agentHistory = history
-                self.scrollToBottomSignal.send()
+                self.applyBackfillResult(result, startedAt: startedAt)
             }
-            logger.info("[HistoryBackfill] rendered \(rebuilt.count) messages from bridge history (assistant \(bridgeAssistantCount) >= local \(localAssistantCount))")
         }
+    }
+
+    /// [C-方案] 处理 backfill 结果。
+    /// - .replaced：DB 空 → 全替换 messages + agentHistory（远端 session 第一次杀后台进）
+    /// - .appended：DB 有 → appendMessages 追加（杀后台第二次进，补漏的尾部）
+    /// - .noop / .failed：什么都不做（保留本地）
+    private func applyBackfillResult(_ result: BackfillResult, startedAt: CFAbsoluteTime) {
+        let elapsed = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
+        switch result {
+        case .empty:
+            logger.info("[HistoryBackfill] applyBackfillResult=empty \(String(format: "%.0f", elapsed))ms")
+        case .noop(let reason):
+            logger.info("[HistoryBackfill] applyBackfillResult=noop reason=\(reason) \(String(format: "%.0f", elapsed))ms")
+        case .failed(let error):
+            logger.error("[HistoryBackfill] applyBackfillResult=failed error=\(error.localizedDescription) \(String(format: "%.0f", elapsed))ms")
+        case .replaced(let msgs):
+            logger.info("[HistoryBackfill] applyBackfillResult=replaced count=\(msgs.count) \(String(format: "%.0f", elapsed))ms")
+            self.messages = msgs
+            // agentHistory 也需要重建以便后续 turn 续接
+            self.agentHistory = msgs.compactMap { cm in
+                var am = AgentMessage(
+                    role: cm.role == .user ? .user : .assistant,
+                    parts: cm.blocks.compactMap { b in
+                        if case .text(let s) = b.kind { return .text(s) }
+                        if case let .toolUse(id, name, input) = b.kind { return .toolUse(id: id, name: name, input: input) }
+                        if case let .toolResult(id, name, content, isError) = b.kind { return .toolResult(id: id, name: name, content: content, isError: isError) }
+                        return nil
+                    }
+                )
+                am.dbMessageId = cm.id
+                return am
+            }
+            self.scrollToBottomSignal.send()
+        case .appended(let msgs):
+            logger.info("[HistoryBackfill] applyBackfillResult=appended count=\(msgs.count) \(String(format: "%.0f", elapsed))ms")
+            // 增量追加到 messages（不替换整页 → V3 diffable 看到旧 UUID 保持 → cell 不重建）
+            for m in msgs {
+                if !self.messages.contains(where: { $0.id == m.id }) {
+                    self.messages.append(m)
+                }
+            }
+            // agentHistory 也增量补（用于后续 turn 的 LLM 上下文）
+            for m in msgs {
+                if m.role == .assistant, !self.agentHistory.contains(where: { $0.dbMessageId == m.id }) {
+                    var am = AgentMessage(
+                        role: .assistant,
+                        parts: m.blocks.compactMap { b in
+                            if case .text(let s) = b.kind { return .text(s) }
+                            return nil
+                        }
+                    )
+                    am.dbMessageId = m.id
+                    self.agentHistory.append(am)
+                }
+            }
+            self.scrollToBottomSignal.send()
+        }
+    }
+
+    /// [C-方案] 远端 session 判别三重门（任一为真即视为远端）。
+    /// loadSession 末尾用此 gate 决定是否触发增量补漏 backfill。
+    /// 三重门只看 agent 类型（远端 vs 本地），不看 iCloud 来源。
+    /// 因为 iCloud 同步的可能是本机本地 agent 的 session，不能误判。
+    ///
+    /// 决策矩阵：
+    /// | 场景                                  | 一重        | 二重         | 三重              | 结果   |
+    /// | 本机新建本地 session                  | .anthropic  | false        | source=nil        | false  |
+    /// | 本机本地 session 发过消息             | .anthropic  | false        | source=nil        | false  |
+    /// | iPhone A 本地 session iCloud 到 B     | .anthropic  | false        | source=nil        | false  |
+    /// | B 上对 iCloud 来的本地 session 发消息 | .anthropic  | false        | source=nil        | false  |
+    /// | 本机新建远端 session                  | .remoteAgt  | false        | remoteBridge      | true   |
+    /// | 本机远端 session 发过消息             | .remoteAgt  | true         | remoteBridge      | true   |
+    /// | iPhone A 远端 session iCloud 到 B     | .remoteAgt  | false        | remoteBridge      | true   |
+    /// | B 上对 iCloud 来的远端 session 发消息 | .remoteAgt  | true         | remoteBridge      | true   |
+    private func isRemoteSession() -> Bool {
+        // 第一重：model binding.provider == .remoteAgent（用户明确选了远端）
+        if isBoundToRemoteAgentGroup() { return true }
+        // 第二重：lastAgentProviderIsRemote（当前 vm 上次发消息用的是远端 provider）
+        if lastAgentProviderIsRemote { return true }
+        // 第三重：session.source == "remoteBridge"（DB schema 标记，兜底旧版本/未绑定）
+        if let sid = sessionId {
+            if let session = try? await ChatStore.shared.getSession(sid),
+               session.source == "remoteBridge" {
+                return true
+            }
+        }
+        return false
+    }
+
+/// 同步版远端判别（第一重 + 第二重，DB 查 source 留给工具类内部 async 处理）。
+    /// 用在 loadSession 的非 async 入口 gate。
+    private func isPossiblyRemoteSession() -> Bool {
+        if isBoundToRemoteAgentGroup() { return true }
+        if lastAgentProviderIsRemote { return true }
+        // 第三重 fallback：本机新建远端 session 写入时 source=remoteBridge，但 getSession 是 async。
+        // 这里保守返 false（远端 session 由调用方传进来的 chatSessionID 隐含表达）；
+        // RemoteHistoryBackfill 内部如果 DB 没数据，会从桥拉全量落库（replaced 路径），
+        // 走错的话本地 agent 不会触发（因为没有 claude mapping，fetchRemoteHistory 返 nil）。
+        return false
+    }
+
+
+    private func isBoundToRemoteAgentGroup() -> Bool {
+        guard let sid = sessionId,
+              let binding = ProviderConfigStore.shared.binding(for: sid) else { return false }
+        if case .group(let gid, _) = binding.primarySource,
+           let group = ProviderConfigStore.shared.group(for: gid) {
+            return group.provider == .remoteAgent
+        }
+        return false
     }
 
     /// [T-ios-paused-badge-desync] Lightweight interrupted-loop tail check.
