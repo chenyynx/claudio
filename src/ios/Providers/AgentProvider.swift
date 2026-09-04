@@ -135,6 +135,13 @@ struct AgentMessage: @unchecked Sendable {
     /// via id instead of sort_order. nil while the message is still in-flight
     /// (e.g. mid-stream before persist).
     var dbMessageId: String? = nil
+    /// Bridge-side message sequence number, set from ServerMessage.historySeq when
+    /// converting bridge wire messages to AgentMessages for history replay.
+    /// Used by RemoteHistoryBackfill to perform incremental sync:
+    /// messages with seq <= lastSyncedBridgeSeq are already local and skipped;
+    /// only messages with seq > lastSyncedBridgeSeq are new and need appending.
+    /// nil for in-memory messages (not from bridge history replay).
+    var bridgeSeq: Int? = nil
 }
 
 // MARK: - Stream Events

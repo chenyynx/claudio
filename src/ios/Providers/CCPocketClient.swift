@@ -543,27 +543,18 @@ final class CCPocketClient: @unchecked Sendable {
             if let past = msg.pastMessages { flat.append(contentsOf: past) }
             if let entries = msg.entries { flat.append(contentsOf: entries.compactMap { $0.message }) }
         }
-        // De-duplicate: same message may appear in both past_history and
-        // history on a fresh session (bridge sends all messages in history,
-        // pastMessages=[]).  Also dedupe across entries duplicates.
-        var seen = Set<String>()
-        var unique: [CCPocketProtocol.ServerMessage] = []
-        for m in flat {
-            // Dedup key: ServerMessage.sessionId is the bridge session id,
-            // present on all reply wrappers.  Deeper message-level id is not
-            // available without a switch on MessagePayload (enum with no
-            // sessionId property), and the top-level id is sufficient for
-            // the past_history+history overlap case we hit in practice.
-            let key = m.sessionId ?? ""
-            if !key.isEmpty && seen.contains(key) { continue }
-            if !key.isEmpty { seen.insert(key) }
-            unique.append(m)
-        }
+        // [A-方案 09-05] 桥端 splitPastHistoryMessages 永远把非 tool_result 推
+        // pastMessages（bridge/websocket.ts:1846-1892），historyMessages 永远空。
+        // past_history + history 不会重叠，dedup 只会误删。
+        // 8f0b870 把 key 从 m.message?.sessionId 改成 m.sessionId 更糟：m.sessionId
+        // 是 bridge session id（一行 session 内所有消息共享），判重后 50 条历史
+        // 只剩 1 条。直接用 flat。
+        let unique = flat
         if unique.isEmpty {
             logger.info("[CCPocket] history: empty reply (all forms empty)")
             return nil
         }
-        logger.info("[CCPocket] history: \(unique.count) messages from bridge (raw=\(result.count) msgs)")
+        logger.info("[CCPocket] history: \(unique.count) messages from bridge (raw=\(result.count) msgs, dedup removed 09-05)")
         return unique
     }
 

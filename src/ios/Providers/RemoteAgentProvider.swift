@@ -479,6 +479,12 @@ final class RemoteAgentProvider: AgentProvider {
             if !thinking.isEmpty {
                 msg.reasoningContent = thinking.joined(separator: "\n")
             }
+            // [M4 09-05] 提取桥端 historySeq（写于 bridge/session.ts:917 appendHistoryToSession）
+            // 用于 RemoteHistoryBackfill 增量同步。ServerMessage.historySeq 在
+            // CCPocketProtocol 已声明为 Int?，这里强转取出。
+            if let seq = m.historySeq {
+                msg.bridgeSeq = seq
+            }
             return msg
         case "tool_result":
             // Same interrupted/error sniffing as the live path — placeholders
