@@ -3212,9 +3212,6 @@ struct ContentView: View {
                 .opacity(0)
                 .accessibilityHidden(true)
         }
-        // [统一背景] 聊天列表背景设为设置页同款 ivory(ClaudePalette.background),
-        // 与 settings/新会话页视觉对齐。.ignoresSafeArea 让底色铺满整个侧栏。
-        .background(ClaudePalette.background.ignoresSafeArea())
         // [T-ios-migration-timer-toolbar-uaf-crash / T-ios-migration-timer-sessionlist-uaf-crash]
         // Own the migration-subtitle refresh driver here, on the stable sidebar list
         // body, instead of on the churny toolbar principal item (see `titleLabel`).
@@ -3362,7 +3359,6 @@ struct ContentView: View {
 
         }
         .listStyle(.plain)
-        .scrollContentBackground(.hidden)
         #if DEBUG
         // TEMPORARY scroll-phase markers to bracket the jitter window in the
         // log. Pair with the [ROWH] probe: a [ROWH] line appearing during
@@ -3550,7 +3546,6 @@ struct ContentView: View {
 
         }
         .listStyle(.plain)
-        .scrollContentBackground(.hidden)
         .navigationSplitViewColumnWidth(min: 340, ideal: 380, max: 500)
         .opacity(didInitialLoad ? 1 : 0)
         .overlay { if didInitialLoad, displaySessions.isEmpty, !isSearching { emptyState } }
@@ -8450,7 +8445,7 @@ private struct SettingsSheet: View {
             // [Fix] Settings page background = session-open sheet background
             // (ClaudePalette.background, pp 2026-09-02) — hide the system
             // grouped gray so the sheet reads as one ivory surface.
-        .scrollContentBackground(.hidden)
+            .scrollContentBackground(.hidden)
             .background(ClaudePalette.background)
             .onAppear {
                 applyPendingDeepLink()
