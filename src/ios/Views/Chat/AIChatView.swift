@@ -68,7 +68,9 @@ private final class CachedViewModel: ObservableObject {
 // MARK: - Color Palette (clean light theme)
 
 enum ChatColors {
-    static let background = Color(UIColor.systemBackground)
+    /// 背景色:与设置页/新会话页/会话列表统一为 ClaudePalette.background
+    /// (light #F7F7F5 / dark #262624),pp 2026-09-04 要求三屏同底。
+    static let background = ClaudePalette.background
     static let secondaryBg = Color(UIColor.secondarySystemBackground)
     static let inputIconBg = Color(UIColor.secondarySystemBackground)
     static let inputIconBorder = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.35, alpha: 1) : UIColor(white: 0, alpha: 0) })
