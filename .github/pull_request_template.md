@@ -1,21 +1,19 @@
 <!--
-  Please read before submitting.
+  提交前请先阅读。
 
-  This repository does not accept pull requests. It is a mirror: development
-  happens in a private tree and is published here on each release, so there is
-  nowhere for a PR to land — it would be overwritten by the next sync.
+  这个仓库不接受 pull request。claudio 的开发在独立的开发线进行，本仓库是
+  公开只读发布，按发布节奏同步——PR 没有可以合并的落点，会被下一次同步覆盖。
 
-  This is not about the quality of your work. If you open one anyway, we will
-  close it with a link to CONTRIBUTING.md.
+  这与你的工作质量无关。如果你还是开了一个，我们会附上 CONTRIBUTING.md 的
+  链接关闭它。
 
-  What helps instead:
+  真正有帮助的做法：
 
-    • Bugs and feature requests → open an issue
-      https://github.com/OpenMinis/OpenMinis/issues
+    • Bug 与功能请求 → 开 issue
+      https://github.com/chenyynx/claudio/issues
 
-    • Use cases and workflows   → OpenMinis/AwesomeMinis  (accepts PRs)
-    • Skills                    → OpenMinis/MinisSkills   (accepts PRs)
-    • Questions and discussion  → the Telegram group, linked in the README
+    • 使用场景与工作流 → 直接在 issue 里描述
+    • 技能分享         → 打包成目录（含 SKILL.md）在 issue 里附上
 
-  See CONTRIBUTING.md for the full picture.
+  完整说明见 CONTRIBUTING.md。
 -->

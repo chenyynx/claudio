@@ -1,48 +1,38 @@
 # Contributing
 
-Thanks for your interest in Minis.
+谢谢你对 claudio 的兴趣。
 
-## We do not accept pull requests
+## 这个仓库不接受 pull request
 
-This repository is a **mirror**. Development happens in a private tree and is
-published here on each release, so a pull request opened against this
-repository has nowhere to land — merging it would be overwritten by the next
-sync, and we cannot merge it upstream either.
+claudio 的仓库是**公开只读发布**：开发在独立的开发线进行，按发布节奏同步到这里。
+因此在这个仓库上开的 PR 没有可以合并的落点——合并了也会被下一次同步覆盖。
 
-Please do not spend your time preparing one. If you have already opened a PR,
-we will close it with a pointer back to this document; that is not a judgement
-on the work.
+请不要在上面花时间。如果你已经开了一个，我们会附上本文的链接关闭它——
+这不是对你工作的判断。
 
-## What we do want
+## 我们想要什么
 
-Everything else. The product is shaped by what people report:
+其余所有东西。产品由用户报告塑造成形：
 
-- **[Open an issue](https://github.com/OpenMinis/OpenMinis/issues)** — bugs,
-  crashes, papercuts, feature requests, questions about behaviour. A clear
-  report is worth more to us than a patch, because it tells us what to build.
-- **Share what you have built** — real workflows and use cases go in
-  **[AwesomeMinis](https://github.com/OpenMinis/AwesomeMinis)**, which does
-  take contributions.
-- **Write a skill** — **[MinisSkills](https://github.com/OpenMinis/MinisSkills)**
-  also takes contributions, and skills are how most people extend Minis
-  without touching the app at all.
-- **Talk to us** — the [Telegram group](https://t.me/+2NzhOJuzRyI1YmM1) is
-  where most day-to-day discussion happens.
+- **[提 issue](https://github.com/chenyynx/claudio/issues)** — bug、崩溃、小痛点、
+  功能请求、行为疑问。一份清晰的报告比一个补丁更有价值，因为它告诉我们该做什么。
+- **分享你搭的工作流** — 真实的使用场景最能帮到产品方向。
+- **写技能** — 技能是大多数人扩展 claudio 的方式，完全不用改 app 本身。
+  技能就是一个带 `SKILL.md` 的目录，可直接在 issue 里附上。
 
-## Filing a good issue
+## 如何提一份好 issue
 
-The more of this you can give us, the faster it gets fixed:
+你能给的越多，修得越快：
 
-- Platform and version (Settings → About shows both)
-- What you expected, what happened instead
-- Steps to reproduce, or the prompt that triggered it
-- Which model / provider was selected, if relevant
-- Logs, if the app produced any (Settings → Logs)
+- 平台与版本（Settings → About 能看到两者）
+- 预期行为与实际行为
+- 复现步骤，或触发问题的 prompt
+- 相关的模型 / provider 选择
+- app 产生的日志（Settings → Logs）
 
-## Using the source
+## 使用源码
 
-The code is GPLv3. You are free to fork it, modify it and run your own build —
-see [BUILDING.md](BUILDING.md). The licence obliges you to publish the source
-of anything you distribute, and to keep it under GPLv3.
+代码是 GPLv3。你可以自由 fork、修改、跑自己的构建——见 [BUILDING.md](BUILDING.md)。
+许可证要求你公布自己分发内容的源码，并保持 GPLv3。
 
-We simply do not merge changes back through this repository.
+我们只是不把改动通过这个仓库合回去。
