@@ -168,7 +168,9 @@ final class CCPocketClient: @unchecked Sendable {
     /// reply resumes the waiter and is NOT forwarded to `onMessage` (a
     /// history fetch runs outside any turn — the turn-scoped consumer must
     /// never see replay traffic).
-    private var historyWaiter: CheckedContinuation<CCPocketProtocol.ServerMessage?, Never>?
+    /// Collected history messages (history + past_history merged).
+    private var historyMessages: [CCPocketProtocol.ServerMessage] = []
+    private var historyWaiter: CheckedContinuation<[CCPocketProtocol.ServerMessage], Never>?
 
     /// [Session sync] Pending continuation for a `recent_sessions` reply
     /// (mirror of the history waiter — request/response, never broadcast).
@@ -512,29 +514,52 @@ final class CCPocketClient: @unchecked Sendable {
             logger.warning("[CCPocket] history: send failed \(error.localizedDescription)")
             return nil
         }
-        // Await the reply (timeout guard resumes nil).
-        let message: CCPocketProtocol.ServerMessage? = await withCheckedContinuation { c in
+        // Await the reply.  The dispatcher only resumes the continuation
+        // once — when `history` (new bridge: comes last after past_history)
+        // or `history_snapshot` (old bridge: only message) arrives.  The
+        // payload delivered is historyMessages + [final], i.e. ALL replies.
+        // On timeout we still have whatever the accumulator caught.
+        historyMessages = []
+        let result: [CCPocketProtocol.ServerMessage] = await withCheckedContinuation { c in
             historyWaiter = c
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(timeout))
                 guard let self else { return }
                 if let w = self.historyWaiter {
                     self.historyWaiter = nil
-                    w.resume(returning: nil)
+                    w.resume(returning: self.historyMessages)
                 }
             }
         }
-        guard let message else {
+        guard !result.isEmpty else {
             logger.warning("[CCPocket] history: timeout after \(timeout)s")
             return nil
         }
-        let entries = message.entries ?? []
-        if entries.isEmpty {
-            logger.info("[CCPocket] history: empty reply (reason=\(message.reason ?? "nil"))")
+        // Build flat [ServerMessage] from both the flat form (history with
+        // messages[]) AND the old entries form (history_snapshot/delta).
+        var flat: [CCPocketProtocol.ServerMessage] = []
+        for msg in result {
+            if let msgs = msg.messages { flat.append(contentsOf: msgs) }
+            if let past = msg.pastMessages { flat.append(contentsOf: past) }
+            if let entries = msg.entries { flat.append(contentsOf: entries.compactMap { $0.message }) }
+        }
+        // De-duplicate: same message may appear in both past_history and
+        // history on a fresh session (bridge sends all messages in history,
+        // pastMessages=[]).  Also dedupe across entries duplicates.
+        var seen = Set<String>()
+        var unique: [CCPocketProtocol.ServerMessage] = []
+        for m in flat {
+            let key = m.sessionId ?? (m.message?.sessionId) ?? ""
+            if !key.isEmpty && seen.contains(key) { continue }
+            if !key.isEmpty { seen.insert(key) }
+            unique.append(m)
+        }
+        if unique.isEmpty {
+            logger.info("[CCPocket] history: empty reply (all forms empty)")
             return nil
         }
-        logger.info("[CCPocket] history: \(entries.count) entries [\(message.fromSeq ?? 0)-\(message.toSeq ?? 0)]")
-        return entries.compactMap { $0.message }
+        logger.info("[CCPocket] history: \(unique.count) messages from bridge (raw=\(result.count) msgs)")
+        return unique
     }
 
     func ensureConnected() {
@@ -705,14 +730,23 @@ final class CCPocketClient: @unchecked Sendable {
         }
 
         // [A-plan v1] History replay reply — resume the fetch waiter.
-        // Request/response with the Bridge is 1:1 (no broadcast observed for
-        // history replies), so no session filter here; the waiter only
-        // exists while a fetch is in flight.
-        if message.type == "history_snapshot" || message.type == "history_delta" {
+        // Bridge sends TWO sequential messages: past_history (disk history
+        // from resume), then history (in-memory since session start).
+        // Old Codex bridge sends history_snapshot / history_delta instead.
+        // All four types feed into the same collector in requestHistory.
+        // Resume-once contract: only `history` (new bridge, LAST) and
+        // `history_snapshot` (old Codex bridge, SOLE) resume.  past_history
+        // and history_delta accumulate into historyMessages.
+        if message.type == "history" || message.type == "history_snapshot" {
             if let w = historyWaiter {
                 historyWaiter = nil
-                w.resume(returning: message)
+                w.resume(returning: historyMessages + [message])
             }
+            historyMessages = []
+            return
+        }
+        if message.type == "past_history" || message.type == "history_delta" {
+            historyMessages.append(message)
             return
         }
 

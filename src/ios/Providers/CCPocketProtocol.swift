@@ -223,8 +223,14 @@ enum CCPocketProtocol {
         let cost: Double?
         let duration: Double?
         let toolCalls: Int?
-        // history
+        // history / past_history payload — bridge sends TWO sequential
+        // messages: past_history (disk-resident history from resume), then
+        // history (in-memory accumulated since session start). The entries[]
+        // form (history_snapshot/delta) is Codex-specific. Claude provider
+        // sends messages[] and pastMessages[].  all-optional for lenient
+        // parse so old bridges still work.
         let messages: [ServerMessage]?
+        let pastMessages: [ServerMessage]?
         // history_snapshot / history_delta payload (bridge = authoritative
         // source for remote restore; entries replay through the live pipeline)
         let fromSeq: Int?
