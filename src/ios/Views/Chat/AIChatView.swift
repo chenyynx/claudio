@@ -1232,25 +1232,23 @@ struct AIChatView: View {
                                   .audio, .movie, .audiovisualContent],
             allowsMultipleSelection: true
         ) { result in
-            // [T-ios-fileimporter-mainactor] .fileImporter's completion handler
-            // is NOT guaranteed to run on the main actor (unlike .photosPicker's
-            // .onChange which is). AIChatViewModel is @MainActor, so calling
-            // vm.addFileAttachment() from a non-main thread modifies @Published
-            // attachments off-thread → SwiftUI never refreshes the attachment
-            // grid. This was the root cause of "files picked from Files App
-            // never appeared as attachment chips" (photos worked because
-            // .onChange IS main-actor). Wrap in Task { @MainActor in } per
-            // swiftui-pro swift.md (never use DispatchQueue.main.async).
-            Task { @MainActor in
-                switch result {
-                case .success(let urls):
-                    minisLogger.info("[Attachment] fileImporter success: \(urls.count) file(s) picked: \(urls.map { $0.lastPathComponent })")
-                    for url in urls {
+            switch result {
+            case .success(let urls):
+                minisLogger.info("[Attachment] fileImporter success: \(urls.count) file(s) picked: \(urls.map { $0.lastPathComponent })")
+                // [Fix 09-05] security-scoped URL 只能在 completion 同步期间用：
+                // 包 Task 会延迟到下一轮 runloop，iOS 已撤销授权 →
+                // addFileAttachment 内 startAccessing 返 false + copyItem 抛异常
+                // → catch 静默丢弃 → "选中了没反应"（f103bb0 包 Task 本想修
+                // @Published 主线程刷新，却正好让 scoped URL 失效）。
+                // 做法：立即复制出本地副本（非 scoped），再上主线程添加。
+                let copied = Self.captureScopedFiles(urls)
+                Task { @MainActor in
+                    for url in copied {
                         vm.addFileAttachment(from: url)
                     }
-                case .failure(let error):
-                    minisLogger.error("File import failed: \(error.localizedDescription)")
                 }
+            case .failure(let error):
+                minisLogger.error("[Attachment] File import failed: \(error.localizedDescription)")
             }
         }
         .onAppear {
@@ -3127,6 +3125,34 @@ struct AIChatView: View {
             missingMinisFileName = name.isEmpty ? url.absoluteString : name
         }
         return .handled
+    }
+
+    /// [Fix 09-05] .fileImporter 返回的是 security-scoped URL，访问权限仅在
+    /// completion 同步执行期间有效。若在此处包 Task/DispatchQueue 延迟处理，
+    /// iOS 已撤销授权 → startAccessing 返 false、copyItem 抛异常 →
+    /// addFileAttachment 的 catch 静默丢弃附件（表现：选中了没反应）。
+    /// 必须在同步路径上立即复制出本地副本；副本 URL 不再受 scope 约束，
+    /// 可安全传入 Task { @MainActor } 供 @Published 刷新。
+    private static func captureScopedFiles(_ urls: [URL]) -> [URL] {
+        let fm = FileManager.default
+        let dest = fm.temporaryDirectory
+        var out: [URL] = []
+        for src in urls {
+            let target = dest.appendingPathComponent(
+                UUID().uuidString.prefix(8) + "_" + src.lastPathComponent
+            )
+            let accessed = src.startAccessingSecurityScopedResource()
+            defer { if accessed { src.stopAccessingSecurityScopedResource() } }
+            do {
+                try fm.copyItem(at: src, to: target)
+                out.append(target)
+            } catch {
+                minisLogger.error(
+                    "[Attachment] scoped copy FAILED \(src.lastPathComponent): \(error.localizedDescription) accessed=\(accessed)"
+                )
+            }
+        }
+        return out
     }
 
     private func handleDropProviders(_ providers: [NSItemProvider]) {
