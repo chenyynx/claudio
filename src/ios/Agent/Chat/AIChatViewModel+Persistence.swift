@@ -856,12 +856,12 @@ extension AIChatViewModel {
             guard await self.isRemoteSession() else { return }
             let startedAt = CFAbsoluteTimeGetCurrent()
             // 拍下当前 DB 已有 raw（用于判重）
-            // loadRemoteMessages 是 sync 签名（deviceId 是 String non-optional）
+            // ChatStore 是 actor，所有方法需 await
             let existingRaw: [RawMessage]
             if let dev = capturedRemoteDeviceId, !dev.isEmpty {
-                existingRaw = ChatStore.shared.loadRemoteMessages(sessionId: capturedSessionId, deviceId: dev)
+                existingRaw = await ChatStore.shared.loadRemoteMessages(sessionId: capturedSessionId, deviceId: dev)
             } else {
-                existingRaw = ChatStore.shared.loadMessages(sessionId: capturedSessionId)
+                existingRaw = await ChatStore.shared.loadMessages(sessionId: capturedSessionId)
             }
             let result = await RemoteHistoryBackfill.shared.backfillIfNeeded(
                 sessionId: capturedSessionId,
