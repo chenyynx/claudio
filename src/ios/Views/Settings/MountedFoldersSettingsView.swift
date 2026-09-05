@@ -397,31 +397,11 @@ private struct AddMountSheet: View {
 }
 
 // MARK: - Folder picker
-
-private struct FolderPicker: UIViewControllerRepresentable {
-    let onPick: (URL) -> Void
-
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
-        picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = false
-        return picker
-    }
-
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: (URL) -> Void
-        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
-
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            guard let url = urls.first else { return }
-            onPick(url)
-        }
-    }
-}
+//
+// 已迁移到 Shared/FolderPicker.swift（in-place picker for .folder UTI）。
+// 这里直接复用，与 BackupDestinationPicker 共享同一份实现 —
+// `ImportDocumentPicker` 的 asCopy:true 与 .folder UTI 不兼容（iOS 18+ picker
+// 内 NSException → SIGABRT 闪退），[T-ios-folder-picker-asCopy-stable-callback]。
 
 // MARK: - ViewModel
 

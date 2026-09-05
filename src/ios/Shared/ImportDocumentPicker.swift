@@ -32,6 +32,21 @@ struct ImportDocumentPicker: UIViewControllerRepresentable {
     var onCancel: (() -> Void)? = nil
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        // [T-ios-folder-picker-asCopy-stable-callback] `asCopy:true` 仅对
+        // document UTI 有意义；对**纯 directory UTI 数组**（全 .folder /
+        // .directory）iOS 18+ 在 picker 内部抛 NSException → SIGABRT 闪退。
+        // 选文件夹请用 Shared/FolderPicker.swift。
+        //
+        // 混选 UTI 数组（document + directory，例如 AIChatView 附件选择器）
+        // iOS 容忍不闪退，但 folder 会被当成普通 document 处理（addFileAttachment
+        // 走 moveItem/copyItem 路径，把文件夹当文件），不是真挂载 — 这是另一
+        // 个独立问题，不在本组件边界内。
+        let isPureDirectory = !allowedContentTypes.isEmpty
+            && allowedContentTypes.allSatisfy { $0.conforms(to: .folder) || $0.conforms(to: .directory) }
+        assert(
+            !isPureDirectory,
+            "ImportDocumentPicker 不支持纯 directory UTI 数组（asCopy:true + pure directory 闪退）；选文件夹请改用 Shared/FolderPicker.swift"
+        )
         // asCopy:true → import 模式：系统复制到沙箱，返回普通 URL，无 scope 握手
         let picker = UIDocumentPickerViewController(
             forOpeningContentTypes: allowedContentTypes,

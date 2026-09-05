@@ -58,26 +58,22 @@ struct BackupDestinationPicker: View {
                     onChanged()
                 }
             }
-            // [Fix 09-05-2] asCopy:true import picker，替代 .fileImporter（iOS 26.2 回调丢失）
+            // [T-ios-folder-picker-asCopy-stable-callback] .folder UTI 走
+            // FolderPicker（asCopy:false in-place 模式）— ImportDocumentPicker
+            // 的 asCopy:true 与 directory UTI 不兼容（iOS 18+ picker 内 NSException
+            // → SIGABRT 闪退）。in-place 模式返回源 URL 带 security scope，
+            // MountedFoldersManager.add 走 startAccessingSecurityScopedResource
+            // + bookmarkData 持久化路径。
             .sheet(isPresented: $showFolderPicker) {
-                ImportDocumentPicker(
-                    allowedContentTypes: [.folder],
-                    allowsMultipleSelection: false,
-                    onPick: { urls in
-                        if let url = urls.first {
-                            do {
-                                _ = try BackupDestinations.addDestination(pickedURL: url)
-                                reload()
-                                onChanged()
-                            } catch {
-                                errorText = error.localizedDescription
-                            }
-                        }
-                    },
-                    onCancel: {
-                        errorText = nil
+                FolderPicker { url in
+                    do {
+                        _ = try BackupDestinations.addDestination(pickedURL: url)
+                        reload()
+                        onChanged()
+                    } catch {
+                        errorText = error.localizedDescription
                     }
-                )
+                }
             }
             .onAppear(perform: reload)
         }

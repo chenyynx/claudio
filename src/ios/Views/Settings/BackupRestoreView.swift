@@ -92,9 +92,13 @@ struct BackupRestoreView: View {
         .modifier(StandaloneTitle(title: AppLocalized("Restore"),
                                  active: !embedded))
         // [Fix 09-05-2] asCopy:true import picker，替代 .fileImporter（iOS 26.2 回调丢失）
+        // [T-ios-folder-picker-asCopy-stable-callback] 移除原 [BackupDelivery.contentType, .data, .folder]
+        // 里的 .folder — 备份包是单文件 .minisbak，文件夹是冗余 UTI；而
+        // asCopy:true + directory UTI 在 iOS 18+ 闪退。如果未来需要"从文件夹
+        // 选备份包"，用 Shared/FolderPicker 单独入口，不要塞回 ImportDocumentPicker。
         .sheet(isPresented: $showPicker) {
             ImportDocumentPicker(
-                allowedContentTypes: [BackupDelivery.contentType, .data, .folder],
+                allowedContentTypes: [BackupDelivery.contentType, .data],
                 allowsMultipleSelection: false,
                 onPick: { urls in
                     if let url = urls.first { load(url) }
