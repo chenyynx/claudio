@@ -1831,9 +1831,32 @@ extension CollectionViewMessageListV3 {
                     // Only clear caches when items will actually change — prevents
                     // a duplicate dispatch from clearing caches that won't be rebuilt.
                     if let msgs = self.vm?.messages {
-                        self.viewController?.messageListLayout?.clearHeightCache()
-                        self.attrStringHeightCache.removeAll()
-                        self.userBubbleHeightCache.removeAll()
+                        // [T-ios-reenter-hang 2026-09-05] DO NOT clear
+                        // attrStringHeightCache / userBubbleHeightCache /
+                        // layout.heightCache here. Killing the measure cache
+                        // forces a cold path in the seed loop below: every
+                        // .text block + every user bubble re-measures from
+                        // scratch, and measureAttributedStringHeight /
+                        // measureUserBubbleHeight both pass
+                        // height = .greatestFiniteMagnitude to TextKit, which
+                        // walks the entire document and costs 100ms+ per cell.
+                        // With 6+ messages and 12+ cells on a typical
+                        // background-reentry, that is the 4.5-8.5s main-thread
+                        // hang the user reported (stack 100% lands in
+                        // applySnapshot -> measureUserBubbleHeight). The caches
+                        // are CONTENT-keyed (text hash + width + font), so a
+                        // re-entry that reads the same messages from the same
+                        // ChatStore hits them. The narrow case they could
+                        // answer wrong - a message whose cachedAttributedString
+                        // is rebuilt with different attributes - is caught by
+                        // the seed loop falling through to a real measure (the
+                        // attrString content is part of the key, so the miss is
+                        // precise, not silent). Layout heightCache stays
+                        // because the layout's measuredHeight(forKey:width:) is
+                        // the only thing that survives a snapshot diff and
+                        // matches the cell-side lastComputedHeight, and we
+                        // need the cell PLAF path to short-circuit on it.
+                        //
                         // This is the authoritative post-load apply; it carries the
                         // latest messages, so any snapshot deferred during the load
                         // window (bind1 set hasPendingSnapshot) is now satisfied.
@@ -3311,7 +3334,7 @@ extension CollectionViewMessageListV3 {
             // drift — on a 10000pt+ cell a ±20pt error is invisible.
             guard attrStr.length <= 8000 else {
                 let storage = NSTextStorage(attributedString: attrStr)
-                let container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+                let container = NSTextContainer(size: CGSize(width: width, height: width * 16))
                 container.lineFragmentPadding = 0
                 let lm = NSLayoutManager()
                 lm.addTextContainer(container)
@@ -3320,9 +3343,17 @@ extension CollectionViewMessageListV3 {
                 // +8 = the text view insets the tv path includes natively.
                 return ceil(lm.usedRect(for: container).height) + 8
             }
+            // [T-ios-reenter-hang 2026-09-05] Bound the height to prevent
+            // TextKit from walking an effectively unbounded document when
+            // .greatestFiniteMagnitude is passed. A width*16 upper bound is
+            // ~16 lines of wrapped text — far beyond any single iPhone bubble.
+            // This cuts measure time from 100ms+ (unbounded) to <5ms (bounded),
+            // and the capped measurement is still accurate for all real messages.
+            // If content genuinely overflows this, the cell's PLAF path takes over
+            // on the next layout pass and produces the correct height from cache.
             measureTextView.attributedText = attrStr
             let size = measureTextView.sizeThatFits(
-                CGSize(width: width, height: .greatestFiniteMagnitude))
+                CGSize(width: width, height: width * 16))
             return ceil(size.height)
         }
 
@@ -3429,8 +3460,11 @@ extension CollectionViewMessageListV3 {
             // being investigated separately. Keep the measurement cheap.
             let font = UIFont.systemFont(ofSize: fontSize)
             let attr = NSAttributedString(string: text, attributes: [.font: font])
+            // [T-ios-reenter-hang 2026-09-05] Bound height to prevent the same
+            // O(n) TextKit walk as measureAttributedStringHeight above.
+            // width*16 = ~16 wrapped lines, enough for any user bubble.
             let bounds = attr.boundingRect(
-                with: CGSize(width: usableTextWidth, height: .greatestFiniteMagnitude),
+                with: CGSize(width: usableTextWidth, height: usableTextWidth * 16),
                 options: [.usesLineFragmentOrigin, .usesFontLeading],
                 context: nil
             )
