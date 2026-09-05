@@ -1618,7 +1618,7 @@ extension AIChatViewModel {
                 let truncatedURL = pageURL.map { ToolResult.truncateURL($0) }
                 let statusStr = toolStatuses[id] ?? (isError ? "failed" : "success")
                 parts.append(.toolResult(ToolResult(
-                    toolUseId: id, output: content, success: !isError, mediaRef: mediaRef, snapshot: snap, pageURL: truncatedURL, status: statusStr
+                    toolUseId: id, output: content, success: !isError, mediaRef: mediaRef, snapshot: snap, pageURL: truncatedURL, status: statusStr, outputFile: nil
                 )))
             case .imageData(let data, let mimeType, let linuxPath):
                 let ref = await ChatStore.shared.saveMedia(

@@ -73,6 +73,7 @@ extension AIChatViewModel {
         case .usage: return "usage"
         case .thinkingDelta: return "thinkingDelta"
         case .toolResult(let id, let name, _, _): return "toolResult(\(name):\(id.prefix(12)))"
+        case .remoteFileAttached(let toolUseId, _): return "remoteFileAttached(\(toolUseId.prefix(12)))"
         case .permissionRequest(_, let name, _): return "permissionRequest(\(name))"
         case .remoteCompactingStarted: return "remoteCompactingStarted"
         case .reasoningContent: return "reasoningContent"
@@ -483,6 +484,24 @@ extension AIChatViewModel {
                 // answers via respondToPermission (approve/reject/always).
                 await MainActor.run {
                     pendingPermission = RemotePermissionRequest(id: id, toolName: toolName, input: input)
+                }
+
+            case .remoteFileAttached(let toolUseId, let file):
+                // Bridge pushed metadata for a remote-produced file (Write tool
+                // output). Fill the AssistantBlock so the card can render +
+                // the user can tap to download/preview. See
+                // AssistantBlock.outputFile* fields + FileAttachmentCard.
+                // toolUseId is paired against the in-flight .toolCallComplete.
+                await MainActor.run {
+                    guard msgIdx < messages.count else { return }
+                    guard let blockIdx = messages[msgIdx].blocks.firstIndex(where: { $0.toolUseId == toolUseId }) else { return }
+                    messages[msgIdx].blocks[blockIdx].outputFileRemotePath = file.filePath
+                    if messages[msgIdx].blocks[blockIdx].outputFileMimeType == nil {
+                        messages[msgIdx].blocks[blockIdx].outputFileMimeType = file.mimeType
+                    }
+                    if messages[msgIdx].blocks[blockIdx].outputFileSizeBytes == 0 && file.sizeBytes > 0 {
+                        messages[msgIdx].blocks[blockIdx].outputFileSizeBytes = file.sizeBytes
+                    }
                 }
 
             case .contentBlockStart(let start):
