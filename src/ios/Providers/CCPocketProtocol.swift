@@ -253,6 +253,15 @@ enum CCPocketProtocol {
         let stopReason: String?
         let inputTokens: Int?
         let outputTokens: Int?
+        // Cache accounting — Anthropic result payloads carry both
+        // cache_creation_input_tokens (bytes written to the prompt cache
+        // this turn) and cache_read_input_tokens (cache hits). The bridge
+        // bridge/sdk-process.ts:extractTokenUsage parses both and rides
+        // them on the result tokenUsage spread; without these fields the
+        // remote Token Usage sheet shows zero for cache read/write. Wire
+        // field names are camelCase, matching the bridge output.
+        let cacheCreationInputTokens: Int?
+        let cachedInputTokens: Int?
         let cost: Double?
         let duration: Double?
         let toolCalls: Int?

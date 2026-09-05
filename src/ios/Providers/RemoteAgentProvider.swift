@@ -432,11 +432,17 @@ final class RemoteAgentProvider: AgentProvider {
             default: stopReason = .endTurn
             }
             if let inputTokens = message.inputTokens, let outputTokens = message.outputTokens {
+                // Bridge sends both cache_creation and cache_read on the
+                // result payload; pass them through so the Token Usage
+                // sheet can show the full cache breakdown. LLMUsage names
+                // its read field cacheReadInputTokens (vs the wire's
+                // cachedInputTokens) — that historical name map is
+                // resolved right here.
                 continuation.yield(.usage(LLMUsage(
                     inputTokens: inputTokens,
                     outputTokens: outputTokens,
-                    cacheCreationInputTokens: nil,
-                    cacheReadInputTokens: nil
+                    cacheCreationInputTokens: message.cacheCreationInputTokens,
+                    cacheReadInputTokens: message.cachedInputTokens
                 )))
             }
             continuation.yield(.done(stopReason: stopReason))
