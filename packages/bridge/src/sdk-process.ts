@@ -50,6 +50,7 @@ export function extractTokenUsage(
 ): {
   inputTokens?: number;
   cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
   outputTokens?: number;
 } {
   if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
@@ -65,10 +66,15 @@ export function extractTokenUsage(
     ?? toFiniteNumber(obj.cache_read_input_tokens)
     ?? toFiniteNumber(obj.cachedInputTokens)
     ?? toFiniteNumber(obj.cacheReadInputTokens);
+  const cacheCreationTokens = toFiniteNumber(obj.cache_creation_input_tokens)
+    ?? toFiniteNumber(obj.cacheCreationInputTokens);
 
   return {
     ...(inputTokens != null ? { inputTokens } : {}),
     ...(cachedReadTokens != null ? { cachedInputTokens: cachedReadTokens } : {}),
+    ...(cacheCreationTokens != null
+      ? { cacheCreationInputTokens: cacheCreationTokens }
+      : {}),
     ...(outputTokens != null ? { outputTokens } : {}),
   };
 }

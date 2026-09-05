@@ -29,6 +29,42 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
   query: mockSdkQuery,
 }));
 
+// ---- extractTokenUsage ----
+
+describe("extractTokenUsage", () => {
+  it("parses Anthropic snake_case fields incl. cache_creation", () => {
+    const result = extractTokenUsage({
+      input_tokens: 1200,
+      output_tokens: 450,
+      cache_creation_input_tokens: 800,
+      cache_read_input_tokens: 300,
+    });
+    expect(result).toEqual({
+      inputTokens: 1200,
+      outputTokens: 450,
+      cacheCreationInputTokens: 800,
+      cachedInputTokens: 300,
+    });
+  });
+
+  it("accepts camelCase cacheCreationInputTokens fallback", () => {
+    const result = extractTokenUsage({
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheCreationInputTokens: 25,
+    });
+    expect(result.cacheCreationInputTokens).toBe(25);
+  });
+
+  it("omits cacheCreationInputTokens when neither field is present", () => {
+    const result = extractTokenUsage({
+      input_tokens: 100,
+      output_tokens: 50,
+    });
+    expect(result).not.toHaveProperty("cacheCreationInputTokens");
+  });
+});
+
 // ---- ACCEPT_EDITS_AUTO_APPROVE ----
 
 describe("ACCEPT_EDITS_AUTO_APPROVE", () => {
