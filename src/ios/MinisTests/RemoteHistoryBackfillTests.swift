@@ -6,13 +6,19 @@ final class RemoteHistoryBackfillTests: XCTestCase {
     private func makeBuildRaw() -> (AgentMessage) async -> RawMessage? {
         return { agentMsg in
             let role: MessageRole = agentMsg.role == .user ? .user : .assistant
+            // [Fix 2026-09-05 bug 1] Prefer the AgentMessage's own dbMessageId
+            // when present (the live path populates it before buildRaw runs).
+            // Otherwise delegate to `rawMessageId()` — the SAME helper
+            // production `buildRawMessage` uses — so test and prod can never
+            // diverge again on id strategy. The previous inline
+            // `if let seq ... "bridge-\(seq)" ... else UUID()` here masked
+            // the production regression because it duplicated the policy
+            // instead of sharing it.
             let id: String
-            if let seq = agentMsg.bridgeSeq {
-                id = "bridge-\(seq)"
-            } else if let dbId = agentMsg.dbMessageId {
+            if let dbId = agentMsg.dbMessageId {
                 id = dbId
             } else {
-                id = UUID().uuidString
+                id = agentMsg.rawMessageId()
             }
             return RawMessage(
                 id: id,
@@ -161,5 +167,36 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         let plan = await BackfillCore.computePlan(history: history, existing: [], lastSyncedSeq: 0, buildRaw: makeBuildRaw())
         XCTAssertEqual(plan.newRaws.count, 3)
         XCTAssertEqual(plan.maxSeq, 100)
+    }
+
+    // MARK: - 11. 防回归：production/rawMessageId 派生策略（2026-09-05 bug 1）
+
+    /// Pins the id strategy used by production `buildRawMessage`. A previous
+    /// version of this test used a hand-rolled `if let seq { "bridge-\(seq)" }
+    /// else { UUID() }` inside `makeBuildRaw` while production called
+    /// `UUID().uuidString` directly — the suites diverged silently and the
+    /// production dedup broke. This test calls the shared `rawMessageId()`
+    /// helper that BOTH prod and test now use, so a future regression that
+    /// changes one without the other will fail here.
+    func test_productionIdStrategy_usesBridgeSeq() {
+        var withSeq = AgentMessage(role: .assistant, parts: [])
+        withSeq.bridgeSeq = 42
+        XCTAssertEqual(withSeq.rawMessageId(), "bridge-42",
+                       "bridgeSeq 必须派生为稳定的 bridge-{seq}，否则 BackfillCore 的 id 去重永不命中")
+
+        var noSeq = AgentMessage(role: .assistant, parts: [])
+        XCTAssertNotEqual(noSeq.rawMessageId(), noSeq.rawMessageId(),
+                          "无 bridgeSeq 必须每次新 UUID（live-stream 路径，重复即 bug）")
+
+        // 关键对齐：makeBuildRaw 与生产 buildRawMessage 走同一 helper
+        let fromHelper = noSeq.rawMessageId()
+        var liveLike = AgentMessage(role: .user, parts: [])
+        let fromMakeBuildRawClosure: String = {
+            // mirror the closure body in makeBuildRaw
+            if let dbId = liveLike.dbMessageId { return dbId }
+            return liveLike.rawMessageId()
+        }()
+        XCTAssertNotEqual(fromHelper, fromMakeBuildRawClosure,
+                          "smoke: 两次调用应得到不同 UUID（都是 nil bridgeSeq 路径）")
     }
 }

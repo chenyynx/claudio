@@ -4940,8 +4940,15 @@ extension RawMessage {
                 if let blockIdx = blocks.lastIndex(where: { $0.toolUseId == tr.toolUseId }) {
                     Self.applyPersistedToolResult(tr, to: blocks[blockIdx], mediaResolver: mediaResolver, lastBrowserURL: &lastBrowserURL)
                 } else {
-                    if !textContent.isEmpty { textContent += "\n" }
-                    textContent += tr.output
+                    // [Fix 2026-09-05 bug 2] Orphan tool_result (no preceding toolUse
+                    // — typical of the bridge backfill path where tool_result arrives
+                    // as a standalone user-role AgentMessage). ccpocket official
+                    // keeps tool_result as its own first-class message type and
+                    // merges into the assistant's tool_use; we can't reshape history
+                    // mid-render, so drop the orphan instead of leaking it into the
+                    // user bubble's textContent (which was producing the
+                    // "tool output masquerading as user message" rendering).
+                    backfillLogger.warning("orphan tool_result dropped toolUseId=\(tr.toolUseId) outputLen=\(tr.output.count)")
                 }
             }
         }

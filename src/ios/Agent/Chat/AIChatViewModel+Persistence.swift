@@ -849,14 +849,24 @@ extension AIChatViewModel {
         // sessionId/remoteDeviceId 都是 String? — 先 guard 解包成 String
         guard let capturedSessionId = sessionId else { return }
         let capturedRemoteDeviceId = remoteDeviceId
-        Task { [weak self] in
+        // [Fix 2026-09-05 bug 3] Use Task.detached so the heavy backfill work
+        // (network fetch + dedup plan + SQLite write + UI conversion) runs off
+        // the main actor. Previously this was a plain `Task { ... }`, which
+        // inherits the enclosing @MainActor and would park the main thread for
+        // 4-5 seconds on every chat page entry — the "click chat page → freeze"
+        // symptom. The flag and final UI apply still hop back to MainActor; only
+        // the heavy middle is detached.
+        Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
-            defer { self.remoteBackfillInFlight = false }
+            let clearFlag = {
+                self.remoteBackfillInFlight = false
+            }
+            defer { Task { @MainActor in clearFlag() } }
             // 远端 session gate（async）
             guard await self.isRemoteSession() else { return }
             let startedAt = CFAbsoluteTimeGetCurrent()
             // 拍下当前 DB 已有 raw（用于判重）
-            // ChatStore 是 actor，所有方法需 await
+            // ChatStore 是 regular class，方法可直接 await（无 MainActor 阻塞）
             let existingRaw: [RawMessage]
             if let dev = capturedRemoteDeviceId, !dev.isEmpty {
                 existingRaw = await ChatStore.shared.loadRemoteMessages(sessionId: capturedSessionId, deviceId: dev)
@@ -1619,8 +1629,13 @@ extension AIChatViewModel {
             )
         }
 
+        // [Fix 2026-09-05 bug 1] Use AgentMessage.rawMessageId() so the
+        // bridge-replay id strategy is identical to what the test asserts.
+        // See `AgentMessage.rawMessageId()` for the full rationale; the
+        // previous inline `UUID().uuidString` here was the root cause of
+        // duplicate renders after kill-reenter (test passed, prod broken).
         var raw = RawMessage(
-            id: UUID().uuidString, sessionId: sessionId,
+            id: msg.rawMessageId(), sessionId: sessionId,
             role: msg.role == .user ? .user : .assistant,
             parts: parts, createdAt: Date(), tokenUsage: storedUsage,
             reasoningContent: reasoningContent ?? msg.reasoningContent,

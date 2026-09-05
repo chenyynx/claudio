@@ -86,7 +86,12 @@ enum BackfillResult {
 }
 
 /// 远端 history 增量同步管理器（单例 + per-session 防重入）。
-@MainActor
+///
+/// [Fix 2026-09-05 bug 3] Removed `@MainActor` so `backfillIfNeeded` can be
+/// called from a detached task without parking the main actor. Thread-safety
+/// is provided by `lock` (NSLock) guarding `inFlight` — no actor isolation
+/// needed. `ChatStore.shared` is also a regular class, so `appendMessages`
+/// and `RemoteSessionMetadata` are safe to call from any executor.
 final class RemoteHistoryBackfill {
     static let shared = RemoteHistoryBackfill()
 
@@ -105,7 +110,16 @@ final class RemoteHistoryBackfill {
     ///   - buildRawMessage: 从 AgentMessage 建 RawMessage 的工厂（由 caller 注入以避免循环依赖）
     ///   - toChatMessage: RawMessage → ChatMessage 的工厂
     ///   - chatSessionID: 桥 chat session id（可能为 nil）
-    func backfillIfNeeded(
+    ///
+    /// [Fix 2026-09-05 bug 3] `nonisolated` lets the caller (scheduleRemoteHistoryBackfill)
+    /// invoke this from a `Task.detached`, so the heavy work — network fetch, dedup plan,
+    /// SQLite write, UI conversion — does NOT park the main actor for 4-5 seconds while
+    /// a user is staring at a frozen chat page. `ChatStore` is a regular class (not actor),
+    /// so `appendMessages` and `RemoteSessionMetadata` can be called from any executor
+    /// without `MainActor.run`. The only MainActor touchpoint is the final `toChatMessage`
+    /// conversion when the caller passes a closure that captures MainActor state — that
+    /// is the caller's problem, not ours.
+    nonisolated func backfillIfNeeded(
         sessionId: String,
         remoteDeviceId: String?,
         existingRawMessages: [RawMessage],
@@ -192,8 +206,27 @@ final class RemoteHistoryBackfill {
         }
 
         // === 7. 转 ChatMessage 给 UI ===
+        // [Fix 2026-09-05 bug 2] Drop orphan tool_result-only user messages here too.
+        // Such a row has no real user text — bridge sent it as a standalone user-role
+        // AgentMessage wrapping a single tool_result part. Rendering it would produce
+        // an empty user bubble, which ccpocket official avoids by treating tool_result
+        // as its own first-class message type. We can't reshape history post-hoc, so
+        // we drop it at the boundary between persistence and UI.
         let newChatMessages: [ChatMessage] = newRaws.compactMap { raw in
-            toChatMessage(raw)
+            if raw.role == .user {
+                let hasNonToolResult = raw.parts.contains { part in
+                    switch part {
+                    case .text: return true
+                    case .toolUse: return true
+                    case .toolResult: return false
+                    }
+                }
+                if !hasNonToolResult {
+                    backfillLogger.warning("orphan tool_result user-bubble dropped rawId=\(raw.id.prefix(8))")
+                    return nil
+                }
+            }
+            return toChatMessage(raw)
         }
 
         // === 8. 决定返回类型 ===

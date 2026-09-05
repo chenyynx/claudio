@@ -142,6 +142,23 @@ struct AgentMessage: @unchecked Sendable {
     /// only messages with seq > lastSyncedBridgeSeq are new and need appending.
     /// nil for in-memory messages (not from bridge history replay).
     var bridgeSeq: Int? = nil
+
+    /// [Fix 2026-09-05 bug 1] Single source of truth for the RawMessage id
+    /// derived from an AgentMessage. Shared between production
+    /// (`buildRawMessage` in `AIChatViewModel+Persistence`) and the unit
+    /// test (`makeBuildRaw` in `RemoteHistoryBackfillTests`) so the two
+    /// cannot drift again — a previous test/prod mismatch (UUID() in prod
+    /// vs "bridge-{seq}" in test) silently broke id-based dedup in prod
+    /// while the test suite passed.
+    ///
+    /// - bridgeSeq present → deterministic `bridge-{seq}`, so re-running
+    ///   `BackfillCore.computePlan` against the same bridge history hits the
+    ///   existing-ids set instead of re-appending duplicates.
+    /// - bridgeSeq nil → fresh UUID each call (live-stream path, no replay).
+    func rawMessageId() -> String {
+        if let seq = bridgeSeq { return "bridge-\(seq)" }
+        return UUID().uuidString
+    }
 }
 
 // MARK: - Stream Events
