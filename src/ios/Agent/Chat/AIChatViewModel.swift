@@ -2280,25 +2280,23 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         let pendingAttachments = attachments
-        // 远端附件候选：图片(4 种 SDK 原生 mime)→原图 base64；其余→上传文件。
-        // 只在远端 provider 消费；本地 agent 走现有 local 路径，零影响。
-        pendingRemotePayloads = pendingAttachments.compactMap { attach in
-            guard attach.loadState == .ready else { return nil }
-            let mime: String
-            let ext = attach.cacheURL.pathExtension.lowercased()
-            switch ext {
-            case "png": mime = "image/png"
-            case "gif": mime = "image/gif"
-            case "webp": mime = "image/webp"
-            default: mime = "image/jpeg"
-            }
-            if attach.kind == .image,
-               Self.kRemoteInlineMimeTypes.contains(mime),
-               let data = try? Data(contentsOf: attach.cacheURL) {
-                return .inlineImage(data: data, mimeType: mime)
-            }
-            return .uploadFile(fileURL: attach.cacheURL, fileName: attach.fileName)
-        }
+        // [Fix 2026-09-06 B-plan] Don't build pendingRemotePayloads here — the
+        // SEND-ASYNC block (started a few lines below at `currentTask = Task {`)
+        // synchronously deletes the source cacheURLs at the cleanup step, and
+        // constructing uploadFile payloads pointing at cacheURL let the
+        // RemoteAgentProvider's async upload(fileURL:) trip the 8200afd
+        // file_not_found_re_add fallback (4b9f8f7 only moved the cache dir to
+        // Application Support, which was the wrong diagnosis — the real
+        // problem was the race between sync cleanup and async upload).
+        //
+        // The actual construction now lives inside SEND-ASYNC *after* the
+        // cleanup, using `uploadsDir/uploads/<safeName>` (Library/MinisChat/
+        // minis/<sid>/attachments/uploads/) as the upload source. uploadsDir
+        // is never auto-cleared and is never touched by cleanupAttachmentFiles
+        // (it only deletes cacheURLs), so the race is gone at the root.
+        // Image-inlining still uses the original cacheURL bytes (read before
+        // cleanup), matching the previous behaviour bit-for-bit.
+        pendingRemotePayloads = []
         #if DEBUG
         logger.info("🔑DRAFT [vm=\(self.vmInstanceId)] send() text=\(text.count)ch attachments=\(pendingAttachments.count) isProcessing=\(self.isProcessing) sessionId=\(self.sessionId ?? "nil") draftId=\(self.draftId ?? "nil") inputText='\(String(self.inputText.prefix(30)))'")
         #else
@@ -2527,6 +2525,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
             var attachmentMetas: [AttachmentMeta] = []
             var userParts: [AgentContentPart] = []
+            // [B-plan] Built per-iteration below and flushed to
+            // self.pendingRemotePayloads AFTER the cleanup step. See the
+            // comment on the B-plan block inside the for loop for the race
+            // this avoids (sync cleanup vs async remote upload).
+            var pendingRemotePayloadsLocal: [RemotePayload] = []
 
             // User attachments always take priority over history images — see
             // the same rationale in buildUserMessageParts. Stale history
@@ -2580,6 +2583,37 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 let meta = AttachmentMeta(path: linuxPath, size: fileSize, modified: fileDate)
                 attachmentMetas.append(meta)
                 logger.info("📎[SEND-ASYNC]   saved \(safeName): \(fileSize) bytes → \(linuxPath)")
+
+                // [B-plan] Decide whether this attachment goes inline (image,
+                // native SDK mime) or as a file upload, and capture the data /
+                // fileURL we'll hand to the remote provider AFTER the cleanup
+                // step below. Crucially the fileURL points at `destURL` (the
+                // session uploads dir, Library/MinisChat/minis/<sid>/...) and
+                // NOT at `attachment.cacheURL` — the cleanup step at the bottom
+                // of the loop only removes cacheURLs, and the remote upload
+                // runs asynchronously after the loop, so pointing at cacheURL
+                // would race the cleanup and trip the 8200afd
+                // file_not_found_re_add fallback. uploadsDir is never
+                // auto-cleared, so the race is gone at the root.
+                // (Images that don't fit the inline-mime set — e.g. heic/bmp —
+                // also go through uploadFile with the same destURL, which is a
+                // small improvement over the old behaviour that pointed at
+                // cacheURL there too.)
+                let ext = attachment.cacheURL.pathExtension.lowercased()
+                let mime: String
+                switch ext {
+                case "png": mime = "image/png"
+                case "gif": mime = "image/gif"
+                case "webp": mime = "image/webp"
+                default: mime = "image/jpeg"
+                }
+                if attachment.kind == .image,
+                   Self.kRemoteInlineMimeTypes.contains(mime),
+                   let data = try? Data(contentsOf: attachment.cacheURL) {
+                    pendingRemotePayloadsLocal.append(.inlineImage(data: data, mimeType: mime))
+                } else {
+                    pendingRemotePayloadsLocal.append(.uploadFile(fileURL: destURL, fileName: attachment.fileName))
+                }
 
                 // [T-ios-attachment-oom-bg-kill] Only IMAGES need the bytes in
                 // memory (for resize/compress/inline below). Non-image attachments
@@ -2654,6 +2688,16 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
             // Clean up cached attachment files now that data has been copied
             Self.cleanupAttachmentFiles(pendingAttachments)
+
+            // [B-plan] Hand the remote payloads to the provider now that
+            // cleanup has run. uploadFile entries already point at
+            // uploadsDir paths so they're immune to the cleanup we just did;
+            // inlineImage entries carry their Data snapshot, which is also
+            // independent of the (now-deleted) source cacheURLs.
+            let localPayloads = pendingRemotePayloadsLocal
+            await MainActor.run {
+                self.pendingRemotePayloads = localPayloads
+            }
 
             // Update ChatMessage with structured attachment metadata for UI display
             //
