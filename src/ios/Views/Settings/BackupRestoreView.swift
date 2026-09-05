@@ -91,15 +91,18 @@ struct BackupRestoreView: View {
         }
         .modifier(StandaloneTitle(title: AppLocalized("Restore"),
                                  active: !embedded))
-        .fileImporter(isPresented: $showPicker,
-                      allowedContentTypes: [BackupDelivery.contentType, .data, .folder],
-                      allowsMultipleSelection: false) { result in
-            switch result {
-            case .success(let urls):
-                if let url = urls.first { load(url) }
-            case .failure(let error):
-                errorText = error.localizedDescription
-            }
+        // [Fix 09-05-2] asCopy:true import picker，替代 .fileImporter（iOS 26.2 回调丢失）
+        .sheet(isPresented: $showPicker) {
+            ImportDocumentPicker(
+                allowedContentTypes: [BackupDelivery.contentType, .data, .folder],
+                allowsMultipleSelection: false,
+                onPick: { urls in
+                    if let url = urls.first { load(url) }
+                },
+                onCancel: {
+                    errorText = nil
+                }
+            )
         }
         .sheet(isPresented: $showServerPicker) {
             ServerRestorePickerSheet { url in

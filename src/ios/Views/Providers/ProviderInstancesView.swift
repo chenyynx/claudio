@@ -154,30 +154,27 @@ struct ProviderInstancesView: View {
                 AddProviderView()
             }
         }
-        .fileImporter(isPresented: $showImportFile, allowedContentTypes: [.json]) { result in
-            switch result {
-            case .success(let url):
-                guard url.startAccessingSecurityScopedResource() else {
-                    importMessage = AppLocalized("Cannot access the selected file.")
+        // [Fix 09-05-2] asCopy:true import picker，替代 .fileImporter（iOS 26.2 回调丢失）
+        .sheet(isPresented: $showImportFile) {
+            ImportDocumentPicker(
+                allowedContentTypes: [.json],
+                onPick: { urls in
+                    guard let url = urls.first else { return }
+                    // [Fix 09-05-2] import 模式 URL 是沙箱副本，无需 security scope
+                    guard let data = try? Data(contentsOf: url),
+                          let json = String(data: data, encoding: .utf8) else {
+                        importMessage = AppLocalized("Failed to read file.")
+                        showImportResult = true
+                        return
+                    }
+                    if let label = store.importInstanceJSON(json) {
+                        importMessage = AppLocalized("Imported provider \"\(label)\" successfully.")
+                    } else {
+                        importMessage = AppLocalized("Invalid provider configuration file.")
+                    }
                     showImportResult = true
-                    return
                 }
-                defer { url.stopAccessingSecurityScopedResource() }
-                guard let data = try? Data(contentsOf: url),
-                      let json = String(data: data, encoding: .utf8) else {
-                    importMessage = AppLocalized("Failed to read file.")
-                    showImportResult = true
-                    return
-                }
-                if let label = store.importInstanceJSON(json) {
-                    importMessage = AppLocalized("Imported provider \"\(label)\" successfully.")
-                } else {
-                    importMessage = AppLocalized("Invalid provider configuration file.")
-                }
-                showImportResult = true
-            case .failure:
-                break
-            }
+            )
         }
         // [T-provider-group-swipe-actions] Swipe-Edit lands on the very screen
         // the row taps into, so there is one provider editor, not two.

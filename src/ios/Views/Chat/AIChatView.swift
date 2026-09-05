@@ -1221,35 +1221,27 @@ struct AIChatView: View {
                 }
             }
         }
-        .fileImporter(
-            isPresented: $showDocumentPicker,
-            // [Fix] 原列表缺 .folder/音视频/压缩包 → Files app 里文件夹、iCloud
-            // 位置文件、Keynote/Numbers 等灰色选不了。.data 是普通文件父类、
-            // .folder 是目录父类，互补后覆盖几乎所有常用文件类型。
-            allowedContentTypes: [.image, .pdf, .plainText, .json, .sourceCode,
-                                  .presentation, .spreadsheet, .data,
-                                  .folder, .directory, .archive,
-                                  .audio, .movie, .audiovisualContent],
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls):
-                minisLogger.info("[Attachment] fileImporter success: \(urls.count) file(s) picked: \(urls.map { $0.lastPathComponent })")
-                // [Fix 09-05] security-scoped URL 只能在 completion 同步期间用：
-                // 包 Task 会延迟到下一轮 runloop，iOS 已撤销授权 →
-                // addFileAttachment 内 startAccessing 返 false + copyItem 抛异常
-                // → catch 静默丢弃 → "选中了没反应"（f103bb0 包 Task 本想修
-                // @Published 主线程刷新，却正好让 scoped URL 失效）。
-                // 做法：立即复制出本地副本（非 scoped），再上主线程添加。
-                let copied = Self.captureScopedFiles(urls)
-                Task { @MainActor in
-                    for url in copied {
-                        vm.addFileAttachment(from: url)
+        // [Fix 09-05-2] 换 UIKit asCopy:true（import 模式）替代 .fileImporter：
+        // SwiftUI .fileImporter / in-place(security-scoped) picker 在 iOS 26.2 +
+        // 重度呈现上下文下点"Open"后跨进程回调丢失（picker 不 dismiss、completion
+        // 永不触发）。import 模式系统把文件复制进沙箱，返回普通 URL，无 scope
+        // 握手，直接绕过断掉的链路。URL 不需要 captureScopedFiles（已退役）。
+        .sheet(isPresented: $showDocumentPicker) {
+            ImportDocumentPicker(
+                allowedContentTypes: [.image, .pdf, .plainText, .json, .sourceCode,
+                                      .presentation, .spreadsheet, .data,
+                                      .folder, .directory, .archive,
+                                      .audio, .movie, .audiovisualContent],
+                allowsMultipleSelection: true,
+                onPick: { urls in
+                    minisLogger.info("[Attachment] documentPicker didPick: \(urls.count) file(s): \(urls.map { $0.lastPathComponent })")
+                    Task { @MainActor in
+                        for url in urls {
+                            vm.addFileAttachment(from: url)
+                        }
                     }
                 }
-            case .failure(let error):
-                minisLogger.error("[Attachment] File import failed: \(error.localizedDescription)")
-            }
+            )
         }
         .onAppear {
             let sinceInit = (CFAbsoluteTimeGetCurrent() - AIChatViewModel.onAppearTimestamp) * 1000
@@ -3125,34 +3117,6 @@ struct AIChatView: View {
             missingMinisFileName = name.isEmpty ? url.absoluteString : name
         }
         return .handled
-    }
-
-    /// [Fix 09-05] .fileImporter 返回的是 security-scoped URL，访问权限仅在
-    /// completion 同步执行期间有效。若在此处包 Task/DispatchQueue 延迟处理，
-    /// iOS 已撤销授权 → startAccessing 返 false、copyItem 抛异常 →
-    /// addFileAttachment 的 catch 静默丢弃附件（表现：选中了没反应）。
-    /// 必须在同步路径上立即复制出本地副本；副本 URL 不再受 scope 约束，
-    /// 可安全传入 Task { @MainActor } 供 @Published 刷新。
-    private static func captureScopedFiles(_ urls: [URL]) -> [URL] {
-        let fm = FileManager.default
-        let dest = fm.temporaryDirectory
-        var out: [URL] = []
-        for src in urls {
-            let target = dest.appendingPathComponent(
-                UUID().uuidString.prefix(8) + "_" + src.lastPathComponent
-            )
-            let accessed = src.startAccessingSecurityScopedResource()
-            defer { if accessed { src.stopAccessingSecurityScopedResource() } }
-            do {
-                try fm.copyItem(at: src, to: target)
-                out.append(target)
-            } catch {
-                minisLogger.error(
-                    "[Attachment] scoped copy FAILED \(src.lastPathComponent): \(error.localizedDescription) accessed=\(accessed)"
-                )
-            }
-        }
-        return out
     }
 
     private func handleDropProviders(_ providers: [NSItemProvider]) {

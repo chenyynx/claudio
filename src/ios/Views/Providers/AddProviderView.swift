@@ -343,8 +343,14 @@ struct AddProviderView: View {
                 }
             }
         }
-        .fileImporter(isPresented: $showImportFile, allowedContentTypes: [.json]) { result in
-            handleImport(result)
+        // [Fix 09-05-2] asCopy:true import picker，替代 .fileImporter（iOS 26.2 回调丢失）
+        .sheet(isPresented: $showImportFile) {
+            ImportDocumentPicker(
+                allowedContentTypes: [.json],
+                onPick: { urls in
+                    if let url = urls.first { handleImport(url) }
+                }
+            )
         }
         .alert(AppLocalized("Import"), isPresented: $showImportResult) {
             Button("OK") {
@@ -360,32 +366,23 @@ struct AddProviderView: View {
         }
     }
 
-    private func handleImport(_ result: Result<URL, Error>) {
+    private func handleImport(_ url: URL) {
         importSucceeded = false
-        switch result {
-        case .success(let url):
-            guard url.startAccessingSecurityScopedResource() else {
-                importMessage = AppLocalized("Cannot access the selected file.")
-                showImportResult = true
-                return
-            }
-            defer { url.stopAccessingSecurityScopedResource() }
-            guard let data = try? Data(contentsOf: url),
-                  let json = String(data: data, encoding: .utf8) else {
-                importMessage = AppLocalized("Failed to read file.")
-                showImportResult = true
-                return
-            }
-            if let label = store.importInstanceJSON(json) {
-                importMessage = AppLocalized("Imported provider \"\(label)\" successfully.")
-                importSucceeded = true
-            } else {
-                importMessage = AppLocalized("Invalid provider configuration file.")
-            }
+        // [Fix 09-05-2] ImportDocumentPicker 走 asCopy:true，URL 是沙箱内副本，
+        // 无需 security-scoped 访问，直接读取即可。
+        guard let data = try? Data(contentsOf: url),
+              let json = String(data: data, encoding: .utf8) else {
+            importMessage = AppLocalized("Failed to read file.")
             showImportResult = true
-        case .failure:
-            break
+            return
         }
+        if let label = store.importInstanceJSON(json) {
+            importMessage = AppLocalized("Imported provider \"\(label)\" successfully.")
+            importSucceeded = true
+        } else {
+            importMessage = AppLocalized("Invalid provider configuration file.")
+        }
+        showImportResult = true
     }
 
     private var navigationTitle: String {

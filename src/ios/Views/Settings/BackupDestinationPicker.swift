@@ -58,23 +58,26 @@ struct BackupDestinationPicker: View {
                     onChanged()
                 }
             }
-            .fileImporter(isPresented: $showFolderPicker,
-                          allowedContentTypes: [.folder],
-                          allowsMultipleSelection: false) { result in
-                switch result {
-                case .success(let urls):
-                    if let url = urls.first {
-                        do {
-                            _ = try BackupDestinations.addDestination(pickedURL: url)
-                            reload()
-                            onChanged()
-                        } catch {
-                            errorText = error.localizedDescription
+            // [Fix 09-05-2] asCopy:true import picker，替代 .fileImporter（iOS 26.2 回调丢失）
+            .sheet(isPresented: $showFolderPicker) {
+                ImportDocumentPicker(
+                    allowedContentTypes: [.folder],
+                    allowsMultipleSelection: false,
+                    onPick: { urls in
+                        if let url = urls.first {
+                            do {
+                                _ = try BackupDestinations.addDestination(pickedURL: url)
+                                reload()
+                                onChanged()
+                            } catch {
+                                errorText = error.localizedDescription
+                            }
                         }
+                    },
+                    onCancel: {
+                        errorText = nil
                     }
-                case .failure(let error):
-                    errorText = error.localizedDescription
-                }
+                )
             }
             .onAppear(perform: reload)
         }
