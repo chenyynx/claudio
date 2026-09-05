@@ -3172,6 +3172,9 @@
 				8B886DA8A270E8FB58A9A1FA /* SpeechPlayerControl.swift in Sources */,
 				7A49962E84F115865D41B933 /* AudioSessionCoordinator.swift in Sources */,
 				C0B1AF9A75C90C3C178A8804 /* VoiceTextSanitizer.swift in Sources */,
+				E5FA0001 /* FileAttachmentCard.swift in Sources */,
+				E5FA0003 /* FilePreviewPanel.swift in Sources */,
+				E5FA0005 /* FilePreviewActions.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -3206,9 +3209,6 @@
 				E5H000002 /* AgentLiveActivityWidget.swift in Sources */,
 				E5H000003 /* AgentActivityAttributes.swift in Sources */,
 				E5AT00003 /* AudioTogglePlaybackIntent.swift in Sources */,
-				E5FA0001 /* FileAttachmentCard.swift in Sources */,
-				E5FA0003 /* FilePreviewPanel.swift in Sources */,
-				E5FA0005 /* FilePreviewActions.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
