@@ -780,13 +780,28 @@ extension CollectionViewMessageListV3 {
         private var cellBridges: [UUID: CellStateBridgeV2] = [:]
 
         // === Height Measurement Cache ===
-        /// Caches measureAttributedStringHeight results by NSAttributedString identity.
-        /// Avoids redundant TextKit layout on repeated snapshots for the same content.
-        private var attrStringHeightCache: [ObjectIdentifier: CGFloat] = [:]
+        /// Caches measureAttributedStringHeight results, keyed by content+width
+        /// (not NSAttributedString identity). Keying by content lets a cache
+        /// entry survive across session reloads: when a process restarts and
+        /// ChatStore deserialises the same message, it builds a new
+        /// NSAttributedString (different ObjectIdentifier) but the content
+        /// hash matches, so the measure result is reused instead of re-walking
+        /// TextKit. With the previous ObjectIdentifier key the cache MISSED on
+        /// every reload - which combined with the bind3-sessionLoad cache
+        /// wipe was the root cause of the 4.5-8.5s main-thread hang on
+        /// background-reentry (T-ios-reenter-hang 2026-09-05).
+        /// Bounded by MAX_ATTR_CACHE to keep the static map from growing
+        /// without bound on a long session.
+        private var attrStringHeightCache: [String: CGFloat] = [:]
+        private static let MAX_ATTR_CACHE = 1024
         /// [T-ios-user-msg-estimate-tail-jitter] Caches accurate user-bubble
         /// heights keyed by "content|width|fontsize" (user text has no
-        /// cachedAttributedString identity to key on). Cleared alongside
-        /// attrStringHeightCache on session change / font change.
+        /// cachedAttributedString identity to key on). Content-keyed so it
+        /// survives session reloads. T-ios-reenter-hang 2026-09-05 stopped
+        /// clearing this on session change - the previous "clear alongside
+        /// attrStringHeightCache" was the root cause of the 4.5-8.5s
+        /// main-thread hang on background-reentry (text block + user bubble
+        /// measures all cold-pathed in one applySnapshot seed pass).
         private var userBubbleHeightCache: [String: CGFloat] = [:]
 
         /// [T-ios-earlier-stream-seed-freeze] Memo for
@@ -2838,12 +2853,32 @@ extension CollectionViewMessageListV3 {
                             // redundant TextKit layout on repeated snapshots.
                             if let attrStr = block.cachedAttributedString {
                                 let textWidth = max(cvWidth - 32, 100)
-                                let key = ObjectIdentifier(attrStr)
+                                // [T-ios-reenter-hang 2026-09-05] Content-keyed
+                                // (length + width + hash of the attributed
+                                // string) so the cache survives a process
+                                // restart. Bounded by MAX_ATTR_CACHE; on
+                                // overflow the oldest half is dropped, which
+                                // only forces re-measure on long-session
+                                // evictions - not a hang risk.
+                                // attrStr.string is the underlying Swift String
+                                // (String.hashValue is a stable Swift hash
+                                // across processes - NSObject.hashValue, by
+                                // contrast, is not contractually stable).
+                                let key = "a|\(attrStr.string.hashValue)|\(attrStr.length)|\(Int(textWidth))"
                                 let height: CGFloat
                                 if let cached = attrStringHeightCache[key] {
                                     height = cached
                                 } else {
                                     height = Self.measureAttributedStringHeight(attrStr, width: textWidth)
+                                    if attrStringHeightCache.count >= Self.MAX_ATTR_CACHE {
+                                        // drop oldest half (insertion-order
+                                        // eviction; deterministic for the same
+                                        // snapshot ordering across runs)
+                                        let dropCount = attrStringHeightCache.count / 2
+                                        for k in Array(attrStringHeightCache.keys.prefix(dropCount)) {
+                                            attrStringHeightCache.removeValue(forKey: k)
+                                        }
+                                    }
                                     attrStringHeightCache[key] = height
                                 }
                                 // height includes the text view's 8pt insets;
