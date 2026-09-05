@@ -271,6 +271,10 @@ final class RemoteAgentProvider: AgentProvider {
         // and the persistence path falls back to UUID, same as before).
         if let seq = message.historySeq {
             seqLock.withLock { _lastBridgeSeq = seq }
+            // [Diag 2026-09-05 路线 D 排障锚点] live 路径 seq 抓取时打点。
+            // 未来"重复渲染 / role 错配"复发，看这里 seq 是否单调递增即可定位
+            // 是不是 id 派生这一段没工作（缺失=live 路径根本没收过 seq）。
+            logger.debug("[BridgeSeq] live captured=\(seq) type=\(message.type)")
         }
         // [Diag] Log every incoming event with its key payload.
         let payload: String = message.text.map { String($0.prefix(40)) }

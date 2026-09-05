@@ -189,6 +189,12 @@ final class RemoteHistoryBackfill {
         let skippedBySeq = plan.skipCounters.seq
         let skippedById = plan.skipCounters.id
         let maxSeq = plan.maxSeq
+        // [Diag 2026-09-05 路线 D 排障锚点] 每次 backfill 跑完打点。
+        // newRaws=0 + skippedBySeq=N + maxSeq=N → 完美对齐，无重复无缺失
+        // newRaws=0 + skippedById=N → 重复渲染复发（id 集已经存在但又来了同 id 的）
+        // newRaws=N + skippedBySeq=0 + lastSyncedSeq>0 → 增量失效（seq 规则没命中）
+        // 这三行一眼能定位 D 复发的具体子原因。
+        backfillLogger.info("[Backfill] session=\(sessionId.prefix(8)) newRaws=\(newRaws.count) skip(seq=\(skippedBySeq) id=\(skippedById)) lastSyncedSeq=\(lastSyncedSeq) maxSeq=\(maxSeq)")
 
         // === 5. 落库 ===
         if !newRaws.isEmpty {
