@@ -83,6 +83,59 @@ enum ChatColors {
     static let accent = Color(UIColor.label)
     static let sendButton = Color(UIColor.label)
     static let sendButtonDisabled = Color(UIColor.quaternaryLabel)
+
+    // MARK: - File attachment card palette (Claudio 2026-09-05, 1:1 Claude 复刻)
+    //
+    // 5 种文件类型分组 (Document / Code / Image / Video / Audio) + File 兜底，
+    // 每种含一对 (背景色, 图标色) — 跟 Claude App 文件卡片一致。
+    // 用 `dynamic` provider 跟随 light/dark 模式；dark 模式下调亮底色让图标仍清晰。
+    // 引入新 token 是有意为之 (B 方案 1:1 复刻 Claude)，跟现有 toolBg/toolBorder 单色
+    // 体系并列——FileAttachmentCard 是唯一使用方，**不要**用于其他组件。
+
+    static let fileCardDocBg  = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.12, green: 0.20, blue: 0.32, alpha: 1)   // dark 模式深蓝
+        : UIColor(red: 0.90, green: 0.94, blue: 0.98, alpha: 1)  // light #E5F0FA
+    })
+    static let fileCardDocFg  = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.55, green: 0.75, blue: 1.00, alpha: 1)
+        : UIColor(red: 0.12, green: 0.36, blue: 0.72, alpha: 1)  // light #1E5BB8
+    })
+
+    static let fileCardCodeBg = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.28, green: 0.24, blue: 0.10, alpha: 1)   // dark 模式深黄
+        : UIColor(red: 1.00, green: 0.96, blue: 0.84, alpha: 1)  // light #FFF4D6
+    })
+    static let fileCardCodeFg = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 1.00, green: 0.85, blue: 0.50, alpha: 1)
+        : UIColor(red: 0.60, green: 0.40, blue: 0.00, alpha: 1)  // light #9A6700
+    })
+
+    static let fileCardImageBg = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.22, green: 0.18, blue: 0.32, alpha: 1)   // dark 深紫
+        : UIColor(red: 0.93, green: 0.91, blue: 0.96, alpha: 1)  // light #EDE7F6
+    })
+    static let fileCardImageFg = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.75, green: 0.65, blue: 0.95, alpha: 1)
+        : UIColor(red: 0.37, green: 0.21, blue: 0.69, alpha: 1)  // light #5E35B1
+    })
+
+    static let fileCardVideoBg = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.10, green: 0.22, blue: 0.14, alpha: 1)   // dark 深绿
+        : UIColor(red: 0.91, green: 0.96, blue: 0.91, alpha: 1)  // light #E8F5E9
+    })
+    static let fileCardVideoFg = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.50, green: 0.85, blue: 0.55, alpha: 1)
+        : UIColor(red: 0.18, green: 0.49, blue: 0.20, alpha: 1)  // light #2E7D32
+    })
+
+    static let fileCardAudioBg = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.32, green: 0.20, blue: 0.08, alpha: 1)   // dark 深橙
+        : UIColor(red: 1.00, green: 0.88, blue: 0.70, alpha: 1)  // light #FFE0B2
+    })
+    static let fileCardAudioFg = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 1.00, green: 0.75, blue: 0.45, alpha: 1)
+        : UIColor(red: 0.90, green: 0.32, blue: 0.00, alpha: 1)  // light #E65100
+    })
 }
 
 // MARK: - System Resource Monitor
@@ -493,6 +546,10 @@ struct AIChatView: View {
     @State private var previewMarkdownFile: URL?
     @State private var previewHTMLFile: URL?
     @State private var previewDocumentFile: URL?
+    /// [Claudio 2026-09-06] 远端 agent 工具输出文件预览面板入口。
+    /// vm.pendingAssistantPreview 变化时设这里，fullScreenCover 弹 FilePreviewPanel。
+    /// dismiss 后清空，下次 onTap 可重新触发。
+    @State private var previewingAssistantFile: URL?
     @State private var shareFile: URL?
     @State private var safariURL: URL?
     @State private var fullBrowserURL: URL?
@@ -880,6 +937,19 @@ struct AIChatView: View {
         })
         .fullScreenCover(item: $previewImageFile) { fileURL in
             MinisImageFilePreviewView(fileURL: fileURL)
+        }
+        // [Claudio 2026-09-06] 远端 agent 工具输出文件全屏预览（FilePreviewPanel）。
+        // 监听 vm.pendingAssistantPreview → 设本地 @State → 触发 fullScreenCover。
+        // fullScreenCover 自带 onDismiss 清本地 state，再清 vm 字段避免重复触发。
+        .onChange(of: vm.pendingAssistantPreview) { newValue in
+            if let url = newValue {
+                previewingAssistantFile = url
+            }
+        }
+        .fullScreenCover(item: $previewingAssistantFile, onDismiss: {
+            vm.pendingAssistantPreview = nil
+        }) { fileURL in
+            FilePreviewPanel(fileURL: fileURL)
         }
         .alert(
             AppLocalized("File Not Found"),

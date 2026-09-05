@@ -1160,6 +1160,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// Drives the RemotePermissionDialog (non-bypass permission modes).
     @Published var pendingPermission: RemotePermissionRequest?
 
+    /// [Claudio 2026-09-06] 远端 agent 工具输出文件已下载到本地后，UI 层
+    /// 监听这个字段弹 FilePreviewPanel 全屏面板。**仅远端 agent 用**——
+    /// 本地 agent 走 OpenMinis 现有 minis:// 链接 / chip 路径。
+    @Published var pendingAssistantPreview: URL?
+
     // Attachments
     @Published var attachments: [InputAttachment] = []
     /// Number of videos currently being imported from the photo picker.
@@ -6690,6 +6695,109 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 }
             }
         }
+    }
+
+    // MARK: - 远端 agent 工具输出文件下载 (Claudio 2026-09-06)
+
+    /// 在所有 messages 树里按 id 找 AssistantBlock（含流式块，已 commit/未 commit 都搜）。
+    /// 工具块的 id 在转 AssistantBlock 时生成 UUID 持久。
+    private func findAssistantBlock(byId blockId: UUID) -> AssistantBlock? {
+        for msg in messages {
+            for block in msg.blocks {
+                if block.id == blockId { return block }
+            }
+        }
+        return nil
+    }
+
+    /// 卡片点 idle / failed：调 prepare_file_download → HTTP GET → 落 sandbox
+    /// → 设 block.outputFileLocalPath + .ready → 自动设 pendingAssistantPreview。
+    /// 状态机推进：idle → preparing → ready(.localPath) / failed(.code, .message)。
+    /// 失败时设 outputFileDownloadState = .failed，UI 显示"点击重试"。
+    func downloadAssistantBlockFile(blockId: UUID) {
+        guard let entry = resolveCurrentEntry() else { return }
+        let chatID = sessionId
+        guard let client = RemoteAgentStore.shared.existingClient(
+            instanceID: entry.providerInstanceId,
+            chatSessionID: chatID
+        ) else { return }
+        guard let block = findAssistantBlock(byId: blockId) else { return }
+        guard let absPath = block.outputFileRemotePath else { return }
+        // 已经在 .preparing / .downloading → 不重入
+        switch block.outputFileDownloadState {
+        case .preparing, .downloading:
+            return
+        default:
+            break
+        }
+        let projectPath = RemoteAgentConnection.load(
+            instanceID: entry.providerInstanceId
+        )?.projectPath ?? ""
+        guard !projectPath.isEmpty else {
+            block.outputFileDownloadState = .failed(
+                errorCode: "file_download_not_allowed",
+                message: "No projectPath configured for this instance"
+            )
+            return
+        }
+        let suggestedName = (absPath as NSString).lastPathComponent
+        let suggestedMime = block.outputFileMimeType
+        let sizeHint = block.outputFileSizeBytes
+
+        block.outputFileDownloadState = .preparing
+
+        Task { [weak block] in
+            do {
+                let result = try await RemoteFileDownload.download(
+                    client: client,
+                    projectPath: projectPath,
+                    absFilePath: absPath,
+                    suggestedFileName: suggestedName,
+                    suggestedMimeType: suggestedMime
+                )
+                await MainActor.run {
+                    guard let block else { return }
+                    block.outputFileLocalPath = result.localPath
+                    if sizeHint == 0 { block.outputFileSizeBytes = result.sizeBytes }
+                    if block.outputFileMimeType == nil {
+                        block.outputFileMimeType = result.mimeType
+                    }
+                    block.outputFileDownloadState = .ready(localPath: result.localPath)
+                    // 自动弹预览面板（pp 决策：下载完成 = 立即预览）
+                    pendingAssistantPreview = URL(fileURLWithPath: result.localPath)
+                    AppLogger(category: "FileDownload").info(
+                        "[FileDownload] ready block=\(block.id.uuidString.prefix(8)) bytes=\(result.sizeBytes)"
+                    )
+                }
+            } catch let err as RemoteDownloadError {
+                await MainActor.run {
+                    guard let block else { return }
+                    block.outputFileDownloadState = .failed(
+                        errorCode: err.code,
+                        message: err.message
+                    )
+                    AppLogger(category: "FileDownload").warning(
+                        "[FileDownload] failed block=\(block.id.uuidString.prefix(8)) code=\(err.code) msg=\(err.message)"
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    guard let block else { return }
+                    block.outputFileDownloadState = .failed(
+                        errorCode: "file_download_failed",
+                        message: error.localizedDescription
+                    )
+                }
+            }
+        }
+    }
+
+    /// 卡片点 .ready：直接弹预览面板（不重复下载）。
+    /// ready 状态已有 outputFileLocalPath，转 URL 设 pendingAssistantPreview。
+    func requestPreviewAssistantBlock(blockId: UUID) {
+        guard let block = findAssistantBlock(byId: blockId) else { return }
+        guard case .ready(let localPath) = block.outputFileDownloadState else { return }
+        pendingAssistantPreview = URL(fileURLWithPath: localPath)
     }
 
 }

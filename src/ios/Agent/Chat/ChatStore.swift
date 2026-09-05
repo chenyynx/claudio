@@ -237,6 +237,14 @@ struct ToolResult: Codable, Hashable {
     /// Optional for backward compatibility with rows written before this field existed;
     /// when nil, callers fall back to `success` (which cannot distinguish failed from cancelled).
     let status: String?
+    /// [Claudio 2026-09-05] Remote agent's tool output file metadata. Only populated
+    /// for the remote (bridge) channel when bridge reports `tool_result.outputFile`
+    /// (ccpocket websocket.ts:2370-2377 — currently absent; pending upstream PR to
+    /// add structured `outputFile: {path, sizeBytes, sha256, mimeType}` to the
+    /// `tool_result` ServerMessage). When upstream lands, App drops its
+    /// "File created at <path>" text fallback in RemoteAgentProvider.
+    /// Optional for backward compatibility with rows written before this field existed.
+    let outputFile: RemoteOutputFile?
 
     /// Truncate a URL to at most `maxLength` characters by eliding the middle.
     /// Returns the original if it's already short enough.
@@ -248,6 +256,24 @@ struct ToolResult: Codable, Hashable {
         let tail = String(url.suffix(keep))
         return head + marker + tail
     }
+}
+
+/// [Claudio 2026-09-05] Structured metadata for a remote agent's tool output file.
+/// Mirrors the eventual `outputFile` field on ccpocket's `tool_result` ServerMessage.
+/// See ccpocket bridge `prepareFileDownload` (websocket.ts:1076-1205) for the
+/// matching `file_download_ready` shape (filePath / fileName / mimeType /
+/// sizeBytes / downloadUrl).
+///
+/// `filePath` is the **absolute** path on the bridge host (e.g. "/home/ubuntu/x.py").
+/// The App converts it to a project-relative path before sending
+/// `prepare_file_download` (which rejects absolute paths per
+/// websocket.ts:1082-1090).
+struct RemoteOutputFile: Codable, Hashable, Sendable {
+    let filePath: String
+    let fileName: String
+    let sizeBytes: Int64
+    let sha256: String?
+    let mimeType: String?
 }
 
 /// A single content part within a message — the atomic unit.
@@ -5059,6 +5085,17 @@ extension RawMessage {
         if let pageURL = tr.pageURL, !pageURL.isEmpty {
             block.browserURL = pageURL
             lastBrowserURL = pageURL
+        }
+        // [Claudio 2026-09-05] 远端 agent 工具输出文件 backfill。**只走远端通道**：
+        // 本地 agent 的 ToolResult.outputFile 永远是 nil（本地文件在 iOS 沙箱可达，
+        // 不需要"下载"语义，直接走 imageFilePath 或 minis:// 链接）。
+        // 写入入口仅一个：RemoteAgentProvider 解析 bridge 推过来的 tool_result 时填上。
+        // backfill 路径**不自动下载**——历史回放时拉一堆文件会爆配额，下载由用户点卡片触发。
+        if let of = tr.outputFile {
+            block.outputFileRemotePath = of.filePath
+            block.outputFileMimeType = of.mimeType
+            block.outputFileSizeBytes = of.sizeBytes
+            // sha256 当前不存（下载校验由 URLSession/HTTP 层做，未来要加就放在 AssistantBlock 上）
         }
     }
 

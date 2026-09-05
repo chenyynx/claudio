@@ -337,6 +337,7 @@ struct ToolCapsuleView: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
         HStack {
             HStack(spacing: 8) {
                 // Status indicator / icon
@@ -493,6 +494,31 @@ struct ToolCapsuleView: View {
                 .accessibilityLabel(Text(AppLocalized("Background suspension info")))
             }
             Spacer(minLength: 0)
+        }
+        // [Claudio 2026-09-05] 远端 agent 工具输出文件下载卡。
+        // 只在 block.outputFileRemotePath 非空时渲染（本地 agent 永不进）。
+        // onTap 分流：
+        //   - .ready → vm.requestPreviewAssistantBlock(blockId:) 直接弹预览
+        //   - 其他   → vm.downloadAssistantBlockFile(blockId:) 触发下载，
+        //              完成后 vm 自动设 pendingAssistantPreview 弹预览
+        if let remotePath = block.outputFileRemotePath {
+            FileAttachmentCard(
+                fileName: (remotePath as NSString).lastPathComponent,
+                mimeType: block.outputFileMimeType,
+                sizeBytes: block.outputFileSizeBytes,
+                downloadState: block.outputFileDownloadState,
+                onTap: {
+                    AppLogger(category: "FileDownload").info("[FileDownload] tap block=\(block.id.uuidString.prefix(8)) state=\(block.outputFileDownloadState)")
+                    switch block.outputFileDownloadState {
+                    case .ready:
+                        vm.requestPreviewAssistantBlock(blockId: block.id)
+                    default:
+                        vm.downloadAssistantBlockFile(blockId: block.id)
+                    }
+                }
+            )
+            .padding(.horizontal, 4)   // 微调：跟工具胶囊视觉缩进对齐
+        }
         }
         .alert(
             AppLocalized("Task may have been paused"),

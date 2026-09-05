@@ -477,6 +477,21 @@ final class RemoteAgentProvider: AgentProvider {
                     || output.hasPrefix("Error:")
                 continuation.yield(.toolResult(id: toolId, name: message.toolName ?? "", output: output, isError: isError))
                 logger.info("[RemoteAgent] tool_result: id=\(toolId.prefix(8)) name=\(message.toolName ?? "?") isError=\(isError) output=\(output.prefix(80).replacingOccurrences(of: "\n", with: " "))")
+                // [Claudio 2026-09-05] Detect remote agent's tool output file
+                // (Write tool produced a downloadable file). Yield a side-band
+                // event so viewModel can fill AssistantBlock.outputFile* fields
+                // WITHOUT polluting the AgentContentPart.toolResult tuple (which
+                // would force changes in 8+ call sites across SSEStream/Offloading/
+                // RequestBudget/ConcurrentTools). The viewModel handler persists
+                // via ChatStore so backfill on relaunch restores the card.
+                if let of = Self.parseRemoteOutputFile(
+                    message: message,
+                    output: output,
+                    toolName: message.toolName
+                ) {
+                    continuation.yield(.remoteFileAttached(toolUseId: toolId, file: of))
+                    logger.info("[RemoteAgent] remoteFileAttached: id=\(toolId.prefix(8)) name=\(of.fileName) size=\(of.sizeBytes) mime=\(of.mimeType ?? "?")")
+                }
             }
 
         default:
@@ -617,5 +632,73 @@ final class RemoteAgentProvider: AgentProvider {
           <file path="\(projectPath)/\(fileName)" size="\(sizeBytes)" modified="\(isoFormatter.string(from: now))" />
         </user-attached-files>
         """
+    }
+
+    // MARK: - 远端工具输出文件检测（2026-09-05 新增）
+
+    /// [Claudio 2026-09-05] Extract a downloadable file reference from a
+    /// `tool_result` ServerMessage. Two strategies, in order:
+    ///
+    /// 1. **Structured (preferred)** — ccpocket upstream is expected to add a
+    ///    `outputFile: {path, sizeBytes, sha256, mimeType}` field on
+    ///    `tool_result` (mirroring `file_download_ready`'s shape at
+    ///    websocket.ts:1197-1205). When present, parse directly. **Currently
+    ///    upstream does NOT carry this field** (verified 2026-09-05 against
+    ///    websocket.ts:2370-2377); this branch activates after a PR lands.
+    ///
+    /// 2. **Text fallback (temporary)** — Claude Code's Write tool result
+    ///    reads `"File created successfully at: /abs/path"` (verified via
+    ///    ccpocket probe). Match that pattern; size unknown → 0. Codex may
+    ///    use a different format; we match what Claude Code emits and
+    ///    silently return nil otherwise.
+    ///
+    /// Returns nil for non-Write tools (Bash / Read / Edit / etc.) — we only
+    /// show a file card when the tool actually produced a file the user
+    /// would want to download.
+    static func parseRemoteOutputFile(
+        message: CCPocketProtocol.ServerMessage,
+        output: String,
+        toolName: String?
+    ) -> RemoteOutputFile? {
+        // Only Write-like tools can produce a file artifact. Reject early
+        // for the common case (Bash/Read/Edit/Glob/Grep/...) so we don't
+        // burn regex on every tool_result.
+        guard let name = toolName?.lowercased() else { return nil }
+        let writeLikeNames: Set<String> = ["write", "file_write", "create_file", "edit"]
+        guard writeLikeNames.contains(name) else { return nil }
+
+        // Strategy 1: structured outputFile (when upstream lands)
+        // ServerMessage is intentionally lenient — no outputFile field yet,
+        // so this branch is dormant. When ccpocket adds the field, decode
+        // it here and return.
+        // TODO [Claudio 2026-09-05]: when ccpocket PR lands, decode
+        //   message.outputFile here. Tracked in C-3 待办.
+
+        // Strategy 2: text fallback. Claude Code emits:
+        //   "File created successfully at: /abs/path"
+        //   "File ... at /abs/path" (older variants)
+        // Regex matches "at <abs path>" — single line, ends at newline.
+        let pattern = #"(?:created|written|saved|wrote)\s+(?:successfully\s+)?at:?\s+(\S+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let range = NSRange(output.startIndex..., in: output)
+        guard let match = regex.firstMatch(in: output, range: range),
+              match.numberOfRanges >= 2,
+              let pathRange = Range(match.range(at: 1), in: output)
+        else { return nil }
+        let path = String(output[pathRange]).trimmingCharacters(in: .whitespaces)
+        // Strip trailing punctuation (period, comma) that some variants include.
+        let cleanedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: ".,;"))
+        // Must look like a real path (starts with /)
+        guard cleanedPath.hasPrefix("/") else { return nil }
+        let fileName = (cleanedPath as NSString).lastPathComponent
+        return RemoteOutputFile(
+            filePath: cleanedPath,
+            fileName: fileName,
+            sizeBytes: 0,            // unknown via text; UI shows nothing
+            sha256: nil,
+            mimeType: nil            // inferred from extension by FileAttachmentCard
+        )
     }
 }

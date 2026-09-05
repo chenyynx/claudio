@@ -540,6 +540,9 @@
 		RCL000119 /* BackupHistoryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000219 /* BackupHistoryDetailView.swift */; };
 		RCL000120 /* BackupCategoryIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000220 /* BackupCategoryIcon.swift */; };
 		RCL000121 /* BackupHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000221 /* BackupHUD.swift */; };
+		E5FA0001 /* FileAttachmentCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0002 /* FileAttachmentCard.swift */; };
+		E5FA0003 /* FilePreviewPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0004 /* FilePreviewPanel.swift */; };
+		E5FA0005 /* FilePreviewActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0006 /* FilePreviewActions.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1234,6 +1237,9 @@
 		RCL000219 /* BackupHistoryDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupHistoryDetailView.swift; sourceTree = "<group>"; };
 		RCL000220 /* BackupCategoryIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupCategoryIcon.swift; sourceTree = "<group>"; };
 		RCL000221 /* BackupHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupHUD.swift; sourceTree = "<group>"; };
+		E5FA0002 /* FileAttachmentCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAttachmentCard.swift; sourceTree = "<group>"; };
+		E5FA0004 /* FilePreviewPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewPanel.swift; sourceTree = "<group>"; };
+		E5FA0006 /* FilePreviewActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewActions.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -2247,6 +2253,9 @@
 				A11Y0002 /* ChatAccessibilityAnnouncer.swift */,
 				F1W0E100 /* WebLoadError.swift */,
 				7844BB4D08A7B9AE6C2865F2 /* RemotePermissionDialog.swift */,
+				E5FA0002 /* FileAttachmentCard.swift */,
+				E5FA0004 /* FilePreviewPanel.swift */,
+				E5FA0006 /* FilePreviewActions.swift */,
 				A44D403A6D05BD06BBADC1CF /* Voice */,
 			);
 			path = Chat;
@@ -3197,6 +3206,9 @@
 				E5H000002 /* AgentLiveActivityWidget.swift in Sources */,
 				E5H000003 /* AgentActivityAttributes.swift in Sources */,
 				E5AT00003 /* AudioTogglePlaybackIntent.swift in Sources */,
+				E5FA0001 /* FileAttachmentCard.swift in Sources */,
+				E5FA0003 /* FilePreviewPanel.swift in Sources */,
+				E5FA0005 /* FilePreviewActions.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

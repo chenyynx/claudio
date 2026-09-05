@@ -139,6 +139,12 @@ extension AIChatViewModel {
         /// Persisted as AgentContentPart.toolResult so the next request
         /// carries the real tool output instead of a placeholder error.
         var toolResults: [(id: String, name: String, output: String, isError: Bool)] = []
+        /// [Claudio 2026-09-05] Remote agent's tool output file metadata
+        /// (carried alongside .toolResult from RemoteAgentProvider's
+        /// `parseRemoteOutputFile` text/structured fallback). Pair to
+        /// .toolResults by toolUseId when persisting so backfill on relaunch
+        /// restores AssistantBlock.outputFileRemotePath / Mime / Size.
+        var remoteOutputFiles: [(toolUseId: String, file: RemoteOutputFile)] = []
         /// UI block sequence snapshot (thinking/tool/text in exact original
         /// order). Built at stream end so a relaunch rebuilds the message
         /// identically — see AgentMessage.uiSequence.
@@ -1107,6 +1113,36 @@ extension AIChatViewModel {
                 // In-memory only; replayed by convertMessagesResponsesAPI on
                 // the next request when model id matches. See ReasoningEcho.
                 result.reasoningEcho = echo
+
+            case .remoteFileAttached(let toolUseId, let file):
+                // [Claudio 2026-09-05] Remote agent produced a downloadable file
+                // (Write tool output). Find the matching AssistantBlock (by
+                // toolUseId, same pairing logic as .toolResult) and fill
+                // outputFile* fields. These fields drive FileAttachmentCard
+                // rendering in AssistantBlockView. Download is user-initiated
+                // (tap on the card → RemoteFileDownload), not automatic.
+                await MainActor.run {
+                    guard msgIdx < messages.count else { return }
+                    let blocks = messages[msgIdx].blocks
+                    // Same pairing as .toolResult above: exact match first.
+                    let blockIdx = blocks.firstIndex(where: { $0.toolUseId == toolUseId })
+                        ?? blocks.indices.last(where: { blocks[$0].toolStatus != nil })
+                    guard let blockIdx else { return }
+                    let block = messages[msgIdx].blocks[blockIdx]
+                    block.outputFileRemotePath = file.filePath
+                    block.outputFileMimeType = file.mimeType
+                    block.outputFileSizeBytes = file.sizeBytes
+                    // Download state stays .idle — user must tap the card.
+                    logger.info("[RemoteAgent] attached outputFile to block: id=\(toolUseId.prefix(8)) name=\(file.fileName) size=\(file.sizeBytes)")
+                }
+                // Track for persistence — same machinery as .toolResult so
+                // backfill after app relaunch restores the card. We piggyback
+                // on the existing toolResults collection by appending a
+                // synthetic entry: the ChatStore writer that consumes
+                // toolResults can detect outputFile and write it to
+                // ToolResult.outputFile (forward-compat for A-plan history
+                // replay that goes through ChatStore).
+                result.remoteOutputFiles.append((toolUseId: toolUseId, file: file))
 
             case .usage(let u):
                 result.turnUsage.add(u)

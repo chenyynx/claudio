@@ -105,6 +105,39 @@ enum CCPocketProtocol {
         var sessionId: String?
     }
 
+    /// [Claudio 2026-09-05] `prepare_file_download` — request a one-shot
+    /// download URL for a file the remote agent produced (e.g. via the Write
+    /// tool). Mirrors ccpocket bridge `prepareFileDownload`
+    /// (websocket.ts:1076-1205) which is the **upload** protocol's symmetric
+    /// counterpart: the client asks for a tokenized URL, the bridge responds
+    /// with `file_download_ready {downloadUrl, fileName, mimeType, sizeBytes,
+    /// filePath}`, and the client HTTP-GETs the URL (no `finalize` step).
+    ///
+    /// `filePath` is **project-relative** (NOT absolute) — the bridge rejects
+    /// absolute paths at websocket.ts:1082-1090 with `file_download_not_allowed`.
+    /// App converts AssistantBlock.outputFileRemotePath (absolute) to relative
+    /// before calling this.
+    struct PrepareFileDownloadRequest: Encodable {
+        let type = "prepare_file_download"
+        var projectPath: String
+        var filePath: String    // project-relative
+        var requestId: String?
+        var sessionId: String?
+    }
+
+    /// [Claudio 2026-09-05] Canonical error codes from ccpocket's
+    /// `prepareFileDownload` (websocket.ts:1055-1074). Mirrored verbatim so
+    /// App-side error handling can switch on the same enum rather than parse
+    /// raw strings. Distinct from upload error codes by `_download_` prefix.
+    enum FileDownloadErrorCode: String, Sendable {
+        case notAllowed    = "file_download_not_allowed"   // path outside project / symlink escape / absolute path
+        case notFound      = "file_download_not_found"     // realpath failed
+        case notFile       = "file_download_not_file"      // not a regular file
+        case tooLarge      = "file_download_too_large"     // > bridge.fileDownloadMaxBytes
+        case unavailable   = "file_download_unavailable"  // bridge has no mediaStore
+        case failed        = "file_download_failed"        // catch-all during register
+    }
+
     /// `stop_session` — destroy a Bridge runtime session (official
     /// websocket.ts:4751): the Bridge broadcasts `result subtype=stopped`
     /// for it, destroys the session (kills the SDK agent process) and

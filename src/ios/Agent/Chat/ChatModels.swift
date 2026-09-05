@@ -203,6 +203,24 @@ enum ToolBlockStatus: Equatable {
     case cancelled
 }
 
+/// [Claudio 2026-09-05] Download state for a remote agent's tool output file
+/// (attached to AssistantBlock). Reflects the prepare_file_download →
+/// file_download_ready → HTTP GET → local-cache lifecycle, mirroring
+/// ccpocket's Flutter `FileTransferCubit` state machine
+/// (apps/mobile/lib/features/file_transfer/state/file_transfer_cubit.dart).
+///
+/// `case .failed` carries the ccpocket error code verbatim
+/// (file_download_not_allowed / file_download_not_found / file_download_not_file /
+/// file_download_too_large / file_download_unavailable / file_download_failed) so
+/// the UI can branch on the same enum rather than parse a raw string.
+enum FileDownloadState: Equatable {
+    case idle
+    case preparing
+    case downloading(progress: Double)  // 0.0 ... 1.0
+    case ready(localPath: String)
+    case failed(errorCode: String, message: String)
+}
+
 /// A single block within an assistant turn.
 final class AssistantBlock: Identifiable, ObservableObject {
     let id = UUID()
@@ -286,6 +304,34 @@ final class AssistantBlock: Identifiable, ObservableObject {
     @Published var toolStatus: ToolBlockStatus?
     /// Local file path for an image (e.g. browser screenshot).
     @Published var imageFilePath: String?
+
+    // MARK: - 远端 agent 工具输出文件（2026-09-05 新增）
+    //
+    // **本地 agent 永不写入以下字段**：本地文件在 iOS 沙箱可达，直接走 imageFilePath
+    // 渲染，**没有**"下载"语义。写入入口仅一个：
+    //   RemoteAgentProvider.swift 的 tool_result 事件处理（用户消息接收路径）
+    //   ChatStore.swift 的 backfillRemoteFileAttachment（历史恢复路径）
+    // 任何其他位置赋值都视为 bug（见 dev-rules C-3 行为基准表）。
+
+    /// Bridge host 上的绝对路径（agent 写到 ~/x.py 时存 "/home/ubuntu/x.py"）。
+    /// UI 展示用，**不是** prepare_file_download 协议的 filePath（那个要相对
+    /// projectPath）。App 端在 RemoteFileDownload 里做 abs→rel 转换。
+    @Published var outputFileRemotePath: String?
+
+    /// 下载完成后 iOS 沙箱里的本地路径。设上后 UI 把 imageFilePath 也指向
+    /// 这条路径，复用现有 UIImage(contentsOfFile:) 渲染（远程图片可直接显示）。
+    @Published var outputFileLocalPath: String?
+
+    /// MIME type from bridge (e.g. "text/x-python")，优先用 bridge 给的，
+    /// bridge 没给时用文件扩展名 fallback（FileAttachmentCard.mimeFor(ext:)）。
+    @Published var outputFileMimeType: String?
+
+    /// File size in bytes (bridge 给的或 fallback 0)。UI 显示用。
+    @Published var outputFileSizeBytes: Int64 = 0
+
+    /// 下载状态机。详见 FileDownloadState 定义。
+    @Published var outputFileDownloadState: FileDownloadState = .idle
+
     /// URL associated with browser tool calls (for display in preview).
     @Published var browserURL: String?
     /// LLM-generated concise description of what this tool call does (5-10 words).
