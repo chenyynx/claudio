@@ -189,6 +189,8 @@ Doris 与服务器 CC 并发开发 claudio 时的追加约定（Doris 全部遵�
 | result/stopped | 正常结束 turn（bridge_service.dart:847） | handleIncoming → endTurn（已有） |
 | session_resume_failed | 中止等待（bridge_service.dart:819） | resumeFailure → abort（已有） |
 | 多段正文渲染 | 每段 text 独立 TextContent，content_block 级渲染（assistant_bubble.dart / chat_message_handler） | tool_use 后 textBlockStarted 重置 → 下段正文重开 .text 块（3e99b5d 对齐，by Doris 手机端） |
+| history_seq 统一性 | 所有 broadcast 消息都带 historySeq（bridge/session.ts:917 appendHistoryToSession 单点入口） | live 路径 NSLock 抓 lastBridgeSeq → AIChatViewModel+Persistence 注入 → `rawMessageId()` 派生 `bridge-{seq}`，与 history replay 路径共用同一 id 集，BackfillCore id 去重命中（b4a931c 对齐） |
+| 远端文件附件 prompt | 用户文本 + `<user-attached-files><file path="<projectPath>/<filename>" size=".." modified="ISO8601"/></user-attached-files>` XML（对齐本地 agent 格式：AIChatViewModel.swift:2662-2670）— agent 拿 path 用 Read 工具读，ChatStore.toChatMessage 4832-4900 剥 XML 出 AttachmentMeta | `RemoteAgentProvider.buildUserAttachedFilesXML(projectPath:fileName:sizeBytes:now:)` 静态 helper → inputText += `\n\n<xml>`（待出包 commit 入库后回填 commit 号） |
 
 ### C-4. 修复完成标准（替代"症状消失即完成"）
 
@@ -213,3 +215,4 @@ Doris 与服务器 CC 并发开发 claudio 时的追加约定（Doris 全部遵�
 2. **离线队列存 start/resume 动作**：官方断线期间的 resume 也入队重放（bridge_service.dart:1898）；我们 resume 只在 provider 第一轮发，断线恰逢第一轮 resume 时 fallback start 可能开新会话（低概率）
 3. **bridge 重启后旧 sessionId 失效**：重放失败消息 re-queue 不丢，官方靠 resume 动作重放恢复
 4. **官方无应用层 ping**：我们保留 30s ping（iOS 后台 WS 假死检测有价值，重连不再 spawn 后无害）
+5. **past_history 路径走 raw role 格式不带 historySeq**：bridge/websocket.ts:4880-4886 的 `past_history` 消息里 `messages[i]` 用 `{role, content}` raw Claude CLI 格式而非 `{type:"assistant", ...}` ServerMessage 格式；`splitPastHistoryMessages`（websocket.ts:1846-1892）直接 push raw 不注入 seq。我方 `agentMessage(fromServer:)` 只 switch `m.type`，raw role 走 default return nil 被过滤。触发条件：app 全程没启动过 + 桥端有长历史 → 用户看到空。修复方向：扩展 agentMessage 认 `m.role == "assistant"/"user"/"tool_result"`，或读官方 chat_session_cubit.dart 看怎么用 past_history 再对齐。属 A-方案范畴（远端恢复统一走 bridge history），与 D-G 根因独立；自托管场景触发概率低，**优先级低**

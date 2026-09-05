@@ -197,8 +197,24 @@ final class RemoteAgentProvider: AgentProvider {
                                     fileName: fileName,
                                     fileURL: fileURL
                                 )
-                                inputText += "\n\n[User uploaded file: \(result.fileName)]"
-                                logger.info("[RemoteAgent] uploaded \(fileName) OK sha=\(result.sha256.prefix(8))")
+                                // [Fix 2026-09-05] Build <user-attached-files> XML
+                                // with the bridge host's full path so the agent can
+                                // Read the file. Mirrors the local agent's format in
+                                // AIChatViewModel.swift:2662-2670 — ChatStore.toChatMessage
+                                // (4832-4900) already strips the XML from user-visible
+                                // display text and parses the <file> element into
+                                // AttachmentMeta for tile rendering. Old plain-text
+                                // "[User uploaded file: X]" had no path (agent couldn't
+                                // find the file) AND leaked the marker into the bubble
+                                // after backfill, because stripAttachmentMarkers only
+                                // matches the image-attachment patterns.
+                                let xml = Self.buildUserAttachedFilesXML(
+                                    projectPath: projectPath,
+                                    fileName: result.fileName,
+                                    sizeBytes: result.sizeBytes
+                                )
+                                inputText += "\n\n\(xml)"
+                                logger.info("[RemoteAgent] uploaded \(fileName) OK sha=\(result.sha256.prefix(8)) size=\(result.sizeBytes)")
                             } catch {
                                 logger.error("[RemoteAgent] upload \(fileName) failed: \(error.localizedDescription)")
                                 inputText += "\n\n[User attempted to attach \(fileName) but upload failed: \(error.localizedDescription)]"
@@ -569,5 +585,37 @@ final class RemoteAgentProvider: AgentProvider {
         guard !textBlockStarted else { return }
         textBlockStarted = true
         continuation.yield(.contentBlockStart(.text))
+    }
+
+    // MARK: - XML 构造（pure helper，可单测）
+
+    /// Build the `<user-attached-files>` XML block that the bridge agent reads
+    /// to know which files were uploaded and where they live on the bridge host.
+    /// Mirrors the local agent's format in `AIChatViewModel.swift:2662-2670` so
+    /// the SAME `ChatStore.toChatMessage` consumer (4832-4900) can parse the
+    /// `<file>` element into `AttachmentMeta` and strip the XML from the
+    /// user-visible bubble. Live UI is also clean (the bubble is built from the
+    /// user's typed text in `AIChatViewModel.send()` line 2442-2443, not from
+    /// this XML). `now` is injectable so the test can pin the timestamp without
+    /// freezing `Date()`.
+    ///
+    /// [Fix 2026-09-05] Replaces the old plain-text marker
+    /// `"[User uploaded file: X]"` which (1) had no path, so the agent
+    /// couldn't `Read` the file, and (2) leaked to the UI after backfill
+    /// because `ChatStore.stripAttachmentMarkers` only matches the
+    /// image-attachment patterns.
+    static func buildUserAttachedFilesXML(
+        projectPath: String,
+        fileName: String,
+        sizeBytes: Int,
+        now: Date = Date()
+    ) -> String {
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime]
+        return """
+        <user-attached-files>
+          <file path="\(projectPath)/\(fileName)" size="\(sizeBytes)" modified="\(isoFormatter.string(from: now))" />
+        </user-attached-files>
+        """
     }
 }
