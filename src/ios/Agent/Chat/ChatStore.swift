@@ -4948,7 +4948,7 @@ extension RawMessage {
                     // mid-render, so drop the orphan instead of leaking it into the
                     // user bubble's textContent (which was producing the
                     // "tool output masquerading as user message" rendering).
-                    backfillLogger.warning("orphan tool_result dropped toolUseId=\(tr.toolUseId) outputLen=\(tr.output.count)")
+                    memDiagLogger.warning("orphan tool_result dropped toolUseId=\(tr.toolUseId) outputLen=\(tr.output.count)")
                 }
             }
         }
