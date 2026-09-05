@@ -18,6 +18,64 @@ import Combine
 
 private let backfillLogger = AppLogger(category: "HistoryBackfill")
 
+
+// MARK: - BackfillCore 纯函数（可单测，无 actor/UI 依赖）
+
+/// 判重 + 增量决策的纯函数。可单测，无 actor / UI / DB / 桥依赖。
+/// 业务规则：bridgeSeq > lastSyncedSeq 才算新增；同 id 防御性去重；
+/// DB 空 → 全量替换；DB 有 → 增量追加。
+enum BackfillCore {
+
+    struct SkipCounters {
+        var seq = 0
+        var id = 0
+    }
+
+    struct Plan {
+        let newRaws: [RawMessage]
+        let skipCounters: SkipCounters
+        let maxSeq: Int
+    }
+
+    /// 纯函数：给定桥 history + 本地已有 raw + 上次同步水位，返回落库计划。
+    /// - Parameters:
+    ///   - history: 桥端 messages（已含 bridgeSeq）
+    ///   - existing: 本地 DB 已有 raw（用于 id 防御性去重）
+    ///   - lastSyncedSeq: 上次已同步的最大 bridgeSeq
+    ///   - buildRaw: AgentMessage → RawMessage 工厂（注入以避免循环依赖）
+    static func computePlan(
+        history: [AgentMessage],
+        existing: [RawMessage],
+        lastSyncedSeq: Int,
+        buildRaw: (AgentMessage) async -> RawMessage?
+    ) async -> Plan {
+        let existingIds = Set(existing.compactMap { $0.id.isEmpty ? nil : $0.id })
+
+        var newRaws: [RawMessage] = []
+        var skip = SkipCounters()
+        var maxSeq = lastSyncedSeq
+
+        for agentMsg in history {
+            let seq = agentMsg.bridgeSeq ?? 0
+            if seq > 0 {
+                maxSeq = max(maxSeq, seq)
+                if seq <= lastSyncedSeq {
+                    skip.seq += 1
+                    continue
+                }
+            }
+            guard let raw = await buildRaw(agentMsg) else { continue }
+            if existingIds.contains(raw.id) {
+                skip.id += 1
+                continue
+            }
+            newRaws.append(raw)
+        }
+
+        return Plan(newRaws: newRaws, skipCounters: skip, maxSeq: maxSeq)
+    }
+}
+
 /// 远端 history 增量同步结果（供 UI 层决策如何呈现）。
 enum BackfillResult {
     case empty                                   // 本地 DB 本来就空，无 UI 变化
@@ -101,36 +159,18 @@ final class RemoteHistoryBackfill {
         backfillLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) bridge returned \(history.count) messages")
 
         // === 4. 判重 + 增量落库 ===
-        let existingIds = Set(existingRawMessages.compactMap { $0.id.isEmpty ? nil : $0.id })
+        // 抽到 BackfillCore.computePlan 纯函数（可单测，无 actor 依赖）
         let lastSyncedSeq = RemoteSessionMetadata.load(sessionId: sessionId)?.lastSyncedBridgeSeq ?? 0
-
-        var newRaws: [RawMessage] = []
-        var skippedBySeq = 0
-        var skippedById = 0
-        var maxSeq = lastSyncedSeq
-
-        for agentMsg in history {
-            // 4a. seq 增量判断（核心判重）
-            let seq = agentMsg.bridgeSeq ?? 0
-            if seq > 0 {
-                maxSeq = max(maxSeq, seq)
-                if seq <= lastSyncedSeq {
-                    skippedBySeq += 1
-                    continue
-                }
-            }
-
-            // 4b. 转 RawMessage
-            guard let raw = await buildRawMessage(agentMsg) else {
-                continue
-            }
-            // 4c. id 二次检查（防御性，本地已有同 id 不重复写）
-            if existingIds.contains(raw.id) {
-                skippedById += 1
-                continue
-            }
-            newRaws.append(raw)
-        }
+        let plan = await BackfillCore.computePlan(
+            history: history,
+            existing: existingRawMessages,
+            lastSyncedSeq: lastSyncedSeq,
+            buildRaw: buildRawMessage
+        )
+        let newRaws = plan.newRaws
+        let skippedBySeq = plan.skipCounters.seq
+        let skippedById = plan.skipCounters.id
+        let maxSeq = plan.maxSeq
 
         // === 5. 落库 ===
         if !newRaws.isEmpty {
