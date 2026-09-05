@@ -133,43 +133,47 @@ final class RemoteHistoryBackfill {
         backfillLogger.info("[HistoryBackfill] entry session=\(sessionId.prefix(8)) existing=\(existingRawMessages.count)")
 
         // === 1. 入口守卫：防重入 ===
-        lock.lock()
-        if inFlight.contains(sessionId) {
-            lock.unlock()
+        // [Fix 2026-09-05 build] Use NSLock.withLock{} instead of bare lock/unlock
+        // — the latter is unavailable from async contexts (Swift 6 will hard-error).
+        // withLock scopes the body so the lock is always released, even on throw.
+        let alreadyInFlight: Bool = lock.withLock {
+            if inFlight.contains(sessionId) { return true }
+            inFlight.insert(sessionId)
+            return false
+        }
+        if alreadyInFlight {
             backfillLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) in-flight, noop")
             return .noop(reason: "in-flight")
         }
-        inFlight.insert(sessionId)
-        lock.unlock()
         defer {
-            lock.lock()
-            inFlight.remove(sessionId)
-            lock.unlock()
+            lock.withLock {
+                inFlight.remove(sessionId)
+            }
         }
 
         // === 2. 实例守卫：必须恰好一个远端 instance ===
-        let instances = ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
+        // [Fix 2026-09-05 build] ProviderConfigStore is @MainActor; the call site is
+        // now nonisolated (after removing @MainActor from this class), so `await` is
+        // required. The call is cheap (filter on a tiny in-memory array).
+        let instances = await ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
         guard instances.count == 1, let instance = instances.first else {
             backfillLogger.warning("[HistoryBackfill] session=\(sessionId.prefix(8)) no remote instance configured")
             return .noop(reason: "no-remote-instance")
         }
 
         // === 3. 拉桥 history ===
+        // [Fix 2026-09-05 build] fetchRemoteHistory returns [AgentMessage]? not throws,
+        // so the do/catch was dead code (warning: unreachable catch). flatten the call.
         let history: [AgentMessage]
-        do {
-            guard let h = await AIChatViewModel.fetchRemoteHistory(
-                instance: instance,
-                chatSessionID: chatSessionID ?? sessionId,
-                allowLegacyMappingFallback: true
-            ) else {
-                backfillLogger.warning("[HistoryBackfill] session=\(sessionId.prefix(8)) bridge fetch failed")
-                return .noop(reason: "bridge-fetch-failed")
-            }
-            history = h
-        } catch {
-            backfillLogger.error("[HistoryBackfill] session=\(sessionId.prefix(8)) bridge fetch threw: \(error)")
-            return .failed(error: error)
+        guard let h = await AIChatViewModel.fetchRemoteHistory(
+            instance: instance,
+            chatSessionID: chatSessionID ?? sessionId,
+            allowLegacyMappingFallback: true
+        ) else {
+            backfillLogger.warning("[HistoryBackfill] session=\(sessionId.prefix(8)) bridge fetch failed")
+            return .noop(reason: "bridge-fetch-failed")
         }
+        history = h
         backfillLogger.info("[HistoryBackfill] session=\(sessionId.prefix(8)) bridge returned \(history.count) messages")
 
         // === 4. 判重 + 增量落库 ===
@@ -219,6 +223,10 @@ final class RemoteHistoryBackfill {
                     case .text: return true
                     case .toolUse: return true
                     case .toolResult: return false
+                    // [Fix 2026-09-05 build] mediaRef is a user-attached file/image
+                    // — that IS real user content, so it counts as "non toolResult"
+                    // and the message should be rendered (not dropped as orphan).
+                    case .mediaRef: return true
                     }
                 }
                 if !hasNonToolResult {
