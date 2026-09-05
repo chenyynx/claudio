@@ -182,6 +182,26 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     init() {
         logger.info("🔄SESSION [vm=\(self.vmInstanceId)] init — new AIChatViewModel created")
 
+        // [Fix 2026-09-06] One-shot migration of the old Caches-based
+        // attachment dir. Pre-Step-5 chips still reference paths under
+        // Caches/InputAttachments, but iOS may have already reaped those
+        // (the root cause of the "file_not_found_re_add" surfaced today).
+        // Removing the directory breaks references cleanly — the 8200afd
+        // catch block (transientNotice) handles any chip tap that races
+        // this.
+        // [Fix 2026-09-06] Modern Foundation API (iOS 16+): URL.cachesDirectory
+        // replaces FileManager.urls(for:).appendingPathComponent. Also drops
+        // the [0] force subscript per swift.md line 7. Logger on unexpected
+        // errors per swift.md line 17 (no silent swallow).
+        let oldCachesDir = URL.cachesDirectory.appending(path: "InputAttachments")
+        if FileManager.default.fileExists(atPath: oldCachesDir.path) {
+            do {
+                try FileManager.default.removeItem(at: oldCachesDir)
+            } catch {
+                logger.warning("[Migration] could not remove old Caches/InputAttachments: \(error.localizedDescription)")
+            }
+        }
+
         fontChangeObserver = NotificationCenter.default.addObserver(
             forName: .fontSettingsMessageBaseChanged, object: nil, queue: .main
         ) { [weak self] _ in

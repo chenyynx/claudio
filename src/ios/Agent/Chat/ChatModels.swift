@@ -447,8 +447,10 @@ struct ToolSnapshotItem: Identifiable {
 struct InputAttachment: Identifiable {
     let id: UUID
     var fileName: String
-    /// URL in the app's Caches directory. For a `.loading` placeholder this is a
-    /// dummy URL with no file on disk yet; it's replaced when the load finishes.
+    /// URL in the app's attachment cache directory (Application Support/InputAttachments
+    /// — see [Fix 2026-09-06] in AIChatViewModel+Attachments.swift). For a `.loading`
+    /// placeholder this is a dummy URL with no file on disk yet; it's replaced when
+    /// the load finishes.
     var cacheURL: URL
     var kind: Kind
     /// Load lifecycle. Photo-library picks insert `.loading` placeholders

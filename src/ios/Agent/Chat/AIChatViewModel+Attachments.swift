@@ -8,9 +8,30 @@ private let logger = AppLogger(category: "AIChatVM")
 
 extension AIChatViewModel {
 
+    // [Fix 2026-09-06] Switch from .cachesDirectory to
+    // .applicationSupportDirectory. iOS treats Caches/ as purgeable under
+    // storage pressure and after backgrounding — surfaced as a
+    // "file_not_found_re_add" caught by the 8200afd fallback in
+    // RemoteFileUpload: the upload URL pointed to a path the system had
+    // already reaped, and the catch block in RemoteAgentProvider.swift:218
+    // forwarded the error string as the file's content to the agent.
+    // Application Support is never auto-cleared (only on app uninstall /
+    // user data reset). This is the "Step 5" follow-up promised in 8200afd's
+    // commit message.
     private var attachmentCacheDir: URL {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return caches.appendingPathComponent("InputAttachments")
+        // [Fix 2026-09-06] Modern Foundation API (iOS 16+): URL.applicationSupportDirectory
+        // replaces FileManager.urls(for:).appendingPathComponent — also drops the
+        // [0] force subscript per swift.md line 7.
+        let dir = URL.applicationSupportDirectory.appending(path: "InputAttachments")
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            // swift.md line 17: don't swallow errors silently. If createDirectory
+            // fails (disk full / permissions), uploads will fail downstream — log
+            // so the failure mode is debuggable.
+            logger.warning("[Attachment] attachmentCacheDir createDirectory failed: \(error.localizedDescription)")
+        }
+        return dir
     }
 
     /// Save an image (from camera, drag-drop, or paste) to Caches and add as attachment.
