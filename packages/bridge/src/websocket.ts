@@ -1,9 +1,9 @@
 import type { Server as HttpServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { lstat, readFile, readlink, realpath, stat, unlink } from "node:fs/promises";
-import { resolve, extname, basename, relative, posix, win32 } from "node:path";
+import { resolve, join, extname, basename, relative, posix, win32 } from "node:path";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
 import {
@@ -869,6 +869,34 @@ export class BridgeWebSocketServer {
     Map<string, InputClientMessage[]>
   >();
   private resumeOperations = new Map<string, ResumeOperation>();
+
+  /**
+   * 启发式判断当前 SDK 模型是否支持 vision（图片输入）。
+   * 不支持时，图片存盘 + 发文本路径给 agent，让 Claude Code 用工具处理。
+   * (claudio 私有 fork: 让 non-vision 模型也能接收图片)
+   */
+  private modelSupportsVision(): boolean {
+    const model = (process.env.ANTHROPIC_MODEL || "").toLowerCase();
+    const baseUrl = (process.env.ANTHROPIC_BASE_URL || "").toLowerCase();
+    // 已知纯文本模型（不支持 vision）
+    const noVisionTokens = ["deepseek", "kimi", "glm-", "sensenova", "qwen"];
+    for (const tok of noVisionTokens) {
+      if (model.includes(tok) || baseUrl.includes(tok)) return false;
+    }
+    // Claude 原生 API 始终支持 vision
+    if (baseUrl.includes("api.anthropic.com")) return true;
+    // 其他情况默认支持（未知模型按能处理图片对待）
+    return true;
+  }
+
+  private mimeToExt(mime: string): string {
+    const m = mime.toLowerCase();
+    if (m.includes("png")) return "png";
+    if (m.includes("gif")) return "gif";
+    if (m.includes("webp")) return "webp";
+    if (m.includes("bmp")) return "bmp";
+    return "jpg";
+  }
 
   constructor(options: BridgeServerOptions) {
     const {
@@ -3378,18 +3406,73 @@ export class BridgeWebSocketServer {
         let wasQueued = false;
         let shouldInterrupt = false;
         if (images.length > 0) {
-          console.log(
-            `[ws] Sending message with ${images.length} inline Base64 image(s)`,
-          );
-          if (typeof claudeProc.dispatchInputWithImages === "function") {
-            const result = claudeProc.dispatchInputWithImages(text, images);
-            wasQueued = result.queued;
-            shouldInterrupt = result.shouldInterrupt;
+          // 不可变 text 用中间变量接收修改
+          let inputText = text;
+          if (this.modelSupportsVision()) {
+            // 模型支持 vision — 走 inline base64
+            console.log(
+              `[ws] Sending message with ${images.length} inline Base64 image(s)`,
+            );
+            if (typeof claudeProc.dispatchInputWithImages === "function") {
+              const result = claudeProc.dispatchInputWithImages(text, images);
+              wasQueued = result.queued;
+              shouldInterrupt = result.shouldInterrupt;
+            } else {
+              const result = claudeProc.sendInputWithImages(text, images);
+              wasQueued =
+                typeof result === "boolean" ? result : isAgentBusySnapshot;
+              shouldInterrupt = wasQueued;
+            }
+          } else if (session.projectPath) {
+            // 模型不支持 vision：存盘 + 发文本路径，让 Claude Code 用工具处理
+            console.log(
+              `[ws] Model lacks vision — saving ${images.length} image(s) to disk`,
+            );
+            const uploadDir = resolve(session.projectPath, ".claude-uploads");
+            let saved = false;
+            try {
+              mkdirSync(uploadDir, { recursive: true });
+              for (const img of images) {
+                const filePath = join(
+                  uploadDir,
+                  `${randomUUID()}.${this.mimeToExt(img.mimeType)}`,
+                );
+                writeFileSync(filePath, Buffer.from(img.base64, "base64"));
+                const note = `[User uploaded image: ${filePath}]`;
+                inputText = inputText ? `${inputText}\n${note}` : note;
+                console.log(`[ws] Image saved: ${filePath}`);
+              }
+              saved = true;
+            } catch (err) {
+              console.error(
+                `[ws] Failed to save image, falling back to inline base64: ${err}`,
+              );
+            }
+            if (saved) {
+              // 存盘成功 → 纯文本路径（agent 用工具处理文件）
+              if (typeof claudeProc.dispatchInput === "function") {
+                const result = claudeProc.dispatchInput(inputText);
+                wasQueued = result.queued;
+                shouldInterrupt = result.shouldInterrupt;
+              } else {
+                wasQueued = claudeProc.sendInput(inputText);
+                shouldInterrupt = wasQueued;
+              }
+            } else {
+              // 存盘失败 → 回退 inline base64（尽力而为）
+              if (typeof claudeProc.dispatchInputWithImages === "function") {
+                const result = claudeProc.dispatchInputWithImages(text, images);
+                wasQueued = result.queued;
+                shouldInterrupt = result.shouldInterrupt;
+              }
+            }
           } else {
-            const result = claudeProc.sendInputWithImages(text, images);
-            wasQueued =
-              typeof result === "boolean" ? result : isAgentBusySnapshot;
-            shouldInterrupt = wasQueued;
+            // 无 projectPath，走 inline（会失败但保持兼容）
+            if (typeof claudeProc.dispatchInputWithImages === "function") {
+              const result = claudeProc.dispatchInputWithImages(text, images);
+              wasQueued = result.queued;
+              shouldInterrupt = result.shouldInterrupt;
+            }
           }
         }
         // Legacy imageId mode (backward compatibility)
