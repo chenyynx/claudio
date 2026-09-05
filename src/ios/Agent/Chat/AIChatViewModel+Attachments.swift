@@ -187,7 +187,22 @@ extension AIChatViewModel {
             // sourceURL may be security-scoped
             let accessed = sourceURL.startAccessingSecurityScopedResource()
             defer { if accessed { sourceURL.stopAccessingSecurityScopedResource() } }
-            try fm.copyItem(at: sourceURL, to: destURL)
+            // picker `asCopy:true` copies the file into `Documents/Inbox/` and
+            // iOS reclaims Inbox contents once the picker dismisses. Move the
+            // file out of Inbox to our own dir first; fall back to copyItem if
+            // moveItem fails (cross-device / quota). Then immediately verify
+            // the destination exists — historically failures here were swallowed
+            // and surfaced later as "未能打开文件 <dest>" deep in upload.
+            do {
+                try fm.moveItem(at: sourceURL, to: destURL)
+            } catch {
+                try fm.copyItem(at: sourceURL, to: destURL)
+            }
+            guard fm.fileExists(atPath: destURL.path) else {
+                throw NSError(domain: "AttachmentCopy", code: -1, userInfo: [
+                    NSLocalizedDescriptionKey: "复制后文件不存在：\(destURL.lastPathComponent)"
+                ])
+            }
 
             if let date = originalDate {
                 try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: destURL.path)
@@ -220,6 +235,10 @@ extension AIChatViewModel {
             logger.info("[Attachment] addFileAttachment OK: \(fileName) -> \(destURL.lastPathComponent) kind=\(kind) total=\(attachments.count)")
         } catch {
             logger.error("[Attachment] addFileAttachment FAILED: file=\(fileName) source=\(sourceURL.path) dest=\(destURL.path) error=\(error.localizedDescription)")
+            // Surface failure to UI via the existing transient toast (4s auto-dismiss).
+            // Without this the user thinks the chip succeeded and only learns
+            // the truth deep in upload ("未能打开文件 <dest>").
+            transientNotice = "添加附件失败：\(fileName) — \(error.localizedDescription)"
         }
     }
 

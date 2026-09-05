@@ -72,12 +72,29 @@ final class RemoteFileUpload {
     // MARK: - helpers
 
     private static func fileSize(_ url: URL) throws -> Int {
+        // Last-line defence: the local cache path may have been reaped between
+        // `addFileAttachment` and this call. Surface a precise re-add hint
+        // instead of the cryptic NSCocoaError "file doesn't exist".
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw RemoteUploadError(
+                code: "file_not_found_re_add",
+                message: "附件文件不存在：\(url.lastPathComponent)。请重新选择附件后再发送。"
+            )
+        }
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         return (attrs[.size] as? Int) ?? 0
     }
 
     /// HTTP PUT 文件（URLSession fromFile 零内存）+ 分块流式 SHA-256。
     private static func httpPutAndHash(url: URL, fileURL: URL) async throws -> String {
+        // Same last-line guard as fileSize — SHA-256 read + URLSession upload
+        // both need a real file on disk.
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            throw RemoteUploadError(
+                code: "file_not_found_re_add",
+                message: "附件文件不存在：\(fileURL.lastPathComponent)。请重新选择附件后再发送。"
+            )
+        }
         // SHA-256 流式
         var sha = SHA256()
         let handle = try FileHandle(forReadingFrom: fileURL)
