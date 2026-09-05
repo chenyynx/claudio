@@ -543,6 +543,7 @@
 		E5FA0001 /* FileAttachmentCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0002 /* FileAttachmentCard.swift */; };
 		E5FA0003 /* FilePreviewPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0004 /* FilePreviewPanel.swift */; };
 		E5FA0005 /* FilePreviewActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0006 /* FilePreviewActions.swift */; };
+		E5FA0007 /* RemoteFileDownload.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0008 /* RemoteFileDownload.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1240,6 +1241,7 @@
 		E5FA0002 /* FileAttachmentCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAttachmentCard.swift; sourceTree = "<group>"; };
 		E5FA0004 /* FilePreviewPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewPanel.swift; sourceTree = "<group>"; };
 		E5FA0006 /* FilePreviewActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewActions.swift; sourceTree = "<group>"; };
+		E5FA0008 /* RemoteFileDownload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteFileDownload.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1568,6 +1570,7 @@
 				E5CPF001 /* CCPocketProtocol.swift */,
 				E5CPF002 /* CCPocketClient.swift */,
 				E5F2A000B /* RemoteFileUpload.swift */,
+				E5FA0008 /* RemoteFileDownload.swift */,
 				E5F2A0011 /* RemoteModelCatalog.swift */,
 				E5F2A0007 /* RemoteSkillRegistry.swift */,
 				E5CPF003 /* RemoteAgentProvider.swift */,
@@ -3001,6 +3004,7 @@
 				E5CPB001 /* CCPocketProtocol.swift in Sources */,
 				E5CPB002 /* CCPocketClient.swift in Sources */,
 				E5F2A0009 /* RemoteFileUpload.swift in Sources */,
+				E5FA0007 /* RemoteFileDownload.swift in Sources */,
 				E5F2A0010 /* RemoteModelCatalog.swift in Sources */,
 				E5F2A0005 /* RemoteSkillRegistry.swift in Sources */,
 				E5CPB003 /* RemoteAgentProvider.swift in Sources */,
