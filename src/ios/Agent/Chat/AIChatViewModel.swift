@@ -5967,7 +5967,18 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 // it names the backup model when one took over. Passing it here
                 // (rather than letting the persist layer look up the session) is
                 // what keeps attribution correct across a silent switch.
-                if let persistedId = await persistAgentMessage(assistantMessage, tokenUsage: turnUsage, thoughtSignatures: sigMap, streamInterruptCount: interruptCount, modelEntryId: activeEntryId),
+                // [Fix 2026-09-05 route D] For RemoteAgentProvider, hand the
+                // bridge seq from the LAST wire event of this turn to the
+                // persistence layer. The provider's `consume()` closed over
+                // the live WS thread and never assigned bridgeSeq onto the
+                // in-memory AgentMessage, so without this the live path
+                // would write UUID row.ids that the backfill id-set
+                // (history-replay path uses bridge-{seq} via
+                // `agentMessage(fromServer:)`) can never match — Bug D
+                // root cause. Local providers' protocol-extension default
+                // returns nil, so this no-ops for them.
+                let turnBridgeSeq = provider.lastBridgeSeq
+                if let persistedId = await persistAgentMessage(assistantMessage, tokenUsage: turnUsage, thoughtSignatures: sigMap, streamInterruptCount: interruptCount, modelEntryId: activeEntryId, bridgeSeq: turnBridgeSeq),
                    assistantAgentIdx < agentHistory.count {
                     agentHistory[assistantAgentIdx].dbMessageId = persistedId
                     // [T-error-persist-ios] Persist this turn's error state AFTER the

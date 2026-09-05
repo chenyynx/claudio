@@ -244,6 +244,17 @@ protocol AgentProvider {
     /// extension members are statically dispatched — a conformer override
     /// would be ignored when accessed through the protocol type).
     var isRemoteAgent: Bool { get }
+    /// Bridge-side history sequence of the most recent message the provider
+    /// received during the current/last turn. nil for local providers, and
+    /// nil on a fresh provider before the first wire event arrives. Used by
+    /// the persistence layer to derive a stable `RawMessage.id` ("bridge-{seq}")
+    /// that matches the id the backfill path will re-derive from history replay
+    /// — without this, the live path and the backfill path produce disjoint
+    /// id sets and BackfillCore.computePlan cannot dedup (the root cause of
+    /// the duplicate-render / role-mismatch / kill-reenter cluster).
+    /// ccpocket official uses runtime-store seq; Claudio persists to SQLite
+    /// (per dev-rules 1 段) so we mirror the seq onto our own row.id instead.
+    var lastBridgeSeq: Int? { get }
 
     /// Provider-specific streaming implementation. Receives a thinking level
     /// that has already been clamped to the model's effective max by the
@@ -264,6 +275,11 @@ extension AgentProvider {
     /// tool-execution behavior WITHOUT runtime type checks
     /// (`provider is RemoteAgentProvider`).
     var isRemoteAgent: Bool { false }
+    /// Local providers never see a bridge seq. Default to nil so callers
+    /// can pass the value through unchanged — local persistAgentMessage
+    /// calls then fall back to `msg.rawMessageId()`'s UUID branch,
+    /// preserving the previous (single-source) behavior.
+    var lastBridgeSeq: Int? { nil }
 
     func streamAgentMessage(
         messages: [AgentMessage],

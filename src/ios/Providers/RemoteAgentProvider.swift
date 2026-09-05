@@ -33,6 +33,26 @@ final class RemoteAgentProvider: AgentProvider {
     private var sessionStarted = false
     private let logger = AppLogger(category: "RemoteAgent")
 
+    /// [Fix 2026-09-05 route D] Bridge-side history seq of the most recent
+    /// wire message we observed in `handle()`. Captured here so the
+    /// persistence layer (runAgentLoop caller) can read it AFTER the
+    /// stream ends and stamp `RawMessage.id` with the SAME
+    /// "bridge-{seq}" string that `agentMessage(fromServer:)` produces
+    /// for the history-replay path — without this alignment, the live
+    /// path writes UUIDs that the backfill path's id-set never matches
+    /// and BackfillCore.computePlan re-appends everything (Bug D root cause).
+    ///
+    /// Thread safety: `handle` runs on the WebSocket callback thread
+    /// (`client.onMessage`); the read site is `runAgentLoop` on the engine
+    /// actor. `RemoteAgentProvider` is a regular class, so we guard
+    /// access with an NSLock — using `withLock{}` (the async-safe scoped
+    /// form, since bare `lock()/unlock()` is unavailable from async
+    /// contexts in Swift 6, see Bug经验库 「acb6234 编译失败: 去 @MainActor
+    /// 必查 3 件套」).
+    private var _lastBridgeSeq: Int? = nil
+    private let seqLock = NSLock()
+    var lastBridgeSeq: Int? { seqLock.withLock { _lastBridgeSeq } }
+
     /// Whether a `.text` content block is currently open. The engine's
     /// stream consumer only accumulates `textDelta` into a block once
     /// `contentBlockStart(.text)` has been seen (currentTextBlockIdx is
@@ -238,6 +258,19 @@ final class RemoteAgentProvider: AgentProvider {
         guard message.sessionId == nil || message.sessionId == client.sessionId else {
             logger.info("[RemoteAgent] ignore event for session \(message.sessionId ?? "?") (ours=\(client.sessionId ?? "?"))")
             return false
+        }
+        // [Fix 2026-09-05 route D] Capture the bridge seq for this wire
+        // message. Every broadcast message carries `historySeq` (set by
+        // bridge/session.ts:917 `appendHistoryToSession`, the single-entry
+        // chokepoint), so the value is monotonic and unique per broadcast.
+        // The persistence layer reads `lastBridgeSeq` AFTER the stream ends
+        // and injects it into the final AgentMessage so `rawMessageId()`
+        // produces "bridge-{seq}" — matching the id set the backfill path
+        // will re-derive. PastHistory messages (splitPastHistoryMessages)
+        // don't get a seq, so we ignore nil (live stream never sees them,
+        // and the persistence path falls back to UUID, same as before).
+        if let seq = message.historySeq {
+            seqLock.withLock { _lastBridgeSeq = seq }
         }
         // [Diag] Log every incoming event with its key payload.
         let payload: String = message.text.map { String($0.prefix(40)) }

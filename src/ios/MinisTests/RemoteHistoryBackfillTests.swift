@@ -199,4 +199,47 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         XCTAssertNotEqual(fromHelper, fromMakeBuildRawClosure,
                           "smoke: 两次调用应得到不同 UUID（都是 nil bridgeSeq 路径）")
     }
+
+    // MARK: - 12. 防回归：live 路径 bridgeSeq 注入后 id 派生与 backfill 一致（2026-09-05 route D）
+
+    /// Pins the live-path injection behavior. After route D, `persistAgentMessage`
+    /// receives the bridge seq from `provider.lastBridgeSeq` and injects it into
+    /// a local copy of the live `AgentMessage` (whose `bridgeSeq` field is nil
+    /// because live events flow through `RemoteAgentProvider.consume()` rather
+    /// than `agentMessage(fromServer:)`). The injected msg must then produce
+    /// the SAME `rawMessageId()` ("bridge-{seq}") that the history-replay path
+    /// produces for the same wire message — this is what lets
+    /// `BackfillCore.computePlan`'s id-set dedup actually hit.
+    ///
+    /// Without this assertion, a regression that injects the seq but the
+    /// helper still UUID-branches (or the helper changes to a different
+    /// format) would silently re-introduce the duplicate-render Bug D.
+    func test_livePath_injectsBridgeSeq_producesStableBridgeId() {
+        // Live-path msg: bridgeSeq is nil because consume() never sets it.
+        var liveMsg = AgentMessage(role: .assistant, parts: [])
+        XCTAssertNil(liveMsg.bridgeSeq, "live path msg 必须 nil bridgeSeq（route D 改前状态）")
+
+        // Route D injection (mirrors the body of persistAgentMessage).
+        let capturedSeq = 17
+        var injected = liveMsg
+        injected.bridgeSeq = capturedSeq
+        let liveId = injected.rawMessageId()
+
+        // History-replay path: same wire message, decoded by
+        // agentMessage(fromServer:) which DOES set bridgeSeq from historySeq.
+        var replayMsg = AgentMessage(role: .assistant, parts: [])
+        replayMsg.bridgeSeq = capturedSeq
+        let replayId = replayMsg.rawMessageId()
+
+        XCTAssertEqual(liveId, replayId,
+                       "live 注入 seq 后必须与 history-replay 路径派生同一 id，否则 BackfillCore id 去重永不命中")
+        XCTAssertEqual(liveId, "bridge-\(capturedSeq)",
+                       "id 派生格式必须是 'bridge-{seq}'，与 makeBuildRaw + rawMessageId 共享同一 helper")
+
+        // 防退化：如果有人改回 live 路径不注入（msg.bridgeSeq 仍 nil），
+        // rawMessageId() 走 UUID 分支 → liveId != replayId → 重复渲染复发
+        let unInjectedId = liveMsg.rawMessageId()  // 仍走 UUID 分支
+        XCTAssertNotEqual(unInjectedId, replayId,
+                          "未注入的 live msg 必须仍走 UUID 分支（保 local 路径行为零变），但这正是 Bug D 根因；本断言只是确认 helper 没意外改 UUID 行为")
+    }
 }

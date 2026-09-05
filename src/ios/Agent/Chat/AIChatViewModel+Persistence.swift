@@ -858,7 +858,15 @@ extension AIChatViewModel {
         // the heavy middle is detached.
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
-            let clearFlag = {
+            // [Fix 2026-09-05 build] Mark the closure @MainActor so the
+            // `remoteBackfillInFlight` mutation inside compiles under Swift 6
+            // — the enclosing `Task.detached` body is nonisolated, and
+            // without the annotation the closure's isolation is inferred
+            // from its context (detached) and Swift 6 errors on the
+            // @MainActor property write. The `Task { @MainActor in clearFlag() }`
+            // call site is correct, but the closure body needs the type-level
+            // promise too.
+            let clearFlag: @MainActor () -> Void = {
                 self.remoteBackfillInFlight = false
             }
             defer { Task { @MainActor in clearFlag() } }
@@ -2082,11 +2090,38 @@ extension AIChatViewModel {
     ///
     /// Callers should write the returned id back to `agentHistory[i].dbMessageId`
     /// so compact logic can later resolve boundaries by id.
+    ///
+    /// - Parameter bridgeSeq: Bridge-side history sequence number from the most
+    ///   recent wire message the provider received this turn (only meaningful
+    ///   for `RemoteAgentProvider`; local providers always pass nil). When
+    ///   non-nil AND `msg.bridgeSeq` is nil, the seq is injected into a local
+    ///   copy of `msg` so `buildRawMessage → rawMessageId()` derives the SAME
+    ///   "bridge-{seq}" id that the history-replay path produces — aligning
+    ///   the live and backfill id sets so `BackfillCore.computePlan` can dedup
+    ///   (route D, root cause fix for the duplicate-render / role-mismatch /
+    ///   kill-reenter cluster, see Bug经验库「远端 agent 三连 bug」).
+    ///   When `msg.bridgeSeq` is already set (history-replay path), the
+    ///   existing value wins.
     @discardableResult
-    func persistAgentMessage(_ msg: AgentMessage, tokenUsage: TokenUsage? = nil, snapshots: [String: (toolName: String, snapshot: ToolSnapshot)] = [:], thoughtSignatures: [String: String] = [:], reasoningContent: String? = nil, streamInterruptCount: Int = 0, modelEntryId: String? = nil) async -> String? {
+    func persistAgentMessage(_ msg: AgentMessage, tokenUsage: TokenUsage? = nil, snapshots: [String: (toolName: String, snapshot: ToolSnapshot)] = [:], thoughtSignatures: [String: String] = [:], reasoningContent: String? = nil, streamInterruptCount: Int = 0, modelEntryId: String? = nil, bridgeSeq: Int? = nil) async -> String? {
         let sid = self.sessionId ?? "nil"
-        logger.info("[Persist] enter sid=\(sid.prefix(8)) role=\(msg.role.rawValue) parts=\(msg.parts.count)")
-        guard let raw = await buildRawMessage(msg, tokenUsage: tokenUsage, snapshots: snapshots, thoughtSignatures: thoughtSignatures, reasoningContent: reasoningContent, streamInterruptCount: streamInterruptCount, modelEntryId: modelEntryId) else {
+        logger.info("[Persist] enter sid=\(sid.prefix(8)) role=\(msg.role.rawValue) parts=\(msg.parts.count) bridgeSeq=\(bridgeSeq.map(String.init) ?? "nil")")
+        // [Fix 2026-09-05 route D] Inject the live path's bridge seq into a
+        // local copy of msg ONLY when the caller is supplying it (live path
+        // where `msg.bridgeSeq` is nil because live events go through
+        // `consume()`, not `agentMessage(fromServer:)`). The history-replay
+        // path passes bridgeSeq=nil and `msg.bridgeSeq` is already set there.
+        // `msg` is a struct so this local copy is safe and never mutates the
+        // caller's AgentMessage reference.
+        let effectiveMsg: AgentMessage
+        if msg.bridgeSeq == nil, let seq = bridgeSeq {
+            var injected = msg
+            injected.bridgeSeq = seq
+            effectiveMsg = injected
+        } else {
+            effectiveMsg = msg
+        }
+        guard let raw = await buildRawMessage(effectiveMsg, tokenUsage: tokenUsage, snapshots: snapshots, thoughtSignatures: thoughtSignatures, reasoningContent: reasoningContent, streamInterruptCount: streamInterruptCount, modelEntryId: modelEntryId) else {
             logger.warning("[Persist] buildRawMessage returned nil sid=\(sid.prefix(8)) role=\(msg.role.rawValue) — NOT WRITTEN")
             return nil
         }
