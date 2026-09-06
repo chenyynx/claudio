@@ -82,7 +82,7 @@ final class RemoteFileUpload {
         if let parsed = URL(string: uploadUrlStr), parsed.scheme != nil {
             url = parsed
         } else if let base = client.httpBaseURL,
-                  let composed = URL(string: uploadUrlStr, relativeTo: base)?.absoluteURL {
+                  let composed = composeBridgeAbsoluteURL(relative: uploadUrlStr, base: base) {
             DiagnosticsLog.shared.write(
                 "RemoteFileUpload",
                 "url-rewrite relative=\"\(uploadUrlStr)\" base=\"\(base.absoluteString)\" → \"\(composed.absoluteString)\""
@@ -171,4 +171,25 @@ final class RemoteFileUpload {
         }
         return hex
     }
+}
+
+// MARK: - URL composition helper
+
+/// [Claudio 2026-09-06] 桥返回的相对路径（如 `/api/uploads/<token>`）
+/// 拼成绝对 URL，**保留 baseURL 的 path 段**（如 /bridge/）— URL(string:
+/// relativeTo:) 在 base 有 path 时行为是「替换 base.path」会把 /bridge/
+/// 丢成裸 /api/...，导致 nginx / 反代路由 miss。URLComponents 显式
+/// 构造 host/port/path，避免 URLSession 拿到 host=nil 的 URL 抛
+/// NSURLErrorCannotFindHost。
+func composeBridgeAbsoluteURL(relative: String, base: URL) -> URL? {
+    guard let baseComponents = URLComponents(url: base, resolvingAgainstBaseURL: false),
+          let host = baseComponents.host else { return nil }
+    var c = URLComponents()
+    c.scheme = baseComponents.scheme
+    c.host = host
+    c.port = baseComponents.port
+    // 拼接：basePath + relative（relative 是 / 开头的绝对路径，覆盖 basePath）
+    let basePath = baseComponents.path  // 如 "/bridge/"
+    c.path = basePath + relative
+    return c.url
 }

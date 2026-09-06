@@ -1408,19 +1408,41 @@ enum CCPocketError: LocalizedError {
 // MARK: - HTTP base URL（远端媒体 URL 拼接用）
 
 extension CCPocketClient {
-    /// 把 ws://host:port baseURL 派生 http://host:port。桥 ws 和 http
-    /// 同进程同端口（bridge/src/index.ts:260 server: httpServer，ws 升级
-    /// + HTTP 请求共用）。RemoteFileContentFetcher 用它把相对
-    /// `/api/media/<id>` 拼成完整 http URL。
+    /// 把 ws://host:port[/path] baseURL 派生 http://host:port[/path]。桥
+    /// ws 和 http 同进程同端口（bridge/src/index.ts:260 server:
+    /// httpServer，ws 升级 + HTTP 请求共用）。RemoteFileContentFetcher
+    /// / RemoteFileUpload / RemoteFileDownload 都用它把相对
+    /// `/api/uploads/<token>` 或 `/api/media/<id>` 拼成完整 URL。
+    ///
+    /// [Claudio 2026-09-06] **关键约束**：必须保留 baseURL 的 path 段。
+    /// pp 配的是 `wss://pipicore.cn/bridge/`，桥 HTTP 路由在 nginx
+    /// 反代后是 `/bridge/api/...`，如果派生 httpBaseURL 时丢 path
+    /// 段，会拼出 `http://pipicore.cn/api/...` 落到 Cloudflare 直
+    /// 连路径（虽然桥也挂在那里，但 pipeline 上游网络栈行为不
+    /// 一致，可能报 NSURLErrorCannotFindHost）。同时强制 host
+    /// 非空 — URLSession 拿 host=nil 的 URL 会抛
+    /// NSURLErrorCannotFindHost。
     var httpBaseURL: URL? {
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        guard let baseComponents = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        var components = URLComponents()
         // [T-ios-ccpocket-exclusive-access] Reading `components?.scheme`
         // and writing `components?.scheme =` in the same statement
         // triggers Swift's overlapping-access diagnostic on Optional
         // chaining — capture the read into a local first so the two
         // accesses don't share the same Optional binding.
-        let currentScheme = components?.scheme
-        components?.scheme = (currentScheme == "wss") ? "https" : "http"
-        return components?.url
+        let currentScheme = baseComponents.scheme
+        components.scheme = (currentScheme == "wss") ? "https" : "http"
+        components.host = baseComponents.host
+        components.port = baseComponents.port
+        // 保留 path（含子路径如 /bridge/）— 这是 nginx / Cloudflare
+        // 反代前缀，丢了路径 HTTP 请求就到不了桥
+        components.path = baseComponents.path
+        guard let url = components.url,
+              url.host != nil else {
+            return nil
+        }
+        return url
     }
 }
