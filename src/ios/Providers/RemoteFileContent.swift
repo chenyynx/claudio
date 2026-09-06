@@ -37,6 +37,27 @@ enum RemoteFileContent: Sendable, Equatable {
     case failed(error: String)
 
     /// 文件路径（用于错误信息、UI 显示路径名）。
+    /// 共享 helper — 把桥返回的相对路径（如 `/api/uploads/<token>` /
+    /// `/api/media/<id>`）拼成绝对 URL，**保留 baseURL 的 path 段**
+    /// （如 /bridge/）— URL(string:relativeTo:) 在 base 有 path 时按
+    /// RFC3986 行为是"替换 base.path"，会把 /bridge/ 段丢成裸
+    /// /api/...，nginx/Cloudflare 反代路由 miss →
+    /// NSURLErrorCannotFindHost。改 URLComponents 显式
+    /// basePath + relative 拼接 + host nil 守卫。
+    ///
+    /// [Claudio 2026-09-06] 抽到 RemoteFileContent 单一文件,避免全局
+    /// 函数在 RemoteFileUpload/Download 重复定义导致 Swift 编译
+    /// "invalid redeclaration" 错。
+    static func composeBridgeAbsoluteURL(relative: String, base: URL) -> URL? {
+        guard let baseComponents = URLComponents(url: base, resolvingAgainstBaseURL: false),
+              let host = baseComponents.host else { return nil }
+        var c = URLComponents()
+        c.scheme = baseComponents.scheme
+        c.host = host
+        c.port = baseComponents.port
+        c.path = baseComponents.path + relative
+        return c.url
+    }
 }
 
 
@@ -157,33 +178,13 @@ struct RemoteFileContentFetcher: Sendable {
         }
     }
 
-    /// 把相对 `/api/media/<id>` 拼成完整 http URL（用 caller 提供的
-    /// httpBaseURL，避免 fetcher 自己再算一次）。
-    /// 共享 helper — 把桥返回的相对路径（如 `/api/uploads/<token>` /
-    /// `/api/media/<id>`）拼成绝对 URL，**保留 baseURL 的 path 段**
-    /// （如 /bridge/）— URL(string:relativeTo:) 在 base 有 path 时按
-    /// RFC3986 行为是"替换 base.path"，会把 /bridge/ 段丢成裸
-    /// /api/...，nginx/Cloudflare 反代路由 miss →
-    /// NSURLErrorCannotFindHost。改 URLComponents 显式
-    /// basePath + relative 拼接 + host nil 守卫。
-    ///
-    /// [Claudio 2026-09-06] 抽到 RemoteFileContent 单一文件,避免全局
-    /// 函数在 RemoteFileUpload/Download 重复定义导致 Swift 编译
-    /// "invalid redeclaration" 错。
-    static func composeBridgeAbsoluteURL(relative: String, base: URL) -> URL? {
-        guard let baseComponents = URLComponents(url: base, resolvingAgainstBaseURL: false),
-              let host = baseComponents.host else { return nil }
-        var c = URLComponents()
-        c.scheme = baseComponents.scheme
-        c.host = host
-        c.port = baseComponents.port
-        c.path = baseComponents.path + relative
-        return c.url
-    }
-
     static func absoluteMediaURL(relative: String, httpBaseURL: URL?) -> URL? {
         guard let httpBaseURL else { return nil }
-        return composeBridgeAbsoluteURL(relative: relative, base: httpBaseURL)
+        // [Claudio 2026-09-06] 调 RemoteFileContent.composeBridgeAbsoluteURL
+        // — 共享 helper 在 enum RemoteFileContent 里(static member),
+        // 不用全局函数避免 RemoteFileUpload/Download 重复定义
+        // "invalid redeclaration"。
+        return RemoteFileContent.composeBridgeAbsoluteURL(relative: relative, base: httpBaseURL)
     }
 
     // MARK: - Media type detection
