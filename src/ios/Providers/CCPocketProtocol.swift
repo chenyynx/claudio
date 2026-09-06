@@ -158,6 +158,86 @@ enum CCPocketProtocol {
         var sessionId: String
     }
 
+    // MARK: - File Peek (text/image/media) — ccpocket file_peek protocol
+    //
+    // 桥端三段式 RPC:list_files 拿文件列表 + read_file 读文本/小图 +
+    // read_media_file 读音视频(mediaUrl 流式)。对齐 ccpocket 官方
+    // bridge/parser.ts:278-316 + apps/mobile/lib/models/messages.dart
+    // ClientMessage.readFile/readMediaFile/listFiles 工厂。
+    //
+    // 调用方式:build payload → CCPocketClient.sendAndWaitRPC →
+    // 桥走 rpcWaiters 配对(CCPocketClient.swift:640-670)返回 file_list /
+    // file_content 响应。
+
+    /// `list_files` — 列出项目内所有可预览的文件(websocket.ts:6147)。
+    /// 返回 file_list 消息(files/ignored/modifiedAt/totalFiles/truncated)。
+    struct ListFilesRequest: Encodable {
+        let type = "list_files"
+        var projectPath: String
+        var requestId: String?
+    }
+
+    /// `read_file` — 读文本/代码/Markdown/HTML 文本内容,或 ≤5MB 图片 base64
+    /// 内联(websocket.ts:5930-6108)。maxLines 控制文本截断(默认 5000)。
+    /// 大于 5MB 的图片会报 file_content error="Image too large" → App
+    /// 端对齐 ccpocket 报"Image too large (max 5MB)",真要看大图走
+    /// 9a844c3 的 prepare_file_download 完整下载。
+    struct ReadFileRequest: Encodable {
+        let type = "read_file"
+        var projectPath: String
+        var filePath: String
+        var maxLines: Int?
+        var requestId: String?
+    }
+
+    /// `read_media_file` — 读音视频,桥 mediaStore.register 注册后返回
+    /// HTTP mediaUrl 相对路径 `/api/media/<id>`(media-store.ts:143)，
+    /// App 端拼上 httpBaseUrl 即可 AVPlayer 流式播放。
+    struct ReadMediaFileRequest: Encodable {
+        let type = "read_media_file"
+        var projectPath: String
+        var filePath: String
+        var requestId: String?
+    }
+
+    // MARK: - File Peek responses (file_list / file_content)
+
+    /// `file_list` 响应。ccpocket 桥的 list_files 分支回包。
+    /// files = 完整路径列表(项目内相对路径);ignored = 跳过的文件
+    /// (如大文件、binary);modifiedAt = path → mtime(秒);
+    /// totalFiles/truncated = 是否有上限截断(maxEntries/maxBytes)。
+    /// all-optional 保持 lenient parse 兼容旧桥。
+    struct FileListResponse: Decodable {
+        let files: [String]?
+        let ignored: [String]?
+        let modifiedAt: [String: Double]?
+        let totalFiles: Int?
+        let truncated: Bool?
+        let error: String?
+    }
+
+    /// `file_content` 响应。read_file/read_media_file 共用回包,按
+    /// `kind` 字段路由:
+    ///   - "text"   → content 字符串 + language + totalLines + truncated
+    ///   - "image"  → base64 内联 + mimeType + sizeBytes(≤5MB)
+    ///   - "audio"  → mediaUrl 相对路径 + mimeType + sizeBytes
+    ///   - "video"  → mediaUrl 相对路径 + mimeType + sizeBytes
+    /// error 非空表示失败(Image too large / Path not allowed / File not
+    /// found 等,见 websocket.ts:5930-6085 各种 case)。
+    struct FileContentResponse: Decodable {
+        let kind: String?       // "text" | "image" | "audio" | "video"
+        let content: String?    // text only
+        let language: String?   // text only
+        let totalLines: Int?    // text only
+        let truncated: Bool?    // text only
+        let base64: String?     // image only
+        let mimeType: String?   // image/audio/video
+        let sizeBytes: Int64?   // image/audio/video
+        let mediaUrl: String?   // audio/video
+        let filePath: String?   // echoed back from request
+        let error: String?
+    }
+
     /// [Session sync] Request the Bridge's recent-session index. NOTE:
     /// `list_sessions` merely re-sends the LIVE session list — the disk
     /// index (all clients' sessions, incl. WeChat-bridge ones) comes from
@@ -310,6 +390,12 @@ enum CCPocketProtocol {
         let codexModelServiceTiers: [String: [String]]?
         let codexProfiles: [String]?
         let defaultCodexProfile: String?
+        // [Claudio 2026-09-06 G2] Bridge-side `BRIDGE_ALLOWED_DIRS` 白名单
+        // (websocket.ts:7880/7923 — already exposed in session_list by upstream
+        // and local fork). iOS parses this so RemoteAgentSetupView can
+        // auto-fill Project Path with the first allowed directory (multi-user
+        // principle: never hardcode a default like /home/ubuntu).
+        let allowedDirs: [String]?
     }
 
     /// One seq-tagged entry of a `history_snapshot` / `history_delta`

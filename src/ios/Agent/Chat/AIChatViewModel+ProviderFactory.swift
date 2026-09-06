@@ -73,7 +73,24 @@ extension AIChatViewModel {
         }
         let token = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
         let connection = RemoteAgentConnection.load(instanceID: instance.id)
-        let projectPath = connection?.projectPath ?? ""
+        let projectPathRaw = connection?.projectPath ?? ""
+        let projectPath = projectPathRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // [Claudio 2026-09-06 G3.2] Empty-path guard. The original code
+        // constructed a RemoteAgentProvider with `projectPath: ""`, which
+        // a) tripped the new init precondition (crash) and b) previously
+        // produced the cryptic "[User attempted to attach X failed:
+        // prepare_file_upload]" bubble after the bridge parser silently
+        // dropped the empty prepare_file_upload. Returning the placeholder
+        // gives the user a clear "go fill the path" message in one turn
+        // instead of a dead provider they have to debug to discover.
+        guard !projectPath.isEmpty else {
+            logger.error("remoteAgent: empty projectPath for instance \(instance.id) — returning config-error provider")
+            return RemoteAgentConfigErrorProvider(
+                model: model,
+                message: "Project Path 未配置。请在设置 → Providers → Remote Session 里填写项目路径（Bridge 的白名单目录），然后重新发送。"
+            )
+        }
         let client = CCPocketClient(baseURL: baseURL, token: token)
         client.mappingInstanceID = instance.id
 
@@ -108,6 +125,7 @@ extension AIChatViewModel {
                     instanceID: instance.id,
                     chatSessionID: chatSessionID,
                     allowLegacyMappingFallback: allowLegacyMappingFallback,
+                    projectPath: projectPath,
                     restoreClaudeId: resumeId
                 )
             }
@@ -135,6 +153,7 @@ extension AIChatViewModel {
             instanceID: instance.id,
             chatSessionID: chatSessionID,
             allowLegacyMappingFallback: allowLegacyMappingFallback,
+            projectPath: projectPath,
             restoreClaudeId: restoreClaudeId
         )
     }

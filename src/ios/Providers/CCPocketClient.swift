@@ -184,6 +184,14 @@ final class CCPocketClient: @unchecked Sendable {
     /// runtime session in the official client's running list).
     private var knownBridgeSessions: [CCPocketProtocol.ServerSession]?
 
+    /// [Claudio 2026-09-06 G2] Bridge-side `BRIDGE_ALLOWED_DIRS` whitelist,
+    /// captured from every `session_list` broadcast (websocket.ts:7880/7923).
+    /// RemoteAgentSetupView watches this to auto-fill the Project Path field
+    /// with the first entry; ProviderFactory falls back to it when an
+    /// existing instance was created without an explicit path.
+    /// Empty = bridge has no whitelist (caller must require manual input).
+    private(set) var allowedDirs: [String] = []
+
     init(baseURL: URL, token: String) {
         self.baseURL = baseURL
         self.token = token
@@ -450,6 +458,59 @@ final class CCPocketClient: @unchecked Sendable {
         guard state == .connected else { return }
         let request = CCPocketProtocol.StopSessionRequest(sessionId: bridgeId)
         try? await send(CCPocketProtocol.encode(request))
+    }
+
+    // MARK: - File Peek (text/image/media) — ccpocket file_peek RPC
+    //
+    // 三段式 RPC 调用 list_files / read_file / read_media_file。
+    // 走 sendAndWaitRPC 等待带 requestId 的 file_list / file_content
+    // 响应配对(CCPocketClient.swift:640-670 拦截有 requestId 的消息
+    // 走 rpcWaiters 而不是 handleIncoming 通用分发)。
+    //
+    // 返回 [String: Any] 原始 dict(对齐 sendAndWaitRPC 已有契约)，
+    // 业务层在 RemoteProjectFileIndex / RemoteFileContent 里
+    // 转成强类型响应。
+
+    /// list_files — 列项目文件。对齐 ccpocket file_peek_sheet.dart
+    /// resolveFilePeekPaths 的已知路径匹配。返回 [String: Any] 原始
+    /// dict(含 files/ignored/modifiedAt/totalFiles/truncated/error)。
+    func listFiles(projectPath: String) async throws -> [String: Any] {
+        let requestId = UUID().uuidString
+        let payload: [String: Any] = [
+            "type": "list_files",
+            "projectPath": projectPath,
+            "requestId": requestId,
+        ]
+        return try await sendAndWaitRPC(payload)
+    }
+
+    /// read_file — 读文本/代码/Markdown/HTML,或 ≤5MB 图片 base64。
+    /// maxLines 控制文本截断(默认 5000,对齐桥端默认)。
+    /// 返回 [String: Any] 原始 dict(含 kind/content/base64 等字段)。
+    func readFile(projectPath: String, filePath: String, maxLines: Int? = nil) async throws -> [String: Any] {
+        let requestId = UUID().uuidString
+        var payload: [String: Any] = [
+            "type": "read_file",
+            "projectPath": projectPath,
+            "filePath": filePath,
+            "requestId": requestId,
+        ]
+        if let maxLines { payload["maxLines"] = maxLines }
+        return try await sendAndWaitRPC(payload)
+    }
+
+    /// read_media_file — 读音视频,返回 mediaUrl 相对路径
+    /// `/api/media/<id>`(media-store.ts:143)。App 端拼上
+    /// httpBaseUrl 即可 AVPlayer 流式。
+    func readMediaFile(projectPath: String, filePath: String) async throws -> [String: Any] {
+        let requestId = UUID().uuidString
+        let payload: [String: Any] = [
+            "type": "read_media_file",
+            "projectPath": projectPath,
+            "filePath": filePath,
+            "requestId": requestId,
+        ]
+        return try await sendAndWaitRPC(payload)
     }
 
     /// [M3] Answer a `permission_request` (official ClientMessage.approve /
@@ -882,6 +943,33 @@ final class CCPocketClient: @unchecked Sendable {
                 )
             }
         }
+        // [Claudio 2026-09-06 G2] Whitelist refresh — same broadcast
+        // frequency as the model catalog. nil is treated as "no change"
+        // so an old payload (pre-G2 bridge) doesn't blank an already-good
+        // value. RemoteAgentSetupView's `.onChange(of: client.allowedDirs)`
+        // picks up the new list and auto-fills the path field.
+        if let dirs = message.allowedDirs {
+            let normalized = Self.normalizeAllowedDirs(dirs)
+            if normalized != allowedDirs {
+                logger.info("[CCPocket] allowedDirs refresh: \(normalized.count) entries (was \(allowedDirs.count))")
+                allowedDirs = normalized
+            }
+        }
+    }
+
+    /// Strip empty / whitespace-only entries and de-dupe; preserves order.
+    /// Bridge exposes `BRIDGE_ALLOWED_DIRS` as a comma-split list — entries
+    /// may include trailing whitespace from env parsing on some shells.
+    private static func normalizeAllowedDirs(_ raw: [String]) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for entry in raw {
+            let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
+            seen.insert(trimmed)
+            out.append(trimmed)
+        }
+        return out
     }
 
     // MARK: - Ping
@@ -1314,5 +1402,19 @@ enum CCPocketError: LocalizedError {
         case .sessionNotStarted: return "Agent session has not started"
         case .server(let message): return "Bridge error: \(message)"
         }
+    }
+}
+
+// MARK: - HTTP base URL（远端媒体 URL 拼接用）
+
+extension CCPocketClient {
+    /// 把 ws://host:port baseURL 派生 http://host:port。桥 ws 和 http
+    /// 同进程同端口（bridge/src/index.ts:260 server: httpServer，ws 升级
+    /// + HTTP 请求共用）。RemoteFileContentFetcher 用它把相对
+    /// `/api/media/<id>` 拼成完整 http URL。
+    var httpBaseURL: URL? {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        components?.scheme = (components?.scheme == "wss") ? "https" : "http"
+        return components?.url
     }
 }

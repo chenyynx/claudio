@@ -28,6 +28,10 @@ final class RemoteAgentProvider: AgentProvider {
 
     private let client: CCPocketClient
     private let instanceID: String
+    /// [Claudio 2026-09-06] 远端 agent 工作项目路径，用于 RemoteProjectFileIndex
+    /// 拉 list_files + RemoteFileContentFetcher 读 read_file/read_media_file
+    /// 时传给桥。RemoteAgentConnection.load(instanceID:).projectPath 提供。
+    let projectPath: String
     /// Claude session id to resume on the first turn (nil = new session).
     private let restoreClaudeId: String?
     private var sessionStarted = false
@@ -76,13 +80,45 @@ final class RemoteAgentProvider: AgentProvider {
     /// Legacy per-instance mapping migration is opt-in from the load path.
     let allowLegacyMappingFallback: Bool
 
-    init(model: LLMModel, client: CCPocketClient, instanceID: String, chatSessionID: String?, allowLegacyMappingFallback: Bool, restoreClaudeId: String?) {
+    init(model: LLMModel, client: CCPocketClient, instanceID: String, chatSessionID: String?, allowLegacyMappingFallback: Bool, projectPath: String, restoreClaudeId: String?) {
+        // [Claudio 2026-09-06 G1.2] Fail-fast on empty projectPath: every
+        // upload (prepare_file_upload) and file-content read carries this
+        // field, and the bridge parser drops empty values silently (turns
+        // into a generic "unsupported_message" reply, which used to surface
+        // as the cryptic "[User attempted to attach X failed: prepare_file_upload]"
+        // bubble). Forces callers (ProviderFactory, history backfill) to
+        // route through RemoteAgentConfigErrorProvider for unconfigured
+        // instances instead of constructing a doomed provider.
+        precondition(
+            !projectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            "RemoteAgentProvider requires non-empty projectPath; route empty-path instances through RemoteAgentConfigErrorProvider."
+        )
+        self.projectPath = projectPath
         self.model = model
         self.client = client
         self.instanceID = instanceID
         self.chatSessionID = chatSessionID
         self.allowLegacyMappingFallback = allowLegacyMappingFallback
         self.restoreClaudeId = restoreClaudeId
+    }
+
+    /// [Claudio 2026-09-06] 拉一次 list_files 并返回 RemoteFileIndexEntry
+    /// （VM 拿到后设自己的 @Published remoteFileSuffixes，让 SelectableMarkdownView
+    /// 拿到 suffixSet）。fire-and-forget 失败不抛错——无文件列表时正文路径
+    /// 不可点击，零行为变化。
+    func refreshFileIndex() async -> RemoteFileIndexEntry? {
+        guard !projectPath.isEmpty else { return nil }
+        await RemoteProjectFileIndex.shared.refresh(projectPath: projectPath, client: client)
+        return await RemoteProjectFileIndex.shared.snapshot(projectPath: projectPath)
+    }
+
+    /// [Claudio 2026-09-06] 构造一个 RemoteFileContentFetcher,用于
+    /// 正文文件路径被点击时按需读远端文件内容(对齐 ccpocket
+    /// file_peek_sheet.dart 的 ClientMessage.readFile/readMediaFile)。
+    /// 由 AIChatViewModel.handleRemoteFilePeekTap 在监听到
+    /// MarkdownFilePeekRouter 通知时调用。
+    func makeFilePeekFetcher(filePath: String) -> RemoteFileContentFetcher {
+        RemoteFileContentFetcher(client: client, projectPath: projectPath, filePath: filePath)
     }
 
     // MARK: - AgentProvider
@@ -190,7 +226,16 @@ final class RemoteAgentProvider: AgentProvider {
                             inlineImages.append(["base64": data.base64EncodedString(), "mimeType": mimeType])
                         case .uploadFile(let fileURL, let fileName):
                             do {
-                                let projectPath = RemoteSessionDefaultsStore.load().projectPath
+                                // [Claudio 2026-09-06 G1.1] Use self.projectPath
+                                // (set at init from RemoteAgentConnection). The
+                                // previous code read RemoteSessionDefaultsStore
+                                // — a *different* store used by RemoteNewSessionSheet
+                                // to remember last-session form options. They are
+                                // never synced, so for instances whose projectPath
+                                // was set via RemoteAgentSetupView (the normal
+                                // create/edit flow), the upload saw "" and the
+                                // bridge parser dropped the prepare_file_upload.
+                                let projectPath = self.projectPath
                                 let result = try await RemoteFileUpload.upload(
                                     client: self.client,
                                     projectPath: projectPath,
@@ -216,8 +261,16 @@ final class RemoteAgentProvider: AgentProvider {
                                 inputText += "\n\n\(xml)"
                                 logger.info("[RemoteAgent] uploaded \(fileName) OK sha=\(result.sha256.prefix(8)) size=\(result.sizeBytes)")
                             } catch {
+                                // [Claudio 2026-09-06 G1.5] Structured failure
+                                // marker — symmetric with the success XML above
+                                // and survives ChatStore backfill without leaking
+                                // raw text into the bubble. `reason` carries
+                                // the upstream error code (RemoteUploadError.code)
+                                // so future diagnosis can grep for it directly.
+                                let reason = (error as? RemoteUploadError)?.code
+                                    ?? "upload_failed"
                                 logger.error("[RemoteAgent] upload \(fileName) failed: \(error.localizedDescription)")
-                                inputText += "\n\n[User attempted to attach \(fileName) but upload failed: \(error.localizedDescription)]"
+                                inputText += "\n\n<attachment-failed file=\"\(fileName)\" reason=\"\(reason)\"/>"
                             }
                         }
                     }

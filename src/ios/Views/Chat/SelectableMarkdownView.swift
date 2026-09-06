@@ -396,6 +396,13 @@ fileprivate final class MarkdownNSRenderer {
     /// call; when non-nil the slot key is simply messageId:blockId — immune
     /// to content collisions between tables with identical rows.
     var blockId: UUID?
+    /// [Claudio 2026-09-06] 远端 agent 项目文件后缀集快照（来自
+    /// RemoteProjectFileIndex.snapshot）。renderInline 的 case .code / .text
+    /// 用这个后缀集判断「反引号内路径 / 裸路径是否命中真实文件」，命中
+    /// 才加 .link 变成可点击（ccpocket file_peek 守门机制，对齐
+    /// file_path_syntax.dart FilePathSyntax / BareFilePathSyntax）。nil
+    /// = 本地 agent / 无文件索引 = 路径不可点击（零行为变化）。
+    var filePathSuffixes: Set<String>?
 
     init(baseFontSize: CGFloat? = nil) {
         self.theme = SelectableMarkdownTheme(baseFontSize: baseFontSize)
@@ -1220,6 +1227,15 @@ fileprivate final class MarkdownNSRenderer {
     private func renderInline(_ node: InlineNode, attributes attrs: [NSAttributedString.Key: Any]) -> NSAttributedString {
         switch node {
         case .text(let text):
+            // [Claudio 2026-09-06] 远端 agent 正文裸路径识别（对齐 ccpocket
+            // file_peek BareFilePathSyntax）：用正则扫出路径状字符串，命中
+            // 后缀集才拆文本加 .link。守门 = 后缀集命中（ccpocket 同款，
+            // file_path_syntax.dart regex `([\w][\w./-]*\.[\w]+)`）。
+            // 本地 agent / 无文件索引 → suffixSet 为 nil/空 → 走原路径零
+            // 行为变化。
+            if let suffixSet = filePathSuffixes, !suffixSet.isEmpty {
+                return Self.renderTextWithBareFilePaths(text: text, baseAttrs: attrs, suffixSet: suffixSet)
+            }
             return NSAttributedString(string: text, attributes: attrs)
 
         case .code(let code):
@@ -1232,7 +1248,21 @@ fileprivate final class MarkdownNSRenderer {
             // The actual color is drawn there with rounded corners; this just triggers the callback.
             codeAttrs[.backgroundColor] = theme.inlineCodeBackground
             // Add hair spaces for visual padding inside the background highlight.
-            return NSAttributedString(string: "\u{200A}\(Self.breakableInlineCode(code))\u{200A}",
+            let displayCode = Self.breakableInlineCode(code)
+            // [Claudio 2026-09-06] 远端 agent 正文文件路径识别（对齐 ccpocket
+            // file_peek FilePathSyntax）：反引号内路径命中项目真实文件后缀集
+            // → 加 .link = minis-file-peek:// scheme，shouldInteractWith
+            // 拦截后调 RemoteFileContentFetcher 读取。守门 = 后缀集命中，否则
+            // 普通 inline code 零变化（本地 agent / 无文件索引时 suffixSet 为
+            // nil 或空，自动跳过）。
+            if let suffixSet = filePathSuffixes, !suffixSet.isEmpty,
+               RemoteProjectFileIndex.matches(path: code, suffixSet: suffixSet) {
+                let scheme = "minis-file-peek://"
+                let encoded = code.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? code
+                codeAttrs[.link] = URL(string: scheme + encoded)
+                codeAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            }
+            return NSAttributedString(string: "\u{200A}\(displayCode)\u{200A}",
                                       attributes: codeAttrs)
 
         case .emphasis(let children):
@@ -1295,6 +1325,65 @@ fileprivate final class MarkdownNSRenderer {
         case .inlineMath(let latex):
             return renderInlineMathAttachment(latex: latex)
         }
+    }
+
+    /// [Claudio 2026-09-06] 裸路径扫描（ccpocket file_peek BareFilePathSyntax）。
+    /// 正则 `([\w][\w./-]*\.[\w]+)` 命中「路径状」候选，逐个查后缀集
+    /// 确认是否真实文件，命中者拆文本加 .link，其他保持纯文本样式。
+    /// 注意：此函数只扫 case .text 拿到的纯文本节点——链接/强调/代码内不扫。
+    /// 守门靠 suffixSet 命中（ccpocket 同款，压误报）。
+    private static let bareFilePathRegex = try? NSRegularExpression(
+        pattern: "([\\w][\\w./-]*\\.[\\w]+)"
+    )
+
+    static func renderTextWithBareFilePaths(
+        text: String,
+        baseAttrs: [NSAttributedString.Key: Any],
+        suffixSet: Set<String>
+    ) -> NSAttributedString {
+        // 性能 guard：太长文本直接跳过（ccpocket 没做，claudio 防御性
+        // 加——流式输出反复 re-render 时避免全量 regex 扫长文）。
+        guard !text.isEmpty, text.count <= 4096 else {
+            return NSAttributedString(string: text, attributes: baseAttrs)
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let regex = bareFilePathRegex else {
+            return NSAttributedString(string: text, attributes: baseAttrs)
+        }
+        let matches = regex.matches(in: text, range: range)
+        guard !matches.isEmpty else {
+            return NSAttributedString(string: text, attributes: baseAttrs)
+        }
+
+        let result = NSMutableAttributedString()
+        var lastEnd = text.startIndex
+        for m in matches {
+            guard let r = Range(m.range(at: 1), in: text) else { continue }
+            let candidate = String(text[r])
+            // 守门：必须命中后缀集才 link 化（URL/版本号/普通带点文字
+            // 不在文件列表里，不会误识别）。
+            guard RemoteProjectFileIndex.matches(path: candidate, suffixSet: suffixSet) else {
+                continue
+            }
+            if r.lowerBound > lastEnd {
+                result.append(NSAttributedString(string: String(text[lastEnd..<r.lowerBound]), attributes: baseAttrs))
+            }
+            var linkAttrs = baseAttrs
+            let scheme = "minis-file-peek://"
+            let encoded = candidate.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? candidate
+            linkAttrs[.link] = URL(string: scheme + encoded)
+            linkAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            result.append(NSAttributedString(string: candidate, attributes: linkAttrs))
+            lastEnd = r.upperBound
+        }
+        if lastEnd < text.endIndex {
+            result.append(NSAttributedString(string: String(text[lastEnd...]), attributes: baseAttrs))
+        }
+        // 无命中 → 回退原样
+        if result.length == 0 || result.string == text {
+            return NSAttributedString(string: text, attributes: baseAttrs)
+        }
+        return result
     }
 
     // MARK: Helpers
@@ -7451,6 +7540,12 @@ struct SelectableMarkdownView: UIViewRepresentable {
     /// gestures route to a paged gallery of all markdown-embedded images in
     /// that message. Leave nil for standalone markdown rendering.
     var messageId: UUID?
+    /// [Claudio 2026-09-06] 远端 agent 项目文件后缀集快照（来自
+    /// RemoteProjectFileIndex.snapshot）。nil = 本地 agent / 无文件索引
+    /// → 文件路径不识别，行为零变化。非 nil = 远端 agent → 正文里反引号
+    /// 内路径 + 裸路径命中后缀集时变可点击 link（ccpocket file_peek 守门
+    /// 机制）。
+    var filePathSuffixes: Set<String>?
     /// Optional block identity for table slot-cache keying. In V3
     /// cell-per-block, each AssistantBlock has its own UUID — using it as
     /// the slot key guarantees uniqueness even when two tables in the same
@@ -7508,6 +7603,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         textView.onCopyScreenshot = onCopyScreenshot
         textView.onReadAloud = onReadAloud
         textView.onSpeakText = onSpeakText
+        context.coordinator.renderer.filePathSuffixes = filePathSuffixes
         #if DEBUG
         // [T-ios-markdown-rerender-burst] makeUIView creates a FRESH textView +
         // resets lastMarkdown="", forcing the next updateUIView through a full
@@ -9041,6 +9137,20 @@ struct SelectableMarkdownView: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
+            // [Claudio 2026-09-06] 远端 agent 正文文件路径点击拦截（对齐 ccpocket
+            // file_peek openFilePeek）：URL.scheme == "minis-file-peek" → 不走系统
+            // openURL，post MarkdownFilePeekRouter 通知由 AIChatView 监听弹
+            // RemoteFilePeekSheet 全屏面板。projectPath 由发起方携带（暂用空字
+            // 符串，AIChatView 监听处用当前 session 的 projectPath 兜底——claudio
+            // 单 session 单 projectPath 场景）。
+            if URL.scheme == "minis-file-peek" {
+                let raw = URL.absoluteString
+                let prefix = "minis-file-peek://"
+                let path = raw.hasPrefix(prefix) ? String(raw.dropFirst(prefix.count)) : raw
+                let decoded = path.removingPercentEncoding ?? path
+                MarkdownFilePeekRouter.postTap(filePath: decoded, projectPath: "")
+                return false
+            }
             if interaction == .presentActions {
                 let alert = UIAlertController(title: URL.absoluteString, message: nil, preferredStyle: .actionSheet)
                 alert.addAction(UIAlertAction(title: AppLocalized("Copy Link"), style: .default) { _ in

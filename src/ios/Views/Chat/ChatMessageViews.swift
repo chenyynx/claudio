@@ -195,6 +195,10 @@ struct ChatMessageRow: View {
     var onRevertCompact: (() -> Void)?
     var browserPool: BrowserTabPool?
     var toolSnapshots: [ToolSnapshotItem] = []
+    /// [Claudio 2026-09-06] 远端 agent 项目文件后缀集快照，由 AIChatView 从
+    /// vm.remoteFileSuffixes 传入。nil = 本地 agent / 无文件索引 = 正文路径
+    /// 不可点击（ccpocket file_peek 守门机制）。
+    var filePathSuffixes: Set<String>?
     @State private var showUsage = false
     @State private var showCompactSummary = false
     /// [T-ios-delete-from-message] Confirmation gate for the suffix delete.
@@ -503,6 +507,7 @@ struct ChatMessageRow: View {
                     isActiveMessage: isActiveMessage,
                     commandStartTime: commandStartTime,
                     onStop: onStop,
+                    filePathSuffixes: filePathSuffixes,
                     onTapBlank: message.usage != nil ? { windowPoint in
                         // Only respond to taps in the bottom 100pt of the message row
                         let bottomZoneTop = rowFrameInWindow.maxY - 100

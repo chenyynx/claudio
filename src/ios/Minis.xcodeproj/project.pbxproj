@@ -545,6 +545,10 @@
 		E5FA0003 /* FilePreviewPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0004 /* FilePreviewPanel.swift */; };
 		E5FA0005 /* FilePreviewActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0006 /* FilePreviewActions.swift */; };
 		E5FA0007 /* RemoteFileDownload.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0008 /* RemoteFileDownload.swift */; };
+		E5PK0001 /* RemoteProjectFileIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5PK0002 /* RemoteProjectFileIndex.swift */; };
+		E5PK0003 /* RemoteFileContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5PK0004 /* RemoteFileContent.swift */; };
+		E5PK0005 /* MarkdownFilePeekRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5PK0006 /* MarkdownFilePeekRouter.swift */; };
+		E5PK0007 /* RemoteFilePeekSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5PK0008 /* RemoteFilePeekSheet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1244,6 +1248,10 @@
 		E5FA0004 /* FilePreviewPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewPanel.swift; sourceTree = "<group>"; };
 		E5FA0006 /* FilePreviewActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewActions.swift; sourceTree = "<group>"; };
 		E5FA0008 /* RemoteFileDownload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteFileDownload.swift; sourceTree = "<group>"; };
+		E5PK0002 /* RemoteProjectFileIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteProjectFileIndex.swift; sourceTree = "<group>"; };
+		E5PK0004 /* RemoteFileContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteFileContent.swift; sourceTree = "<group>"; };
+		E5PK0006 /* MarkdownFilePeekRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownFilePeekRouter.swift; sourceTree = "<group>"; };
+		E5PK0008 /* RemoteFilePeekSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteFilePeekSheet.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1573,6 +1581,8 @@
 				E5CPF002 /* CCPocketClient.swift */,
 				E5F2A000B /* RemoteFileUpload.swift */,
 				E5FA0008 /* RemoteFileDownload.swift */,
+				E5PK0002 /* RemoteProjectFileIndex.swift */,
+				E5PK0004 /* RemoteFileContent.swift */,
 				E5F2A0011 /* RemoteModelCatalog.swift */,
 				E5F2A0007 /* RemoteSkillRegistry.swift */,
 				E5CPF003 /* RemoteAgentProvider.swift */,
@@ -2262,6 +2272,8 @@
 				E5FA0002 /* FileAttachmentCard.swift */,
 				E5FA0004 /* FilePreviewPanel.swift */,
 				E5FA0006 /* FilePreviewActions.swift */,
+				E5PK0006 /* MarkdownFilePeekRouter.swift */,
+				E5PK0008 /* RemoteFilePeekSheet.swift */,
 				A44D403A6D05BD06BBADC1CF /* Voice */,
 			);
 			path = Chat;
@@ -3008,6 +3020,10 @@
 				E5CPB002 /* CCPocketClient.swift in Sources */,
 				E5F2A0009 /* RemoteFileUpload.swift in Sources */,
 				E5FA0007 /* RemoteFileDownload.swift in Sources */,
+				E5PK0001 /* RemoteProjectFileIndex.swift in Sources */,
+				E5PK0003 /* RemoteFileContent.swift in Sources */,
+				E5PK0005 /* MarkdownFilePeekRouter.swift in Sources */,
+				E5PK0007 /* RemoteFilePeekSheet.swift in Sources */,
 				E5F2A0010 /* RemoteModelCatalog.swift in Sources */,
 				E5F2A0005 /* RemoteSkillRegistry.swift in Sources */,
 				E5CPB003 /* RemoteAgentProvider.swift in Sources */,

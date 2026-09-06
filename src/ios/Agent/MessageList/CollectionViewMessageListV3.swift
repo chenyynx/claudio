@@ -316,6 +316,7 @@ private struct BridgedAssistantBlockV3: View {
             isActiveMessage: bridge.isActiveMessage,
             commandStartTime: bridge.isActiveMessage ? bridge.commandStartTime : nil,
             onStop: bridge.isActiveMessage ? bridge.onStop : nil,
+            filePathSuffixes: bridge.filePathSuffixes,
             onTapBlank: { _ in
                 toggleUsage()
             },
@@ -1462,6 +1463,12 @@ extension CollectionViewMessageListV3 {
             bridge.onStop = isActive ? { [weak self] in self?.onStop?() } : nil
             bridge.browserPool = vm.browserTabPool
             bridge.toolSnapshots = vm.toolSnapshots
+            // [Claudio 2026-09-06] 远端 agent 项目文件后缀集快照 — 从 VM 透
+            // 传到 bridge，cell 层 AssistantBlockView 读 bridge.filePathSuffixes
+            // 传给 SelectableMarkdownView。始终刷新（而非按消息条件），因为
+            // loadSession 拉 list_files 后 remoteFileSuffixes 从 nil → set 时
+            // 要触发所有 message 的重渲染。
+            bridge.filePathSuffixes = vm.remoteFileSuffixes
             bridge.autoRetryAttempt = isLast ? vm.autoRetryAttempt : 0
             bridge.autoRetryCountdown = isLast ? vm.autoRetryCountdown : 0
             // [T-ios-session-status-mismatch] Defense-in-depth: even if vm.canResume

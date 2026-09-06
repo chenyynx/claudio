@@ -1165,6 +1165,11 @@ final class CellStateBridgeV2: ObservableObject {
     @Published var isStreaming: Bool = false
     @Published var browserPool: BrowserTabPool?
     @Published var toolSnapshots: [ToolSnapshotItem] = []
+    /// [Claudio 2026-09-06] 远端 agent 项目文件后缀集快照（ccpocket
+    /// file_peek 守门）。nil = 本地 agent = 零行为变化。
+    /// 由 AIChatViewModel 统一刷新（session_created 后拉一次 list_files），
+    /// cell 层经 bridge 读透传给 SelectableMarkdownView。
+    @Published var filePathSuffixes: Set<String>?
     /// Tool detail sheet — owned by footer, triggered by block cells.
     @Published var detailBlock: AssistantBlock?
     /// Token usage visibility — toggled by double-tap on block cells, read by footer.

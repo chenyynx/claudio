@@ -1185,6 +1185,23 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// 本地 agent 走 OpenMinis 现有 minis:// 链接 / chip 路径。
     @Published var pendingAssistantPreview: URL?
 
+    /// [Claudio 2026-09-06] 远端 agent 正文文件路径点击后的预览内容，
+    /// AIChatView 监听这个字段弹 RemoteFilePeekSheet 全屏面板。与
+    /// pendingAssistantPreview 分工明确：那个走「已下载本地文件」语义，
+    /// 这个走「按需读内容不落盘」语义。
+    @Published var pendingRemoteFilePeek: RemoteFilePeekItem?
+
+    /// [Claudio 2026-09-06] 当前活跃远端 agent provider 的弱引用。为
+    /// file peek 提供 client/projectPath 通路（RemoteFileContentFetcher
+    /// 构造需要）。runAgentLoop 构建 RemoteAgentProvider 后设置。
+    private weak var lastRemoteAgentProvider: RemoteAgentProvider?
+
+    /// [Claudio 2026-09-06] 远端 agent 项目文件后缀集快照（ccpocket
+    /// file_peek 守门机制）。nil = 本地 agent / 无文件索引 = 正文路径
+    /// 不可点击。session_created 后由 refreshRemoteFileIndex 拉取填
+    /// 充，updateBridge 读到后透传给 SelectableMarkdownView。
+    @Published var remoteFileSuffixes: Set<String>?
+
     // Attachments
     @Published var attachments: [InputAttachment] = []
     /// Number of videos currently being imported from the photo picker.
@@ -4905,6 +4922,20 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         if let remoteProvider = provider as? RemoteAgentProvider {
             remoteProvider.pendingRemotePayloads = pendingRemotePayloads
             pendingRemotePayloads = []
+            // [Claudio 2026-09-06] 远端 agent 文件索引:session 启动后拉
+            // list_files 建后缀集(RemoteProjectFileIndex 单例),让正文
+            // 里的反引号路径 + 裸路径命中真实文件时可点击(cppocket
+            // file_peek 守门机制)。fire-and-forget,失败退化为不可点击。
+            // 对齐 ccpocket file_peek_sheet.dart 加载 fileList 的时机。
+            //
+            // 同时存 provider 弱引用,给 handleRemoteFilePeekTap 提供
+            // client + projectPath 通路(payload 不带 projectPath,需
+            // 在 vm 层从当前 provider 补)。
+            lastRemoteAgentProvider = remoteProvider
+            Task { @MainActor in
+                let entry = await remoteProvider.refreshFileIndex()
+                self.remoteFileSuffixes = entry?.suffixSet
+            }
         }
 
         // Set extended cache TTL globally for Anthropic request patching
@@ -6883,3 +6914,34 @@ enum LLMProviderError: LocalizedError {
     }
 }
 
+// MARK: - Remote File Peek（远端 agent 正文文件路径点击预览）
+
+extension AIChatViewModel {
+    /// [Claudio 2026-09-06] 处理远端 agent 正文文件路径点击
+    /// （SelectableMarkdownView 里 .link = minis-file-peek:// URL 被
+    /// shouldInteractWith 拦截后,MarkdownFilePeekRouter 发通知,AIChatView
+    /// 监听通知调这个方法）。
+    ///
+    /// 对齐 ccpocket file_peek_sheet.dart openFilePeek:按路径调
+    /// read_file / read_media_file,成功后弹 sheet。claudio 端把
+    /// fetch 结果包装成 RemoteFilePeekItem 赋给 pendingRemoteFilePeek,
+    /// AIChatView 监听弹 RemoteFilePeekSheet。失败 → transientNotice
+    /// 提示,不弹面板。
+    func handleRemoteFilePeekTap(filePath: String) {
+        guard lastAgentProviderIsRemote,
+              let provider = lastRemoteAgentProvider else {
+            return
+        }
+        // 空路径 / 文件索引没命中过的路径直接忽略
+        guard !filePath.isEmpty else { return }
+        let fetcher = provider.makeFilePeekFetcher(filePath: filePath)
+        let projectPath = provider.projectPath
+        // fetch 在 RemoteFilePeekSheet 内部 .task 里执行(对齐 ccpocket
+        // file_peek_sheet 自己在 initState 发请求 + 渲染 loading)。
+        pendingRemoteFilePeek = RemoteFilePeekItem(
+            filePath: filePath,
+            projectPath: projectPath,
+            fetcher: { try await fetcher.fetch() }
+        )
+    }
+}

@@ -15,6 +15,11 @@ struct AssistantBlockView: View {
     /// down to SelectableMarkdownView (nil for non-text or streaming contexts).
     var onReadAloud: (() -> Void)?
     var onSpeakText: ((String) -> Void)?
+    /// [Claudio 2026-09-06] 远端 agent 项目文件后缀集快照，传给
+    /// SelectableMarkdownView 让正文反引号内/裸路径命中真实文件时变
+    /// 可点击 link（ccpocket file_peek 守门机制）。nil = 本地 agent /
+    /// 无文件索引 = 零行为变化。
+    var filePathSuffixes: Set<String>?
     var browserPool: BrowserTabPool?
     var toolSnapshots: [ToolSnapshotItem] = []
     @Binding var highlightedBlockId: UUID?
@@ -119,6 +124,7 @@ struct AssistantBlockView: View {
             cachedAttributedString: block.cachedAttributedString,
             messageId: message.id,
             blockId: block.id,
+            filePathSuffixes: filePathSuffixes,
             onTapBlank: onTapBlank,
             onCopyScreenshot: onCopyScreenshot,
             onReadAloud: onReadAloud,
