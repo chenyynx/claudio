@@ -7628,6 +7628,26 @@ struct SelectableMarkdownView: UIViewRepresentable {
         let currentFontSize = FontSettings.shared.scaledMessage(16.5)
         let fontChanged = context.coordinator.lastFontSize != currentFontSize
 
+        // [Claudio 2026-09-06 fix] 同步 filePathSuffixes 到 renderer。
+        // makeUIView 只在创建时传一次，而文件索引是异步加载的
+        // （refreshFileIndex fire-and-forget）——首次渲染时 suffixes
+        // 还是 nil，加载完后 updateUIView 不会再同步，导致 renderer
+        // 永远拿 nil、正文路径永不注入 minis-file-peek link（点击
+        // 无反应）。这里在早退 guard **之前**同步；若 suffixes 从
+        // 空→非空且 markdown 未变，强制重渲染一次让 link 注入生效。
+        let prevSuffixes = context.coordinator.renderer.filePathSuffixes
+        let suffixesChanged = (prevSuffixes == nil) != (filePathSuffixes == nil)
+            || (prevSuffixes?.isEmpty != filePathSuffixes?.isEmpty)
+            || (prevSuffixes?.count != filePathSuffixes?.count)
+        if suffixesChanged {
+            context.coordinator.renderer.filePathSuffixes = filePathSuffixes
+            if filePathSuffixes?.isEmpty == false,
+               markdown == context.coordinator.lastMarkdown {
+                // 强制下面的渲染路径走一遍（清 dedup 基线）
+                context.coordinator.lastMarkdown = ""
+            }
+        }
+
         // [AttachHotPath] updateUIView entry — only log when this textView has
         // image attachments in its renderer's cache (the only scenario that can
         // trigger the streaming + image re-layout problem). Skips noise from
