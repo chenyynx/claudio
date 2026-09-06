@@ -1665,9 +1665,6 @@ struct ContentView: View {
             NavigationStack {
                 RemoteAgentSetupView(existingInstance: providerStore.instances.first {
                     $0.providerType == .remoteAgent && $0.isEnabled
-                }, onConnected: {
-                    // [P1-C] 新连接引导 [开始对话] → 直达远端会话
-                    handleNewSessionResult(.claude(ClaudeSessionOptions()))
                 })
             }
         }
@@ -1675,10 +1672,6 @@ struct ContentView: View {
             RemoteNewSessionSheet { result in
                 handleNewSessionResult(result)
             }
-        }
-        // [P1-C] 设置页新连接引导 → 直达远端会话
-        .onReceive(NotificationCenter.default.publisher(for: .remoteConnectedStartChat)) { _ in
-            handleNewSessionResult(.claude(ClaudeSessionOptions()))
         }
         // ③ 启动失败 sheet(避开 .alert 挂在大 body 链中触发 SwiftUI 类型推导超时)
         .onChange(of: startSessionError) { newVal in
@@ -4534,7 +4527,7 @@ struct ContentView: View {
                 .padding(.top, 64)
 
                 VStack(alignment: .leading, spacing: 14) {
-                    emptyStateSectionLabel("选择你的起点")
+                    emptyStateSectionLabel("Choose your starting point")
 
                     RemotePathCard(
                         configured: remoteInstance != nil && remoteSummary != nil,
@@ -4581,9 +4574,6 @@ struct ContentView: View {
                 // 与"连接电脑"共用此 sheet，已配置时进编辑模式（字段预填）。
                 RemoteAgentSetupView(existingInstance: providerStore.instances.first {
                     $0.providerType == .remoteAgent && $0.isEnabled
-                }, onConnected: {
-                    // [P1-C] 新连接引导 [开始对话] → 直达远端会话
-                    handleNewSessionResult(.claude(ClaudeSessionOptions()))
                 })
             }
         }
@@ -8328,11 +8318,6 @@ private struct SettingsSheet: View {
                 NavigationStack {
                     RemoteAgentSetupView(existingInstance: ProviderConfigStore.shared.instances.first {
                         $0.providerType == .remoteAgent && $0.isEnabled
-                    }, onConnected: {
-                        // [P1-C] 设置页新建连接后引导 → 直达远端会话。
-                        // SettingsSheet 内无法直接调 ContentView 方法，走
-                        // 通知（ContentView 已监听同类导航事件模式）。
-                        NotificationCenter.default.post(name: .remoteConnectedStartChat, object: nil)
                     })
                 }
             }
@@ -8676,11 +8661,6 @@ private struct ForceSyncToastBanner: View {
 
 
 
-extension Notification.Name {
-    /// [P1-C] SettingsSheet 内新连接引导 [开始对话] → ContentView 开远端会话
-    static let remoteConnectedStartChat = Notification.Name("RemoteConnectedStartChat")
-}
-
 // MARK: - [Claudio 2026-09-07 P1] 欢迎页双路径启动器组件
 //
 // 设计基准：/var/minis/shared/claudio-design/welcome-page-v1.html（定稿）
@@ -8852,29 +8832,24 @@ private struct PathCardIcon: View {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .fill(
                     LinearGradient(
-                        colors: kind == .remote
-                            ? [adaptiveColor(light: 0x33322E, dark: 0x4A4945),
-                               adaptiveColor(light: 0x141413, dark: 0x1D1C19)]
-                            : [adaptiveColor(light: 0xFFFFFF, dark: 0x3A3936),
-                               adaptiveColor(light: 0xEDEBE5, dark: 0x2C2B28)],
+                        colors: [adaptiveColor(light: 0x33322E, dark: 0x4A4945),
+                                 adaptiveColor(light: 0x141413, dark: 0x1D1C19)],
                         startPoint: .top, endPoint: .bottom)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .strokeBorder(kind == .remote ? Color.white.opacity(0.12) : Color.primary.opacity(0.07),
-                                      lineWidth: 1)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
                 )
                 .overlay(alignment: .top) {
                     RoundedRectangle(cornerRadius: 13)
-                        .strokeBorder(Color.white.opacity(kind == .remote ? 0.18 : 0.9),
-                                      lineWidth: 1)
+                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
                         .frame(height: 1)
                         .padding(.horizontal, 8)
                 }
-                .shadow(color: Color.primary.opacity(kind == .remote ? 0.28 : 0.10), radius: 8, y: 4)
+                .shadow(color: Color.primary.opacity(0.28), radius: 8, y: 4)
             Image(systemName: kind == .remote ? "desktopcomputer" : "iphone")
                 .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(kind == .remote ? ClaudePalette.ctaForeground : ClaudePalette.textPrimary)
+                .foregroundStyle(ClaudePalette.ctaForeground)
         }
         .frame(width: 46, height: 46)
     }
@@ -9031,24 +9006,8 @@ private struct LocalPathCard: View {
                     PathCardGhostButton(title: "管理", action: onManage)
                 }
             } else {
-                // 次级按钮：中灰渐变（视觉主次靠色彩不靠序号）
-                Button(action: onConfigure) {
-                    Text("配置模型")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(ClaudePalette.ctaForeground)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 13)
-                        .background(
-                            Capsule().fill(
-                                LinearGradient(colors: [adaptiveColor(light: 0x4A4945, dark: 0x5C5B56),
-                                                        adaptiveColor(light: 0x37362F, dark: 0x3D3C38)],
-                                                   startPoint: .top, endPoint: .bottom)
-                            )
-                        )
-                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
-                        .shadow(color: Color.primary.opacity(0.20), radius: 8, y: 4)
-                }
-                .buttonStyle(.plain)
+                // [Claudio 2026-09-07 pp 修订] 与远程主按钮统一深黑色
+                PathCardPrimaryButton(title: "配置模型", action: onConfigure)
                 Text("准备一个模型服务商的 API Key，一分钟搞定。")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.primary.opacity(0.30))
