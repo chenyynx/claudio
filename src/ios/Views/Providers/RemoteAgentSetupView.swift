@@ -49,8 +49,31 @@ struct RemoteAgentSetupView: View {
         token.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// [Claudio 2026-09-06] Bridge URL 必须能解析出 host。
+    /// 单斜杠 `wss:/host/path` 这类手滑 URL 会被 URLComponents 按
+    /// RFC3986 解析成 host=nil + 整段 path——WebSocketTask 容忍,
+    /// 但文件上传的 httpBaseURL 派生会失败(file_upload_invalid_url)。
+    /// 在 UI 层直接拦,提示用户改双斜杠。
+    private var bridgeURLHost: String? {
+        let trimmed = wssURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let comps = URLComponents(string: trimmed) else { return nil }
+        if let host = comps.host, !host.isEmpty { return host }
+        // 单斜杠 fallback: scheme:/host/path → host 落在 path 里
+        if comps.scheme != nil, comps.path.hasPrefix("/") {
+            let body = String(comps.path.dropFirst())
+            if let slash = body.firstIndex(of: "/") {
+                let candidate = String(body[..<slash])
+                if candidate.contains("."), !candidate.isEmpty { return candidate }
+            } else if body.contains(".") {
+                return body
+            }
+        }
+        return nil
+    }
+
     private var canSave: Bool {
-        !trimmedToken.isEmpty && !isSaving
+        !trimmedToken.isEmpty && !isSaving && bridgeURLHost != nil
     }
 
     /// Path must be non-empty for upload/file-peek to ever work (the bridge
@@ -286,7 +309,7 @@ struct RemoteAgentSetupView: View {
                     if isSaving {
                         ProgressView().tint(ClaudePalette.ctaForeground)
                     } else {
-                        Text(canSave ? "Connect" : "Add a token to continue")
+                        Text(canSave ? "Connect" : (bridgeURLHost == nil ? "Check Bridge URL (need wss://host)" : "Add a token to continue"))
                             .font(.body.weight(.semibold))
                     }
                 }

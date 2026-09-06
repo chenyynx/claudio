@@ -1425,8 +1425,27 @@ extension CCPocketClient {
     /// 非空 — URLSession 拿 host=nil 的 URL 会抛
     /// NSURLErrorCannotFindHost。
     var httpBaseURL: URL? {
-        guard let baseComponents = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+        // [Claudio 2026-09-06] pp 实际填的 URL 是 wss:/pipicore.cn/bridge/
+        // (单斜杠,手滑少打一个 /)。URLSessionWebSocketTask 容忍(所以
+        // WS 一直通),但 URLComponents 严格按 RFC3986 → host=nil,
+        // 整个 /pipicore.cn/bridge/ 被塞进 path。
+        // 这里 fallback: 如果 URLComponents.host==nil 但 path 像是
+        // /{domain}/{rest} 格式,手动切 host + path,避免返 nil。
+        guard var baseComponents = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             return nil
+        }
+        if baseComponents.host == nil, baseComponents.scheme != nil {
+            // path 是 "/pipicore.cn/bridge/" → 切 host="pipicore.cn",
+            // path="/bridge/"
+            let p = baseComponents.path
+            if p.hasPrefix("/") {
+                let trimmed = String(p.dropFirst())
+                if let slash = trimmed.firstIndex(of: "/") {
+                    baseComponents.host = String(trimmed[..<slash])
+                    baseComponents.path = String(trimmed[slash...])
+                    // 包含 ":port" 的情况先不动(罕见,默认 port=nil)
+                }
+            }
         }
         var components = URLComponents()
         // [T-ios-ccpocket-exclusive-access] Reading `components?.scheme`
@@ -1439,7 +1458,7 @@ extension CCPocketClient {
         components.host = baseComponents.host
         components.port = baseComponents.port
         // 保留 path（含子路径如 /bridge/）— 这是 nginx / Cloudflare
-        // 反代前缀，丢了路径 HTTP 请求就到不了桥
+        // 反代前缀,丢了路径 HTTP 请求就到不了桥
         components.path = baseComponents.path
         guard let url = components.url,
               url.host != nil else {
