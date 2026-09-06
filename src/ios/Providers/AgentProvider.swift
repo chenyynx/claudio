@@ -193,12 +193,15 @@ enum AgentStreamEvent: @unchecked Sendable {
     case toolResult(id: String, name: String, output: String, isError: Bool)
     /// [Claudio 2026-09-05] Remote agent produced a downloadable file (Write tool
     /// output). Bridge pushes this metadata alongside `tool_result` so the App
-    /// can show a Claude-style file card (FileAttachmentCard). Distinct from
+    /// can show a Claude-style file card. Distinct from
     /// `.toolResult` because the output file is **not** part of the LLM context —
     /// it's UI metadata only. Consumer finds the AssistantBlock by `toolUseId`
     /// and fills AssistantBlock.outputFileRemotePath/MimeType/SizeBytes.
     /// **Remote-only** event: local agent never yields this (iSH writes are
     /// already in iOS sandbox; no download needed).
+    /// [Claudio 2026-09-06 G6] FileAttachmentCard 入口已下线,本事件仍然发射,
+    /// outputFile* 字段仍然写入 AssistantBlock + ChatStore — 等未来重新做
+    /// "agent 发文件给用户" 入口时零成本复活。
     case remoteFileAttached(toolUseId: String, file: RemoteOutputFile)
     /// Bridge `permission_request` — the agent wants to run a tool that
     /// needs approval (non-bypass permission mode). The UI shows the

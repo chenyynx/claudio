@@ -219,6 +219,14 @@ enum FileDownloadState: Equatable {
     case downloading(progress: Double)  // 0.0 ... 1.0
     case ready(localPath: String)
     case failed(errorCode: String, message: String)
+
+    /// [Claudio 2026-09-06 G6] 之前定义在 FileAttachmentCard.swift:132-137,
+    /// 卡片删除后迁到这里（紧挨 enum 定义），让 RemoteFileDownloadTests
+    /// 继续编译。原注释"// MARK: - FileDownloadState helpers"作为迁移印记。
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
 }
 
 /// A single block within an assistant turn.
@@ -323,7 +331,8 @@ final class AssistantBlock: Identifiable, ObservableObject {
     @Published var outputFileLocalPath: String?
 
     /// MIME type from bridge (e.g. "text/x-python")，优先用 bridge 给的，
-    /// bridge 没给时用文件扩展名 fallback（FileAttachmentCard.mimeFor(ext:)）。
+    /// bridge 没给时用文件扩展名 fallback（FileKind.fromExtension, FileKind.swift）。
+    /// [Claudio 2026-09-06 G6] FileAttachmentCard 入口已下线,本字段仍保留。
     @Published var outputFileMimeType: String?
 
     /// File size in bytes (bridge 给的或 fallback 0)。UI 显示用。

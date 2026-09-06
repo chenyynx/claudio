@@ -541,7 +541,7 @@
 		RCL000119 /* BackupHistoryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000219 /* BackupHistoryDetailView.swift */; };
 		RCL000120 /* BackupCategoryIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000220 /* BackupCategoryIcon.swift */; };
 		RCL000121 /* BackupHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000221 /* BackupHUD.swift */; };
-		E5FA0001 /* FileAttachmentCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0002 /* FileAttachmentCard.swift */; };
+E5FK0001 /* FileKind.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FK0002 /* FileKind.swift */; };
 		E5FK0003 /* RemoteAgentConfigErrorProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FK0004 /* RemoteAgentConfigErrorProvider.swift */; };
 		E5FK0005 /* RemoteAgentEditPathView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FK0006 /* RemoteAgentEditPathView.swift */; };
 		E5FA0003 /* FilePreviewPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FA0004 /* FilePreviewPanel.swift */; };
@@ -1246,7 +1246,7 @@
 		RCL000219 /* BackupHistoryDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupHistoryDetailView.swift; sourceTree = "<group>"; };
 		RCL000220 /* BackupCategoryIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupCategoryIcon.swift; sourceTree = "<group>"; };
 		RCL000221 /* BackupHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupHUD.swift; sourceTree = "<group>"; };
-		E5FA0002 /* FileAttachmentCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAttachmentCard.swift; sourceTree = "<group>"; };
+E5FK0002 /* FileKind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileKind.swift; sourceTree = "<group>"; };
 		E5FK0004 /* RemoteAgentConfigErrorProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAgentConfigErrorProvider.swift; sourceTree = "<group>"; };
 		E5FK0006 /* RemoteAgentEditPathView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAgentEditPathView.swift; sourceTree = "<group>"; };
 		E5FA0004 /* FilePreviewPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewPanel.swift; sourceTree = "<group>"; };
@@ -2274,7 +2274,7 @@
 				A11Y0002 /* ChatAccessibilityAnnouncer.swift */,
 				F1W0E100 /* WebLoadError.swift */,
 				7844BB4D08A7B9AE6C2865F2 /* RemotePermissionDialog.swift */,
-				E5FA0002 /* FileAttachmentCard.swift */,
+				E5FK0002 /* FileKind.swift */,
 				E5FA0004 /* FilePreviewPanel.swift */,
 				E5FA0006 /* FilePreviewActions.swift */,
 				E5PK0006 /* MarkdownFilePeekRouter.swift */,
@@ -3204,7 +3204,7 @@
 				8B886DA8A270E8FB58A9A1FA /* SpeechPlayerControl.swift in Sources */,
 				7A49962E84F115865D41B933 /* AudioSessionCoordinator.swift in Sources */,
 				C0B1AF9A75C90C3C178A8804 /* VoiceTextSanitizer.swift in Sources */,
-				E5FA0001 /* FileAttachmentCard.swift in Sources */,
+				E5FK0001 /* FileKind.swift in Sources */,
 				E5FA0003 /* FilePreviewPanel.swift in Sources */,
 				E5FA0005 /* FilePreviewActions.swift in Sources */,
 			);
