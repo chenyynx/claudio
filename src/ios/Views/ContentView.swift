@@ -4482,19 +4482,6 @@ struct ContentView: View {
     @State private var startSessionError: String?
     @State private var showStartSessionError = false
 
-    /// [Claudio 2026-09-07 P0] 第一个启用远端实例的 projectPath 尾段
-    /// （"/home/ubuntu/claudio" → "claudio"），欢迎页 Start Chatting
-    /// 行右侧显示。nil = 不显示。
-    private var remoteProjectPathTail: String? {
-        guard let inst = providerStore.instances.first(where: {
-            $0.providerType == .remoteAgent && $0.isEnabled
-        }),
-        let conn = RemoteAgentConnection.load(instanceID: inst.id),
-        !conn.projectPath.isEmpty else { return nil }
-        let parts = conn.projectPath.split(separator: "/")
-        return parts.last.map(String.init)
-    }
-
     private var emptyState: some View {
         let hasProviders = !providerStore.instances.filter { $0.providerType != .remoteAgent }.isEmpty
         let hasGroups = !providerStore.modelGroups.isEmpty
@@ -4605,37 +4592,9 @@ struct ContentView: View {
                             }
                         }
                     }
-                    // [Claudio 2026-09-07 P0] 已连接态的一键开始：复用
-                    // handleNewSessionResult(.claude) 完整链（挑实例 →
-                    // visibleEntries.first → updateSessionModelId →
-                    // openSession），全程零"选模型"（第 0 原则：这是远端
-                    // 路径专属入口，On-Device 三步骤不动）。
-                    if hasRemote {
-                        Button {
-                            handleNewSessionResult(.claude(ClaudeSessionOptions()))
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "bubble.left.and.text.bubble.right")
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text("Start Chatting")
-                                    .font(.system(size: 15, weight: .semibold))
-                                Spacer()
-                                if let tail = remoteProjectPathTail {
-                                    Text(tail)
-                                        .font(.caption)
-                                        .foregroundStyle(ClaudePalette.textSecondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                }
-                            }
-                            .foregroundStyle(ClaudePalette.ctaForeground)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 13)
-                            .background(Capsule().fill(ClaudePalette.ctaBackground))
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.top, 2)
-                    }
+                    // [Claudio 2026-09-07 P0 revert] Start Chatting 按钮已删：
+                    // 与右下角 FAB → 新建 sheet（默认 tab 已智能化 Claude）
+                    // 完全重复，pp 拍板去掉。远端一键入口由 FAB 承担。
                 }
                 .frame(maxWidth: 400)
 
