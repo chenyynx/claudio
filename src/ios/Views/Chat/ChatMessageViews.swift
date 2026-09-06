@@ -526,8 +526,8 @@ struct ChatMessageRow: View {
                             }
                         }
                     } : nil,
-                    filePathSuffixes: filePathSuffixes,
                     onCopyScreenshot: onCopyScreenshot,
+                    filePathSuffixes: filePathSuffixes,
                     browserPool: browserPool,
                     toolSnapshots: toolSnapshots,
                     highlightedBlockId: $highlightedBlockId,

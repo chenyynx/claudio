@@ -319,13 +319,13 @@ private struct BridgedAssistantBlockV3: View {
             onTapBlank: { _ in
                 toggleUsage()
             },
-            filePathSuffixes: bridge.filePathSuffixes,
             onCopyScreenshot: { bridge.onCopyScreenshot?() },
             // [T-selection-menu-minis-tts] Selection-menu TTS: whole-reply
             // replay is suppressed while this reply is still streaming (same
             // rule as the overlay context menu); Read Selection stays available.
             onReadAloud: bridge.isStreaming ? nil : bridge.onReadAloud,
             onSpeakText: bridge.onSpeakText,
+            filePathSuffixes: bridge.filePathSuffixes,
             browserPool: bridge.browserPool,
             toolSnapshots: bridge.toolSnapshots,
             highlightedBlockId: .constant(nil),
