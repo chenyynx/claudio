@@ -323,23 +323,27 @@ copy_outputs() {
     mkdir -p "$OUTPUT_INCLUDE/ish/asbestos"
     mkdir -p "$OUTPUT_RESOURCES"
 
-    # Copy static libraries. [Claudio 2026-09-07] When the simulator slice
-    # built, lipo it together with the device slice into a fat archive so
-    # both `xcodebuild build` (iphoneos) and `xcodebuild test` (simulator)
-    # can link the same deps/libs/*.a. Single-arch fallback keeps the old
-    # behavior when the sim build failed.
+    # Copy static libraries. [Claudio 2026-09-07 2a] Device libs go to
+    # deps/libs (unchanged); simulator libs go to deps/libs-sim. lipo CANNOT
+    # merge them: device arm64 and simulator arm64 share the Mach-O cpu type
+    # "arm64" (they differ only in the platform load command), and lipo
+    # rejects "same architectures" fat files. Xcode picks the right dir via
+    # the SDK-conditional LIBRARY_SEARCH_PATHS in the project.
     log_info "Copying libraries..."
     SIM_BUILD_DIR="$ISH_DIR/build-ios-sim"
+    OUTPUT_LIBS_SIM="$SCRIPT_DIR/libs-sim"
     for lib in libish.a libish_emu.a libfakefs.a; do
-        if [ -f "$SIM_BUILD_DIR/$lib" ]; then
-            lipo -create "$BUILD_DIR/$lib" "$SIM_BUILD_DIR/$lib" -output "$OUTPUT_LIBS/$lib" \
-                && log_success "$lib: fat (device + simulator)" \
-                || cp "$BUILD_DIR/$lib" "$OUTPUT_LIBS/"
-        else
-            cp "$BUILD_DIR/$lib" "$OUTPUT_LIBS/"
-            log_warning "$lib: device-only slice (simulator build unavailable)"
-        fi
+        cp "$BUILD_DIR/$lib" "$OUTPUT_LIBS/"
     done
+    if [ -f "$SIM_BUILD_DIR/libish.a" ] && [ -f "$SIM_BUILD_DIR/libish_emu.a" ] && [ -f "$SIM_BUILD_DIR/libfakefs.a" ]; then
+        mkdir -p "$OUTPUT_LIBS_SIM"
+        for lib in libish.a libish_emu.a libfakefs.a; do
+            cp "$SIM_BUILD_DIR/$lib" "$OUTPUT_LIBS_SIM/"
+        done
+        log_success "Simulator libs → deps/libs-sim/"
+    else
+        log_warning "Simulator libs incomplete; deps/libs-sim not created (simulator test link will fail, device build unaffected)"
+    fi
 
     # Copy VDSO if built (arm64 guest VDSO path)
     if [ -f "$BUILD_DIR/vdso/arm64/libvdso.so.elf" ]; then

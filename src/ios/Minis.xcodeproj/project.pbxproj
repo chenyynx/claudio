@@ -3584,6 +3584,7 @@
 					"@executable_path/Frameworks",
 				);
 				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/../../deps/libs";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../deps/libs-sim";
 				MARKETING_VERSION = 1.13;
 				OTHER_LDFLAGS = (
 					"-lish_emu",
@@ -3638,6 +3639,7 @@
 					"@executable_path/Frameworks",
 				);
 				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/../../deps/libs";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../deps/libs-sim";
 				MARKETING_VERSION = 1.13;
 				OTHER_LDFLAGS = (
 					"-lish_emu",
