@@ -160,8 +160,19 @@ struct RemoteFileContentFetcher: Sendable {
     /// 把相对 `/api/media/<id>` 拼成完整 http URL（用 caller 提供的
     /// httpBaseURL，避免 fetcher 自己再算一次）。
     static func absoluteMediaURL(relative: String, httpBaseURL: URL?) -> URL? {
-        guard let httpBaseURL else { return nil }
-        return URL(string: relative, relativeTo: httpBaseURL)?.absoluteURL
+        // [Claudio 2026-09-06] 同 RemoteFileUpload/Download composeBridgeAbsoluteURL
+        // 修法:URL(string:relativeTo:) 在 base 有 path 时按 RFC3986 行为是
+        // "替换 base.path",会丢 /bridge/ 段。改 URLComponents 显式
+        // basePath + relative 拼接。
+        guard let httpBaseURL,
+              let baseComponents = URLComponents(url: httpBaseURL, resolvingAgainstBaseURL: false),
+              let host = baseComponents.host else { return nil }
+        var c = URLComponents()
+        c.scheme = baseComponents.scheme
+        c.host = host
+        c.port = baseComponents.port
+        c.path = baseComponents.path + relative
+        return c.url
     }
 
     // MARK: - Media type detection
