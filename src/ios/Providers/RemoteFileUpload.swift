@@ -81,18 +81,27 @@ final class RemoteFileUpload {
         let url: URL
         if let parsed = URL(string: uploadUrlStr), parsed.scheme != nil {
             url = parsed
-        } else if let base = client.httpBaseURL,
-                  let composed = RemoteFileContent.composeBridgeAbsoluteURL(relative: uploadUrlStr, base: base) {
+        } else {
+            // [Claudio 2026-09-06 DEBUG-DIAG] 排查 file_upload_invalid_url
+            let httpBase = client.httpBaseURL
+            let httpBaseStr = httpBase?.absoluteString ?? "<nil>"
             DiagnosticsLog.shared.write(
                 "RemoteFileUpload",
-                "url-rewrite relative=\"\(uploadUrlStr)\" base=\"\(base.absoluteString)\" → \"\(composed.absoluteString)\""
+                "url-diag client.baseURL=\"\(client.baseURL.absoluteString)\" httpBaseURL=\"\(httpBaseStr)\" uploadUrlStr=\"\(uploadUrlStr)\""
             )
-            url = composed
-        } else {
-            throw RemoteUploadError(
-                code: "file_upload_invalid_url",
-                message: "prepare_file_upload returned unsupported uploadUrl (no host / no httpBaseURL): \(uploadUrlStr)"
-            )
+            if let httpBase,
+               let composed = RemoteFileContent.composeBridgeAbsoluteURL(relative: uploadUrlStr, base: httpBase) {
+                DiagnosticsLog.shared.write(
+                    "RemoteFileUpload",
+                    "url-rewrite relative=\"\(uploadUrlStr)\" base=\"\(httpBase.absoluteString)\" → \"\(composed.absoluteString)\""
+                )
+                url = composed
+            } else {
+                throw RemoteUploadError(
+                    code: "file_upload_invalid_url",
+                    message: "baseURL=\(client.baseURL.absoluteString) httpBaseURL=\(httpBaseStr) uploadUrl=\(uploadUrlStr)"
+                )
+            }
         }
 
         // ── 2. HTTP PUT（fromFile 零内存）+ 流式 SHA-256 ──
