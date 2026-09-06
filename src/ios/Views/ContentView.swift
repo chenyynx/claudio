@@ -4580,10 +4580,31 @@ struct ContentView: View {
                 // manage the existing connection.
                 VStack(alignment: .leading, spacing: 10) {
                     emptyStateSectionLabel("Your Computer")
+                    // [Claudio 2026-09-06 G3.4] Long-press entry into the
+                    // dedicated path edit modal. Tap still opens the full
+                    // setup page (URL/token/path all editable). Long-press
+                    // skips straight to the path — the common post-setup
+                    // change ("switch to a different repo on my Mac").
+                    // [Claudio 2026-09-07 P0 fix] contextMenu 必须紧跟
+                    // background（同一 ViewBuilder 表达式链内），若挪到
+                    // if hasRemote 块之后会变成对 if 内容的修饰 →
+                    // "type '()' cannot conform to 'View'" 编译错
+                    // （CI 34049705757 build 红）。
                     cloudEntryStep(isDone: hasRemote) {
                         showConnectComputer = true
                     }
                     .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(ClaudePalette.cardFill))
+                    .contextMenu {
+                        if let remoteID = providerStore.instances.first(where: {
+                            $0.providerType == .remoteAgent && $0.isEnabled
+                        })?.id {
+                            Button {
+                                editingPathInstanceID = remoteID
+                            } label: {
+                                Label("Edit Project Path", systemImage: "folder")
+                            }
+                        }
+                    }
                     // [Claudio 2026-09-07 P0] 已连接态的一键开始：复用
                     // handleNewSessionResult(.claude) 完整链（挑实例 →
                     // visibleEntries.first → updateSessionModelId →
@@ -4614,22 +4635,6 @@ struct ContentView: View {
                         }
                         .buttonStyle(.plain)
                         .padding(.top, 2)
-                    }
-                    // [Claudio 2026-09-06 G3.4] Long-press entry into the
-                    // dedicated path edit modal. Tap still opens the full
-                    // setup page (URL/token/path all editable). Long-press
-                    // skips straight to the path — the common post-setup
-                    // change ("switch to a different repo on my Mac").
-                    .contextMenu {
-                        if let remoteID = providerStore.instances.first(where: {
-                            $0.providerType == .remoteAgent && $0.isEnabled
-                        })?.id {
-                            Button {
-                                editingPathInstanceID = remoteID
-                            } label: {
-                                Label("Edit Project Path", systemImage: "folder")
-                            }
-                        }
                     }
                 }
                 .frame(maxWidth: 400)
