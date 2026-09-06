@@ -504,6 +504,7 @@ struct ToolCapsuleView: View {
         // [Claudio 2026-09-06] 远端 agent 工具输出文件入口删除 — FileAttachmentCard
         // 已下线。outputFile* 字段 / 下载基础设施 / FilePreviewPanel 全部保留，
         // 后续若恢复"agent 发文件给用户"入口可零成本复活（重做卡片 + 重新挂这里）。
+        }
         .alert(
             AppLocalized("Task may have been paused"),
             isPresented: $showBgHintAlert
