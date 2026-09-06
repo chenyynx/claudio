@@ -4599,11 +4599,13 @@ struct ContentView: View {
                                 Text("Start Chatting")
                                     .font(.system(size: 15, weight: .semibold))
                                 Spacer()
-                                Text(remoteProjectPathTail)
-                                    .font(.caption)
-                                    .foregroundStyle(ClaudePalette.textSecondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
+                                if let tail = remoteProjectPathTail {
+                                    Text(tail)
+                                        .font(.caption)
+                                        .foregroundStyle(ClaudePalette.textSecondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                }
                             }
                             .foregroundStyle(ClaudePalette.ctaForeground)
                             .padding(.horizontal, 16)
