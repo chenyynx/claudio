@@ -134,6 +134,12 @@ jobs:
       # filename so every build URL is unique — no Safari cache/416). Asset
       # downloads work through gh.llkk.cc, unlike Actions artifact blobs.
       - name: Run unit tests (post-package gate)
+        # ⏸ [Claudio 2026-09-07 pp 拍板] 测试基建暂时挂起：首次接入暴露
+        # 存量工程连环问题（Standalone 顶层脚本混入 target / Release 无
+        # testability / Debug+MyMac availability 检查），逐个清是技术债
+        # 专项，不阻塞主线。测试代码与 RemoteFallbackResolverTests 等
+        # pin 全部保留；恢复 = 删掉下面这行 if: false。
+        if: false
         # [Claudio 2026-09-07 P0] MinisTests 首次真正接入。放在 ipa 上传
         # 之后：出包零延迟；同一 job 复用 Release 编译产物（测试阶段只编
         # 测试 bundle + 跑用例，几分钟）。测试红 = job 红（无
