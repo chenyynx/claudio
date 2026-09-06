@@ -49,27 +49,8 @@ struct RemoteAgentSetupView: View {
         token.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// [Claudio 2026-09-06] Bridge URL 必须能解析出 host。
-    /// 单斜杠 `wss:/host/path` 这类手滑 URL 会被 URLComponents 按
-    /// RFC3986 解析成 host=nil + 整段 path——WebSocketTask 容忍,
-    /// 但文件上传的 httpBaseURL 派生会失败(file_upload_invalid_url)。
-    /// 在 UI 层直接拦,提示用户改双斜杠。
     private var bridgeURLHost: String? {
-        let trimmed = wssURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        guard let comps = URLComponents(string: trimmed) else { return nil }
-        if let host = comps.host, !host.isEmpty { return host }
-        // 单斜杠 fallback: scheme:/host/path → host 落在 path 里
-        if comps.scheme != nil, comps.path.hasPrefix("/") {
-            let body = String(comps.path.dropFirst())
-            if let slash = body.firstIndex(of: "/") {
-                let candidate = String(body[..<slash])
-                if candidate.contains("."), !candidate.isEmpty { return candidate }
-            } else if body.contains(".") {
-                return body
-            }
-        }
-        return nil
+        BridgeURLValidator.host(of: wssURL)
     }
 
     private var canSave: Bool {
@@ -541,4 +522,44 @@ struct RemoteAgentSetupView: View {
 extension Notification.Name {
     static let showRemoteQRScanner = Notification.Name("showRemoteQRScanner")
     static let remoteQRScanResult = Notification.Name("remoteQRScanResult")
+}
+
+
+// MARK: - BridgeURLValidator
+
+/// [Claudio 2026-09-07 P1] Bridge URL 格式校验的单一实现 — SetupView
+/// 的 canSave 与 ProviderInstanceDetailView 的即时提示共用。
+///
+/// 背景（2026-09-06 单斜杠事故）：`wss:/host/path`（少打一个 /）会被
+/// URLSessionWebSocketTask 容忍（WS 照常通），但 URLComponents 按
+/// RFC3986 解析成 host=nil + 整段塞进 path —— 文件上传的 httpBaseURL
+/// 派生随之失败。UI 层必须拦，同时 displayHost 给卡片/摘要一个
+/// 人认得的短名（pipicore.cn → pipicore）。
+enum BridgeURLValidator {
+    /// 解析出 host；单斜杠形态从 path 首段兜底切出。nil = 无法解析。
+    static func host(of urlString: String) -> String? {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let comps = URLComponents(string: trimmed) else { return nil }
+        if let host = comps.host, !host.isEmpty { return host }
+        if comps.scheme != nil, comps.path.hasPrefix("/") {
+            let body = String(comps.path.dropFirst())
+            if let slash = body.firstIndex(of: "/") {
+                let candidate = String(body[..<slash])
+                if candidate.contains("."), !candidate.isEmpty { return candidate }
+            } else if body.contains(".") {
+                return body
+            }
+        }
+        return nil
+    }
+
+    /// 摘要用短名：host 去 TLD（pipicore.cn → pipicore；带端口先去端口）。
+    static func displayHost(of urlString: String) -> String? {
+        guard let host = host(of: urlString) else { return nil }
+        let name = host.split(separator: ":").first.map(String.init) ?? host
+        let parts = name.split(separator: ".")
+        if parts.count >= 2 { return String(parts[0]) }
+        return name
+    }
 }

@@ -552,6 +552,19 @@ struct ProviderInstanceDetailView: View {
                 .onSubmit { saveCustomBaseURL(instance) }
                 .onDisappear { saveCustomBaseURL(instance) }
 
+            // [Claudio 2026-09-07 P1] remoteAgent 的 URL 即时校验 —
+            // 单斜杠/无 host 的坏 URL 当场红字提示（与 SetupView 同一
+            // BridgeURLValidator，单一实现两个入口）。非 remote 实例
+            // 不显示，本地 provider 行为零变化。
+            if instance.providerType == .remoteAgent,
+               !editingCustomBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               BridgeURLValidator.host(of: editingCustomBaseURL) == nil {
+                Label("需要 wss://host 格式（注意双斜杠）— 当前 URL 解析不出主机名，文件上传会失败",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
             // [T-mimo-shadow-voice] /v1 toggle always shown — instances are no
             // longer classified voice-only; this is a normal endpoint setting.
             Toggle("Auto Append \"/v1\"", isOn: Binding(
@@ -563,7 +576,9 @@ struct ProviderInstanceDetailView: View {
                 }
             ))
         } header: {
-            Text("Custom API Base")
+            // [Claudio 2026-09-07 P1] remoteAgent 语义化命名（pp: 找不到
+            // 改 Bridge URL 的入口 — "Custom API Base" 对远端用户是黑话）
+            Text(instance.providerType == .remoteAgent ? "Bridge URL" : "Custom API Base")
         } footer: {
             Text(instance.appendV1Suffix
                  ? "Leave empty to use the default endpoint. \"/v1\" is appended automatically — enter the base host only."
