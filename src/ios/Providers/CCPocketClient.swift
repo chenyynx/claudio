@@ -76,7 +76,9 @@ final class CCPocketClient: @unchecked Sendable {
     /// connection and a Bridge session id has been captured.
     private(set) var started = false
 
-    private let baseURL: URL
+    /// [Claudio 2026-09-06 DEBUG] 改为 internal 让 RemoteFileUpload.upload 诊断日志能读
+    /// 实际生产环境应该保持 private,debug 完改回
+    internal let baseURL: URL
     private let token: String
     private var task: URLSessionWebSocketTask?
 
