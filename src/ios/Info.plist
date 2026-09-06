@@ -296,6 +296,8 @@
 	<false/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>NFCReaderUsageDescription</key>
 	<string>Minis uses NFC so the AI agent can read and write NFC tags on your behalf.</string>
 	<key>NSAlarmKitUsageDescription</key>

@@ -236,6 +236,10 @@ final class RemoteAgentProvider: AgentProvider {
                                 // create/edit flow), the upload saw "" and the
                                 // bridge parser dropped the prepare_file_upload.
                                 let projectPath = self.projectPath
+                                DiagnosticsLog.shared.write(
+                                    "RemoteAgentProvider",
+                                    "upload-prepare projectPath=\"\(projectPath)\" fileName=\"\(fileName)\" fileURL=\(fileURL.path) instanceID=\(self.instanceID)"
+                                )
                                 let result = try await RemoteFileUpload.upload(
                                     client: self.client,
                                     projectPath: projectPath,
@@ -260,6 +264,10 @@ final class RemoteAgentProvider: AgentProvider {
                                 )
                                 inputText += "\n\n\(xml)"
                                 logger.info("[RemoteAgent] uploaded \(fileName) OK sha=\(result.sha256.prefix(8)) size=\(result.sizeBytes)")
+                                DiagnosticsLog.shared.write(
+                                    "RemoteAgentProvider",
+                                    "upload-ok fileName=\"\(fileName)\" finalName=\"\(result.fileName)\" sizeBytes=\(result.sizeBytes) sha256=\(String(result.sha256.prefix(8)))"
+                                )
                             } catch {
                                 // [Claudio 2026-09-06 G1.5] Structured failure
                                 // marker — symmetric with the success XML above
@@ -269,6 +277,10 @@ final class RemoteAgentProvider: AgentProvider {
                                 // so future diagnosis can grep for it directly.
                                 let reason = (error as? RemoteUploadError)?.code
                                     ?? "upload_failed"
+                                DiagnosticsLog.shared.write(
+                                    "RemoteAgentProvider",
+                                    "upload-fail fileName=\"\(fileName)\" reason=\"\(reason)\" error=\(error.localizedDescription) type=\(type(of: error))"
+                                )
                                 logger.error("[RemoteAgent] upload \(fileName) failed: \(error.localizedDescription)")
                                 inputText += "\n\n<attachment-failed file=\"\(fileName)\" reason=\"\(reason)\"/>"
                             }

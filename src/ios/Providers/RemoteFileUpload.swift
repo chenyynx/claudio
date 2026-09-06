@@ -56,7 +56,12 @@ final class RemoteFileUpload {
             "conflictPolicy": conflictPolicy,
             "requestId": UUID().uuidString,
         ]
+        DiagnosticsLog.shared.write(
+            "RemoteFileUpload",
+            "prepare-req type=\(prepareReq["type"] ?? "?") projectPath=\"\(trimmedPath)\" directoryPath=\"\(directoryPath)\" fileName=\"\(fileName)\" sizeBytes=\(sizeBytes) (type=\(type(of: sizeBytes))) conflictPolicy=\"\(conflictPolicy)\" requestId=\"\(prepareReq["requestId"] ?? "?")\" fileURL=\(fileURL.path)"
+        )
         let prepare = try await client.sendAndWaitRPC(prepareReq)
+        DiagnosticsLog.shared.write("RemoteFileUpload", "prepare-resp \(prepare)")
         guard let uploadUrlStr = prepare["uploadUrl"] as? String,
               let uploadToken = prepare["uploadToken"] as? String,
               let url = URL(string: uploadUrlStr) else {
@@ -77,8 +82,13 @@ final class RemoteFileUpload {
             "requestId": UUID().uuidString,
         ]
         let finalize = try await client.sendAndWaitRPC(finalizeReq)
+        DiagnosticsLog.shared.write("RemoteFileUpload", "finalize-resp \(finalize)")
         let finalName = (finalize["fileName"] as? String) ?? fileName
         let finalSize = (finalize["sizeBytes"] as? Int) ?? sizeBytes
+        DiagnosticsLog.shared.write(
+            "RemoteFileUpload",
+            "upload-ok fileName=\(finalName) sizeBytes=\(finalSize) (type=\(type(of: finalSize))) sha256=\(String(sha256.prefix(8)))"
+        )
         return RemoteUploadResult(fileName: finalName, sizeBytes: finalSize, sha256: sha256)
     }
 
@@ -88,7 +98,9 @@ final class RemoteFileUpload {
         // Last-line defence: the local cache path may have been reaped between
         // `addFileAttachment` and this call. Surface a precise re-add hint
         // instead of the cryptic NSCocoaError "file doesn't exist".
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        let exists = FileManager.default.fileExists(atPath: url.path)
+        guard exists else {
+            DiagnosticsLog.shared.write("RemoteFileUpload", "fileSize-miss path=\(url.path) exists=\(exists)")
             throw RemoteUploadError(
                 code: "file_not_found_re_add",
                 message: "附件文件不存在：\(url.lastPathComponent)。请重新选择附件后再发送。"
@@ -102,7 +114,9 @@ final class RemoteFileUpload {
     private static func httpPutAndHash(url: URL, fileURL: URL) async throws -> String {
         // Same last-line guard as fileSize — SHA-256 read + URLSession upload
         // both need a real file on disk.
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+        let exists = FileManager.default.fileExists(atPath: fileURL.path)
+        guard exists else {
+            DiagnosticsLog.shared.write("RemoteFileUpload", "httpPut-miss path=\(fileURL.path) exists=\(exists)")
             throw RemoteUploadError(
                 code: "file_not_found_re_add",
                 message: "附件文件不存在：\(fileURL.lastPathComponent)。请重新选择附件后再发送。"
@@ -125,9 +139,11 @@ final class RemoteFileUpload {
         request.httpMethod = "PUT"
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         let (_, response) = try await URLSession.shared.upload(for: request, fromFile: fileURL)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard (200..<300).contains(statusCode) else {
+            DiagnosticsLog.shared.write("RemoteFileUpload", "httpPut-fail status=\(statusCode)")
             throw RemoteUploadError(code: "file_upload_http_failed",
-                                     message: "Upload HTTP request failed")
+                                     message: "Upload HTTP request failed (status=\(statusCode))")
         }
         return hex
     }
