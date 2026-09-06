@@ -47,11 +47,22 @@ enum RemoteFileContent: Sendable, Equatable {
 /// sheet 内部自己在 .task 里调 fetcher()(对齐 ccpocket file_peek_sheet.dart
 /// 在 initState 里发 read_file/read_media_file + 自己渲染 loading spinner),
 /// 所以 item 只带请求参数 + fetch 闭包,不带结果。
-struct RemoteFilePeekItem: Identifiable, Sendable {
+struct RemoteFilePeekItem: Identifiable, Equatable, Sendable {
     let id = UUID()
     let filePath: String
     let projectPath: String
     let fetcher: @Sendable () async throws -> RemoteFileContent
+
+    // [T-ios-remotepeek-equatable] Required by .onChange(of:) modifier in
+    // RemoteFilePeekPresentationModifier — SwiftUI passes the new value as
+    // `Optional<RemoteFilePeekItem>`, and Optional is only Equatable when its
+    // wrapped type is. We can't synthesize Equatable because `fetcher` is a
+    // @Sendable closure (not Equatable itself); two items are "equal" iff
+    // they share the same UUID — which is what sheet identity actually cares
+    // about (don't re-render the same peek).
+    static func == (lhs: RemoteFilePeekItem, rhs: RemoteFilePeekItem) -> Bool {
+        lhs.id == rhs.id
+    }
 }
 
 /// 单文件读内容操作。对齐 ccpocket file_peek_sheet.dart:296-310
