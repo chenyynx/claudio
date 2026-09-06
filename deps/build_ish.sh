@@ -177,6 +177,41 @@ library_dirs = ['$IOS_SDK/usr/lib']
 EOF
 
     log_success "Cross-compilation file created"
+
+    # [Claudio 2026-09-07] Simulator slice for CI unit tests (xcodebuild test
+    # on iOS Simulator needs every linked static lib to carry a simulator
+    # arch — ld rejects "building for iOS-simulator, but linking object file
+    # built for iOS"). Same arm64 cpu on Apple Silicon runners; only the SDK
+    # and the version-min flag differ.
+    SIM_BUILD_DIR="$ISH_DIR/build-ios-sim"
+    mkdir -p "$SIM_BUILD_DIR"
+    IOS_SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+    SIM_CROSS_FILE="$SIM_BUILD_DIR/ios-sim-cross.txt"
+
+    cat > "$SIM_CROSS_FILE" << EOF
+[binaries]
+c = ['clang', '-arch', 'arm64', '-isysroot', '$IOS_SIM_SDK', '-mios-simulator-version-min=$IOS_DEPLOYMENT_TARGET']
+ar = 'ar'
+strip = 'strip'
+pkg-config = 'false'
+
+[host_machine]
+system = 'darwin'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+
+[built-in options]
+c_args = []
+c_link_args = ['-L$IOS_SIM_SDK/usr/lib']
+
+[properties]
+needs_exe_wrapper = true
+sys_root = '$IOS_SIM_SDK'
+library_dirs = ['$IOS_SIM_SDK/usr/lib']
+EOF
+
+    log_success "Simulator cross-compilation file created"
 }
 
 # ============================================================================
@@ -237,6 +272,33 @@ build_ish() {
     log_info "Building VDSO..."
     ninja -C "$BUILD_DIR" vdso/arm64/libvdso.so.elf || log_warning "VDSO build failed (may need LLVM)"
 
+    # [Claudio 2026-09-07] Simulator slice build. Failure is NON-FATAL:
+    # device libs stay single-arch and the ipa still ships; only the CI
+    # simulator unit tests lose their link inputs. VDSO is guest-side and
+    # is not rebuilt for the simulator.
+    log_info "Building iSH simulator slice..."
+    SIM_BUILD_DIR="$ISH_DIR/build-ios-sim"
+    SIM_CROSS_FILE="$SIM_BUILD_DIR/ios-sim-cross.txt"
+    if [ ! -f "$SIM_BUILD_DIR/build.ninja" ]; then
+        meson setup "$SIM_BUILD_DIR" \
+            --cross-file "$SIM_CROSS_FILE" \
+            --buildtype="$MESON_BUILDTYPE" \
+            -Db_ndebug="$MESON_NDEBUG" \
+            -Dlog="" \
+            -Dlog_handler=nslog \
+            -Dkernel=ish \
+            -Dengine=asbestos \
+            -Dguest_arch=arm64 || log_warning "Simulator meson setup failed"
+    else
+        meson setup --reconfigure "$SIM_BUILD_DIR" \
+            --buildtype="$MESON_BUILDTYPE" \
+            -Db_ndebug="$MESON_NDEBUG" || log_warning "Simulator reconfigure failed"
+    fi
+    if [ -f "$SIM_BUILD_DIR/build.ninja" ]; then
+        ninja -C "$SIM_BUILD_DIR" libish.a libish_emu.a libfakefs.a \
+            || log_warning "Simulator libs build failed (device-only libs will be copied)"
+    fi
+
     cd "$SCRIPT_DIR"
     log_success "iSH libraries built successfully"
 }
@@ -261,11 +323,23 @@ copy_outputs() {
     mkdir -p "$OUTPUT_INCLUDE/ish/asbestos"
     mkdir -p "$OUTPUT_RESOURCES"
 
-    # Copy static libraries
+    # Copy static libraries. [Claudio 2026-09-07] When the simulator slice
+    # built, lipo it together with the device slice into a fat archive so
+    # both `xcodebuild build` (iphoneos) and `xcodebuild test` (simulator)
+    # can link the same deps/libs/*.a. Single-arch fallback keeps the old
+    # behavior when the sim build failed.
     log_info "Copying libraries..."
-    cp "$BUILD_DIR/libish.a" "$OUTPUT_LIBS/"
-    cp "$BUILD_DIR/libish_emu.a" "$OUTPUT_LIBS/"
-    cp "$BUILD_DIR/libfakefs.a" "$OUTPUT_LIBS/"
+    SIM_BUILD_DIR="$ISH_DIR/build-ios-sim"
+    for lib in libish.a libish_emu.a libfakefs.a; do
+        if [ -f "$SIM_BUILD_DIR/$lib" ]; then
+            lipo -create "$BUILD_DIR/$lib" "$SIM_BUILD_DIR/$lib" -output "$OUTPUT_LIBS/$lib" \
+                && log_success "$lib: fat (device + simulator)" \
+                || cp "$BUILD_DIR/$lib" "$OUTPUT_LIBS/"
+        else
+            cp "$BUILD_DIR/$lib" "$OUTPUT_LIBS/"
+            log_warning "$lib: device-only slice (simulator build unavailable)"
+        fi
+    done
 
     # Copy VDSO if built (arm64 guest VDSO path)
     if [ -f "$BUILD_DIR/vdso/arm64/libvdso.so.elf" ]; then
