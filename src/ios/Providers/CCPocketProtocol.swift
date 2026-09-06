@@ -207,9 +207,18 @@ enum CCPocketProtocol {
     /// (如大文件、binary);modifiedAt = path → mtime(秒);
     /// totalFiles/truncated = 是否有上限截断(maxEntries/maxBytes)。
     /// all-optional 保持 lenient parse 兼容旧桥。
+    ///
+    /// [Claudio 2026-09-06] `ignored` 字段类型修正：桥端
+    /// (claudio-bridge packages/bridge/src/git-operations.ts:ClientFileListResult)
+    /// 实际返回 `ignored: boolean[]`（与 files 等长，标记每个文件是否被
+    /// git 忽略），iOS 之前定义成 `[String]?` 会让 JSONDecoder 抛
+    /// typeMismatch → RemoteProjectFileIndex.refresh 走 catch →
+    /// suffixSet 永远 nil → 反引号内/裸路径识别失效。改 [Bool]? 对齐
+    /// wire format。iOS 端不消费此字段（ccpocket 客户端也只解析成
+    /// Set<String> 然后丢弃），保留只为 decode 不报错。
     struct FileListResponse: Decodable {
         let files: [String]?
-        let ignored: [String]?
+        let ignored: [Bool]?
         let modifiedAt: [String: Double]?
         let totalFiles: Int?
         let truncated: Bool?

@@ -63,11 +63,35 @@ final class RemoteFileUpload {
         let prepare = try await client.sendAndWaitRPC(prepareReq)
         DiagnosticsLog.shared.write("RemoteFileUpload", "prepare-resp \(prepare)")
         guard let uploadUrlStr = prepare["uploadUrl"] as? String,
-              let uploadToken = prepare["uploadToken"] as? String,
-              let url = URL(string: uploadUrlStr) else {
+              let uploadToken = prepare["uploadToken"] as? String else {
             throw RemoteUploadError(
                 code: (prepare["errorCode"] as? String) ?? "file_upload_failed",
                 message: (prepare["message"] as? String) ?? "prepare_file_upload returned no upload URL"
+            )
+        }
+        // [Claudio 2026-09-06] 桥 upload-store.ts:224 返回相对路径
+        // `/api/uploads/<token>`（无 scheme/host）。直接 URL(string:)
+        // 构造会让 URLSession.upload 抛 NSURLErrorUnsupportedURL（iOS
+        // 中文翻译「不支持的URL」），上传卡 HTTP PUT 阶段，前几轮
+        // 修复全在 prepare 阶段，没碰到这里。用 client.httpBaseURL
+        // 派生 http://host:port 拼绝对 URL（RemoteFileContentFetcher
+        // 处理 /api/media/<id> 同款路径，CCPocketClient.swift:1415
+        // 已实现 ws→http scheme 切换）。若桥后续返回绝对 URL，路径
+        // 分支的 scheme 守卫让它走原路径。
+        let url: URL
+        if let parsed = URL(string: uploadUrlStr), parsed.scheme != nil {
+            url = parsed
+        } else if let base = client.httpBaseURL,
+                  let composed = URL(string: uploadUrlStr, relativeTo: base)?.absoluteURL {
+            DiagnosticsLog.shared.write(
+                "RemoteFileUpload",
+                "url-rewrite relative=\"\(uploadUrlStr)\" base=\"\(base.absoluteString)\" → \"\(composed.absoluteString)\""
+            )
+            url = composed
+        } else {
+            throw RemoteUploadError(
+                code: "file_upload_invalid_url",
+                message: "prepare_file_upload returned unsupported uploadUrl (no host / no httpBaseURL): \(uploadUrlStr)"
             )
         }
 

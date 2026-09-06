@@ -63,13 +63,30 @@ final class RemoteFileDownload {
         let prepare = try await client.sendAndWaitRPC(prepareReq)
         // [Fix 2026-09-05] 对齐 ccpocket websocket.ts:1197-1205 file_download_ready
         // shape: downloadUrl + fileName + mimeType + sizeBytes + filePath.
-        guard let urlStr = prepare["downloadUrl"] as? String,
-              let url = URL(string: urlStr) else {
+        guard let urlStr = prepare["downloadUrl"] as? String else {
             throw RemoteDownloadError(
                 code: (prepare["errorCode"] as? String)
                     ?? CCPocketProtocol.FileDownloadErrorCode.failed.rawValue,
                 message: (prepare["message"] as? String)
                     ?? "prepare_file_download returned no downloadUrl"
+            )
+        }
+        // [Claudio 2026-09-06] 与 RemoteFileUpload 对称：桥 downloadUrl
+        // 是相对路径 `/api/media/<token>`，iOS 端必须用 httpBaseURL
+        // 拼绝对 URL（与 upload 修法同款根因）。RemoteFileContentFetcher
+        // 处理 /api/media/<id> 路径已用 httpBaseURL，但 RemoteFileDownload
+        // 这条旧路径漏接，同 bug。scheme 守卫让桥未来返回绝对 URL 时
+        // 走原路径。
+        let url: URL
+        if let parsed = URL(string: urlStr), parsed.scheme != nil {
+            url = parsed
+        } else if let base = client.httpBaseURL,
+                  let composed = URL(string: urlStr, relativeTo: base)?.absoluteURL {
+            url = composed
+        } else {
+            throw RemoteDownloadError(
+                code: CCPocketProtocol.FileDownloadErrorCode.failed.rawValue,
+                message: "prepare_file_download returned unsupported downloadUrl (no host / no httpBaseURL): \(urlStr)"
             )
         }
         let mime = (prepare["mimeType"] as? String) ?? suggestedMimeType
