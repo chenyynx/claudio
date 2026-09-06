@@ -77,6 +77,28 @@ final class RemoteAgentStore {
         clients.removeValue(forKey: key)
     }
 
+    /// [Claudio 2026-09-06 G4] Sweep every live client for an instance
+    /// across ALL chat sessions (and detached sub-tasks). Triggered when
+    /// `Project Path` changes — the cached clients still hold the OLD
+    /// `projectPath`, so any subsequent input would re-route uploads to
+    /// the old directory. The next turn's `makeRemoteAgentProvider` will
+    /// reconnect with the new value persisted to `RemoteAgentConnection`.
+    ///
+    /// Multi-chat sweep is intentional: every conversation's bridge
+    /// session is anchored to the same CWD. Releasing one chat but not
+    /// another would leave a zombie session with a stale CWD.
+    func releaseAll(forInstanceID instanceID: String) {
+        lock.lock()
+        let toRelease = clients.filter { key, _ in key.hasPrefix(instanceID + ".") }
+        lock.unlock()
+        for (key, client) in toRelease {
+            client.disconnect()
+            lock.lock()
+            clients.removeValue(forKey: key)
+            lock.unlock()
+        }
+    }
+
     /// All live client states, for the sidebar connection dot aggregation
     /// (any connected = connected; any connecting wins for the spinner).
     func liveStates() -> [CCPocketClient.State] {

@@ -22,6 +22,16 @@ struct RemoteAgentSetupView: View {
     @State private var token = ""
     @State private var projectPath = ""
     @State private var isSaving = false
+    /// [Claudio 2026-09-06 G2] Probe state for auto-fill. Set when the
+    /// throwaway probe connect fails (URL bad, bridge down, token wrong)
+    /// so the field hint can show "Bridge 不可达" instead of silently
+    /// staying empty.
+    @State private var bridgeUnreachable = false
+    @State private var allowedDirs: [String] = []
+    /// Auto-fill runs only when the user is creating a NEW instance AND
+    /// the field is still empty — never overwrite an in-progress edit,
+    /// never overwrite a saved value being shown to an editor.
+    @State private var didAttemptAutofill = false
     @FocusState private var focused: Field?
 
     private enum Field { case url, token, path }
@@ -41,6 +51,14 @@ struct RemoteAgentSetupView: View {
 
     private var canSave: Bool {
         !trimmedToken.isEmpty && !isSaving
+    }
+
+    /// Path must be non-empty for upload/file-peek to ever work (the bridge
+    /// parser silently drops empty projectPath — see G1.3 pre-flight).
+    /// Skip validation when allowedDirs is non-empty AND user hasn't typed
+    /// yet (placeholder mode — first connect attempt should fill it).
+    private var trimmedPath: String {
+        projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var body: some View {
@@ -71,6 +89,9 @@ struct RemoteAgentSetupView: View {
                 Button("Cancel") { dismiss() }
                     .foregroundStyle(ClaudePalette.textPrimary)
             }
+        }
+        .task {
+            await attemptAutofill()
         }
     }
 
@@ -222,13 +243,28 @@ struct RemoteAgentSetupView: View {
 
             fieldRow(
                 label: "Project Path",
-                placeholder: "/path/to/project",
+                placeholder: allowedDirs.first ?? "/path/to/project",
                 text: $projectPath,
                 field: .path,
                 monospace: true,
                 keyboard: .default,
                 secure: false
             )
+
+            // [Claudio 2026-09-06 G2] Auto-fill status hint. Shows the
+            // bridge-reported whitelist (or "no whitelist") so the user
+            // knows where the placeholder came from. On bridge-down we
+            // surface that explicitly instead of staying silent.
+            if bridgeUnreachable {
+                Label("Bridge 不可达，无法自动填充 — 请手动输入", systemImage: "wifi.slash")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if let first = allowedDirs.first {
+                Label("已自动填入 Bridge 第一个白名单目录", systemImage: "wand.and.stars")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .onTapGesture { projectPath = first }
+            }
         }
         .padding(.vertical, 24)
     }
@@ -373,6 +409,24 @@ struct RemoteAgentSetupView: View {
         let trimmedBase = wssURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPath = projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedToken.isEmpty else { return }
+        // [Claudio 2026-09-06 G3.2] Don't let the user save an empty
+        // Project Path — the bridge silently drops empty prepare_file_upload
+        // and the resulting error bubble gives them no actionable info.
+        // Editing an existing instance that somehow ended up empty is the
+        // only path that can reach here without an autofill succeeding.
+        guard !trimmedPath.isEmpty else {
+            logger.warning("save: refused empty projectPath for instance \(existingInstance?.id.prefix(8) ?? "new")")
+            return
+        }
+        // [Claudio 2026-09-06 G2] Whitelist guard at save: if the bridge
+        // gave us a whitelist, the path must be in it. Mismatch produces
+        // a `file_upload_not_allowed` at upload time — catch it before
+        // persisting so the user sees the hint NOW, not after their first
+        // upload attempt bubbles the cryptic generic error.
+        if !allowedDirs.isEmpty, !allowedDirs.contains(trimmedPath) {
+            logger.warning("save: projectPath not in bridge whitelist")
+            return
+        }
 
         isSaving = true
         if let existing = existingInstance {
@@ -402,9 +456,54 @@ struct RemoteAgentSetupView: View {
         isSaving = false
         dismiss()
     }
-}
 
-extension Notification.Name {
-    static let showRemoteQRScanner = Notification.Name("showRemoteQRScanner")
-    static let remoteQRScanResult = Notification.Name("remoteQRScanResult")
+    // MARK: - G2 Auto-fill
+
+    /// [Claudio 2026-09-06 G2] Open a throwaway Bridge connection just to
+    /// pull the `session_list` (which carries `allowedDirs`). When the
+    /// Bridge is reachable AND the whitelist has at least one entry, fill
+    /// the empty Project Path field with `allowedDirs.first`. Multi-user
+    /// principle: we never hardcode a default — the Bridge tells us what
+    /// directories the user already trusts.
+    ///
+    /// Skipped for editing flows (`existingInstance != nil`) so we never
+    /// silently overwrite a saved value with the bridge-reported default.
+    /// Re-running also skipped after the first attempt — `.task` may fire
+    /// multiple times on view re-entry; a flag avoids re-overwriting a
+    /// field the user has typed into.
+    private func attemptAutofill() async {
+        guard existingInstance == nil, !didAttemptAutofill else { return }
+        didAttemptAutofill = true
+        let trimmedBase = wssURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let baseURL = URL(string: trimmedBase) else {
+            bridgeUnreachable = true
+            return
+        }
+        let probe = CCPocketClient(baseURL: baseURL, token: trimmedToken)
+        probe.mappingInstanceID = nil
+        do {
+            try await probe.connect(projectPath: "", provider: "claude", permissionMode: "default")
+            // Wait briefly for session_list to land on the receive task.
+            for _ in 0..<20 {
+                if !probe.allowedDirs.isEmpty || probe.state != .connected { break }
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            allowedDirs = probe.allowedDirs
+            bridgeUnreachable = false
+            // [Claudio 2026-09-06 G2 UX] Auto-fill only when (a) field still
+            // empty and (b) whitelist has at least one entry. The user
+            // can always overwrite before tapping Save.
+            if projectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let first = allowedDirs.first {
+                projectPath = first
+                logger.info("autofill: filled projectPath with \(first)")
+            }
+        } catch {
+            bridgeUnreachable = true
+            logger.warning("autofill: probe connect failed: \(error.localizedDescription)")
+        }
+        probe.disconnect()
+    }
+
+    private let logger = AppLogger(category: "RemoteAgentSetup")
 }

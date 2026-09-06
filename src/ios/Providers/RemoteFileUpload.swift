@@ -23,6 +23,12 @@ struct RemoteUploadResult {
 final class RemoteFileUpload {
 
     /// 完整上传一个文件到 bridge 项目目录；返回结果或抛 RemoteUploadError。
+    ///
+    /// [Claudio 2026-09-06 G1] Pre-flight 校验 projectPath 非空：bridge parser
+    /// 把空 projectPath 当 unsupported_message 直接 drop，UI 端只能看到
+    /// `[User attempted to attach X failed: prepare_file_upload]` 这种
+    /// 不可执行的错误。提前在客户端拦截，让上游能看到具体错误码
+    /// `project_path_not_configured`，UI 层可以引导用户去设置。
     static func upload(
         client: CCPocketClient,
         projectPath: String,
@@ -31,12 +37,19 @@ final class RemoteFileUpload {
         fileURL: URL,
         conflictPolicy: String = "rename"
     ) async throws -> RemoteUploadResult {
+        let trimmedPath = projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty else {
+            throw RemoteUploadError(
+                code: "project_path_not_configured",
+                message: "Project Path 未配置，无法上传文件。请在 Remote Session 设置里填写 Project Path。"
+            )
+        }
         let sizeBytes = try fileSize(fileURL)
 
         // ── 1. prepare ──
         let prepareReq: [String: Any] = [
             "type": "prepare_file_upload",
-            "projectPath": projectPath,
+            "projectPath": trimmedPath,
             "directoryPath": directoryPath,
             "fileName": fileName,
             "sizeBytes": sizeBytes,

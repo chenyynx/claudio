@@ -4473,6 +4473,11 @@ struct ContentView: View {
     @State private var showConnectComputer = false
     @State private var showConnectionSheet = false
     @State private var showNewSessionSheet = false
+    /// [Claudio 2026-09-06 G3.4] Drives the dedicated path-edit modal
+    /// (RemoteAgentEditPathView) opened from the provider card's long-press
+    /// menu. Set to the instance id when the user picks "Edit Project
+    /// Path"; the sheet binding resets it on dismiss.
+    @State private var editingPathInstanceID: String?
     /// ③ 启动会话失败原因: 简单 sheet 弹错(避开 .alert 修饰器 + 复杂 body 类型推导)
     @State private var startSessionError: String?
     @State private var showStartSessionError = false
@@ -4561,6 +4566,22 @@ struct ContentView: View {
                         showConnectComputer = true
                     }
                     .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(ClaudePalette.cardFill))
+                    // [Claudio 2026-09-06 G3.4] Long-press entry into the
+                    // dedicated path edit modal. Tap still opens the full
+                    // setup page (URL/token/path all editable). Long-press
+                    // skips straight to the path — the common post-setup
+                    // change ("switch to a different repo on my Mac").
+                    .contextMenu {
+                        if let remoteID = providerStore.instances.first(where: {
+                            $0.providerType == .remoteAgent && $0.isEnabled
+                        })?.id {
+                            Button {
+                                editingPathInstanceID = remoteID
+                            } label: {
+                                Label("Edit Project Path", systemImage: "folder")
+                            }
+                        }
+                    }
                 }
                 .frame(maxWidth: 400)
 
@@ -4584,7 +4605,22 @@ struct ContentView: View {
                 RemoteAgentSetupView()
             }
         }
+        // [Claudio 2026-09-06 G3.4] Path-edit sheet. `item:` binding
+        // (instead of `isPresented`) so the modal knows which instance to
+        // edit without an extra @State for the id; nil = dismiss.
+        .sheet(item: Binding(
+            get: { editingPathInstanceID.map { InstanceIDBox(id: $0) } },
+            set: { editingPathInstanceID = $0?.id }
+        )) { box in
+            RemoteAgentEditPathView(instanceID: box.id)
+        }
     }
+
+    /// [Claudio 2026-09-06 G3.4] Identifiable wrapper so the sheet's
+    /// `item:` binding type-infers to a single concrete identifiable
+    /// value. Using String directly with `Binding<String?>` does NOT
+    /// satisfy the `Identifiable` constraint `item:` requires.
+    private struct InstanceIDBox: Identifiable { let id: String }
 
     // title/subtitle must stay LocalizedStringKey, not String. A string literal at
     // the call site localizes fine on its own, but routing it through a String
