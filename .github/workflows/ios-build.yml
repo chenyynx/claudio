@@ -147,7 +147,7 @@ jobs:
             -project Minis.xcodeproj \
             -scheme Minis \
             -configuration Release \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
+            -destination 'platform=macOS,variant=Designed for iPad' \
             -only-testing:MinisTests \
             CODE_SIGNING_ALLOWED=NO \
             SWIFT_NUM_THREADS=2 \
