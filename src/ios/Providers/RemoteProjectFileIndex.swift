@@ -46,6 +46,21 @@ struct RemoteFileIndexEntry: Sendable, Equatable {
         }
         return suffixes
     }
+
+    /// [Claudio 2026-09-07] 把相对后缀集合并进 `{root}/{相对形态}` 绝对
+    /// 路径形态 — agent 正文引用文件常用绝对路径（/home/ubuntu/claudio/
+    /// README.md），而 buildSuffixSet 只产出相对形态，matches() 不命中
+    /// → 路径不可点击。root 为空时原样返回（无绝对形态可造）。
+    static func mergingAbsoluteForms(_ suffixes: Set<String>, projectRoot: String) -> Set<String> {
+        let root = projectRoot.hasSuffix("/") ? String(projectRoot.dropLast()) : projectRoot
+        guard !root.isEmpty, !suffixes.isEmpty else { return suffixes }
+        var merged = suffixes
+        merged.reserveCapacity(suffixes.count * 2)
+        for s in suffixes {
+            merged.insert(root + "/" + s)
+        }
+        return merged
+    }
 }
 
 /// 远端 agent 项目文件索引单例。actor 保护：后台 task 调 refresh
@@ -77,10 +92,19 @@ actor RemoteProjectFileIndex {
             let response = try JSONDecoder().decode(CCPocketProtocol.FileListResponse.self, from: data)
             let files = response.files ?? []
             let modifiedRaw = response.modifiedAt ?? [:]
+            // [Claudio 2026-09-07] 绝对路径形态一并入集：agent 正文里
+            // 引用文件常用绝对路径（/home/ubuntu/claudio/README.md），
+            // 而 buildSuffixSet 产出的是项目相对形态（claudio/README.md）
+            // —— matches() 只查集合成员，绝对形态不命中 → 路径不可点击。
+            // 在 refresh 一次性合并，matches/渲染调用点零改动。
+            let suffixSet = RemoteFileIndexEntry.mergingAbsoluteForms(
+                RemoteFileIndexEntry.buildSuffixSet(from: files),
+                projectRoot: projectPath
+            )
             let entry = RemoteFileIndexEntry(
                 files: files,
                 modifiedAt: modifiedRaw,
-                suffixSet: RemoteFileIndexEntry.buildSuffixSet(from: files),
+                suffixSet: suffixSet,
                 fetchedAt: .now
             )
             index[projectPath] = entry

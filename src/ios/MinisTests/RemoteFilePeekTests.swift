@@ -54,6 +54,42 @@ final class RemoteFilePeekTests: XCTestCase {
         XCTAssertEqual(RemoteProjectFileIndex.stripLineCol("src/foo.swift"), "src/foo.swift")
     }
 
+
+    // MARK: - mergingAbsoluteForms [Claudio 2026-09-07]
+
+    func test_mergingAbsoluteForms_addsRootPrefixedForms() {
+        let rel: Set<String> = ["claudio/README.md", "README.md"]
+        let merged = RemoteFileIndexEntry.mergingAbsoluteForms(rel, projectRoot: "/home/ubuntu")
+        XCTAssertEqual(merged, [
+            "claudio/README.md", "README.md",
+            "/home/ubuntu/claudio/README.md", "/home/ubuntu/README.md",
+        ])
+    }
+
+    func test_mergingAbsoluteForms_trailingSlashRoot_noDoubleSlash() {
+        let merged = RemoteFileIndexEntry.mergingAbsoluteForms(["a.md"], projectRoot: "/home/ubuntu/")
+        XCTAssertTrue(merged.contains("/home/ubuntu/a.md"))
+        XCTAssertFalse(merged.contains("//home/ubuntu/a.md"))
+    }
+
+    func test_mergingAbsoluteForms_emptyRoot_returnsUnchanged() {
+        let rel: Set<String> = ["a.md"]
+        XCTAssertEqual(RemoteFileIndexEntry.mergingAbsoluteForms(rel, projectRoot: ""), rel)
+    }
+
+    func test_matches_absoluteFormHitsAfterMerge() {
+        // 端到端 pin：合并后绝对路径必须命中（回归保护 — 修复前永远 false）
+        let set = RemoteFileIndexEntry.mergingAbsoluteForms(
+            RemoteFileIndexEntry.buildSuffixSet(from: ["claudio/README.md"]),
+            projectRoot: "/home/ubuntu"
+        )
+        XCTAssertTrue(RemoteProjectFileIndex.matches(path: "/home/ubuntu/claudio/README.md", suffixSet: set))
+        XCTAssertTrue(RemoteProjectFileIndex.matches(path: "/home/ubuntu/README.md", suffixSet: set))
+        XCTAssertTrue(RemoteProjectFileIndex.matches(path: "claudio/README.md", suffixSet: set))
+        // 行号后缀 + 绝对形态组合
+        XCTAssertTrue(RemoteProjectFileIndex.matches(path: "/home/ubuntu/claudio/README.md:42", suffixSet: set))
+    }
+
     // MARK: - matches
 
     func test_matches_exactSuffix() {
