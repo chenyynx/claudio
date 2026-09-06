@@ -172,7 +172,29 @@ struct RemoteFilePeekSheet: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .safeAreaPadding(.top)
+        // [T-ios-16-safeareapadding-compat] safeAreaPadding(.top) is iOS 17+.
+        // Project deployment target is iOS 16.0, so on iOS 16 we overlay a
+        // zero-height Color.clear at the top whose height equals the current
+        // top safe-area inset — same visual result, no layout change. On
+        // iOS 17+ we just call the native modifier.
+        .modifier(SafeAreaTopPaddingCompat())
+    }
+
+    /// iOS 17+ `safeAreaPadding(.top)` replacement for iOS 16.
+    private struct SafeAreaTopPaddingCompat: ViewModifier {
+        @ViewBuilder
+        func body(content: Content) -> some View {
+            if #available(iOS 17.0, *) {
+                content.safeAreaPadding(.top)
+            } else {
+                content.overlay(alignment: .top) {
+                    GeometryReader { geo in
+                        Color.clear.frame(height: geo.safeAreaInsets.top)
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
+        }
     }
 
     // MARK: - 内容区
