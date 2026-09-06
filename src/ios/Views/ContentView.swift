@@ -7983,19 +7983,25 @@ private struct SettingsSheet: View {
     @State private var navPath = NavigationPath()
     @State private var showFeedbackDialog = false
 
-    /// [Claudio 2026-09-07 P1-C] 远程卡片的编辑 sheet（复用 SetupView
-    /// existingInstance 编辑模式）。
-    @State private var showRemoteSetup = false
-
     var body: some View {
         NavigationStack(path: $navPath) {
             List {
-                // [Claudio 2026-09-07 P1-C] 「远程」置顶卡 — 远端连接是
-                // 最高频设置操作，直接给一级入口。
-                Section {
-                    RemoteComputerSettingsCard { showRemoteSetup = true }
+                // [Claudio 2026-09-07 P1-C 重做] 「远程」标准行（与
+                // Storage/Memory 同族样式）→ 设备管理页（pp: 自定义卡
+                // 与其他区格格不入；配置页职责是管理设备）。
+                NavigationLink {
+                    RemoteDevicesView().settingsPaletteBackground()
+                } label: {
+                    Label {
+                        Text("远程")
+                    } icon: {
+                        Image(systemName: "desktopcomputer")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.white)
+                            .frame(width: 21, height: 21)
+                            .background(.orange, in: Circle())
+                    }
                 }
-                .listRowBackground(ClaudePalette.card)
 
                 Section {
                     NavigationLink {
@@ -8312,13 +8318,6 @@ private struct SettingsSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
-                }
-            }
-            .sheet(isPresented: $showRemoteSetup) {
-                NavigationStack {
-                    RemoteAgentSetupView(existingInstance: ProviderConfigStore.shared.instances.first {
-                        $0.providerType == .remoteAgent && $0.isEnabled
-                    })
                 }
             }
             .navigationDestination(for: SettingsDestination.self) { dest in
@@ -8681,65 +8680,133 @@ private func adaptiveColor(light: UInt32, dark: UInt32) -> Color {
     })
 }
 
-/// [Claudio 2026-09-07 P1-C] 设置页「远程」置顶卡 — pp 上次找不到改
-/// Bridge URL 的入口：远端连接是最高频设置操作，不该埋在
-/// Manage Providers → 列表 → detail 三层之下。有 remoteAgent 实例时
-/// 显示状态摘要，点击直接进 RemoteAgentSetupView 编辑模式；无实例时
-/// 显示"未连接 · 点此配置"。
-private struct RemoteComputerSettingsCard: View {
-    let onOpen: () -> Void
-    var body: some View {
-        let store = ProviderConfigStore.shared
-        let inst = store.instances.first { $0.providerType == .remoteAgent && $0.isEnabled }
-        Button(action: onOpen) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(LinearGradient(colors: [adaptiveColor(light: 0x33322E, dark: 0x4A4945),
-                                                      adaptiveColor(light: 0x141413, dark: 0x1D1C19)],
-                                             startPoint: .top, endPoint: .bottom))
-                        .frame(width: 34, height: 34)
-                    Image(systemName: "desktopcomputer")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(ClaudePalette.ctaForeground)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text("远程").font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(ClaudePalette.textPrimary)
-                        Circle()
-                            .fill(inst != nil && (inst?.hasAnyCredential ?? false) ? Color.green : Color.secondary.opacity(0.4))
-                            .frame(width: 6, height: 6)
-                    }
-                    if let inst, let base = inst.effectiveCustomBaseURL {
-                        Text(remoteSubtitle(instance: inst, base: base))
-                            .font(.system(size: 12))
-                            .foregroundStyle(ClaudePalette.textSecondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    } else {
-                        Text("未连接 · 点此配置")
-                            .font(.system(size: 12))
-                            .foregroundStyle(ClaudePalette.textSecondary)
-                    }
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.primary.opacity(0.25))
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+/// [Claudio 2026-09-07 P1-C 重做] 远程设备管理页 — Settings「远程」行
+/// 进入。列表 = 全部 remoteAgent 实例（状态点 + label + host·项目·运行时
+/// 摘要；点击进 SetupView 编辑模式；左滑删除）；底部「添加新设备」进
+/// 新建表单。
+private struct RemoteDevicesView: View {
+    @ObservedObject private var store = ProviderConfigStore.shared
+    @State private var editingInstance: ProviderInstance?
+    @State private var showAddDevice = false
+    @State private var pendingDelete: ProviderInstance?
+
+    private var devices: [ProviderInstance] {
+        store.instances.filter { $0.providerType == .remoteAgent }
     }
 
-    private func remoteSubtitle(instance: ProviderInstance, base: String) -> String {
-        let host = BridgeURLValidator.host(of: base) ?? base
-        let tail = RemoteAgentConnection.load(instanceID: instance.id)?.projectPath
-            .split(separator: "/").last.map(String.init)
-        return tail.map { "\(host) · \($0)" } ?? host
+    var body: some View {
+        List {
+            if !devices.isEmpty {
+                Section {
+                    ForEach(devices) { device in
+                        Button {
+                            editingInstance = device
+                        } label: {
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(deviceColor(device))
+                                    .frame(width: 7, height: 7)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(device.label)
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundStyle(ClaudePalette.textPrimary)
+                                    Text(summaryLine(device))
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(ClaudePalette.textSecondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.primary.opacity(0.25))
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                pendingDelete = device
+                            } label: {
+                                Label("删除", systemImage: "trash")
+                            }
+                        }
+                    }
+                } header: {
+                    Text("设备")
+                }
+            }
+
+            Section {
+                Button {
+                    showAddDevice = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(ClaudePalette.textSecondary)
+                        Text("添加新设备")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(ClaudePalette.textPrimary)
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } footer: {
+                if devices.isEmpty {
+                    Text("连接运行 Claude Code 或 Codex 的电脑，手机即可随身接手。")
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .navigationTitle("远程")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: Binding(
+            get: { editingInstance.map { SettingsInstanceBox(id: $0.id) } },
+            set: { editingInstance = $0.flatMap { b in store.instances.first { $0.id == b.id } } }
+        )) { box in
+            NavigationStack {
+                RemoteAgentSetupView(existingInstance: store.instances.first { $0.id == box.id })
+            }
+        }
+        .sheet(isPresented: $showAddDevice) {
+            NavigationStack {
+                RemoteAgentSetupView()
+            }
+        }
+        .alert("删除设备", isPresented: Binding(
+            get: { pendingDelete != nil },
+            set: { if !$0 { pendingDelete = nil } }
+        ), presenting: pendingDelete) { device in
+            Button("删除", role: .destructive) {
+                store.removeInstance(device.id)
+                pendingDelete = nil
+            }
+            Button("取消", role: .cancel) { pendingDelete = nil }
+        } message: { device in
+            Text("将删除「\(device.label)」的连接配置与 Token。历史会话保留，但无法继续对话。")
+        }
+    }
+
+    private func deviceColor(_ device: ProviderInstance) -> Color {
+        device.isEnabled && device.hasAnyCredential ? .green : .secondary.opacity(0.5)
+    }
+
+    /// 摘要：host · 项目尾段 · 运行时（与欢迎页卡片同一信息体系）。
+    private func summaryLine(_ device: ProviderInstance) -> String {
+        let host = (device.effectiveCustomBaseURL).flatMap { BridgeURLValidator.host(of: $0) } ?? "未配置"
+        let tail = RemoteAgentConnection.load(instanceID: device.id)?.projectPath
+            .split(separator: "/").last.map(String.init) ?? ""
+        let runtime = RemoteSessionDefaultsStore.load().provider == "codex" ? "Codex" : "Claude Code"
+        let parts = [host, tail, runtime].filter { !$0.isEmpty }
+        return parts.joined(separator: " · ")
     }
 }
+
+/// sheet(item:) 的 Identifiable 包装（ContentView.InstanceIDBox 是私有
+/// 嵌套类型不可跨结构体复用，这里自建）。
+private struct SettingsInstanceBox: Identifiable { let id: String }
 
 /// 质感卡底：168° 微渐变 + 1px 描边 + 双层柔影 + 顶部内高光线 +
 /// 右上 Claude 橙暖光晕（设计稿"质感六层"）。
