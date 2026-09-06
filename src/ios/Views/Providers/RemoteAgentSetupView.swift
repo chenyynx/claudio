@@ -22,6 +22,13 @@ struct RemoteAgentSetupView: View {
     @State private var token = ""
     @State private var projectPath = ""
     @State private var isSaving = false
+    /// [Claudio 2026-09-07 P1-C] 新连接保存成功后进入引导态（✓ + 开始
+    /// 对话/稍后），编辑模式不触发。
+    @State private var justConnected = false
+    /// 引导态 [开始对话] 回调 — ContentView 传入（dismiss 后延迟触发，
+    /// 避开 sheet 关闭动画与导航 push 的竞争，同 T-ios-moveto-transfer-race
+    /// 教训）。
+    var onConnected: (() -> Void)? = nil
     /// [Claudio 2026-09-06 G2] Probe state for auto-fill. Set when the
     /// throwaway probe connect fails (URL bad, bridge down, token wrong)
     /// so the field hint can show "Bridge 不可达" instead of silently
@@ -67,6 +74,9 @@ struct RemoteAgentSetupView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
+            if justConnected {
+                connectedGuide
+            } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     heroSection
@@ -85,6 +95,7 @@ struct RemoteAgentSetupView: View {
             .scrollDismissesKeyboard(.interactively)
 
             stickyConnectButton
+            }
         }
         .navigationTitle("Connect Your Computer")
         .navigationBarTitleDisplayMode(.inline)
@@ -97,6 +108,61 @@ struct RemoteAgentSetupView: View {
         .task {
             await attemptAutofill()
         }
+    }
+
+    /// [Claudio 2026-09-07 P1-C] 连接完成引导态：✓ + 摘要 + 开始对话/稍后。
+    private var connectedGuide: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(Color.green)
+                .shadow(color: Color.green.opacity(0.35), radius: 16, y: 4)
+            Text("已连接")
+                .font(.system(size: 24, weight: .bold))
+                .foregroundStyle(ClaudePalette.textPrimary)
+            Text(remoteSummaryLine)
+                .font(.system(size: 14))
+                .foregroundStyle(ClaudePalette.textSecondary)
+                .multilineTextAlignment(.center)
+            VStack(spacing: 12) {
+                Button {
+                    dismiss()
+                    // sheet 关闭动画完成后再 push 导航（同 transfer-race 教训）
+                    let cb = onConnected
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { cb?() }
+                } label: {
+                    Text("开始对话")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(ClaudePalette.ctaForeground)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Capsule().fill(ClaudePalette.ctaBackground))
+                }
+                .buttonStyle(.plain)
+                Button {
+                    dismiss()
+                } label: {
+                    Text("稍后")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(ClaudePalette.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 10)
+        }
+        .padding(.horizontal, 40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ClaudePalette.background)
+    }
+
+    /// 引导摘要：host · 项目尾段（保存后的最新值）。
+    private var remoteSummaryLine: String {
+        let host = BridgeURLValidator.host(of: wssURL) ?? wssURL
+        let tail = projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "/").last.map(String.init) ?? ""
+        return tail.isEmpty ? host : "\(host) · \(tail)"
     }
 
     // MARK: - Hero
@@ -458,7 +524,12 @@ struct RemoteAgentSetupView: View {
             store.addInstance(instance)
         }
         isSaving = false
-        dismiss()
+        // [Claudio 2026-09-07 P1-C] 新连接 → 引导态；编辑 → 直接关（现状）
+        if existingInstance == nil {
+            justConnected = true
+        } else {
+            dismiss()
+        }
     }
 
     // MARK: - G2 Auto-fill

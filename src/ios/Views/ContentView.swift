@@ -1665,6 +1665,9 @@ struct ContentView: View {
             NavigationStack {
                 RemoteAgentSetupView(existingInstance: providerStore.instances.first {
                     $0.providerType == .remoteAgent && $0.isEnabled
+                }, onConnected: {
+                    // [P1-C] 新连接引导 [开始对话] → 直达远端会话
+                    handleNewSessionResult(.claude(ClaudeSessionOptions()))
                 })
             }
         }
@@ -1672,6 +1675,10 @@ struct ContentView: View {
             RemoteNewSessionSheet { result in
                 handleNewSessionResult(result)
             }
+        }
+        // [P1-C] 设置页新连接引导 → 直达远端会话
+        .onReceive(NotificationCenter.default.publisher(for: .remoteConnectedStartChat)) { _ in
+            handleNewSessionResult(.claude(ClaudeSessionOptions()))
         }
         // ③ 启动失败 sheet(避开 .alert 挂在大 body 链中触发 SwiftUI 类型推导超时)
         .onChange(of: startSessionError) { newVal in
@@ -4574,6 +4581,9 @@ struct ContentView: View {
                 // 与"连接电脑"共用此 sheet，已配置时进编辑模式（字段预填）。
                 RemoteAgentSetupView(existingInstance: providerStore.instances.first {
                     $0.providerType == .remoteAgent && $0.isEnabled
+                }, onConnected: {
+                    // [P1-C] 新连接引导 [开始对话] → 直达远端会话
+                    handleNewSessionResult(.claude(ClaudeSessionOptions()))
                 })
             }
         }
@@ -7983,9 +7993,20 @@ private struct SettingsSheet: View {
     @State private var navPath = NavigationPath()
     @State private var showFeedbackDialog = false
 
+    /// [Claudio 2026-09-07 P1-C] 远程卡片的编辑 sheet（复用 SetupView
+    /// existingInstance 编辑模式）。
+    @State private var showRemoteSetup = false
+
     var body: some View {
         NavigationStack(path: $navPath) {
             List {
+                // [Claudio 2026-09-07 P1-C] 「远程」置顶卡 — 远端连接是
+                // 最高频设置操作，直接给一级入口。
+                Section {
+                    RemoteComputerSettingsCard { showRemoteSetup = true }
+                }
+                .listRowBackground(ClaudePalette.card)
+
                 Section {
                     NavigationLink {
                         ProviderInstancesView().settingsPaletteBackground()
@@ -8301,6 +8322,18 @@ private struct SettingsSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showRemoteSetup) {
+                NavigationStack {
+                    RemoteAgentSetupView(existingInstance: ProviderConfigStore.shared.instances.first {
+                        $0.providerType == .remoteAgent && $0.isEnabled
+                    }, onConnected: {
+                        // [P1-C] 设置页新建连接后引导 → 直达远端会话。
+                        // SettingsSheet 内无法直接调 ContentView 方法，走
+                        // 通知（ContentView 已监听同类导航事件模式）。
+                        NotificationCenter.default.post(name: .remoteConnectedStartChat, object: nil)
+                    })
                 }
             }
             .navigationDestination(for: SettingsDestination.self) { dest in
@@ -8642,6 +8675,12 @@ private struct ForceSyncToastBanner: View {
 }
 
 
+
+extension Notification.Name {
+    /// [P1-C] SettingsSheet 内新连接引导 [开始对话] → ContentView 开远端会话
+    static let remoteConnectedStartChat = Notification.Name("RemoteConnectedStartChat")
+}
+
 // MARK: - [Claudio 2026-09-07 P1] 欢迎页双路径启动器组件
 //
 // 设计基准：/var/minis/shared/claudio-design/welcome-page-v1.html（定稿）
@@ -8660,6 +8699,66 @@ private func adaptiveColor(light: UInt32, dark: UInt32) -> Color {
                        blue: CGFloat(hex & 0xFF) / 255,
                        alpha: 1)
     })
+}
+
+/// [Claudio 2026-09-07 P1-C] 设置页「远程」置顶卡 — pp 上次找不到改
+/// Bridge URL 的入口：远端连接是最高频设置操作，不该埋在
+/// Manage Providers → 列表 → detail 三层之下。有 remoteAgent 实例时
+/// 显示状态摘要，点击直接进 RemoteAgentSetupView 编辑模式；无实例时
+/// 显示"未连接 · 点此配置"。
+private struct RemoteComputerSettingsCard: View {
+    let onOpen: () -> Void
+    var body: some View {
+        let store = ProviderConfigStore.shared
+        let inst = store.instances.first { $0.providerType == .remoteAgent && $0.isEnabled }
+        Button(action: onOpen) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(LinearGradient(colors: [adaptiveColor(light: 0x33322E, dark: 0x4A4945),
+                                                      adaptiveColor(light: 0x141413, dark: 0x1D1C19)],
+                                             startPoint: .top, endPoint: .bottom))
+                        .frame(width: 34, height: 34)
+                    Image(systemName: "desktopcomputer")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(ClaudePalette.ctaForeground)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("远程").font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(ClaudePalette.textPrimary)
+                        Circle()
+                            .fill(inst != nil && (inst?.hasAnyCredential ?? false) ? Color.green : Color.secondary.opacity(0.4))
+                            .frame(width: 6, height: 6)
+                    }
+                    if let inst, let base = inst.effectiveCustomBaseURL {
+                        Text(remoteSubtitle(instance: inst, base: base))
+                            .font(.system(size: 12))
+                            .foregroundStyle(ClaudePalette.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } else {
+                        Text("未连接 · 点此配置")
+                            .font(.system(size: 12))
+                            .foregroundStyle(ClaudePalette.textSecondary)
+                    }
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.primary.opacity(0.25))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func remoteSubtitle(instance: ProviderInstance, base: String) -> String {
+        let host = BridgeURLValidator.host(of: base) ?? base
+        let tail = RemoteAgentConnection.load(instanceID: instance.id)?.projectPath
+            .split(separator: "/").last.map(String.init)
+        return tail.map { "\(host) · \($0)" } ?? host
+    }
 }
 
 /// 质感卡底：168° 微渐变 + 1px 描边 + 双层柔影 + 顶部内高光线 +
