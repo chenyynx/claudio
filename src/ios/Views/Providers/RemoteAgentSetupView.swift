@@ -43,7 +43,8 @@ struct RemoteAgentSetupView: View {
 
     private enum Field { case url, token, path }
 
-    init(existingInstance: ProviderInstance? = nil) {
+    init(existingInstance: ProviderInstance? = nil, onConnected: (() -> Void)? = nil) {
+        self.onConnected = onConnected
         self.existingInstance = existingInstance
         if let instance = existingInstance {
             _wssURL = State(initialValue: instance.customBaseURL ?? "")
