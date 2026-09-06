@@ -11,59 +11,6 @@ permissions:
   contents: write
 
 jobs:
-  unit-tests:
-    # [Claudio 2026-09-07 P0] 首次真正执行 MinisTests（此前 CI 只 build，
-    # 30+ 测试文件从未运行）。独立 job：红不影响 ipa 出包，但 Actions
-    # 页红绿可见。Debug + iPhone 16 模拟器（macos-26 的 Xcode 26 自带）。
-    # 只编译 MinisTests target 依赖链，跳过签名。
-    runs-on: macos-26
-    timeout-minutes: 90
-    continue-on-error: true   # 存量测试从未跑过，首启可能有历史失败；先观察再收紧
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install deps toolchain
-        run: |
-          brew install meson ninja llvm lld libarchive pkg-config go
-
-      - name: Prepare xcconfig
-        run: |
-          cd src/ios
-          cp Configs/ProviderCustomization.xcconfig.example Configs/ProviderCustomization.xcconfig
-
-      - name: Cache native deps build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            deps/lame-build
-            deps/frameworks
-            deps/ish/build-ios
-          key: deps-${{ runner.os }}-${{ hashFiles('deps/build_lame.sh', 'deps/build_ffmpeg.sh', 'deps/build_ish.sh', 'deps/build_rclone_ios.sh') }}
-
-      - name: Run unit tests
-        run: |
-          cd src/ios
-          xcodebuild test \
-            -project Minis.xcodeproj \
-            -scheme Minis \
-            -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
-            -only-testing:MinisTests \
-            CODE_SIGNING_ALLOWED=NO \
-            SWIFT_NUM_THREADS=2 \
-            -derivedDataPath build/DerivedDataTest \
-          | tee /tmp/xcodebuild-test.log
-          # xcbeautify 不装了，直接 grep 汇总
-          echo "=== TEST SUMMARY ==="
-          grep -E "Test Suite 'All tests'|Test Suite 'MinisTests'|Executed .* tests" /tmp/xcodebuild-test.log | tail -10 || true
-          if grep -qE "\*\* TEST FAILED \*\*" /tmp/xcodebuild-test.log; then
-            echo "::error::Unit tests failed"
-            grep -E "error:|failed \(" /tmp/xcodebuild-test.log | head -30
-            exit 1
-          fi
-
   build:
     # Project targets iOS 26.2 / Swift 6.0 — macos-15's Xcode 16.4 (iOS 18.5
     # SDK) fails on upstream code (glassEffect etc.). Need Xcode 26.
@@ -186,6 +133,33 @@ jobs:
       # [doris] Release the ipa as a release asset (fixed tag, commit-suffixed
       # filename so every build URL is unique — no Safari cache/416). Asset
       # downloads work through gh.llkk.cc, unlike Actions artifact blobs.
+      - name: Run unit tests (post-package gate)
+        # [Claudio 2026-09-07 P0] MinisTests 首次真正接入。放在 ipa 上传
+        # 之后：出包零延迟；同一 job 复用 Release 编译产物（测试阶段只编
+        # 测试 bundle + 跑用例，几分钟）。测试红 = job 红（无
+        # continue-on-error），但 ipa 已上传不丢。依赖 deps 构建链产物
+        # （alpine-rootfs / RootfsPatch），故不能拆成独立并行 job ——
+        # 那会要求重复整条 20-40 分钟的原生依赖构建。
+        run: |
+          cd src/ios
+          xcodebuild test \
+            -project Minis.xcodeproj \
+            -scheme Minis \
+            -configuration Release \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
+            -only-testing:MinisTests \
+            CODE_SIGNING_ALLOWED=NO \
+            SWIFT_NUM_THREADS=2 \
+            -derivedDataPath build/DerivedData \
+          | tee /tmp/xcodebuild-test.log
+          echo "=== TEST SUMMARY ==="
+          grep -E "Test Suite '(All tests|MinisTests)'|Executed .* tests" /tmp/xcodebuild-test.log | tail -10 || true
+          if grep -qE "\*\* TEST FAILED \*\*" /tmp/xcodebuild-test.log; then
+            echo "::error::Unit tests failed (ipa already uploaded — fix before next push)"
+            grep -E "Test Case.*failed|error:" /tmp/xcodebuild-test.log | head -30
+            exit 1
+          fi
+
       - name: Release unsigned .ipa
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
