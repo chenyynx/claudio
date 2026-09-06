@@ -497,8 +497,6 @@ struct AIChatView: View {
     /// vm.pendingAssistantPreview 变化时设这里，fullScreenCover 弹 FilePreviewPanel。
     /// dismiss 后清空，下次 onTap 可重新触发。
     @State private var previewingAssistantFile: URL?
-    /// [Claudio 2026-09-06] 远端 agent 正文文件路径点击预览面板 state。
-    @State private var previewingRemoteFilePeek: RemoteFilePeekItem?
     @State private var shareFile: URL?
     @State private var safariURL: URL?
     @State private var fullBrowserURL: URL?
@@ -900,28 +898,10 @@ struct AIChatView: View {
         }) { fileURL in
             FilePreviewPanel(fileURL: fileURL)
         }
-        // [Claudio 2026-09-06] 远端 agent 正文文件路径点击预览
-        // （RemoteFilePeekSheet）。SelectableMarkdownView 里的
-        // minis-file-peek:// link 被 shouldInteractWith 拦截后
-        // MarkdownFilePeekRouter 发通知,这里监听调 vm.handleRemoteFilePeekTap
-        // 读文件内容,成功后 vm.pendingRemoteFilePeek 被赋非 nil →
-        // 下面 onChange 设本地 state → fullScreenCover 弹面板。
-        .onReceive(NotificationCenter.default.publisher(for: MarkdownFilePeekRouter.tappedNotification)) { note in
-            guard let info = note.userInfo,
-                  let filePath = info[MarkdownFilePeekRouter.filePathKey] as? String,
-                  !filePath.isEmpty else { return }
-            vm.handleRemoteFilePeekTap(filePath: filePath)
-        }
-        .onChange(of: vm.pendingRemoteFilePeek) { newValue in
-            if let item = newValue {
-                previewingRemoteFilePeek = item
-            }
-        }
-        .fullScreenCover(item: $previewingRemoteFilePeek, onDismiss: {
-            vm.pendingRemoteFilePeek = nil
-        }) { item in
-            RemoteFilePeekSheet(item: item)
-        }
+        // [Claudio 2026-09-06] 远端 agent 正文文件路径点击预览 —
+        // 收敛到 RemoteFilePeekPresentationModifier,避免 body 复杂
+        // 触发 type-check 超时(AIChatView.swift:564 反复超时挂 CI)。
+        .modifier(RemoteFilePeekPresentationModifier(vm: vm))
         .alert(
             AppLocalized("File Not Found"),
             isPresented: Binding(
