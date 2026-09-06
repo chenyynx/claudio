@@ -507,7 +507,6 @@ struct ChatMessageRow: View {
                     isActiveMessage: isActiveMessage,
                     commandStartTime: commandStartTime,
                     onStop: onStop,
-                    filePathSuffixes: filePathSuffixes,
                     onTapBlank: message.usage != nil ? { windowPoint in
                         // Only respond to taps in the bottom 100pt of the message row
                         let bottomZoneTop = rowFrameInWindow.maxY - 100
@@ -527,6 +526,7 @@ struct ChatMessageRow: View {
                             }
                         }
                     } : nil,
+                    filePathSuffixes: filePathSuffixes,
                     onCopyScreenshot: onCopyScreenshot,
                     browserPool: browserPool,
                     toolSnapshots: toolSnapshots,

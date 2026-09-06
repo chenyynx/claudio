@@ -316,10 +316,10 @@ private struct BridgedAssistantBlockV3: View {
             isActiveMessage: bridge.isActiveMessage,
             commandStartTime: bridge.isActiveMessage ? bridge.commandStartTime : nil,
             onStop: bridge.isActiveMessage ? bridge.onStop : nil,
-            filePathSuffixes: bridge.filePathSuffixes,
             onTapBlank: { _ in
                 toggleUsage()
             },
+            filePathSuffixes: bridge.filePathSuffixes,
             onCopyScreenshot: { bridge.onCopyScreenshot?() },
             // [T-selection-menu-minis-tts] Selection-menu TTS: whole-reply
             // replay is suppressed while this reply is still streaming (same
