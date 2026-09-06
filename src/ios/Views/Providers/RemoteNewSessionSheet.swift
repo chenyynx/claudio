@@ -94,6 +94,23 @@ private extension UIColor {
     }
 }
 
+/// [Claudio 2026-09-07 P0] 默认 tab 决策的测试访问点 —— 纯函数放顶层
+/// internal enum，RemoteNewSessionTabTests 直接调；View struct 里的
+/// 同名 static 委托到这里，单一实现两个名字。
+enum RemoteNewSessionTabProbe {
+    static func remoteDefaultTab(
+        savedProvider: String?,
+        hasUsableLocal: Bool,
+        hasUsableRemote: Bool
+    ) -> RemoteNewSessionSheet.Tab {
+        RemoteNewSessionSheet.remoteDefaultTab(
+            savedProvider: savedProvider,
+            hasUsableLocal: hasUsableLocal,
+            hasUsableRemote: hasUsableRemote
+        )
+    }
+}
+
 /// New-session sheet: three tabs (On-Device / Claude / Codex) behind a
 /// native segmented control, bottom sheet with medium/large detents.
 /// Codex shows a "coming soon" placeholder and cannot start a session,
@@ -101,6 +118,26 @@ private extension UIColor {
 struct RemoteNewSessionSheet: View {
     enum Tab: Int {
         case onDevice, claude, codex
+    }
+
+    /// [Claudio 2026-09-07 P0] 无 saved.provider 记忆时的默认 tab 决策
+    /// （纯函数，RemoteNewSessionTabTests pin 死）。
+    ///
+    /// 第 0 原则（本地/远端隔离）：两个生态都可用时默认 On-Device
+    /// （本地优先，与欢迎页主次一致）；只有远端启用才默认 Claude——
+    /// 只连了电脑的用户不该每次新建都手动切 tab。
+    static func remoteDefaultTab(
+        savedProvider: String?,
+        hasUsableLocal: Bool,
+        hasUsableRemote: Bool
+    ) -> Tab {
+        switch savedProvider {
+        case "codex": return .codex
+        case "claude": return .claude
+        default: break
+        }
+        if hasUsableRemote && !hasUsableLocal { return .claude }
+        return .onDevice
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -137,12 +174,23 @@ struct RemoteNewSessionSheet: View {
             forkSession: saved.forkSession,
             persistSession: saved.persistSession
         ))
-        let initialTab: Tab
-        switch saved.provider {
-        case "codex": initialTab = .codex
-        case "claude": initialTab = .claude
-        default: initialTab = .onDevice
+        // [Claudio 2026-09-07 P0] 默认 tab 智能化：saved.provider 记忆
+        // 优先；无记忆时按生态可用性决策（remoteDefaultTab 纯函数，
+        // 两生态都可用 → On-Device 本地优先；只有远端 → Claude）。
+        let pstore0 = ProviderConfigStore.shared
+        let hasUsableLocal = pstore0.modelEntries.contains { entry in
+            guard !entry.isHidden,
+                  let inst = pstore0.instance(for: entry.providerInstanceId) else { return false }
+            return inst.providerType != .remoteAgent && inst.isEnabled && inst.hasAnyCredential
         }
+        let hasUsableRemote = pstore0.instances.contains {
+            $0.providerType == .remoteAgent && $0.isEnabled && $0.hasAnyCredential
+        }
+        let initialTab = Self.remoteDefaultTab(
+            savedProvider: saved.provider,
+            hasUsableLocal: hasUsableLocal,
+            hasUsableRemote: hasUsableRemote
+        )
         _tab = State(initialValue: initialTab)
     }
 

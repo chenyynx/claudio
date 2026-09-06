@@ -534,6 +534,65 @@ extension AIChatViewModel {
         return resolved
     }
 
+    /// [Claudio 2026-09-07 P0] 远端兜底决策（纯函数，可直接单测）。
+    ///
+    /// 第 0 原则（pp 铁律）：本地/远端严格隔离。只有当**不存在任何可用
+    /// 本地模型**（启用 + 有 credential + 未隐藏 + 非 remoteAgent 类型）
+    /// 时，才允许落到启用中的远端实例的虚拟 entry（ccpocket-remote）。
+    /// 只要有一个可用本地模型，一律 .keepLocalPath —— 原 resolve 链路
+    /// 继续走（binding → cachedModelId → default group → nil），绝不静默
+    /// 切远端。default group 永不 leak 到 remoteAgent 的现有约束不变。
+    ///
+    /// 纯函数原因：决策输入全部显式传参（不探 Keychain / 不读 store 单例），
+    /// 隔离铁律的边界条件用单测 pin 死，防止未来 refactor 把"本地可用"
+    /// 的判定改松导致本地用户被静默切到远端。
+    enum RemoteFallbackDecision: Equatable {
+        /// 无可用本地模型，落到指定远端实例的 entry
+        case fallBackToRemote(instanceId: String, entryId: String)
+        /// 存在可用本地模型（或没有可用远端）——走原 resolve 链路
+        case keepLocalPath
+    }
+
+    struct RemoteFallbackSnapshot {
+        struct InstanceSnapshot {
+            let id: String
+            let providerType: ProviderType
+            let isEnabled: Bool
+            let hasCredential: Bool
+        }
+        struct EntrySnapshot {
+            let id: String
+            let instanceId: String
+            let isHidden: Bool
+        }
+        let instances: [InstanceSnapshot]
+        let entries: [EntrySnapshot]
+    }
+
+    static func remoteFallbackDecision(from snap: RemoteFallbackSnapshot) -> RemoteFallbackDecision {
+        // 1) 只要有一个可用本地模型（启用 + credential + 可见 + 非 remote），
+        //    绝不兜底 —— 本地/远端隔离铁律。
+        let hasUsableLocalEntry = snap.entries.contains { entry in
+            guard !entry.isHidden else { return false }
+            guard let inst = snap.instances.first(where: { $0.id == entry.instanceId }) else { return false }
+            return inst.providerType != .remoteAgent
+                && inst.isEnabled && inst.hasCredential
+        }
+        if hasUsableLocalEntry { return .keepLocalPath }
+
+        // 2) 无可用本地模型 → 找第一个启用且有 credential 的远端实例，
+        //    落它的第一个可见 entry（ccpocket-remote 虚拟条目）。
+        guard let remoteInst = snap.instances.first(where: {
+            $0.providerType == .remoteAgent && $0.isEnabled && $0.hasCredential
+        }) else { return .keepLocalPath }
+
+        guard let entry = snap.entries.first(where: {
+            $0.instanceId == remoteInst.id && !$0.isHidden
+        }) else { return .keepLocalPath }
+
+        return .fallBackToRemote(instanceId: remoteInst.id, entryId: entry.id)
+    }
+
     private func resolveCurrentEntryUncached() -> ModelEntry? {
         let store = ProviderConfigStore.shared
 
@@ -671,6 +730,30 @@ extension AIChatViewModel {
            store.instance(for: groupEntry.providerInstanceId)?.providerType != .remoteAgent {
             logger.info("🔀RESOLVE via default group=\(groupId) → entry=\(entryId)")
             return groupEntry
+        }
+
+        // 3.5 [Claudio 2026-09-07 P0] 无可用本地配置但存在启用远端实例
+        //     → 落它的虚拟 entry，不再返回 nil。pp: 首次安装只配了远端的
+        //     用户不该被 "No model configured" 拦住再手选一次模型 —— 远端
+        //     的真模型选择发生在 Bridge 端，iOS 的 ccpocket-remote 只是
+        //     占位。决策逻辑在 static remoteFallbackDecision（纯函数），
+        //     隔离边界条件由 RemoteFallbackResolverTests pin 死。
+        //     第 3 步约束不变：default group（本地 intent）仍绝不 leak
+        //     到 remoteAgent；本分支只兜「无任何可用本地配置」的空态。
+        let snapshot = RemoteFallbackSnapshot(
+            instances: store.instances.map {
+                .init(id: $0.id, providerType: $0.providerType,
+                      isEnabled: $0.isEnabled, hasCredential: $0.hasAnyCredential)
+            },
+            entries: store.modelEntries.map {
+                .init(id: $0.id, instanceId: $0.providerInstanceId, isHidden: $0.isHidden)
+            }
+        )
+        if case .fallBackToRemote(let instanceId, let entryId) = Self.remoteFallbackDecision(from: snapshot),
+           let entry = store.entry(for: entryId),
+           entry.providerInstanceId == instanceId {
+            logger.info("🔀RESOLVE no usable local config → remote fallback entry=\(entryId) (instance \(instanceId.prefix(8)))")
+            return entry
         }
 
         // 4. No config — return nil
