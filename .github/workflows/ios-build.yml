@@ -49,7 +49,7 @@ jobs:
             -project Minis.xcodeproj \
             -scheme Minis \
             -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
             -only-testing:MinisTests \
             CODE_SIGNING_ALLOWED=NO \
             SWIFT_NUM_THREADS=2 \
