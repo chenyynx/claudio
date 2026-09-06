@@ -507,3 +507,15 @@ struct RemoteAgentSetupView: View {
 
     private let logger = AppLogger(category: "RemoteAgentSetup")
 }
+
+// [T-ios-remoteagent-qr-notif-restored] a5d9d49 refactor dropped these two
+// static Notification.Name declarations by accident while rewriting the
+// Connect section — but RemoteAgentSetupView still references them at the
+// "Scan QR Code" button (line 170) and the onReceive at the bottom of the
+// connect section (line 220). Without this extension both lines fail to
+// compile with "type 'Notification.Name' has no member 'showRemoteQRScanner'
+// / 'remoteQRScanResult'".
+extension Notification.Name {
+    static let showRemoteQRScanner = Notification.Name("showRemoteQRScanner")
+    static let remoteQRScanResult = Notification.Name("remoteQRScanResult")
+}
