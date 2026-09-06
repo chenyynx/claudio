@@ -146,12 +146,12 @@ jobs:
           xcodebuild test \
             -project Minis.xcodeproj \
             -scheme Minis \
-            -configuration Release \
+            -configuration Debug \
             -destination 'platform=macOS,variant=Designed for iPad' \
             -only-testing:MinisTests \
             CODE_SIGNING_ALLOWED=NO \
             SWIFT_NUM_THREADS=2 \
-            -derivedDataPath build/DerivedData \
+            -derivedDataPath build/DerivedDataTest \
           | tee /tmp/xcodebuild-test.log
           echo "=== TEST SUMMARY ==="
           grep -E "Test Suite '(All tests|MinisTests)'|Executed .* tests" /tmp/xcodebuild-test.log | tail -10 || true
