@@ -141,6 +141,7 @@ jobs:
         # （alpine-rootfs / RootfsPatch），故不能拆成独立并行 job ——
         # 那会要求重复整条 20-40 分钟的原生依赖构建。
         run: |
+          set -o pipefail   # [fix] | tee 会吞 xcodebuild 退出码
           cd src/ios
           xcodebuild test \
             -project Minis.xcodeproj \
@@ -154,7 +155,7 @@ jobs:
           | tee /tmp/xcodebuild-test.log
           echo "=== TEST SUMMARY ==="
           grep -E "Test Suite '(All tests|MinisTests)'|Executed .* tests" /tmp/xcodebuild-test.log | tail -10 || true
-          if grep -qE "\*\* TEST FAILED \*\*" /tmp/xcodebuild-test.log; then
+          if grep -q "TEST FAILED" /tmp/xcodebuild-test.log; then
             echo "::error::Unit tests failed (ipa already uploaded — fix before next push)"
             grep -E "Test Case.*failed|error:" /tmp/xcodebuild-test.log | head -30
             exit 1
