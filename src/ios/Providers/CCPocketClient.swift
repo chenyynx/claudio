@@ -1414,7 +1414,13 @@ extension CCPocketClient {
     /// `/api/media/<id>` 拼成完整 http URL。
     var httpBaseURL: URL? {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
-        components?.scheme = (components?.scheme == "wss") ? "https" : "http"
+        // [T-ios-ccpocket-exclusive-access] Reading `components?.scheme`
+        // and writing `components?.scheme =` in the same statement
+        // triggers Swift's overlapping-access diagnostic on Optional
+        // chaining — capture the read into a local first so the two
+        // accesses don't share the same Optional binding.
+        let currentScheme = components?.scheme
+        components?.scheme = (currentScheme == "wss") ? "https" : "http"
         return components?.url
     }
 }
