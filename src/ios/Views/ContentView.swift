@@ -4519,7 +4519,10 @@ struct ContentView: View {
             // 布局骨架对齐 dsh WorkspaceView.body：LazyVStack(leading,18)
             // + padding(horizontal 22, top 18) + header 后 Spacer(108)。
             LazyVStack(alignment: .leading, spacing: 18) {
-                Spacer(minLength: 108)
+                // [pp 反馈 2026-09-07] 品牌行删除后内容偏上；ScrollView 里
+                // Spacer 不自动撑开（只生效 minLength），固定加大到 170
+                // 对齐 dsh 参照构图（标题约在屏高 1/3 处）。
+                Spacer(minLength: 170)
 
                 WelcomeHero()
 
