@@ -44,7 +44,19 @@ private struct OceanFluidLayer: View {
     var body: some View {
         Rectangle()
             .fill(OceanColor.navy)
-            .visualEffect { content, proxy in
+            .modifier(OceanFluidShader(time: time))
+    }
+}
+
+/// [Claudio 2026-09-07] visualEffect/colorEffect/ShaderLibrary are iOS 17+;
+/// deployment target is 16.0, so gate the shader layer and degrade to a
+/// static vertical gradient (grid + particle layers still render on 16).
+private struct OceanFluidShader: ViewModifier {
+    let time: TimeInterval
+
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, *) {
+            content.visualEffect { content, proxy in
                 content.colorEffect(
                     ShaderLibrary.harnessFluid(
                         .float2(proxy.size),
@@ -52,6 +64,14 @@ private struct OceanFluidLayer: View {
                     )
                 )
             }
+        } else {
+            content.overlay(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.05), .clear, Color.black.opacity(0.08)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+        }
     }
 }
 
