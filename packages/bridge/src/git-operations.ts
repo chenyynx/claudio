@@ -48,6 +48,8 @@ export interface FileSystemFileListOptions {
   maxDepth?: number;
   maxFiles?: number;
   excludedDirs?: ReadonlySet<string> | readonly string[];
+  /** [Plan B②] Per-directory file quota for the BFS walk. */
+  perDirFiles?: number;
 }
 
 export interface ClientFileListOptions extends FileSystemFileListOptions {
@@ -63,7 +65,11 @@ export interface ClientFileListResult {
   modifiedAt?: Record<string, number>;
 }
 
-export const DEFAULT_FILESYSTEM_FILE_LIST_MAX_DEPTH = 8;
+export /** [Plan B② 2026-09-07] Max files contributed per directory before the
+ * BFS moves on — keeps one huge subtree (node_modules-less but still big,
+ * e.g. ~/Applications) from starving sibling project dirs of budget. */
+const DEFAULT_FILESYSTEM_FILE_LIST_PER_DIR_FILES = 50;
+const DEFAULT_FILESYSTEM_FILE_LIST_MAX_DEPTH = 8;
 export const DEFAULT_FILESYSTEM_FILE_LIST_MAX_FILES = 5000;
 export const DEFAULT_FILESYSTEM_FILE_LIST_EXCLUDED_DIRS = new Set([
   ".git",
@@ -653,21 +659,32 @@ async function collectFileSystemFiles(
     options.maxDepth ?? DEFAULT_FILESYSTEM_FILE_LIST_MAX_DEPTH;
   const maxFiles =
     options.maxFiles ?? DEFAULT_FILESYSTEM_FILE_LIST_MAX_FILES;
+  const perDirFiles =
+    options.perDirFiles ?? DEFAULT_FILESYSTEM_FILE_LIST_PER_DIR_FILES;
   const excludedDirs = toExcludedDirSet(
     options.excludedDirs ?? DEFAULT_FILESYSTEM_FILE_LIST_EXCLUDED_DIRS,
   );
   const files: string[] = [];
   let traversalTruncated = false;
 
-  async function visit(
-    absDir: string,
-    relDir: string,
-    depth: number,
-  ): Promise<void> {
-    if (files.length >= maxFiles) return;
+  // [Plan B② 2026-09-07] BFS with a per-directory file quota. The previous
+  // alphabetical DFS starved sibling dirs on broad non-Git roots (e.g. a
+  // home directory: ~/Applications alone could eat the whole entry budget
+  // before ~/claudio was ever reached). Quota per dir keeps breadth: every
+  // top-level project's shallow files land in the list; deep trees get
+  // truncated instead of monopolising it.
+  type BfsDir = { absDir: string; relDir: string; depth: number };
+  const queue: BfsDir[] = [{ absDir: root, relDir: "", depth: 0 }];
+
+  while (queue.length > 0) {
+    if (files.length >= maxFiles) {
+      traversalTruncated = true;
+      break;
+    }
+    const { absDir, relDir, depth } = queue.shift()!;
     if (depth >= maxDepth) {
       traversalTruncated = true;
-      return;
+      continue;
     }
 
     let dir: Dir;
@@ -676,7 +693,7 @@ async function collectFileSystemFiles(
     } catch (err) {
       if (relDir === "") throw err;
       traversalTruncated = true;
-      return;
+      continue;
     }
 
     const entries: Dirent[] = [];
@@ -686,30 +703,43 @@ async function collectFileSystemFiles(
 
     entries.sort((a, b) => a.name.localeCompare(b.name));
 
+    const subdirs: BfsDir[] = [];
+    let filesFromThisDir = 0;
+
     for (const entry of entries) {
-      if (files.length >= maxFiles) return;
       if (entry.name === "." || entry.name === "..") continue;
 
       const absPath = join(absDir, entry.name);
       const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
 
-      if (entry.isSymbolicLink()) {
-        continue;
-      }
+      if (entry.isSymbolicLink()) continue;
 
       if (entry.isDirectory()) {
         if (excludedDirs.has(entry.name)) continue;
-        await visit(absPath, relPath, depth + 1);
+        subdirs.push({ absDir: absPath, relDir: relPath, depth: depth + 1 });
         continue;
       }
 
       if (entry.isFile()) {
+        if (filesFromThisDir >= perDirFiles) {
+          traversalTruncated = true;
+          continue;
+        }
+        if (files.length >= maxFiles) {
+          traversalTruncated = true;
+          break;
+        }
         files.push(toPosixRelativePath(relative(root, absPath)));
+        filesFromThisDir += 1;
       }
     }
+
+    // Depth-first within the queue order would defeat breadth: enqueue
+    // subdirs after the parent's files so level order is preserved.
+    queue.push(...subdirs);
   }
 
-  await visit(root, "", 0);
+  if (files.length > maxFiles) files.length = maxFiles;
   return {
     files: files.sort((a, b) => a.localeCompare(b)),
     traversalTruncated,
