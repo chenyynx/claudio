@@ -370,7 +370,21 @@ struct RemoteSessionOptionsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var permissionMode: String
     @State private var sandboxMode: String
+    // [Claudio 2026-09-07 P2] Thinking effort — persisted to the resume
+    // defaults. NOT a live switch: the bridge applies effort at SDK spawn
+    // (probe: websocket.ts resume_session → sessionManager.create), so a
+    // change lands on the NEXT resume/start of this conversation.
+    @State private var effort: String
     @State private var applyError: String?
+
+    private static let effortOptions: [(value: String, title: String, detail: String)] = [
+        ("", "Default", "Bridge-side default effort"),
+        ("low", "Low", "Fastest, least reasoning"),
+        ("medium", "Medium", "Balanced reasoning"),
+        ("high", "High", "Deep reasoning"),
+        ("xhigh", "XHigh", "Extended reasoning"),
+        ("max", "Max", "Maximum reasoning budget"),
+    ]
 
     private static let permissionOptions: [(value: String, title: String, detail: String)] = [
         ("default", "Default", "Ask before tools that need permission"),
@@ -387,6 +401,7 @@ struct RemoteSessionOptionsSheet: View {
         let saved = RemoteSessionDefaultsStore.load()
         _permissionMode = State(initialValue: saved.permissionMode)
         _sandboxMode = State(initialValue: saved.sandboxMode)
+        _effort = State(initialValue: saved.effort ?? "")
     }
 
     var body: some View {
@@ -468,7 +483,31 @@ struct RemoteSessionOptionsSheet: View {
                         .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(ClaudePalette.cardFill))
                     }
 
-                    Text("Applies immediately")
+                    // [Claudio 2026-09-07 P2] Effort — 持久化到 resume defaults，
+                    // 下次 resume/start 时随 spawn 生效（非 live 切换）。
+                    VStack(alignment: .leading, spacing: 8) {
+                        sectionLabel("Thinking Effort")
+                        VStack(spacing: 0) {
+                            ForEach(Self.effortOptions.indices, id: \.self) { idx in
+                                let opt = Self.effortOptions[idx]
+                                optionRow(
+                                    title: opt.title,
+                                    detail: opt.detail,
+                                    isSelected: effort == opt.value
+                                ) {
+                                    selectEffort(opt.value)
+                                }
+                                if idx < Self.effortOptions.count - 1 {
+                                    rowDivider
+                                }
+                            }
+                        }
+                        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(ClaudePalette.cardFill))
+                        Text("Applies on the next resume of this conversation")
+                            .font(.caption)
+                            .foregroundStyle(ClaudePalette.textSecondary)
+                            .padding(.leading, 6)
+                    }
                         .font(.caption2)
                         .foregroundStyle(ClaudePalette.textSecondary)
                         .padding(.leading, 6)
@@ -512,12 +551,22 @@ struct RemoteSessionOptionsSheet: View {
         }
     }
 
+    private func selectEffort(_ value: String) {
+        guard value != effort else { return }
+        effort = value
+        persistDefaults()
+        // Not live-applied: effort is a spawn-time parameter on the bridge
+        // (sdk-process.ts options.model/effort). The persisted default is
+        // picked up on the next resume_session / start.
+    }
+
     /// Persist to the start defaults — the live switch (when a client
     /// exists) AND the next session start both read from here.
     private func persistDefaults() {
         var saved = RemoteSessionDefaultsStore.load()
         saved.permissionMode = permissionMode
         saved.sandboxMode = sandboxMode
+        saved.effort = effort.isEmpty ? nil : effort
         RemoteSessionDefaultsStore.save(saved)
     }
 
