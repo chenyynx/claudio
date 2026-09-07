@@ -96,6 +96,12 @@ enum CCPocketProtocol {
         var provider: String?
         var permissionMode: String?
         var resumeRequestId: String?
+        // [Claudio 2026-09-07 P2] 远端优先体验：resume 时把当前 defaults
+        // 的 model/effort/fallbackModel 透传给桥，spawn 新进程立即生效。
+        // 桥端 case "resume_session" 已收这三个字段（websocket.ts:5400+）。
+        var model: String?
+        var effort: String?
+        var fallbackModel: String?
     }
 
     /// `interrupt` — stop the current turn; the agent responds with

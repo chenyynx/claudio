@@ -298,12 +298,16 @@ final class CCPocketClient: @unchecked Sendable {
         guard let projectPath else { throw CCPocketError.notConnected }
         let resumeRequestId = UUID().uuidString
         pendingStartRequestId = resumeRequestId
+        let defaults = RemoteSessionDefaultsStore.load()
         let request = CCPocketProtocol.ResumeSessionRequest(
             sessionId: claudeId,
             projectPath: projectPath,
             provider: providerName,
             permissionMode: permissionMode,
-            resumeRequestId: resumeRequestId
+            resumeRequestId: resumeRequestId,
+            model: defaults.model,
+            effort: defaults.effort,
+            fallbackModel: defaults.fallbackModel
         )
         try await send(CCPocketProtocol.encode(request), allowsReconnect: false)
         logger.info("[CCPocket] resume_session sent claudeId=\(claudeId.prefix(8))...")
@@ -1465,5 +1469,17 @@ extension CCPocketClient {
             return nil
         }
         return url
+    }
+}
+
+// [Claudio 2026-09-07 P2] 桥端 system init 透传的模型短名（如
+// "claude-sonnet-4-6"）。顶栏显示用——避免 UI 从 SDK 字符串拼接。
+// resume 后由 RemoteAgentProvider case "system" 写入；不存盘是
+// 临时会话状态，重连后由新 system 消息覆盖。
+private var _bridgeModelName: String?
+extension CCPocketClient {
+    var bridgeModelName: String? {
+        get { _bridgeModelName }
+        set { _bridgeModelName = newValue }
     }
 }

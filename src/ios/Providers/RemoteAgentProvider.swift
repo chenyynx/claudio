@@ -375,6 +375,10 @@ final class RemoteAgentProvider: AgentProvider {
         case "system":
             // Only capture the short Bridge session id for routing; the
             // long Claude id is not a routing key.
+            // [Claudio 2026-09-07 P2] 桥端系统初始化消息里带 model 字段
+            // （sdk-process.ts:484 spawn 时 sys.model）。把它写到 client
+            // 属性供顶栏显示——避免 UI 端从 SDK 字符串拼接模型短名。
+            if let m = message.model { client.bridgeModelName = m }
             break
 
         case "status":
