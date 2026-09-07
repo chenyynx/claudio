@@ -4573,6 +4573,10 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollIndicators(.hidden)
+            // [pp 反馈 2026-09-07] 内容正好撑满一屏（22%+内容+44%）时
+            // ScrollView 默认不响应拖动——这里强制保留 iOS 原生 rubber-band
+            // 弹性，滑动松手后弹回。
+            .scrollBounceBehavior(.always)
         }
         .foregroundStyle(.white)
         .background(OceanBackground().ignoresSafeArea())
