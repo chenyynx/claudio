@@ -1700,7 +1700,12 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
         const candidate = block as unknown as Record<string, unknown>;
         if (
           candidate.type === "tool_use" &&
-          candidate.name === CHANGE_TITLE_TOOL_NAME &&
+          typeof candidate.name === "string" &&
+          // Wire name carries the MCP server prefix:
+          // mcp__change-title__change_title (found via short-name match
+          // MISSING it — the card leaked into the client stream).
+          (candidate.name === CHANGE_TITLE_TOOL_NAME ||
+            candidate.name.endsWith("_" + CHANGE_TITLE_TOOL_NAME)) &&
           typeof candidate.id === "string"
         ) {
           this.changeTitleToolUseIds.add(candidate.id);
