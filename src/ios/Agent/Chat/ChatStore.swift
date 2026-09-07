@@ -5025,7 +5025,8 @@ extension RawMessage {
                 .flatMap { $0 as? [String: Any] } ?? [:]
             kind = RemoteToolCatalog.blockKind(for: tu.name, args: argsDict)
             content = RemoteToolCatalog.streamingPreview(for: tu.name, args: argsDict)
-        } else switch tu.name {
+        } else {
+            switch tu.name {
         case "shell_execute", "Bash", "BashOutput":
             let cmd = extractCommandFromJSON(tu.input)
             kind = .shellTool(command: cmd)
@@ -5063,6 +5064,7 @@ extension RawMessage {
         default:
             kind = .shellTool(command: tu.name)
             content = tu.name
+            }
         }
         // Seed as .running so applyToolResults can recognize this block as
         // "not yet finalized"; loadSession finalizes leftovers as .cancelled.

@@ -916,7 +916,8 @@ extension AIChatViewModel {
                     // local names keep the legacy mapping below untouched.
                     if RemoteToolCatalog.isRemoteTool(name) {
                         messages[msgIdx].blocks[blockIdx].kind = RemoteToolCatalog.blockKind(for: name, args: args)
-                    } else switch name {
+                    } else {
+                        switch name {
                     case "file_write":
                         if let path = args["path"] as? String {
                             messages[msgIdx].blocks[blockIdx].kind = .fileWriteTool(path: path)
@@ -950,6 +951,7 @@ extension AIChatViewModel {
                             messages[msgIdx].blocks[blockIdx].kind = .readImageTool(path: path)
                         }
                     default: break
+                    }
                     }
                     // Store serialized tool input args for introspection
                     if let argsData = try? JSONSerialization.data(withJSONObject: args),
