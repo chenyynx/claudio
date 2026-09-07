@@ -18,6 +18,49 @@ import Foundation
 ///   (including `result`) is lost in the race window.
 final class RemoteAgentProvider: AgentProvider {
 
+    // MARK: - [Plan B3 2026-09-07] Tool-observed file paths
+
+    /// File tools whose structured path args we observe (official ccpocket
+    /// parity: Edit/FileEdit/MultiEdit/Write/NotebookEdit - plus Read, whose
+    /// file_path is the most common reference source in replies).
+    private static let observedFileToolNames: Set<String> = [
+        "Read", "Edit", "Write", "MultiEdit", "NotebookEdit",
+    ]
+    private static let observedPathArgKeys: Set<String> = [
+        "file_path", "notebook_path", "path", "filePath",
+    ]
+    private let observedPathsLock = NSLock()
+    private var observedFilePathsStorage: Set<String> = []
+    /// Fired on the stream task whenever the observed set grows. VM merges
+    /// these into the render suffix set (AIChatViewModel.rebuildRemoteFileSuffixes).
+    var onFilePathsObserved: ((Set<String>) -> Void)?
+
+    /// Snapshot of paths observed from file-tool arguments so far.
+    var observedFilePaths: Set<String> {
+        observedPathsLock.lock()
+        defer { observedPathsLock.unlock() }
+        return observedFilePathsStorage
+    }
+
+    private func observeFilePaths(fromArgs args: [String: Any], toolName: String) {
+        guard Self.observedFileToolNames.contains(toolName) else { return }
+        let found = args.compactMap { key, value -> String? in
+            guard Self.observedPathArgKeys.contains(key),
+                  let s = value as? String,
+                  !s.isEmpty else { return nil }
+            return s
+        }
+        guard !found.isEmpty else { return }
+        observedPathsLock.lock()
+        let before = observedFilePathsStorage.count
+        for p in found { observedFilePathsStorage.insert(p) }
+        let changed = observedFilePathsStorage.count != before
+        let snapshot = observedFilePathsStorage
+        observedPathsLock.unlock()
+        if changed { onFilePathsObserved?(snapshot) }
+    }
+
+
     var name: String { "CC Pocket Remote" }
     var model: LLMModel
     var defaultMaxTokens: Int { 16_384 }
@@ -460,6 +503,8 @@ final class RemoteAgentProvider: AgentProvider {
                         textBlockStarted = false
                         continuation.yield(.toolCallComplete(id: toolId, name: toolName, args: args, metadata: nil))
                         logger.info("[RemoteAgent] tool_use: \(toolName) id=\(toolId.prefix(8)) args=\(args.keys.sorted())")
+                        // [Plan B3] Ground-truth path observation (see class header).
+                        observeFilePaths(fromArgs: args, toolName: toolName)
                     default:
                         break
                     }

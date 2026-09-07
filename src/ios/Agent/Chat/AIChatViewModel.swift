@@ -1201,6 +1201,19 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// 不可点击。session_created 后由 refreshRemoteFileIndex 拉取填
     /// 充，updateBridge 读到后透传给 SelectableMarkdownView。
     @Published var remoteFileSuffixes: Set<String>?
+    // [Plan B3 2026-09-07] list_files suffixes + tool-observed path merge cache.
+    private var remoteIndexSuffixes: Set<String> = []
+    private var remoteObservedFilePaths: Set<String> = []
+
+    /// [Plan B3 2026-09-07] list_files suffixes UNION tool-observed path
+    /// forms. nil = local agent / no remote data (renderer: zero behavior).
+    private func rebuildRemoteFileSuffixes() {
+        var merged = remoteIndexSuffixes
+        for path in remoteObservedFilePaths {
+            merged.formUnion(RemoteProjectFileIndex.observedPathForms(path))
+        }
+        remoteFileSuffixes = merged.isEmpty ? nil : merged
+    }
 
     // Attachments
     @Published var attachments: [InputAttachment] = []
@@ -4932,9 +4945,18 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // client + projectPath 通路(payload 不带 projectPath,需
             // 在 vm 层从当前 provider 补)。
             lastRemoteAgentProvider = remoteProvider
+            // [Plan B3] Tool-observed paths augment the list_files suffix set.
+            remoteProvider.onFilePathsObserved = { [weak self] paths in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.remoteObservedFilePaths.formUnion(paths)
+                    self.rebuildRemoteFileSuffixes()
+                }
+            }
             Task { @MainActor in
                 let entry = await remoteProvider.refreshFileIndex()
-                self.remoteFileSuffixes = entry?.suffixSet
+                self.remoteIndexSuffixes = entry?.suffixSet ?? []
+                self.rebuildRemoteFileSuffixes()
             }
         }
 

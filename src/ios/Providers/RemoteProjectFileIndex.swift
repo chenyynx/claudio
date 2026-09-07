@@ -140,6 +140,24 @@ actor RemoteProjectFileIndex {
 
     /// 后缀集匹配核心（exact 或 stripped 命中）。纯静态，renderInline hot
     /// path 调用零开销。
+    /// [Plan B3 2026-09-07] Suffix forms for a tool-observed file path.
+    /// "/home/ubuntu/claudio/README.md" -> absolute original + all tail
+    /// combos ("claudio/README.md", "README.md", ...). Relative input works
+    /// too ("claudio/README.md" -> original + "README.md"). Pure, testable.
+    nonisolated static func observedPathForms(_ raw: String) -> Set<String> {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        var forms: Set<String> = [trimmed]
+        let cleaned = trimmed.hasPrefix("/") ? String(trimmed.dropFirst()) : trimmed
+        let parts = cleaned.split(separator: "/").map(String.init)
+        if parts.count > 1 {
+            for i in 1..<parts.count {
+                forms.insert(parts[i...].joined(separator: "/"))
+            }
+        }
+        return forms
+    }
+
     nonisolated static func matches(path: String, suffixSet: Set<String>) -> Bool {
         if suffixSet.contains(path) { return true }
         let stripped = stripLineCol(path)
