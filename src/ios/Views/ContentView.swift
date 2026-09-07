@@ -4516,48 +4516,61 @@ struct ContentView: View {
         }()
 
         return ScrollView {
-            VStack(spacing: 24) {
-                VStack(spacing: 8) {
-                    ShimmerWelcomeTitle()
-                    Text("With us, into the unknown.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+            VStack(alignment: .leading, spacing: 0) {
+                // [Claudio 2026-09-07 ocean] 品牌行：幽灵 + Claudio + HARNESS +
+                // 两圆钮（齿轮=设置 / 终端=工具，复用现有 sheet/terminal 入口）。
+                WelcomeBrandBar(
+                    onSettings: { activeToolSheet = .settings },
+                    onTools: { showTerminal = true }
+                )
+                .padding(.top, 8)
+
+                WelcomeHero()
+                    .padding(.top, 92)
+                    .padding(.bottom, 30)
+
+                let remoteReady = remoteInstance != nil && remoteSummary != nil
+                WelcomePathCard(
+                    kind: .remote, title: "远程",
+                    subtitle: remoteReady ? (remoteSummary ?? "") : "Claude Code 与 Codex，装进口袋",
+                    connected: remoteReady,
+                    action: { showConnectComputer = true }
+                )
+                if remoteReady {
+                    StartChatStrip {
+                        handleNewSessionResult(.claude(ClaudeSessionOptions()))
+                    }
+                    .padding(.top, 14)
                 }
-                .padding(.top, 64)
 
-                VStack(alignment: .leading, spacing: 14) {
-                    emptyStateSectionLabel("Choose your starting point")
-
-                    RemotePathCard(
-                        configured: remoteInstance != nil && remoteSummary != nil,
-                        summary: remoteSummary,
-                        onConnect: { showConnectComputer = true },
-                        onStartChat: { handleNewSessionResult(.claude(ClaudeSessionOptions())) },
-                        onManage: { showConnectComputer = true }
-                    )
-
-                    LocalPathCard(
-                        configured: localSummary != nil,
-                        summary: localSummary,
-                        onConfigure: { showAddProvider = true },
-                        onStartChat: { handleNewSessionResult(.onDevice) },
-                        onManage: { showSelectModels = true }
-                    )
-
-                    Text("两种 Agent 可同时使用，随时切换")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.primary.opacity(0.30))
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 8)
+                let localReady = localSummary != nil
+                WelcomePathCard(
+                    kind: .local, title: "本地",
+                    subtitle: localReady ? (localSummary ?? "") : "AI 住在手机里，数据寸步不离",
+                    connected: localReady,
+                    action: {
+                        if localReady {
+                            showSelectModels = true
+                        } else {
+                            showAddProvider = true
+                        }
+                    }
+                )
+                .padding(.top, 14)
+                if localReady {
+                    StartChatStrip { handleNewSessionResult(.onDevice) }
+                        .padding(.top, 14)
                 }
-                .frame(maxWidth: 420)
 
-                Spacer(minLength: 40)
+                Text("两种 Agent 可同时使用，随时切换")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.35))
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 44)
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, 20)
         }
-        .background(ClaudePalette.background.ignoresSafeArea())
+        .background(OceanBackground().ignoresSafeArea())
         .sheet(isPresented: $showAddProvider) {
             NavigationStack {
                 AddProviderView()
@@ -4594,14 +4607,6 @@ struct ContentView: View {
     /// satisfy the `Identifiable` constraint `item:` requires.
     private struct InstanceIDBox: Identifiable { let id: String }
 
-    /// Section header inside the first-launch empty state. Same styling as
-    /// the sidebar's group headers (small semibold secondary label).
-    private func emptyStateSectionLabel(_ title: LocalizedStringKey) -> some View {
-        Text(title)
-            .font(.subheadline)
-            .foregroundStyle(ClaudePalette.textSecondary)
-            .padding(.leading, 6)
-    }
 
     // MARK: - Search Bar
 
@@ -8810,278 +8815,3 @@ private struct SettingsInstanceBox: Identifiable { let id: String }
 
 /// 质感卡底：168° 微渐变 + 1px 描边 + 双层柔影 + 顶部内高光线 +
 /// 右上 Claude 橙暖光晕（设计稿"质感六层"）。
-private struct PathCardChrome: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .background(
-                LinearGradient(
-                    colors: [adaptiveColor(light: 0xFFFFFF, dark: 0x33322F),
-                             adaptiveColor(light: 0xFBFAF7, dark: 0x2A2926)],
-                    startPoint: .top, endPoint: .bottom)
-            )
-            .overlay(alignment: .topTrailing) {
-                Circle()
-                    .fill(ClaudePalette.accent.opacity(0.09))
-                    .frame(width: 140, height: 140)
-                    .blur(radius: 30)
-                    .offset(x: 40, y: -50)
-                    .allowsHitTesting(false)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
-            )
-            .overlay(alignment: .top) {
-                // 顶部内高光线
-                LinearGradient(colors: [Color.white.opacity(0.9), Color.white.opacity(0)],
-                               startPoint: .top, endPoint: .bottom)
-                    .frame(height: 1)
-                    .padding(.horizontal, 14)
-                    .allowsHitTesting(false)
-            }
-            .shadow(color: Color.primary.opacity(0.04), radius: 1, y: 1)
-            .shadow(color: Color.primary.opacity(0.08), radius: 20, y: 8)
-    }
-}
-
-/// 绿点呼吸（2.6s 光晕循环）。
-private struct BreathingDot: View {
-    @State private var pulsing = false
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(Color.green.opacity(0.18))
-                .frame(width: 14, height: 14)
-                .scaleEffect(pulsing ? 1.35 : 0.7)
-                .opacity(pulsing ? 0.25 : 0.9)
-            Circle()
-                .fill(Color.green)
-                .frame(width: 7, height: 7)
-        }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.3).repeatForever(autoreverses: true)) {
-                pulsing = true
-            }
-        }
-    }
-}
-
-/// 标题流光（6s 暖橙 sheen 循环，设计稿定稿动画）。
-/// TimelineView 30fps 驱动 gradient stop 位移；空状态页专属，开销可接受。
-private struct ShimmerWelcomeTitle: View {
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
-            let cycle = timeline.date.timeIntervalSinceReferenceDate
-                .truncatingRemainder(dividingBy: 6) / 6
-            let pos = cycle * 2 - 0.5   // -0.5 … 1.5 扫过
-            Text("Welcome to Claudio")
-                .font(.system(size: 28, weight: .bold))
-                .foregroundStyle(
-                    LinearGradient(
-                        stops: [
-                            .init(color: ClaudePalette.textPrimary, location: min(max(pos - 0.22, 0), 1)),
-                            .init(color: ClaudePalette.accent, location: min(max(pos, 0), 1)),
-                            .init(color: ClaudePalette.textPrimary, location: min(max(pos + 0.22, 0), 1)),
-                        ],
-                        startPoint: .leading, endPoint: .trailing)
-                )
-        }
-    }
-}
-
-/// 卡片 icon 块（远程深/本地浅，材质对仗）。
-private struct PathCardIcon: View {
-    enum Kind { case remote, local }
-    let kind: Kind
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [adaptiveColor(light: 0x33322E, dark: 0x4A4945),
-                                 adaptiveColor(light: 0x141413, dark: 0x1D1C19)],
-                        startPoint: .top, endPoint: .bottom)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-                )
-                .overlay(alignment: .top) {
-                    RoundedRectangle(cornerRadius: 13)
-                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-                        .frame(height: 1)
-                        .padding(.horizontal, 8)
-                }
-                .shadow(color: Color.primary.opacity(0.28), radius: 8, y: 4)
-            Image(systemName: kind == .remote ? "desktopcomputer" : "iphone")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(ClaudePalette.ctaForeground)
-        }
-        .frame(width: 46, height: 46)
-    }
-}
-
-/// 深色主按钮（渐变黑 + 内高光 + 投影）。
-private struct PathCardPrimaryButton: View {
-    let title: String
-    var icon: String? = nil
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                if let icon {
-                    Image(systemName: icon).font(.system(size: 14, weight: .semibold))
-                }
-                Text(title).font(.system(size: 16, weight: .semibold))
-            }
-            .foregroundStyle(ClaudePalette.ctaForeground)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 13)
-            .background(
-                Capsule().fill(
-                    LinearGradient(colors: [adaptiveColor(light: 0x2A2925, dark: 0x55534E),
-                                            adaptiveColor(light: 0x141413, dark: 0x2B2A27)],
-                                       startPoint: .top, endPoint: .bottom)
-                )
-            )
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
-            .overlay(alignment: .top) {
-                Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
-                    .frame(height: 1).padding(.horizontal, 10)
-            }
-            .shadow(color: Color.primary.opacity(0.30), radius: 10, y: 5)
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// 玻璃幽灵按钮（管理）。
-private struct PathCardGhostButton: View {
-    let title: String
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(ClaudePalette.textPrimary)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 13)
-                .background(Capsule().fill(.ultraThinMaterial))
-                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
-                .shadow(color: Color.primary.opacity(0.05), radius: 4, y: 2)
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// 玻璃状态摘要条（整行可点 = 管理）。
-private struct PathCardSummaryRow: View {
-    let summary: String
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                BreathingDot()
-                Text(summary)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(ClaudePalette.textPrimary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.primary.opacity(0.25))
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.ultraThinMaterial))
-            .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(Color.primary.opacity(0.05), lineWidth: 1))
-            .shadow(color: Color.primary.opacity(0.04), radius: 6, y: 2)
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// 卡片头（icon + 标题 + 简介）。
-private struct PathCardHeader: View {
-    let kind: PathCardIcon.Kind
-    let title: String
-    let blurb: String
-    var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            PathCardIcon(kind: kind)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(ClaudePalette.textPrimary)
-                Text(blurb)
-                    .font(.system(size: 13))
-                    .foregroundStyle(ClaudePalette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-}
-
-/// 远程路径卡。未配置→[连接电脑]；已配置→摘要行+[开始对话][管理]。
-private struct RemotePathCard: View {
-    let configured: Bool
-    let summary: String?
-    let onConnect: () -> Void
-    let onStartChat: () -> Void
-    let onManage: () -> Void
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PathCardHeader(kind: .remote, title: "远程",
-                           blurb: "Claude Code 与 Codex，装进口袋。")
-                .padding(.bottom, 16)
-            if configured, let summary {
-                PathCardSummaryRow(summary: summary, action: onManage)
-                    .padding(.bottom, 12)
-                HStack(spacing: 10) {
-                    PathCardPrimaryButton(title: "开始对话", icon: "bubble.left.and.text.bubble.right", action: onStartChat)
-                    PathCardGhostButton(title: "管理", action: onManage)
-                }
-            } else {
-                PathCardPrimaryButton(title: "连接电脑", action: onConnect)
-            }
-        }
-        .padding(20)
-        .modifier(PathCardChrome())
-    }
-}
-
-/// 本地路径卡。未配置→[配置模型]+hint；已就绪→摘要行+[开始对话][管理]。
-private struct LocalPathCard: View {
-    let configured: Bool
-    let summary: String?
-    let onConfigure: () -> Void
-    let onStartChat: () -> Void
-    let onManage: () -> Void
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PathCardHeader(kind: .local, title: "本地",
-                           blurb: "AI 住在手机里，数据寸步不离。")
-                .padding(.bottom, 16)
-            if configured, let summary {
-                PathCardSummaryRow(summary: summary, action: onManage)
-                    .padding(.bottom, 12)
-                HStack(spacing: 10) {
-                    PathCardPrimaryButton(title: "开始对话", icon: "bubble.left.and.text.bubble.right", action: onStartChat)
-                    PathCardGhostButton(title: "管理", action: onManage)
-                }
-            } else {
-                // [Claudio 2026-09-07 pp 修订] 与远程主按钮统一深黑色
-                PathCardPrimaryButton(title: "配置模型", action: onConfigure)
-                Text("准备一个模型服务商的 API Key，一分钟搞定。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.primary.opacity(0.30))
-                    .padding(.top, 12)
-            }
-        }
-        .padding(20)
-        .modifier(PathCardChrome())
-    }
-}

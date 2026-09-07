@@ -557,6 +557,7 @@
 		E5OC1002 /* GlassSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5OC0002 /* GlassSurface.swift */; };
 		E5OC1003 /* OceanAnimatedBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5OC0003 /* OceanAnimatedBackground.swift */; };
 		E5OC1004 /* OceanBackground.metal in Sources */ = {isa = PBXBuildFile; fileRef = E5OC0004 /* OceanBackground.metal */; };
+		E5OC1005 /* WelcomeOcean.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5OC0005 /* WelcomeOcean.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1268,6 +1269,7 @@
 		E5OC0002 /* GlassSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Views/Ocean/GlassSurface.swift"; sourceTree = "<group>"; };
 		E5OC0003 /* OceanAnimatedBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Views/Ocean/OceanAnimatedBackground.swift"; sourceTree = "<group>"; };
 		E5OC0004 /* OceanBackground.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = "Views/Ocean/OceanBackground.metal"; sourceTree = "<group>"; };
+		E5OC0005 /* WelcomeOcean.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Views/Ocean/WelcomeOcean.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -2771,6 +2773,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E5OC1005 /* WelcomeOcean.swift in Sources */,
 				E5OC1001 /* OceanTheme.swift in Sources */,
 				E5OC1002 /* GlassSurface.swift in Sources */,
 				E5OC1003 /* OceanAnimatedBackground.swift in Sources */,
