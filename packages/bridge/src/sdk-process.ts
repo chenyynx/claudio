@@ -10,7 +10,13 @@ import {
   type SDKAssistantMessageError,
   type PermissionResult,
   type ModelInfo,
+  type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
+import {
+  CHANGE_TITLE_TOOL_NAME,
+  TITLE_SYSTEM_PROMPT,
+  createTitleMcpServer,
+} from "./change-title.js";
 import { isClaudeBedrockModeEnabled } from "./claude-provider.js";
 import {
   normalizeToolResultContent,
@@ -655,6 +661,8 @@ export interface SdkProcessEvents {
   exit: [number | null];
   /** Fired just before "exit" to allow re-persisting session metadata. */
   session_end: [];
+  /** [Model self-title] The model called change_title with a new title. */
+  title_change: [string];
 }
 
 interface PendingPermission {
@@ -720,6 +728,10 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
   private _projectPath: string | null = null;
   private toolCallsSinceLastResult = 0;
   private fileEditsSinceLastResult = 0;
+  // [Model self-title] In-process MCP server + tool_use-id tracking so
+  // change_title interactions are hidden from the client message stream.
+  private titleMcpServer: McpSdkServerConfigWithInstance | null = null;
+  private changeTitleToolUseIds = new Set<string>();
   private pendingAssistantError: ServerMessage | null = null;
   private launchStartedAt = 0;
 
@@ -821,6 +833,13 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
       this.initTimeoutId = null;
     }, 3000);
 
+    // [Model self-title] Per-session in-process MCP server. The handler
+    // runs here (no stdio subprocess) and surfaces as a title_change event.
+    const titleServer = createTitleMcpServer((title) => {
+      this.emit("title_change", title);
+    });
+    this.titleMcpServer = titleServer;
+
     this.queryInstance = query({
       prompt: this.createUserMessageStream(),
       options: {
@@ -846,6 +865,16 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
               return { continue: true };
             }],
           }],
+        },
+        // [Model self-title] Happy-Coder-style: append a title instruction to
+        // Claude Code's preset prompt so the model names the session itself.
+        mcpServers: {
+          "change-title": titleServer,
+        },
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          append: TITLE_SYSTEM_PROMPT,
         },
         includePartialMessages: true,
         canUseTool: this.handleCanUseTool.bind(this),
@@ -913,6 +942,8 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     this.toolCallsSinceLastResult = 0;
     this.fileEditsSinceLastResult = 0;
     this.pendingAssistantError = null;
+    this.titleMcpServer = null;
+    this.changeTitleToolUseIds.clear();
 
     // Emit session_end so listeners can re-persist metadata before cleanup.
     // processMessages() won't reach its session_end emit because close()
@@ -1382,6 +1413,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
 
       // Convert SDK message to ServerMessage
       let serverMsg = sdkMessageToServerMessage(message);
+      serverMsg = this.filterChangeTitleMessages(message, serverMsg);
       if (message.type === "assistant" && this.pendingAssistantError === null) {
         this.pendingAssistantError = claudeAssistantErrorMessage(
           (message as Record<string, unknown>).error,
@@ -1645,6 +1677,57 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
   ): void {
     this.setStatus("running");
     resolve(this.buildUserMessage(text, images));
+  }
+
+  /**
+   * [Model self-title] Hide change_title interactions from the client
+   * message stream: the tool_use block on assistant messages and the
+   * matching tool_result on user messages are removed (the tool card would
+   * otherwise flash in the chat UI). The title itself propagates via the
+   * title_change event → session_list broadcast instead.
+   */
+  private filterChangeTitleMessages(
+    message: SDKMessage,
+    serverMsg: ServerMessage | null,
+  ): ServerMessage | null {
+    if (!serverMsg) return null;
+
+    if (message.type === "assistant" && serverMsg.type === "assistant") {
+      const content = serverMsg.message?.content;
+      if (!Array.isArray(content)) return serverMsg;
+      const filtered = content.filter((block) => {
+        if (!block || typeof block !== "object") return true;
+        const candidate = block as unknown as Record<string, unknown>;
+        if (
+          candidate.type === "tool_use" &&
+          candidate.name === CHANGE_TITLE_TOOL_NAME &&
+          typeof candidate.id === "string"
+        ) {
+          this.changeTitleToolUseIds.add(candidate.id);
+          return false;
+        }
+        return true;
+      });
+      if (filtered.length === 0) return null;
+      if (filtered.length === content.length) return serverMsg;
+      return {
+        ...serverMsg,
+        message: { ...serverMsg.message, content: filtered },
+      } as ServerMessage;
+    }
+
+    if (message.type === "user" && serverMsg.type === "tool_result") {
+      const toolUseId = (serverMsg as Record<string, unknown>).toolUseId;
+      if (
+        typeof toolUseId === "string" &&
+        this.changeTitleToolUseIds.has(toolUseId)
+      ) {
+        this.changeTitleToolUseIds.delete(toolUseId);
+        return null;
+      }
+    }
+
+    return serverMsg;
   }
 
   private handlePostToolUseHook(input: unknown): void {

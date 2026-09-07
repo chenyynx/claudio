@@ -39,6 +39,7 @@ import {
   buildAutoRenameTranscript,
   generateAutoRenameName,
 } from "./auto-rename.js";
+import { shouldApplyModelTitle } from "./change-title.js";
 
 export interface WorktreeOptions {
   useWorktree?: boolean;
@@ -113,6 +114,10 @@ export interface SessionInfo {
   autoRename?: boolean;
   /** Prevents automatic rename from running more than once. */
   autoRenameAttempted?: boolean;
+  /** [Model self-title] User explicitly renamed — model changes never override. */
+  isUserNamed?: boolean;
+  /** [Model self-title] Timestamp of the last model-applied title (throttle). */
+  lastModelTitleChangeAt?: number;
 }
 
 export interface HistoryEntry {
@@ -723,6 +728,14 @@ export class SessionManager {
     // Retry name persistence after the SDK/CLI has flushed transcript files.
     // This covers early renames that happened before the provider session id
     // or JSONL file was available.
+    // [Model self-title] The model set/refined the title via the
+    // in-process change_title MCP tool. Guards live in applyModelTitle.
+    if (proc instanceof SdkProcess) {
+      proc.on("title_change", (title) => {
+        this.applyModelTitle(session, title);
+      });
+    }
+
     if (proc instanceof SdkProcess) {
       proc.on("session_end", async () => {
         if (!session.name) return;
@@ -1806,7 +1819,46 @@ export class SessionManager {
     if (!session) return false;
     session.name = name ?? undefined;
     session.autoRenameAttempted = true;
+    if (name) {
+      // Explicit user intent wins over future model self-titles.
+      session.isUserNamed = true;
+    }
     return true;
+  }
+
+  /**
+   * [Model self-title] Apply (or reject) a model-initiated title change.
+   * Guards: non-empty → dedup → user-override → 8s throttle (pure logic in
+   * shouldApplyModelTitle, change-title.ts). Applied titles are persisted
+   * to the Claude session file (best-effort; session_end re-persists) and
+   * broadcast through the regular session_list path.
+   */
+  private applyModelTitle(session: SessionInfo, title: string): void {
+    if (!shouldApplyModelTitle(session, title, Date.now())) {
+      console.log(
+        `[session] Model title change rejected for ${session.id}: ` +
+          `title="${title.slice(0, 40)}" current="${session.name?.slice(0, 40) ?? ""}" ` +
+          `userNamed=${session.isUserNamed === true}`,
+      );
+      return;
+    }
+    session.name = title.trim();
+    session.lastModelTitleChangeAt = Date.now();
+    session.autoRenameAttempted = true; // model named it — skip auto-rename
+    if (session.provider === "claude" && session.claudeSessionId) {
+      void renameClaudeSession(
+        session.worktreePath ?? session.projectPath,
+        session.claudeSessionId,
+        session.name,
+      ).catch((err) => {
+        console.warn(
+          `[session] Failed to persist model title for ${session.id}:`,
+          err,
+        );
+      });
+    }
+    console.log(`[session] Model title set for ${session.id}: "${session.name}"`);
+    this.onSessionUpdated?.(session.id);
   }
 
   destroy(id: string): boolean {
