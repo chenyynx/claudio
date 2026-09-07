@@ -4519,7 +4519,6 @@ struct ContentView: View {
             // 布局骨架对齐 dsh WorkspaceView.body：LazyVStack(leading,18)
             // + padding(horizontal 22, top 18) + header 后 Spacer(108)。
             LazyVStack(alignment: .leading, spacing: 18) {
-                WelcomeBrandMark()
                 Spacer(minLength: 108)
 
                 WelcomeHero()

@@ -2,36 +2,8 @@ import SwiftUI
 
 // MARK: - 欢迎页深海版组件
 // 逐项对照 dsh-mobile WorkspaceView.swift 真实实现（不再按截图目测）：
-// header / hero / workspaceCard / newSessionButton 的结构、字号、透明度、
-// 材质全部对齐原版；差异仅品牌元素（幽灵剪影 + Claudio + HARNESS）与动作闭包。
-
-/// dsh HarnessMark 同构：剪影 icon + 产品名（22 semibold rounded）+ 描边徽章
-/// （9 bold monospaced, padding 5/3, r3）。品牌元素换 claudio 幽灵。
-/// 不带右上圆钮——emptyState 是会话列表 overlay，系统导航栏按钮仍在
-/// （齿轮/菜单由 toolbar 提供），重复入口多余（2026-09-07 pp 拍板删除）。
-struct WelcomeBrandMark: View {
-    var body: some View {
-        HStack(spacing: 7) {
-            Image("GhostMark")
-                .renderingMode(.template)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 27, height: 27)
-                .foregroundStyle(.white)
-                .accessibilityHidden(true)
-            Text("Claudio")
-                .font(.system(size: 22, weight: .semibold, design: .rounded))
-            Text("HARNESS")
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                .padding(.horizontal, 5)
-                .padding(.vertical, 3)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .stroke(Color.white, lineWidth: 1)
-                )
-        }
-    }
-}
+// hero / workspaceCard / newSessionButton 的结构、字号、透明度、材质
+// 全部对齐原版。品牌行三件套已删（pp 拍板）——欢迎页直接以 hero 开场。
 
 /// dsh hero 同构：32/bold 主标 + .subheadline 白 65% 副行，spacing 7。
 struct WelcomeHero: View {
