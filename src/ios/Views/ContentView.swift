@@ -4515,56 +4515,57 @@ struct ContentView: View {
             return nil
         }()
 
-        return ScrollView {
-            // 布局骨架对齐 dsh WorkspaceView.body：LazyVStack(leading,18)
-            // + padding(horizontal 22, top 18) + header 后 Spacer(108)。
-            LazyVStack(alignment: .leading, spacing: 18) {
-                // [pp 反馈 2026-09-07] 品牌行删除后内容偏上；ScrollView 里
-                // Spacer 不自动撑开（只生效 minLength），固定加大到 170
-                // 对齐 dsh 参照构图（标题约在屏高 1/3 处）。
-                Spacer(minLength: 170)
+        // [pp 反馈 2026-09-07] 视觉垂直居中：GeometryReader 撑 minHeight，
+        // 上下弹性 Spacer 均分——内容少时整块居中，超一屏时 Spacer 收缩正常滚动。
+        return GeometryReader { geo in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    Spacer(minLength: 0)
 
-                WelcomeHero()
+                    WelcomeHero()
 
-                let remoteReady = remoteInstance != nil && remoteSummary != nil
-                WelcomePathCard(
-                    kind: .remote, title: "远程",
-                    subtitle: remoteReady ? (remoteSummary ?? "") : "Claude Code 与 Codex，装进口袋",
-                    connected: remoteReady,
-                    action: { showConnectComputer = true }
-                )
-                if remoteReady {
-                    StartChatStrip {
-                        handleNewSessionResult(.claude(ClaudeSessionOptions()))
-                    }
-                }
-
-                let localReady = localSummary != nil
-                WelcomePathCard(
-                    kind: .local, title: "本地",
-                    subtitle: localReady ? (localSummary ?? "") : "AI 住在手机里，数据寸步不离",
-                    connected: localReady,
-                    action: {
-                        if localReady {
-                            showSelectModels = true
-                        } else {
-                            showAddProvider = true
+                    let remoteReady = remoteInstance != nil && remoteSummary != nil
+                    WelcomePathCard(
+                        kind: .remote, title: "远程",
+                        subtitle: remoteReady ? (remoteSummary ?? "") : "Claude Code 与 Codex，装进口袋",
+                        connected: remoteReady,
+                        action: { showConnectComputer = true }
+                    )
+                    if remoteReady {
+                        StartChatStrip {
+                            handleNewSessionResult(.claude(ClaudeSessionOptions()))
                         }
                     }
-                )
-                if localReady {
-                    StartChatStrip { handleNewSessionResult(.onDevice) }
-                }
 
-                Text("两种 Agent 可同时使用，随时切换")
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.5))
-                Spacer(minLength: 24)
+                    let localReady = localSummary != nil
+                    WelcomePathCard(
+                        kind: .local, title: "本地",
+                        subtitle: localReady ? (localSummary ?? "") : "AI 住在手机里，数据寸步不离",
+                        connected: localReady,
+                        action: {
+                            if localReady {
+                                showSelectModels = true
+                            } else {
+                                showAddProvider = true
+                            }
+                        }
+                    )
+                    if localReady {
+                        StartChatStrip { handleNewSessionResult(.onDevice) }
+                    }
+
+                    Text("两种 Agent 可同时使用，随时切换")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.5))
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 22)
+                .frame(minHeight: geo.size.height)
+                .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 18)
+            .scrollIndicators(.hidden)
         }
-        .scrollIndicators(.hidden)
         .foregroundStyle(.white)
         .background(OceanBackground().ignoresSafeArea())
         .sheet(isPresented: $showAddProvider) {
