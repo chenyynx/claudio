@@ -4518,17 +4518,18 @@ struct ContentView: View {
             return nil
         }()
 
-        // [pp 2026-09-08 第三轮] 欢迎页骨架逐行对照 dsh-mobile
-        // WorkspaceView.swift 原版：ScrollView + LazyVStack(spacing:18) +
-        // Spacer(minLength:) 自然流。不做 GeometryReader / 百分比留白 /
-        // 强制居中——超高才自然滚动，平常纹丝不动，滚动行为与 dsh 一致。
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                // dsh 原版 header 之后是 Spacer(minLength: 108) 再接 hero；
-                // claudio 无自定义 header（系统导航栏已占位），保持同款 108。
-                Spacer(minLength: 108)
+        // [pp 2026-09-08 第三轮+四轮] 骨架沿用 dsh-mobile WorkspaceView 的
+        // ScrollView + LazyVStack，但空状态页无 header/会话列表，纯内容组
+        // 顶着上边会显得头重脚轻。故：LazyVStack 撑 minHeight=视口，
+        // 上下弹性 Spacer 在内容不足一屏时均分余量（整组视觉居中），
+        // 内容超一屏时 Spacer 收缩到 min 值、自然滚动（与 dsh 一致）。
+        return GeometryReader { geo in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    // 上留白：最小 60（≈ dsh 的 header+108 的观感），富余时参与均分
+                    Spacer(minLength: 60)
 
-                WelcomeHero()
+                    WelcomeHero()
 
                     let remoteReady = remoteInstance != nil && remoteSummary != nil
                     WelcomePathCard(
@@ -4565,13 +4566,16 @@ struct ContentView: View {
                         .foregroundStyle(.white.opacity(0.5))
                         .frame(maxWidth: .infinity, alignment: .center)
 
-                // dsh 原版底部收尾留白。
-                Spacer(minLength: 24)
+                // 下留白：最小 30，富余时与上 Spacer 均分 → 整组视觉居中
+                Spacer(minLength: 30)
             }
             .padding(.horizontal, 22)
-            .padding(.top, 18)
+            .padding(.vertical, 18)
+            .frame(minHeight: geo.size.height - 36)
+            .frame(maxWidth: .infinity)
+            }
+            .scrollIndicators(.hidden)
         }
-        .scrollIndicators(.hidden)
         .foregroundStyle(.white)
         .background(OceanBackground().ignoresSafeArea())
         .sheet(isPresented: $showAddProvider) {
