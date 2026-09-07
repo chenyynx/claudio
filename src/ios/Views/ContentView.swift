@@ -4487,18 +4487,6 @@ struct ContentView: View {
     @State private var startSessionError: String?
     @State private var showStartSessionError = false
 
-    /// [pp 反馈 2026-09-07] scrollBounceBehavior 是 iOS 16.4+；主 target
-    /// 部署到 16.0/16.2，需要门控。16.0-16.3 降级为原行为（无弹性，可接受：
-    /// 欢迎页背景在该区间本就降级为静态渐变）。
-    @ViewBuilder
-    private func bounceBehaviorAlways() -> some View {
-        if #available(iOS 16.4, *) {
-            self.scrollBounceBehavior(.always)
-        } else {
-            self
-        }
-    }
-
     private var emptyState: some View {
         // [Claudio 2026-09-07 P1] 双路径启动器（设计稿 welcome-page-v1.html
         // 定稿）。第 0 原则：动作全部复用现有链路（handleNewSessionResult /
@@ -6779,6 +6767,21 @@ private struct MenuKey: Equatable {
     /// keeping this a pure value type — see the type comment above about the
     /// use-after-free that closures/reference captures caused here.
     let filed: Bool
+}
+
+/// [pp 反馈 2026-09-07] scrollBounceBehavior 是 iOS 16.4+；主 target
+/// 部署到 16.0/16.2，需要门控。16.0-16.3 降级为原行为（无弹性，可接受：
+/// 欢迎页背景在该区间本就降级为静态渐变）。View extension 才能链在
+/// GeometryReader 闭包内的 ScrollView 上（struct 方法不行）。
+fileprivate extension View {
+    @ViewBuilder
+    func bounceBehaviorAlways() -> some View {
+        if #available(iOS 16.4, *) {
+            self.scrollBounceBehavior(.always)
+        } else {
+            self
+        }
+    }
 }
 
 // MARK: - Session Row
