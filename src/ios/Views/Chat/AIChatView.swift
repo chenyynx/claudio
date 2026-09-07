@@ -85,16 +85,16 @@ enum ChatColors {
     static let sendButtonDisabled = Color(UIColor.quaternaryLabel)
 
     // [Grok-inputbar 2026-09-08] Grok 风格扩展色（亮暗双模式）
-    static let extIcon = Color(UIColor { bash.userInterfaceStyle == .dark
+    static let extIcon = Color(UIColor { $0.userInterfaceStyle == .dark
         ? UIColor.white.withAlphaComponent(0.92)
         : UIColor.black.withAlphaComponent(0.85) })
-    static let extPlusTop = Color(UIColor { bash.userInterfaceStyle == .dark
+    static let extPlusTop = Color(UIColor { $0.userInterfaceStyle == .dark
         ? UIColor.white.withAlphaComponent(0.10)
         : UIColor(white: 1.0, alpha: 1) })
-    static let extPlusBottom = Color(UIColor { bash.userInterfaceStyle == .dark
+    static let extPlusBottom = Color(UIColor { $0.userInterfaceStyle == .dark
         ? UIColor.white.withAlphaComponent(0.055)
         : UIColor(white: 0.92, alpha: 1) })
-    static let extPillBg = Color(UIColor { bash.userInterfaceStyle == .dark
+    static let extPillBg = Color(UIColor { $0.userInterfaceStyle == .dark
         ? UIColor.white.withAlphaComponent(0.12)
         : UIColor(white: 0.94, alpha: 1) })
     static let extFocusOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
