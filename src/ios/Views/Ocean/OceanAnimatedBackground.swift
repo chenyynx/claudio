@@ -8,8 +8,12 @@ struct OceanAnimatedBackground: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
 
+    /// [pp 2026-09-08] sheet 弹出转场期间暂停 shader——转场动画与 30fps
+    /// fluid 渲染抢 GPU 导致掉帧；被 sheet 覆盖压暗时暂停无视觉影响。
+    var isPaused: Bool = false
+
     private var pausesAnimation: Bool {
-        reduceMotion || scenePhase != .active
+        reduceMotion || scenePhase != .active || isPaused
     }
 
     var body: some View {

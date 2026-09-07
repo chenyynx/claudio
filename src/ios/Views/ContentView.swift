@@ -4476,6 +4476,13 @@ struct ContentView: View {
     @State private var showAddProvider = false
     @State private var showSelectModels = false
     @State private var showConnectComputer = false
+
+    /// [pp 2026-09-08] 欢迎页任一 sheet 活动时暂停深海背景动画：
+    /// 转场动画与 30fps shader 抢 GPU 是三个入口全掉帧的共同因子。
+    private var welcomeSheetActive: Bool {
+        showAddProvider || showSelectModels || showConnectComputer
+            || editingPathInstanceID != nil
+    }
     @State private var showConnectionSheet = false
     @State private var showNewSessionSheet = false
     /// [Claudio 2026-09-06 G3.4] Drives the dedicated path-edit modal
@@ -4577,7 +4584,7 @@ struct ContentView: View {
             .scrollIndicators(.hidden)
         }
         .foregroundStyle(.white)
-        .background(OceanBackground().ignoresSafeArea())
+        .background(OceanBackground(isPaused: welcomeSheetActive).ignoresSafeArea())
         .sheet(isPresented: $showAddProvider) {
             NavigationStack {
                 AddProviderView()

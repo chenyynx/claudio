@@ -14,7 +14,8 @@ enum OceanColor {
 }
 
 struct OceanBackground: View {
+    var isPaused: Bool = false
     var body: some View {
-        OceanAnimatedBackground()
+        OceanAnimatedBackground(isPaused: isPaused)
     }
 }
