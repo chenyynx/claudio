@@ -187,10 +187,10 @@ struct SessionModelPicker: View {
 
 // MARK: - Compact Display Helper
 
-@MainActor
 /// [Claudio 2026-09-07 P2 4.4] 远端会话顶栏显示解析（AIChatView 顶栏与
 /// 模型 sheet 共用，SessionModelDisplay 内部 gate 调用）。铁律：仅当
 /// entry 归属 remoteAgent 实例时才走这些方法，本地路径零触碰。
+@MainActor
 enum RemoteSessionTopBar {
     /// 占位 label（RemoteAgentSetupView 自动创建时的硬编码默认值）。
     static let placeholderLabels: Set<String> = ["My Computer", "我的电脑"]
@@ -233,6 +233,7 @@ enum RemoteSessionTopBar {
     }
 }
 
+@MainActor
 struct SessionModelDisplay {
     let store: ProviderConfigStore
     var draftGroupId: String? = nil
