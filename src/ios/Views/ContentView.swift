@@ -4516,18 +4516,16 @@ struct ContentView: View {
         }()
 
         return ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // [Claudio 2026-09-07 ocean] 品牌行：幽灵 + Claudio + HARNESS +
-                // 两圆钮（齿轮=设置 / 终端=工具，复用现有 sheet/terminal 入口）。
+            // 布局骨架对齐 dsh WorkspaceView.body：LazyVStack(leading,18)
+            // + padding(horizontal 22, top 18) + header 后 Spacer(108)。
+            LazyVStack(alignment: .leading, spacing: 18) {
                 WelcomeBrandBar(
                     onSettings: { activeToolSheet = .settings },
                     onTools: { showTerminal = true }
                 )
-                .padding(.top, 8)
+                Spacer(minLength: 108)
 
                 WelcomeHero()
-                    .padding(.top, 92)
-                    .padding(.bottom, 30)
 
                 let remoteReady = remoteInstance != nil && remoteSummary != nil
                 WelcomePathCard(
@@ -4540,7 +4538,6 @@ struct ContentView: View {
                     StartChatStrip {
                         handleNewSessionResult(.claude(ClaudeSessionOptions()))
                     }
-                    .padding(.top, 14)
                 }
 
                 let localReady = localSummary != nil
@@ -4556,20 +4553,20 @@ struct ContentView: View {
                         }
                     }
                 )
-                .padding(.top, 14)
                 if localReady {
                     StartChatStrip { handleNewSessionResult(.onDevice) }
-                        .padding(.top, 14)
                 }
 
                 Text("两种 Agent 可同时使用，随时切换")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.35))
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 44)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.5))
+                Spacer(minLength: 24)
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 22)
+            .padding(.top, 18)
         }
+        .scrollIndicators(.hidden)
+        .foregroundStyle(.white)
         .background(OceanBackground().ignoresSafeArea())
         .sheet(isPresented: $showAddProvider) {
             NavigationStack {
