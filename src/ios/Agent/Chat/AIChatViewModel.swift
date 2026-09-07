@@ -6718,6 +6718,14 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// displayed level always matches what will actually be requested (the request
     /// path re-clamps per-model too — AgentProvider: min(level, catalogMax)).
     var currentThinkingLevel: ThinkingLevel {
+        // [Claudio 2026-09-07 P2] 远端分支：读 RemoteSessionDefaultsStore.effort
+        // 字符串（"low"/"medium"/"high"/"xhigh"/"max"）→ ThinkingLevel。
+        // 本地路径完全跳过——铁律：lastAgentProviderIsRemote == true 才进此分支。
+        if lastAgentProviderIsRemote {
+            let s = RemoteSessionDefaultsStore.load().effort ?? ""
+            if let mapped = ThinkingLevel(rawValue: s) { return mapped }
+            return .off
+        }
         let stored: ThinkingLevel = {
             if let sid = sessionId, let cfg = ProviderConfigStore.shared.inferenceConfig(for: sid) {
                 return cfg.thinkingLevel
