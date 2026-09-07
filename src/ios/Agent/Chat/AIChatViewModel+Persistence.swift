@@ -935,12 +935,28 @@ extension AIChatViewModel {
             self.scrollToBottomSignal.send()
         case .appended(let msgs):
             logger.info("[HistoryBackfill] applyBackfillResult=appended count=\(msgs.count) \(String(format: "%.0f", elapsed))ms")
-            // 增量追加到 messages（不替换整页 → V3 diffable 看到旧 UUID 保持 → cell 不重建）
+            // [Fix 2026-09-08 重复渲染] 增量追加前做内容指纹去重。
+            // 活体消息（UUID id）和回填消息（bridge 派生 id）的 id 永远
+            // 不同 → 仅靠 id 判重防不住杀重进的重复追加。加文本指纹：
+            // 取每条消息首个 text block 的前 80 字符 + role 作为指纹。
+            var existingFingerprints = Set(self.messages.map { msg -> String in
+                let text = msg.blocks.first(where: { $0.kind == .text })?.content ?? ""
+                return "\(msg.role.rawValue):\(String(text.prefix(80)))"
+            })
+            var addedCount = 0
             for m in msgs {
-                if !self.messages.contains(where: { $0.id == m.id }) {
+                let text = m.blocks.first(where: { $0.kind == .text })?.content ?? ""
+                let fingerprint = "\(m.role.rawValue):\(String(text.prefix(80)))"
+                if !self.messages.contains(where: { $0.id == m.id }),
+                   !existingFingerprints.contains(fingerprint) {
                     self.messages.append(m)
+                    existingFingerprints.insert(fingerprint)
+                    addedCount += 1
+                } else {
+                    logger.info("[HistoryBackfill] dedup: skipped id=\(m.id.prefix(8)) fp=\(fingerprint.prefix(40))")
                 }
             }
+            logger.info("[HistoryBackfill] appended dedup: \(msgs.count) → \(addedCount) added")
             // agentHistory 增量补 assistant turn（用 uuidString 转 ChatMessage.id）
             for m in msgs where m.role == .assistant {
                 let dbId = m.id.uuidString
@@ -955,6 +971,9 @@ extension AIChatViewModel {
                     am.dbMessageId = dbId
                     self.agentHistory.append(am)
                 }
+            }
+            if addedCount > 0 {
+                self.scrollToBottomSignal.send()
             }
             self.scrollToBottomSignal.send()
         }
