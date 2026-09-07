@@ -4520,14 +4520,17 @@ struct ContentView: View {
 
         // [pp 反馈 2026-09-07] 视觉垂直居中：GeometryReader 撑 minHeight，
         // 上下弹性 Spacer 均分——内容少时整块居中，超一屏时 Spacer 收缩正常滚动。
-        return GeometryReader { geo in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    // [pp 真机截图实测 2026-09-07] 大标题顶部目标 = 全屏 32%：
-                    // 导航栏占 ~12%，内容区上方留白 = 22%（0.22 × 内容区高 ≈ 全屏 20%）
-                    Spacer().frame(height: geo.size.height * 0.22)
+        // [pp 反馈 2026-09-07 第二轮] 欢迎页固定构图不滚动。原 ScrollView +
+        // 22%/44% 固定留白在双就绪态内容超一屏 → 变真滚动（卡片跟着滑走，
+        // 弹不回来）。改静态 VStack + 加权弹性 Spacer（layoutPriority 1:2
+        // ≈ 22%:44% 设计比例）：空间富余按比例展开（标题仍落 ~1/3 处），
+        // 空间紧张收缩到最小留白——任何情况下内容固定、零滚动。
+        return GeometryReader { _ in
+            VStack(alignment: .leading, spacing: 18) {
+                // 大标题顶部目标 = 全屏 32%（导航栏 ~12% + 上留白 ~20%）
+                Spacer(minLength: 16).layoutPriority(1)
 
-                    WelcomeHero()
+                WelcomeHero()
 
                     let remoteReady = remoteInstance != nil && remoteSummary != nil
                     WelcomePathCard(
@@ -4564,19 +4567,10 @@ struct ContentView: View {
                         .foregroundStyle(.white.opacity(0.5))
                         .frame(maxWidth: .infinity, alignment: .center)
 
-                    // 下方留白补足到视口底（22% + 内容 ~34% + 44% ≈ 100%，
-                    // 内容少时不滚动；双就绪态内容变多时正常滚动）
-                    Spacer().frame(height: geo.size.height * 0.44)
-                }
-                .padding(.horizontal, 22)
-                .frame(minHeight: geo.size.height)
-                .frame(maxWidth: .infinity)
+                Spacer(minLength: 16).layoutPriority(2)
             }
-            .scrollIndicators(.hidden)
-            // [pp 反馈 2026-09-07] 内容正好撑满一屏（22%+内容+44%）时
-            // ScrollView 默认不响应拖动——这里强制保留 iOS 原生 rubber-band
-            // 弹性，滑动松手后弹回。
-            .bounceBehaviorAlways()
+            .padding(.horizontal, 22)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .foregroundStyle(.white)
         .background(OceanBackground().ignoresSafeArea())
@@ -6767,21 +6761,6 @@ private struct MenuKey: Equatable {
     /// keeping this a pure value type — see the type comment above about the
     /// use-after-free that closures/reference captures caused here.
     let filed: Bool
-}
-
-/// [pp 反馈 2026-09-07] scrollBounceBehavior 是 iOS 16.4+；主 target
-/// 部署到 16.0/16.2，需要门控。16.0-16.3 降级为原行为（无弹性，可接受：
-/// 欢迎页背景在该区间本就降级为静态渐变）。View extension 才能链在
-/// GeometryReader 闭包内的 ScrollView 上（struct 方法不行）。
-fileprivate extension View {
-    @ViewBuilder
-    func bounceBehaviorAlways() -> some View {
-        if #available(iOS 16.4, *) {
-            self.scrollBounceBehavior(.always)
-        } else {
-            self
-        }
-    }
 }
 
 // MARK: - Session Row
