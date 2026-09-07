@@ -4487,6 +4487,18 @@ struct ContentView: View {
     @State private var startSessionError: String?
     @State private var showStartSessionError = false
 
+    /// [pp 反馈 2026-09-07] scrollBounceBehavior 是 iOS 16.4+；主 target
+    /// 部署到 16.0/16.2，需要门控。16.0-16.3 降级为原行为（无弹性，可接受：
+    /// 欢迎页背景在该区间本就降级为静态渐变）。
+    @ViewBuilder
+    private func bounceBehaviorAlways() -> some View {
+        if #available(iOS 16.4, *) {
+            self.scrollBounceBehavior(.always)
+        } else {
+            self
+        }
+    }
+
     private var emptyState: some View {
         // [Claudio 2026-09-07 P1] 双路径启动器（设计稿 welcome-page-v1.html
         // 定稿）。第 0 原则：动作全部复用现有链路（handleNewSessionResult /
@@ -4576,7 +4588,7 @@ struct ContentView: View {
             // [pp 反馈 2026-09-07] 内容正好撑满一屏（22%+内容+44%）时
             // ScrollView 默认不响应拖动——这里强制保留 iOS 原生 rubber-band
             // 弹性，滑动松手后弹回。
-            .scrollBounceBehavior(.always)
+            .bounceBehaviorAlways()
         }
         .foregroundStyle(.white)
         .background(OceanBackground().ignoresSafeArea())
