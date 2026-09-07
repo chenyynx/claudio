@@ -5,26 +5,10 @@ import SwiftUI
 // header / hero / workspaceCard / newSessionButton 的结构、字号、透明度、
 // 材质全部对齐原版；差异仅品牌元素（幽灵剪影 + Claudio + HARNESS）与动作闭包。
 
-/// dsh header 的 claudio 版：品牌标 + Spacer + 圆钮对。
-/// 圆钮 trailing -4 对齐卡片右缘（dsh 原注释的做法）。
-struct WelcomeBrandBar: View {
-    var onSettings: () -> Void
-    var onTools: () -> Void
-
-    var body: some View {
-        HStack {
-            WelcomeBrandMark()
-            Spacer()
-            WelcomeHeaderButton(systemName: "terminal", accessibilityLabel: "工具", action: onTools)
-            WelcomeHeaderButton(systemName: "gearshape.fill", accessibilityLabel: "设置", action: onSettings)
-                .padding(.trailing, -4)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 /// dsh HarnessMark 同构：剪影 icon + 产品名（22 semibold rounded）+ 描边徽章
 /// （9 bold monospaced, padding 5/3, r3）。品牌元素换 claudio 幽灵。
+/// 不带右上圆钮——emptyState 是会话列表 overlay，系统导航栏按钮仍在
+/// （齿轮/菜单由 toolbar 提供），重复入口多余（2026-09-07 pp 拍板删除）。
 struct WelcomeBrandMark: View {
     var body: some View {
         HStack(spacing: 7) {
@@ -45,33 +29,6 @@ struct WelcomeBrandMark: View {
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
                         .stroke(Color.white, lineWidth: 1)
                 )
-        }
-    }
-}
-
-/// dsh headerButton 同款：iOS 26 原生 .glass 圆形按钮；
-/// 低版本 ultraThinMaterial 圆 + 白 25% 描边。icon 17 semibold，40×40。
-struct WelcomeHeaderButton: View {
-    let systemName: String
-    let accessibilityLabel: String
-    let action: () -> Void
-
-    var body: some View {
-        let label = Image(systemName: systemName)
-            .font(.system(size: 17, weight: .semibold))
-            .frame(width: 40, height: 40)
-            .contentShape(Circle())
-        if #available(iOS 26.0, *) {
-            Button(action: action) { label }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .accessibilityLabel(accessibilityLabel)
-        } else {
-            Button(action: action) { label }
-                .buttonStyle(.plain)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 0.8))
-                .accessibilityLabel(accessibilityLabel)
         }
     }
 }

@@ -2278,7 +2278,7 @@ struct AIChatView: View {
                     .padding(.top, legacyLayout ? 0 : 2)
                     .onReceive(NotificationCenter.default.publisher(for: .soulMdChanged)) { _ in
                         let n = SoulStore.cachedMetadata.name
-                        soulName = n.isEmpty ? "Minis" : n
+                        soulName = n.isEmpty ? "Claudio" : n
                     }
             }
             .buttonStyle(.plain)
