@@ -217,7 +217,7 @@ extension AIChatViewModel {
             return
         }
         // 兜底标题也带关键词分类 → 远端会话也能换头像(不调 LLM/不依赖本地 agent)
-        let category = inferRemoteSessionCategoryCompat(from: firstUserRaw)
+        let category = inferRemoteSessionCategory(from: firstUserRaw)
         await ChatStore.shared.updateSessionTitle(sessionId, title: fallback, category: category)
         logger.info("[TitleGen] Applied fallback title \"\(fallback)\" + category \"\(category)\" (attempt \(attempt))")
     }
@@ -705,16 +705,3 @@ extension AIChatViewModel {
     }
 
 }
-
-
-// [Session sync] Compat — inferRemoteSessionCategory is defined in ContentView.swift
-// inside #if REMOTE_SESSION_SYNC, so its symbol does not exist when flag is OFF.
-// This compat function provides an always-available accessor.
-private func inferRemoteSessionCategoryCompat(from text: String?) -> String {
-#if REMOTE_SESSION_SYNC
-    return inferRemoteSessionCategory(from: text)
-#else
-    return "chat"
-#endif
-}
-
