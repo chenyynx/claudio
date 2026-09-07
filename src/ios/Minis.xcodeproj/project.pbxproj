@@ -553,6 +553,10 @@
 		E5PK0005 /* MarkdownFilePeekRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5PK0006 /* MarkdownFilePeekRouter.swift */; };
 		E5PK0007 /* RemoteFilePeekSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5PK0008 /* RemoteFilePeekSheet.swift */; };
 		E5PK0009 /* RemoteFilePeekPresentationModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5PK0010 /* RemoteFilePeekPresentationModifier.swift */; };
+		E5OC1001 /* OceanTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5OC0001 /* OceanTheme.swift */; };
+		E5OC1002 /* GlassSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5OC0002 /* GlassSurface.swift */; };
+		E5OC1003 /* OceanAnimatedBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5OC0003 /* OceanAnimatedBackground.swift */; };
+		E5OC1004 /* OceanBackground.metal in Sources */ = {isa = PBXBuildFile; fileRef = E5OC0004 /* OceanBackground.metal */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1260,6 +1264,10 @@
 		E5PK0006 /* MarkdownFilePeekRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownFilePeekRouter.swift; sourceTree = "<group>"; };
 		E5PK0008 /* RemoteFilePeekSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteFilePeekSheet.swift; sourceTree = "<group>"; };
 		E5PK0010 /* RemoteFilePeekPresentationModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteFilePeekPresentationModifier.swift; sourceTree = "<group>"; };
+		E5OC0001 /* OceanTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Views/Ocean/OceanTheme.swift"; sourceTree = "<group>"; };
+		E5OC0002 /* GlassSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Views/Ocean/GlassSurface.swift"; sourceTree = "<group>"; };
+		E5OC0003 /* OceanAnimatedBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Views/Ocean/OceanAnimatedBackground.swift"; sourceTree = "<group>"; };
+		E5OC0004 /* OceanBackground.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = "Views/Ocean/OceanBackground.metal"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -2763,6 +2771,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E5OC1001 /* OceanTheme.swift in Sources */,
+				E5OC1002 /* GlassSurface.swift in Sources */,
+				E5OC1003 /* OceanAnimatedBackground.swift in Sources */,
+				E5OC1004 /* OceanBackground.metal in Sources */,
 				2578A68E823B55078FA6FFBF /* RemotePermissionDialog.swift in Sources */,
 				EFE7022EC375763A1772C0F0 /* RemoteSessionDefaultsStore.swift in Sources */,
 				CC0DC87CCB27D7B6BE72D92C /* RemoteNewSessionSheet.swift in Sources */,
