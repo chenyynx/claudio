@@ -4540,7 +4540,7 @@ struct ContentView: View {
                     let localReady = localSummary != nil
                     WelcomePathCard(
                         kind: .local, title: "本地",
-                        subtitle: localReady ? (localSummary ?? "") : "AI 住在手机里，数据寸步不离",
+                        subtitle: localReady ? (localSummary ?? "") : "跑在手机内置 Linux 上的 AI agent",
                         connected: localReady,
                         action: {
                             if localReady {
