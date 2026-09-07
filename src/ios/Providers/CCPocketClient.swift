@@ -930,15 +930,30 @@ final class CCPocketClient: @unchecked Sendable {
             if let instanceID = mappingInstanceID {
                 let iid = instanceID
                 let userRenamed = Self.userRenamedSessionIds
-                let named = sessions.compactMap { s -> (sid: String, title: String)? in
+                // [Fix 2026-09-08] 自己打开的会话直接按 bridge session id 匹配
+                // （sessionId/boundChatSessionID 都在客户端手上，不依赖
+                // claudeId 映射——新会话/resume 时 claudeId 可能尚未落映射或
+                // 已变化，映射路径会整条漏掉）。
+                var named: [(sid: String, title: String)] = []
+                if let sessionId,
+                   let own = sessions.first(where: { $0.id == sessionId }),
+                   let name = own.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !name.isEmpty,
+                   let ownChat = boundChatSessionID,
+                   !userRenamed.contains(ownChat) {
+                    named.append((ownChat, name))
+                }
+                // 其他会话（后台/另一客户端开的）仍走 claudeId 映射。
+                for s in sessions {
+                    guard s.id != sessionId else { continue }
                     guard let claudeId = s.claudeSessionId ?? s.sessionId,
                           claudeId.count > 8,
                           let name = s.name?.trimmingCharacters(in: .whitespacesAndNewlines),
                           !name.isEmpty,
                           let boundSid = Self.boundChatSessionID(instanceID: iid, claudeId: claudeId),
                           !userRenamed.contains(boundSid)
-                    else { return nil }
-                    return (boundSid, name)
+                    else { continue }
+                    named.append((boundSid, name))
                 }
                 if !named.isEmpty {
                     let clientLogger = logger
