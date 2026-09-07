@@ -4520,8 +4520,9 @@ struct ContentView: View {
         return GeometryReader { geo in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    // [pp 反馈 2026-09-07] 上方留 6% 屏高（54pt ≈ 大标题字号的视觉呼吸）
-                    Spacer().frame(height: geo.size.height * 0.06)
+                    // [pp 真机截图实测 2026-09-07] 大标题顶部目标 = 全屏 32%：
+                    // 导航栏占 ~12%，内容区上方留白 = 22%（0.22 × 内容区高 ≈ 全屏 20%）
+                    Spacer().frame(height: geo.size.height * 0.22)
 
                     WelcomeHero()
 
@@ -4560,8 +4561,9 @@ struct ContentView: View {
                         .foregroundStyle(.white.opacity(0.5))
                         .frame(maxWidth: .infinity, alignment: .center)
 
-                    // 下方 Spacer 占 25% 屏高（balance 视觉重心）
-                    Spacer().frame(height: geo.size.height * 0.25)
+                    // 下方留白补足到视口底（22% + 内容 ~34% + 44% ≈ 100%，
+                    // 内容少时不滚动；双就绪态内容变多时正常滚动）
+                    Spacer().frame(height: geo.size.height * 0.44)
                 }
                 .padding(.horizontal, 22)
                 .frame(minHeight: geo.size.height)
