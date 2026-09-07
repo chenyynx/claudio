@@ -911,7 +911,12 @@ extension AIChatViewModel {
                     messages[msgIdx].blocks[blockIdx].content = content
                     messages[msgIdx].blocks[blockIdx].toolStatus = .running
                     messages[msgIdx].blocks[blockIdx].streamingFileContent = nil
-                    switch name {
+                    // [Plan 2026-09-08] Remote (Claude Code) tool names resolve
+                    // through RemoteToolCatalog (official header/summary copy);
+                    // local names keep the legacy mapping below untouched.
+                    if RemoteToolCatalog.isRemoteTool(name) {
+                        messages[msgIdx].blocks[blockIdx].kind = RemoteToolCatalog.blockKind(for: name, args: args)
+                    } else switch name {
                     case "file_write":
                         if let path = args["path"] as? String {
                             messages[msgIdx].blocks[blockIdx].kind = .fileWriteTool(path: path)
@@ -1299,6 +1304,11 @@ extension AIChatViewModel {
     }
 
     nonisolated private func makeToolPreview(name: String, args: [String: Any]) -> String {
+        // [Plan 2026-09-08] Remote (Claude Code) names route through the
+        // catalog (official activity copy); local names keep legacy text.
+        if RemoteToolCatalog.isRemoteTool(name) {
+            return RemoteToolCatalog.streamingPreview(for: name, args: args)
+        }
         switch name {
         case "shell_execute":
             return "Executing..."

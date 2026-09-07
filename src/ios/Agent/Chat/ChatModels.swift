@@ -437,6 +437,168 @@ enum AssistantBlockKind: Equatable {
     case info
 }
 
+// MARK: - RemoteToolCatalog
+
+/// [Plan 2026-09-08] Display catalog for REMOTE (Claude Code) tool calls.
+///
+/// Copy model mirrors the official CLI renderers (cross-checked against the
+/// deobfuscated v2.1.76 source — T-Lab-CUHKSZ/claude-code — and the local
+/// binary's tool-name constants):
+/// - header name overrides: Grep→Search, WebFetch→Fetch, WebSearch→
+///   "Web Search", NotebookEdit→"Edit Notebook"; TodoWrite renders no
+///   header at all; MCP tools funnel into a single "mcp" entry.
+/// - summaries (official getToolSummary rules): read/write → file basename;
+///   bash → command (60 chars); search → quoted pattern (50 chars);
+///   other → description/prompt/first-keys (50 chars).
+///
+/// ⚠️ ISOLATION: local agent tool names (file_read, shell_execute, …) NEVER
+/// reach this catalog — every call site gates on `isRemoteTool` and keeps
+/// the legacy local mapping byte-identical. The gate is NAME-based; if the
+/// local agent ever grows MCP tools (also `mcp__`-prefixed) this must
+/// switch to provider-based gating.
+enum RemoteToolCatalog {
+
+    // MARK: Membership
+
+    /// Wire names the catalog knows how to render. Unknown names (incl.
+    /// every local tool name) return false → call sites keep the legacy
+    /// local mapping untouched.
+    static func isRemoteTool(_ name: String) -> Bool {
+        if name.hasPrefix("mcp__") { return true }
+        return knownNames.contains(name)
+    }
+
+    private static let knownNames: Set<String> = [
+        "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead",
+        "Bash", "BashOutput", "KillShell",
+        "Glob", "Grep", "WebSearch", "WebFetch",
+        "Task", "Agent", "TodoWrite", "AskUserQuestion",
+        "EnterPlanMode", "ExitPlanMode", "SlashCommand", "Skill",
+        "TaskOutput", "TaskStop",
+    ]
+
+    // MARK: Block kind
+
+    /// AssistantBlockKind with the associated value filled from args —
+    /// the missing half of the legacy backfill switch (which only knows
+    /// local tool names, so remote cards fell back to "Read file").
+    /// Falls back to a memory card carrying an official "other"-rule
+    /// summary for tools without a file/shell shape (TodoWrite,
+    /// AskUserQuestion, mcp__*, …).
+    static func blockKind(for name: String, args: [String: Any]) -> AssistantBlockKind {
+        let file = stringArg(args, keys: ["file_path", "path", "notebook_path"])
+        switch name {
+        case "Read", "NotebookRead":
+            return .fileReadTool(path: file ?? "")
+        case "Write":
+            return .fileWriteTool(path: file ?? "")
+        case "Edit", "MultiEdit", "NotebookEdit":
+            return .fileEditTool(path: file ?? "")
+        case "Bash", "BashOutput", "KillShell", "SlashCommand":
+            return .shellTool(command: stringArg(args, keys: ["command"]) ?? "")
+        case "Glob", "Grep":
+            // Official header: Search(pattern: "x") — compact card shows the
+            // pattern itself on a shell-shaped card.
+            let pattern = stringArg(args, keys: ["pattern", "query"]) ?? ""
+            return pattern.isEmpty
+                ? .shellTool(command: name)
+                : .shellTool(command: "pattern: \"\(trunc(pattern, 50))\"")
+        case "WebSearch":
+            return .browserTool(action: trunc(stringArg(args, keys: ["query"]) ?? "Web Search", 50))
+        case "WebFetch":
+            return .browserTool(action: trunc(stringArg(args, keys: ["url"]) ?? "Fetch", 50))
+        case "Task", "Agent":
+            return .memoryTool(action: trunc(stringArg(args, keys: ["description", "prompt"]) ?? "Running task", 50))
+        case "TodoWrite":
+            let count = (args["todos"] as? [Any])?.count ?? 0
+            return .memoryTool(action: count > 0 ? "todo list · \(count) items" : "todo list")
+        case "AskUserQuestion":
+            return .memoryTool(action: trunc(questionText(args) ?? "Asking user", 60))
+        case "EnterPlanMode":
+            return .memoryTool(action: "Enter plan mode")
+        case "ExitPlanMode":
+            return .memoryTool(action: "Exit plan mode")
+        case "Skill":
+            return .memoryTool(action: trunc(stringArg(args, keys: ["skill", "command"]) ?? "Skill", 50))
+        default:
+            // mcp__* and any future remote tool: official "other" rule —
+            // description/prompt first, then the first few arg keys.
+            return .memoryTool(action: trunc(otherSummary(name, args), 50))
+        }
+    }
+
+    // MARK: Streaming preview
+
+    /// Transient card text while the tool runs — the official activity
+    /// lines: "Reading X…", "Searching for Y…", "Running task".
+    static func streamingPreview(for name: String, args: [String: Any]) -> String {
+        let file = stringArg(args, keys: ["file_path", "path", "notebook_path"])
+        let base = file.map { ($0 as NSString).lastPathComponent } ?? ""
+        switch name {
+        case "Read", "NotebookRead":
+            return base.isEmpty ? "Reading file…" : "Reading \(base)…"
+        case "Write":
+            return base.isEmpty ? "Writing file…" : "Writing \(base)…"
+        case "Edit", "MultiEdit", "NotebookEdit":
+            return base.isEmpty ? "Editing file…" : "Editing \(base)…"
+        case "Bash":
+            let cmd = stringArg(args, keys: ["command"]) ?? ""
+            return cmd.isEmpty ? "Running…" : "Running \(trunc(cmd, 60))…"
+        case "Glob", "Grep":
+            let p = stringArg(args, keys: ["pattern", "query"]) ?? ""
+            return p.isEmpty ? "Searching…" : "Searching for \(trunc(p, 50))…"
+        case "WebSearch":
+            let q = stringArg(args, keys: ["query"]) ?? ""
+            return q.isEmpty ? "Searching the web…" : "Searching for \(trunc(q, 50))…"
+        case "WebFetch":
+            let u = stringArg(args, keys: ["url"]) ?? ""
+            return u.isEmpty ? "Fetching web page…" : "Fetching \(trunc(u, 50))…"
+        case "Task", "Agent":
+            return stringArg(args, keys: ["description", "prompt"]).map { trunc($0, 50) } ?? "Running task"
+        case "TodoWrite":
+            return "Updating todo list…"
+        case "AskUserQuestion":
+            return trunc(questionText(args) ?? "Asking user…", 60)
+        default:
+            let s = trunc(otherSummary(name, args), 50)
+            return s.isEmpty ? "Working…" : "\(s)…"
+        }
+    }
+
+    // MARK: Helpers
+
+    private static func stringArg(_ args: [String: Any], keys: [String]) -> String? {
+        for k in keys {
+            if let v = args[k] as? String, !v.isEmpty { return v }
+        }
+        return nil
+    }
+
+    /// AskUserQuestion: official schema carries `questions: [{question…}]`;
+    /// tolerate a flat `question` string too.
+    private static func questionText(_ args: [String: Any]) -> String? {
+        if let flat = stringArg(args, keys: ["question", "prompt"]) { return flat }
+        if let arr = args["questions"] as? [[String: Any]], let first = arr.first,
+           let q = first["question"] as? String, !q.isEmpty {
+            return q
+        }
+        return nil
+    }
+
+    /// Official `_otherSummary`: description → prompt → skill → first 3 keys.
+    private static func otherSummary(_ name: String, _ args: [String: Any]) -> String {
+        if let s = stringArg(args, keys: ["description", "prompt", "skill", "query"]) { return s }
+        let keys = args.keys.sorted().prefix(3).joined(separator: ", ")
+        return keys.isEmpty ? name : keys
+    }
+
+    private static func trunc(_ s: String, _ n: Int) -> String {
+        guard s.count > n else { return s }
+        return String(s.prefix(n)) + "…"
+    }
+}
+
+
 enum KernelStatus: Equatable {
     case notBooted
     case booting
