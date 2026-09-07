@@ -4518,17 +4518,15 @@ struct ContentView: View {
             return nil
         }()
 
-        // [pp 反馈 2026-09-07] 视觉垂直居中：GeometryReader 撑 minHeight，
-        // 上下弹性 Spacer 均分——内容少时整块居中，超一屏时 Spacer 收缩正常滚动。
-        // [pp 反馈 2026-09-07 第二轮] 欢迎页固定构图不滚动。原 ScrollView +
-        // 22%/44% 固定留白在双就绪态内容超一屏 → 变真滚动（卡片跟着滑走，
-        // 弹不回来）。改静态 VStack + 加权弹性 Spacer（layoutPriority 1:2
-        // ≈ 22%:44% 设计比例）：空间富余按比例展开（标题仍落 ~1/3 处），
-        // 空间紧张收缩到最小留白——任何情况下内容固定、零滚动。
-        return GeometryReader { _ in
-            VStack(alignment: .leading, spacing: 18) {
-                // 大标题顶部目标 = 全屏 32%（导航栏 ~12% + 上留白 ~20%）
-                Spacer(minLength: 16).layoutPriority(1)
+        // [pp 2026-09-08 第三轮] 欢迎页骨架逐行对照 dsh-mobile
+        // WorkspaceView.swift 原版：ScrollView + LazyVStack(spacing:18) +
+        // Spacer(minLength:) 自然流。不做 GeometryReader / 百分比留白 /
+        // 强制居中——超高才自然滚动，平常纹丝不动，滚动行为与 dsh 一致。
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 18) {
+                // dsh 原版 header 之后是 Spacer(minLength: 108) 再接 hero；
+                // claudio 无自定义 header（系统导航栏已占位），保持同款 108。
+                Spacer(minLength: 108)
 
                 WelcomeHero()
 
@@ -4567,11 +4565,13 @@ struct ContentView: View {
                         .foregroundStyle(.white.opacity(0.5))
                         .frame(maxWidth: .infinity, alignment: .center)
 
-                Spacer(minLength: 16).layoutPriority(2)
+                // dsh 原版底部收尾留白。
+                Spacer(minLength: 24)
             }
             .padding(.horizontal, 22)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.top, 18)
         }
+        .scrollIndicators(.hidden)
         .foregroundStyle(.white)
         .background(OceanBackground().ignoresSafeArea())
         .sheet(isPresented: $showAddProvider) {
