@@ -941,19 +941,19 @@ extension AIChatViewModel {
             // 取每条消息首个 text block 的前 80 字符 + role 作为指纹。
             var existingFingerprints = Set(self.messages.map { msg -> String in
                 let text = msg.blocks.first(where: { $0.kind == .text })?.content ?? ""
-                return "\(msg.role.rawValue):\(String(text.prefix(80)))"
+                return "\(String(describing: msg.role)):\(String(text.prefix(80)))"
             })
             var addedCount = 0
             for m in msgs {
                 let text = m.blocks.first(where: { $0.kind == .text })?.content ?? ""
-                let fingerprint = "\(m.role.rawValue):\(String(text.prefix(80)))"
+                let fingerprint = "\(String(describing: m.role)):\(String(text.prefix(80)))"
                 if !self.messages.contains(where: { $0.id == m.id }),
                    !existingFingerprints.contains(fingerprint) {
                     self.messages.append(m)
                     existingFingerprints.insert(fingerprint)
                     addedCount += 1
                 } else {
-                    logger.info("[HistoryBackfill] dedup: skipped id=\(m.id.prefix(8)) fp=\(fingerprint.prefix(40))")
+                    logger.info("[HistoryBackfill] dedup: skipped id=\(m.id.uuidString.prefix(8)) fp=\(fingerprint.prefix(40))")
                 }
             }
             logger.info("[HistoryBackfill] appended dedup: \(msgs.count) → \(addedCount) added")
@@ -1986,10 +1986,10 @@ extension AIChatViewModel {
             // matches what the log shows.
             let preAnchorTags = preAnchorPruned.map { msg -> String in
                 let dbId = msg.dbMessageId?.prefix(8) ?? "----"
-                return "\(msg.role.rawValue)/db=\(dbId)"
+                return "\(String(describing: msg.role))/db=\(dbId)"
             }
             let postAnchorTags = postAnchor.enumerated().map { (off, m) -> String in
-                "\(anchorIdx + 1 + off):\(m.role.rawValue)"
+                "\(anchorIdx + 1 + off):\(String(describing: m.role))"
             }
             logger.info("[CompactDiag] eAH v2 layout: preAnchorSent=[\(preAnchorTags.joined(separator: ","))] | SUMMARY injected into first postAnchor user | postAnchorAbsIdx=[\(postAnchorTags.joined(separator: ","))]")
 
@@ -2124,7 +2124,7 @@ extension AIChatViewModel {
     @discardableResult
     func persistAgentMessage(_ msg: AgentMessage, tokenUsage: TokenUsage? = nil, snapshots: [String: (toolName: String, snapshot: ToolSnapshot)] = [:], thoughtSignatures: [String: String] = [:], reasoningContent: String? = nil, streamInterruptCount: Int = 0, modelEntryId: String? = nil, bridgeSeq: Int? = nil) async -> String? {
         let sid = self.sessionId ?? "nil"
-        logger.info("[Persist] enter sid=\(sid.prefix(8)) role=\(msg.role.rawValue) parts=\(msg.parts.count) bridgeSeq=\(bridgeSeq.map(String.init) ?? "nil")")
+        logger.info("[Persist] enter sid=\(sid.prefix(8)) role=\(String(describing: msg.role)) parts=\(msg.parts.count) bridgeSeq=\(bridgeSeq.map(String.init) ?? "nil")")
         // [Fix 2026-09-05 route D] Inject the live path's bridge seq into a
         // local copy of msg ONLY when the caller is supplying it (live path
         // where `msg.bridgeSeq` is nil because live events go through
@@ -2141,7 +2141,7 @@ extension AIChatViewModel {
             effectiveMsg = msg
         }
         guard let raw = await buildRawMessage(effectiveMsg, tokenUsage: tokenUsage, snapshots: snapshots, thoughtSignatures: thoughtSignatures, reasoningContent: reasoningContent, streamInterruptCount: streamInterruptCount, modelEntryId: modelEntryId) else {
-            logger.warning("[Persist] buildRawMessage returned nil sid=\(sid.prefix(8)) role=\(msg.role.rawValue) — NOT WRITTEN")
+            logger.warning("[Persist] buildRawMessage returned nil sid=\(sid.prefix(8)) role=\(String(describing: msg.role)) — NOT WRITTEN")
             return nil
         }
         logger.info("[Persist] built raw.sid=\(raw.sessionId.prefix(8)) raw.id=\(raw.id.prefix(8)) role=\(raw.role.rawValue)")
