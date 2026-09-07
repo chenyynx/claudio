@@ -1747,6 +1747,9 @@ struct ContentView: View {
             SessionEditSheet(session: session) { newTitle, newCategory in
                 // [T-ios-state-publish-offmain-crash] @MainActor so the @State
                 // write after the actor-hop await stays on the main thread.
+                // [Model self-title] Explicit user rename — never let the
+                // bridge name sync clobber this title.
+                CCPocketClient.markUserRenamed(session.id)
                 Task { @MainActor in
                     await ChatStore.shared.updateSessionTitle(session.id, title: newTitle, category: newCategory)
                     refreshSessionList()

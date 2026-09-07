@@ -922,6 +922,39 @@ final class CCPocketClient: @unchecked Sendable {
                     BridgeSessionRegistry.shared.update(instanceID: instanceID, sessions: sessions)
                 }
             }
+            // [Model self-title] The Bridge renamed a session we have a
+            // bound local row for (model change_title, auto-rename, or a
+            // rename from another client). Pull the new name into ChatStore
+            // so the sidebar + chat header follow. Locally user-renamed
+            // sessions are skipped — explicit user intent wins. Best-effort.
+            if let instanceID = mappingInstanceID {
+                let iid = instanceID
+                let userRenamed = Self.userRenamedSessionIds
+                let named = sessions.compactMap { s -> (sid: String, title: String)? in
+                    guard let claudeId = s.claudeSessionId ?? s.sessionId,
+                          claudeId.count > 8,
+                          let name = s.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !name.isEmpty,
+                          let boundSid = Self.boundChatSessionID(instanceID: iid, claudeId: claudeId),
+                          !userRenamed.contains(boundSid)
+                    else { return nil }
+                    return (boundSid, name)
+                }
+                if !named.isEmpty {
+                    let clientLogger = logger
+                    Task { @MainActor in
+                        for item in named {
+                            guard let existing = await ChatStore.shared.getSession(item.sid),
+                                  existing.title != item.title else { continue }
+                            let category = inferRemoteSessionCategory(from: item.title)
+                            await ChatStore.shared.updateSessionTitlePreservingActivity(
+                                item.sid, title: item.title, category: category
+                            )
+                            clientLogger.info("[CCPocket] bridge title sync: \(item.sid.prefix(8)) → \(item.title)")
+                        }
+                    }
+                }
+            }
             if let sessionId {
                 let match = sessions.first { $0.id == sessionId }
                 if let claudeId = match?.claudeSessionId, claudeId != claudeSessionId {
@@ -1278,6 +1311,21 @@ final class CCPocketClient: @unchecked Sendable {
 
     /// [Session sync] Reverse lookup: the local chat row bound to this
     /// Claude session id, if any.
+    // MARK: - [Model self-title] User-rename guard
+
+    /// [Model self-title] Sessions whose title the user set explicitly via
+    /// the edit sheet. Bridge model/auto titles must never clobber these —
+    /// the session_list sync below skips them.
+    private static let userRenamedSessionsKey = "ccpocket.userRenamedSessions"
+    static var userRenamedSessionIds: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: userRenamedSessionsKey) ?? [])
+    }
+    static func markUserRenamed(_ sessionId: String) {
+        var ids = userRenamedSessionIds
+        guard ids.insert(sessionId).inserted else { return }
+        UserDefaults.standard.set(Array(ids), forKey: userRenamedSessionsKey)
+    }
+
     static func boundChatSessionID(instanceID: String, claudeId: String) -> String? {
         let prefix = mappingKeyPrefix + instanceID + "."
         for key in UserDefaults.standard.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
