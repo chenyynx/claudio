@@ -884,25 +884,6 @@ private func isSyntheticRemoteSessionCompat(_ session: ChatSession) -> Bool {
 #endif
 }
 
-#if REMOTE_SESSION_SYNC
-// MARK: - [Session sync] Remote-bridge synthetic rows
-
-private let remoteSyntheticIdPrefix = "rbrid."
-
-/// [Session sync] Master switch for merging Bridge-only remote rows (live
-/// broadcast + recent index) into the sidebar. TEMPORARILY DISABLED
-/// (pp 2026-09-02): the sync feature shipped with known bugs (blank chat
-/// on broadcast rows, click-jumps-to-top, list flashing). Re-enable when
-/// the fixes land; already-materialized remote sessions (real local rows)
-/// keep working — only new synthetic rows stop appearing.
-private let remoteSessionSyncEnabled = false
-
-/// A synthetic list row for a Bridge session that has no local row yet
-/// (sessions started from other clients, e.g. the WeChat bridge).
-fileprivate func isSyntheticRemoteSession(_ session: ChatSession) -> Bool {
-    session.source == "remoteBridge" && session.id.hasPrefix(remoteSyntheticIdPrefix)
-}
-
 /// [Session sync] Best-effort topic category for synced remote rows. The
 /// LLM title/category flow only runs after an in-app turn, which synced
 /// sessions never had — without this they sat on the unset gray avatar
@@ -928,6 +909,25 @@ func inferRemoteSessionCategory(from text: String?) -> String {
         return rule.category
     }
     return "chat"
+}
+
+#if REMOTE_SESSION_SYNC
+// MARK: - [Session sync] Remote-bridge synthetic rows
+
+private let remoteSyntheticIdPrefix = "rbrid."
+
+/// [Session sync] Master switch for merging Bridge-only remote rows (live
+/// broadcast + recent index) into the sidebar. TEMPORARILY DISABLED
+/// (pp 2026-09-02): the sync feature shipped with known bugs (blank chat
+/// on broadcast rows, click-jumps-to-top, list flashing). Re-enable when
+/// the fixes land; already-materialized remote sessions (real local rows)
+/// keep working — only new synthetic rows stop appearing.
+private let remoteSessionSyncEnabled = false
+
+/// A synthetic list row for a Bridge session that has no local row yet
+/// (sessions started from other clients, e.g. the WeChat bridge).
+fileprivate func isSyntheticRemoteSession(_ session: ChatSession) -> Bool {
+    session.source == "remoteBridge" && session.id.hasPrefix(remoteSyntheticIdPrefix)
 }
 
 /// Merge local rows with Bridge-only sessions (live broadcast + recent
