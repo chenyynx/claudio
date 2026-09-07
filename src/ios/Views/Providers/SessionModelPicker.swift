@@ -188,6 +188,51 @@ struct SessionModelPicker: View {
 // MARK: - Compact Display Helper
 
 @MainActor
+/// [Claudio 2026-09-07 P2 4.4] 远端会话顶栏显示解析（AIChatView 顶栏与
+/// 模型 sheet 共用，SessionModelDisplay 内部 gate 调用）。铁律：仅当
+/// entry 归属 remoteAgent 实例时才走这些方法，本地路径零触碰。
+enum RemoteSessionTopBar {
+    /// 占位 label（RemoteAgentSetupView 自动创建时的硬编码默认值）。
+    static let placeholderLabels: Set<String> = ["My Computer", "我的电脑"]
+
+    /// 显示名：label 非占位默认值 → label；否则 baseURL.host 去 TLD
+    /// （pipicore.cn → pipicore）；无 URL → "Remote"。
+    static func displayName(for instance: ProviderInstance) -> String {
+        if !placeholderLabels.contains(instance.label) { return instance.label }
+        if let base = instance.effectiveCustomBaseURL,
+           let host = BridgeURLValidator.displayHost(of: base) {
+            let parts = host.split(separator: ".")
+            return parts.count >= 2 ? String(parts[0]) : host
+        }
+        return String(localized: "Remote")
+    }
+
+    /// 模型短名：bridgeModelName（system init 实际值，P2 数据层捕获）
+    /// → RemoteSessionDefaultsStore.model（会话开始选项）→ nil（不显示）。
+    /// 去已知厂商前缀：claude-sonnet-4-6 → sonnet-4-6。
+    static func modelShortName(instanceID: String, chatSessionID: String?) -> String? {
+        let raw: String?
+        if let client = RemoteAgentStore.shared.existingClient(
+            instanceID: instanceID, chatSessionID: chatSessionID
+        ), let live = client.bridgeModelName {
+            raw = live
+        } else {
+            raw = RemoteSessionDefaultsStore.load().model
+        }
+        guard let raw, !raw.isEmpty else { return nil }
+        for prefix in ["claude-", "deepseek-", "kimi-", "glm-", "qwen-"] where raw.hasPrefix(prefix) {
+            return String(raw.dropFirst(prefix.count))
+        }
+        return raw
+    }
+
+    /// projectPath 尾段：/home/ubuntu/claudio → claudio。
+    static func projectTail(instanceID: String) -> String? {
+        RemoteAgentConnection.load(instanceID: instanceID)?.projectPath
+            .split(separator: "/").last.map(String.init)
+    }
+}
+
 struct SessionModelDisplay {
     let store: ProviderConfigStore
     var draftGroupId: String? = nil
@@ -205,6 +250,11 @@ struct SessionModelDisplay {
         switch binding.primarySource {
         case .directEntry(let entryId, _):
             if let entry = store.entry(for: entryId) {
+                // [P2 4.4] 远端 entry → 顶栏显示名（label > host 反解 > 兜底）
+                if let inst = store.instance(for: entry.providerInstanceId),
+                   inst.providerType == .remoteAgent {
+                    return RemoteSessionTopBar.displayName(for: inst)
+                }
                 return entry.model.displayName
             }
             return entryId
@@ -230,6 +280,19 @@ struct SessionModelDisplay {
 
         guard let entry = store.entry(for: entryId),
               let instance = store.instance(for: entry.providerInstanceId) else { return nil }
+        // [P2 4.4] 远端 entry → 副行 = (projectPath 尾段 · 模型短名)。
+        // 尾段 nil（未配 projectPath）时退显示名，模型短名 nil 时只显示尾段。
+        if instance.providerType == .remoteAgent {
+            let tail = RemoteSessionTopBar.projectTail(instanceID: instance.id)
+            let model = RemoteSessionTopBar.modelShortName(
+                instanceID: instance.id, chatSessionID: sessionId
+            )
+            let labelPart = tail ?? RemoteSessionTopBar.displayName(for: instance)
+            if let model {
+                return (labelPart, model)
+            }
+            return (labelPart, instance.label)
+        }
         return (instance.label, entry.model.displayName)
     }
 
