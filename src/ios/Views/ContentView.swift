@@ -4520,7 +4520,8 @@ struct ContentView: View {
         return GeometryReader { geo in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    Spacer(minLength: 0)
+                    // [pp 反馈 2026-09-07] 上方留 6% 屏高（54pt ≈ 大标题字号的视觉呼吸）
+                    Spacer().frame(height: geo.size.height * 0.06)
 
                     WelcomeHero()
 
@@ -4557,8 +4558,10 @@ struct ContentView: View {
                     Text("两种 Agent 可同时使用，随时切换")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.5))
+                        .frame(maxWidth: .infinity, alignment: .center)
 
-                    Spacer(minLength: 0)
+                    // 下方 Spacer 占 25% 屏高（balance 视觉重心）
+                    Spacer().frame(height: geo.size.height * 0.25)
                 }
                 .padding(.horizontal, 22)
                 .frame(minHeight: geo.size.height)
