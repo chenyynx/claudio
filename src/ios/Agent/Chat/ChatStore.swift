@@ -5014,7 +5014,18 @@ extension RawMessage {
     fileprivate static func makeToolBlock(from tu: ToolUse, lastBrowserURL: inout String?) -> AssistantBlock {
         let kind: AssistantBlockKind
         let content: String
-        switch tu.name {
+        // [Plan 2026-09-08 对抗审查] Remote (Claude Code) names resolve via
+        // RemoteToolCatalog — the legacy switch below reads the "path" arg
+        // key, which Claude Code doesn't use (file_path), so reloaded cards
+        // regressed to "Read file" after every relaunch.
+        if RemoteToolCatalog.isRemoteTool(tu.name) {
+            // ToolUse.input is a JSON *string* — parse before the catalog.
+            let argsDict = (tu.input.data(using: .utf8))
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) }
+                .flatMap { $0 as? [String: Any] } ?? [:]
+            kind = RemoteToolCatalog.blockKind(for: tu.name, args: argsDict)
+            content = RemoteToolCatalog.streamingPreview(for: tu.name, args: argsDict)
+        } else switch tu.name {
         case "shell_execute", "Bash", "BashOutput":
             let cmd = extractCommandFromJSON(tu.input)
             kind = .shellTool(command: cmd)
