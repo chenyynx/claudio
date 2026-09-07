@@ -501,7 +501,7 @@ enum RemoteToolCatalog {
             // pattern itself on a shell-shaped card.
             let pattern = stringArg(args, keys: ["pattern", "query"]) ?? ""
             return pattern.isEmpty
-                ? .shellTool(command: name)
+                ? .shellTool(command: displaySafe(name))
                 : .shellTool(command: "pattern: \"\(trunc(pattern, 50))\"")
         case "WebSearch":
             return .browserTool(action: trunc(stringArg(args, keys: ["query"]) ?? "Web Search", 50))
@@ -588,8 +588,17 @@ enum RemoteToolCatalog {
     /// Official `_otherSummary`: description → prompt → skill → first 3 keys.
     private static func otherSummary(_ name: String, _ args: [String: Any]) -> String {
         if let s = stringArg(args, keys: ["description", "prompt", "skill", "query"]) { return s }
-        let keys = args.keys.sorted().prefix(3).joined(separator: ", ")
-        return keys.isEmpty ? name : keys
+        let keys = args.keys.sorted().prefix(3)
+            .map { displaySafe($0) }
+            .joined(separator: ", ")
+        return keys.isEmpty ? displaySafe(name) : keys
+    }
+
+    /// [pp 2026-09-08] 展示文案里的下划线统一显示为连字符——仅元数据
+    /// 表面（工具名回退、参数键名）。命令/文件名/pattern 等字面内容
+    /// 是真实数据，不做转写。
+    private static func displaySafe(_ s: String) -> String {
+        s.replacingOccurrences(of: "_", with: "-")
     }
 
     private static func trunc(_ s: String, _ n: Int) -> String {
