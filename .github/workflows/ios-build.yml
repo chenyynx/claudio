@@ -10,6 +10,10 @@ on:
     paths-ignore:
       - '.claude/**'
       - '**/*.md'
+      - 'bridge/**'
+  # [M0-② 2026-09-09] bridge/ 目录有自己的 server-ci.yml（Linux）——
+  # 这里再把 bridge/** 排除，纯 bridge 提交不烧 macOS 配额（10x）。
+  # 混合提交（iOS+bridge）仍照常构建。
   workflow_dispatch:
 
 # [doris] GITHUB_TOKEN defaults to read-only — release upload needs
