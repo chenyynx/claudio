@@ -1,0 +1,4 @@
+interface:
+  display_name: "ストア審査提出"
+  short_description: "公開版との差分から最新ビルドをストア審査へ提出"
+  default_prompt: "$submit-store-review を使って、公開版との差分からリリースノートを作り、最新ビルドを審査へ提出してください。"

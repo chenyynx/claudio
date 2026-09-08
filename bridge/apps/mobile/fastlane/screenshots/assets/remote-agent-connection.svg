@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" fill="none">
+  <defs>
+    <linearGradient id="connection" x1="405" y1="270" x2="655" y2="270" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF6A3D"/>
+      <stop offset="1" stop-color="#35D99A"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="160" y1="138" x2="407" y2="360" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#242428"/>
+      <stop offset="1" stop-color="#111113"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-80%" width="180%" height="260%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+  </defs>
+
+  <!-- Mac / Linux host -->
+  <rect x="100" y="100" width="350" height="268" rx="24" fill="white" stroke="#17171A" stroke-width="10"/>
+  <rect x="124" y="124" width="302" height="220" rx="12" fill="url(#screen)"/>
+  <circle cx="148" cy="148" r="5" fill="#FF6A3D"/>
+  <circle cx="166" cy="148" r="5" fill="#F4BD4F"/>
+  <circle cx="184" cy="148" r="5" fill="#35D99A"/>
+  <path d="M154 193L178 213L154 233" stroke="#FF7A50" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M198 234H267" stroke="#E8E8EA" stroke-width="8" stroke-linecap="round"/>
+  <path d="M154 274H242" stroke="#71717A" stroke-width="8" stroke-linecap="round"/>
+  <path d="M265 274H322" stroke="#35D99A" stroke-width="8" stroke-linecap="round"/>
+  <path d="M154 306H298" stroke="#71717A" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="361" cy="225" r="37" fill="#2D2D31" stroke="#FF6A3D" stroke-width="5"/>
+  <rect x="341" y="210" width="40" height="31" rx="10" stroke="white" stroke-width="4"/>
+  <circle cx="353" cy="225" r="3.5" fill="#35D99A"/>
+  <circle cx="369" cy="225" r="3.5" fill="#35D99A"/>
+  <path d="M361 210V199" stroke="white" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="361" cy="195" r="4" fill="#FF6A3D"/>
+  <path d="M170 368L150 410H400L380 368" fill="#F7F7F8" stroke="#17171A" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M92 410H458C458 430 442 446 422 446H128C108 446 92 430 92 410Z" fill="white" stroke="#17171A" stroke-width="10" stroke-linejoin="round"/>
+
+  <!-- Brand connection -->
+  <path d="M430 264C486 210 549 210 612 264" stroke="url(#connection)" stroke-width="28" stroke-linecap="round" opacity="0.18" filter="url(#glow)"/>
+  <path d="M430 264C486 210 549 210 612 264" stroke="url(#connection)" stroke-width="13" stroke-linecap="round"/>
+  <path d="M430 302C489 356 551 356 612 302" stroke="url(#connection)" stroke-width="9" stroke-linecap="round" stroke-dasharray="12 18"/>
+  <path d="M596 245L622 264L597 284" stroke="#35D99A" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- CC Pocket phone -->
+  <rect x="620" y="52" width="230" height="438" rx="52" fill="#17171A"/>
+  <rect x="632" y="64" width="206" height="414" rx="42" fill="white"/>
+  <rect x="686" y="76" width="98" height="26" rx="13" fill="#17171A"/>
+  <path d="M656 135H743" stroke="#17171A" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="805" cy="135" r="12" fill="#FF6A3D"/>
+  <rect x="652" y="180" width="166" height="84" rx="18" fill="#FFF0EB" stroke="#FF6A3D" stroke-width="4"/>
+  <circle cx="674" cy="207" r="7" fill="#FF6A3D"/>
+  <path d="M692 205H778" stroke="#5B5B63" stroke-width="8" stroke-linecap="round"/>
+  <path d="M673 235H753" stroke="#97979E" stroke-width="7" stroke-linecap="round"/>
+  <rect x="652" y="280" width="166" height="94" rx="18" fill="#EAFBF5" stroke="#35D99A" stroke-width="4"/>
+  <circle cx="674" cy="307" r="7" fill="#35D99A"/>
+  <path d="M692 305H778" stroke="#5B5B63" stroke-width="8" stroke-linecap="round"/>
+  <path d="M673 336L688 350L716 321" stroke="#1DBD7F" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M735 340H790" stroke="#97979E" stroke-width="7" stroke-linecap="round"/>
+  <rect x="652" y="394" width="166" height="54" rx="27" fill="#17171A"/>
+  <path d="M686 421H784" stroke="white" stroke-width="8" stroke-linecap="round"/>
+</svg>

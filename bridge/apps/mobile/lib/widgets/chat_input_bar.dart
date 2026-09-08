@@ -1,0 +1,1314 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../l10n/app_localizations.dart';
+import '../models/image_paste_shortcut.dart';
+import '../models/messages.dart';
+import '../services/native_paste_bridge.dart';
+import '../utils/platform_helper.dart';
+import '../utils/diff_parser.dart';
+import 'bubbles/image_preview.dart';
+
+/// Bottom input bar with slash-command button, text field, and action buttons.
+///
+/// Pure presentation — all actions are dispatched via callbacks.
+///
+/// Desktop keyboard shortcuts (handled in [_InputTextField]):
+/// - Tab: indent current line(s)
+/// - Shift+Tab: dedent current line(s)
+/// - Active completion overlays handle navigation/selection first.
+class ChatInputBar extends StatelessWidget {
+  final TextEditingController inputController;
+  final ProcessStatus status;
+  final bool hasInputText;
+  final bool isInputEmpty;
+  final bool isVoiceAvailable;
+  final bool isRecording;
+  final VoidCallback onSend;
+  final VoidCallback onStop;
+  final VoidCallback onInterrupt;
+  final VoidCallback onToggleVoice;
+  final VoidCallback onIndent;
+  final VoidCallback onDedent;
+  final bool canDedent;
+  final VoidCallback onSlashCommand;
+  final VoidCallback onMention;
+  final VoidCallback? onDollarMention;
+  final bool isInMentionContext;
+  final bool showDollarButton;
+  final VoidCallback? onShowPromptHistory;
+  final VoidCallback? onAttachImage;
+  final List<({Uint8List bytes, String mimeType})> attachedImages;
+  final void Function([int? index])? onClearImage;
+  final DiffSelection? attachedDiffSelection;
+  final VoidCallback? onClearDiffSelection;
+  final VoidCallback? onTapDiffPreview;
+  final String? hintText;
+
+  /// Callback to paste an image from clipboard (desktop only).
+  /// When set, [imagePasteShortcut] attempts image paste.
+  /// Returns true if an image was found and pasted.
+  final Future<bool> Function()? onPasteImage;
+
+  /// Callback to paste an image from the text field context menu.
+  final Future<void> Function()? onPasteImageFromContextMenu;
+
+  /// Returns whether the clipboard currently contains a supported image.
+  final Future<bool> Function()? hasImageInClipboard;
+
+  /// Shortcut used to attach an image from the clipboard on desktop.
+  final ImagePasteShortcut imagePasteShortcut;
+
+  /// Handles keyboard events while an input completion overlay is open.
+  final KeyEventResult Function(KeyEvent event)? onCompletionKeyEvent;
+
+  const ChatInputBar({
+    super.key,
+    required this.inputController,
+    required this.status,
+    required this.hasInputText,
+    this.isInputEmpty = true,
+    required this.isVoiceAvailable,
+    required this.isRecording,
+    required this.onSend,
+    required this.onStop,
+    required this.onInterrupt,
+    required this.onToggleVoice,
+    required this.onIndent,
+    required this.onDedent,
+    this.canDedent = true,
+    required this.onSlashCommand,
+    required this.onMention,
+    this.onDollarMention,
+    this.isInMentionContext = false,
+    this.showDollarButton = false,
+    this.onShowPromptHistory,
+    this.onAttachImage,
+    this.attachedImages = const [],
+    this.onClearImage,
+    this.attachedDiffSelection,
+    this.onClearDiffSelection,
+    this.onTapDiffPreview,
+    this.hintText,
+    this.onPasteImage,
+    this.onPasteImageFromContextMenu,
+    this.hasImageInClipboard,
+    this.imagePasteShortcut = ImagePasteShortcut.ctrlV,
+    this.onCompletionKeyEvent,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: EdgeInsets.only(
+        left: 8,
+        right: 8,
+        top: 8,
+        bottom: MediaQuery.of(context).padding.bottom + 8,
+      ),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.15),
+            blurRadius: 8,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (attachedDiffSelection != null)
+            _DiffPreview(
+              selection: attachedDiffSelection!,
+              onTap: onTapDiffPreview,
+              onClear: onClearDiffSelection,
+            ),
+          if (attachedImages.isNotEmpty)
+            _ImagePreview(images: attachedImages, onClearImage: onClearImage),
+          _InputTextField(
+            controller: inputController,
+            status: status,
+            hintText: hintText,
+            onSend: onSend,
+            hasInputText: hasInputText,
+            onPasteImage: onPasteImage,
+            onPasteImageFromContextMenu: onPasteImageFromContextMenu,
+            hasImageInClipboard: hasImageInClipboard,
+            imagePasteShortcut: imagePasteShortcut,
+            onCompletionKeyEvent: onCompletionKeyEvent,
+            onIndent: onIndent,
+            onDedent: onDedent,
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                child: isInputEmpty
+                    ? _SlashCommandButton(
+                        key: const ValueKey('slash_command_button'),
+                        onTap: onSlashCommand,
+                      )
+                    : _DedentButton(
+                        key: const ValueKey('dedent_button'),
+                        onTap: onDedent,
+                        enabled: canDedent,
+                      ),
+              ),
+              const SizedBox(width: 8),
+              _IndentButton(onTap: onIndent),
+              const SizedBox(width: 8),
+              _MentionButton(onTap: onMention, enabled: !isInMentionContext),
+              if (showDollarButton) ...[
+                const SizedBox(width: 8),
+                _DollarButton(onTap: onDollarMention ?? () {}),
+              ],
+              const SizedBox(width: 8),
+              _AttachButton(
+                hasAttachment: attachedImages.isNotEmpty,
+                imageCount: attachedImages.length,
+                onTap: onAttachImage,
+              ),
+              if (onShowPromptHistory != null) ...[
+                const SizedBox(width: 8),
+                _HistoryButton(onTap: onShowPromptHistory!),
+              ],
+              const Spacer(),
+              if (isVoiceAvailable) ...[
+                _VoiceButton(isRecording: isRecording, onTap: onToggleVoice),
+                const SizedBox(width: 8),
+              ],
+              _ActionButton(
+                status: status,
+                hasInputText: hasInputText,
+                onSend: onSend,
+                onStop: onStop,
+                onInterrupt: onInterrupt,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _IndentButton extends StatelessWidget {
+  const _IndentButton({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return Tooltip(
+      message: l.tooltipIndent,
+      child: Material(
+        color: cs.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          key: const ValueKey('indent_button'),
+          borderRadius: BorderRadius.circular(20),
+          onTap: onTap,
+          child: Container(
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
+            child: Icon(
+              Icons.format_indent_increase,
+              size: 18,
+              color: cs.primary,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DedentButton extends StatelessWidget {
+  const _DedentButton({super.key, required this.onTap, required this.enabled});
+  final VoidCallback onTap;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return Tooltip(
+      message: l.tooltipDedent,
+      child: Opacity(
+        opacity: enabled ? 1.0 : 0.4,
+        child: Material(
+          color: cs.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(20),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: enabled ? onTap : null,
+            child: Container(
+              width: 36,
+              height: 36,
+              alignment: Alignment.center,
+              child: Icon(
+                Icons.format_indent_decrease,
+                size: 18,
+                color: cs.primary,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SlashCommandButton extends StatelessWidget {
+  const _SlashCommandButton({super.key, required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return Tooltip(
+      message: l.tooltipSlashCommand,
+      child: Material(
+        color: cs.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: onTap,
+          child: Container(
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
+            child: Text(
+              '/',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: cs.primary,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MentionButton extends StatelessWidget {
+  const _MentionButton({required this.onTap, required this.enabled});
+  final VoidCallback onTap;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return Tooltip(
+      message: l.tooltipMention,
+      child: Opacity(
+        opacity: enabled ? 1.0 : 0.4,
+        child: Material(
+          color: cs.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(20),
+          child: InkWell(
+            key: const ValueKey('mention_button'),
+            borderRadius: BorderRadius.circular(20),
+            onTap: enabled ? onTap : null,
+            child: Container(
+              width: 36,
+              height: 36,
+              alignment: Alignment.center,
+              child: Text(
+                '@',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: cs.primary,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DollarButton extends StatelessWidget {
+  const _DollarButton({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return Tooltip(
+      message: l.tooltipDollarMention,
+      child: Material(
+        color: cs.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          key: const ValueKey('dollar_button'),
+          borderRadius: BorderRadius.circular(20),
+          onTap: onTap,
+          child: Container(
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
+            child: Text(
+              r'$',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: cs.primary,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AttachButton extends StatelessWidget {
+  const _AttachButton({
+    required this.hasAttachment,
+    required this.imageCount,
+    required this.onTap,
+  });
+  final bool hasAttachment;
+  final int imageCount;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return Tooltip(
+      message: l.tooltipAttachImage,
+      child: Material(
+        color: hasAttachment ? cs.primaryContainer : cs.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          key: const ValueKey('attach_image_button'),
+          borderRadius: BorderRadius.circular(20),
+          onTap: onTap,
+          child: Container(
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
+            child: hasAttachment
+                ? Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Icon(Icons.image, size: 18, color: cs.onPrimaryContainer),
+                      if (imageCount > 1)
+                        Positioned(
+                          top: -6,
+                          right: -8,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: cs.primary,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '$imageCount',
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                                color: cs.onPrimary,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  )
+                : Icon(Icons.image_outlined, size: 18, color: cs.primary),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HistoryButton extends StatelessWidget {
+  const _HistoryButton({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return Tooltip(
+      message: l.tooltipPromptHistory,
+      child: Material(
+        color: cs.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          key: const ValueKey('prompt_history_button'),
+          borderRadius: BorderRadius.circular(20),
+          onTap: onTap,
+          child: Container(
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
+            child: Icon(Icons.history, size: 18, color: cs.primary),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ImagePreview extends StatelessWidget {
+  const _ImagePreview({required this.images, required this.onClearImage});
+  final List<({Uint8List bytes, String mimeType})> images;
+  final void Function([int? index])? onClearImage;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: SizedBox(
+        height: 80,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: images.length,
+          separatorBuilder: (_, _) => const SizedBox(width: 6),
+          itemBuilder: (context, index) {
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                GestureDetector(
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          FullScreenImageViewer(bytes: images[index].bytes),
+                    ),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.memory(
+                      images[index].bytes,
+                      height: 80,
+                      width: 80,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 4,
+                  right: 4,
+                  child: Tooltip(
+                    message: l.tooltipRemoveImage,
+                    child: GestureDetector(
+                      onTap: () => onClearImage?.call(index),
+                      child: Container(
+                        decoration: const BoxDecoration(
+                          color: Colors.black54,
+                          shape: BoxShape.circle,
+                        ),
+                        padding: const EdgeInsets.all(4),
+                        child: const Icon(
+                          Icons.close,
+                          size: 14,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _DiffPreview extends StatelessWidget {
+  const _DiffPreview({
+    required this.selection,
+    required this.onTap,
+    required this.onClear,
+  });
+  final DiffSelection selection;
+  final VoidCallback? onTap;
+  final VoidCallback? onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    final previewSummary = summarizeDiffSelection(selection.diffText);
+    final summaryParts = <String>[];
+    if (previewSummary.changedLineCount > 0) {
+      summaryParts.add(l.changedLines(previewSummary.changedLineCount));
+    }
+    if (previewSummary.hunkCount > 0) {
+      summaryParts.add(l.hunkCount(previewSummary.hunkCount));
+    } else if (previewSummary.fileCount > 0) {
+      summaryParts.add(l.fileCount(previewSummary.fileCount));
+    }
+
+    final summary = summaryParts.isNotEmpty
+        ? summaryParts.join(' · ')
+        : l.fileCount(
+            previewSummary.fileCount > 0 ? previewSummary.fileCount : 1,
+          );
+
+    final previewLines = <String>[];
+    final filePath = previewSummary.primaryFilePath;
+    if (filePath != null && filePath.isNotEmpty) {
+      previewLines.add(filePath);
+    }
+    final hunkHeader = previewSummary.primaryHunkHeader;
+    if (hunkHeader != null && hunkHeader.isNotEmpty) {
+      previewLines.add(hunkHeader);
+    }
+    if (previewLines.isEmpty) {
+      previewLines.add(summary);
+    }
+    final preview = previewLines.join('\n');
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: cs.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: cs.outline.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.difference, size: 20, color: cs.primary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    summary,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: cs.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    preview,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontFamily: 'monospace',
+                      color: cs.onSurface.withValues(alpha: 0.6),
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Tooltip(
+              message: l.tooltipClearDiff,
+              child: GestureDetector(
+                onTap: onClear,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    shape: BoxShape.circle,
+                  ),
+                  padding: const EdgeInsets.all(4),
+                  child: const Icon(Icons.close, size: 14, color: Colors.white),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InputTextField extends StatefulWidget {
+  const _InputTextField({
+    required this.controller,
+    required this.status,
+    this.hintText,
+    required this.onSend,
+    required this.hasInputText,
+    this.onPasteImage,
+    this.onPasteImageFromContextMenu,
+    this.hasImageInClipboard,
+    required this.imagePasteShortcut,
+    this.onCompletionKeyEvent,
+    this.onIndent,
+    this.onDedent,
+  });
+  final TextEditingController controller;
+  final ProcessStatus status;
+  final String? hintText;
+  final VoidCallback onSend;
+  final bool hasInputText;
+
+  /// Callback to paste an image from clipboard.
+  /// Returns true if an image was pasted.
+  final Future<bool> Function()? onPasteImage;
+
+  /// Callback to paste an image from the long-press context menu.
+  final Future<void> Function()? onPasteImageFromContextMenu;
+
+  /// Returns whether the clipboard currently contains a supported image.
+  final Future<bool> Function()? hasImageInClipboard;
+
+  /// Shortcut used to attach an image from the clipboard on desktop.
+  final ImagePasteShortcut imagePasteShortcut;
+
+  /// Gives active completion overlays first chance to handle navigation,
+  /// dismissal, and selection shortcuts.
+  final KeyEventResult Function(KeyEvent event)? onCompletionKeyEvent;
+
+  /// Callback for Tab key (indent).
+  final VoidCallback? onIndent;
+
+  /// Callback for Shift+Tab key (dedent).
+  final VoidCallback? onDedent;
+
+  @override
+  State<_InputTextField> createState() => _InputTextFieldState();
+}
+
+class _InputTextFieldState extends State<_InputTextField>
+    with WidgetsBindingObserver {
+  static _InputTextFieldState? _androidImeOwner;
+
+  late final FocusNode _focusNode;
+  var _androidImeResetPending = false;
+  var _androidImeWasActiveBeforeInactive = false;
+  var _clipboardProbeGeneration = 0;
+  var _hasImageInClipboard = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _focusNode = FocusNode(onKeyEvent: _handleKeyEvent);
+    _focusNode.addListener(_handleFocusChanged);
+    FocusManager.instance.addListener(_syncAndroidImeOwner);
+  }
+
+  @override
+  void didUpdateWidget(covariant _InputTextField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imagePasteShortcut != widget.imagePasteShortcut) {
+      _syncNativePasteBridge();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    FocusManager.instance.removeListener(_syncAndroidImeOwner);
+    if (identical(_androidImeOwner, this)) _androidImeOwner = null;
+    NativePasteBridge.instance.deactivate(this);
+    _focusNode.removeListener(_handleFocusChanged);
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    switch (state) {
+      case AppLifecycleState.inactive:
+        _androidImeWasActiveBeforeInactive =
+            identical(_androidImeOwner, this) &&
+            (_focusNode.hasFocus || _hasAndroidImeInset);
+      case AppLifecycleState.hidden ||
+          AppLifecycleState.paused ||
+          AppLifecycleState.detached:
+        if (_androidImeResetPending ||
+            (!_androidImeWasActiveBeforeInactive &&
+                !_focusNode.hasFocus &&
+                !(identical(_androidImeOwner, this) && _hasAndroidImeInset))) {
+          return;
+        }
+        _androidImeResetPending = true;
+        _resetAndroidIme();
+      case AppLifecycleState.resumed:
+        final shouldRepairStaleInset =
+            _androidImeWasActiveBeforeInactive &&
+            identical(_androidImeOwner, this) &&
+            !_focusNode.hasFocus &&
+            _hasAndroidImeInset;
+        _androidImeWasActiveBeforeInactive = false;
+        if (!_androidImeResetPending && !shouldRepairStaleInset) return;
+        _androidImeResetPending = false;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _resetAndroidIme();
+        });
+    }
+  }
+
+  bool get _hasAndroidImeInset =>
+      (View.maybeOf(context)?.viewInsets.bottom ?? 0) > 0;
+
+  void _resetAndroidIme() {
+    _focusNode.unfocus();
+    if (identical(_androidImeOwner, this)) _androidImeOwner = null;
+    unawaited(_hideAndroidIme());
+  }
+
+  void _handleFocusChanged() {
+    _syncAndroidImeOwner();
+    _syncNativePasteBridge();
+  }
+
+  void _syncAndroidImeOwner() {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    if (_focusNode.hasFocus) {
+      _androidImeOwner = this;
+    } else if (FocusManager.instance.primaryFocus case final primaryFocus?
+        when primaryFocus is! FocusScopeNode &&
+            identical(_androidImeOwner, this)) {
+      _androidImeOwner = null;
+    }
+  }
+
+  Future<void> _hideAndroidIme() async {
+    try {
+      await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    } catch (_) {
+      // The text input channel may already be disconnected.
+    }
+  }
+
+  void _syncNativePasteBridge() {
+    if (_focusNode.hasFocus &&
+        widget.imagePasteShortcut != ImagePasteShortcut.commandV) {
+      NativePasteBridge.instance.activate(this, _handleNativeTextPaste);
+    } else {
+      NativePasteBridge.instance.deactivate(this);
+    }
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    final generation = ++_clipboardProbeGeneration;
+    _setHasImageInClipboard(false);
+    if (widget.hasImageInClipboard == null) return;
+    unawaited(_refreshClipboardImageAvailability(generation));
+  }
+
+  void _cancelClipboardProbe(PointerEvent event) {
+    _clipboardProbeGeneration++;
+  }
+
+  Future<void> _refreshClipboardImageAvailability(int generation) async {
+    final probe = widget.hasImageInClipboard;
+    if (probe == null) return;
+    final hasImage = await probe();
+    if (!mounted || generation != _clipboardProbeGeneration) return;
+    _setHasImageInClipboard(hasImage);
+  }
+
+  void _setHasImageInClipboard(bool value) {
+    if (_hasImageInClipboard == value) return;
+    setState(() => _hasImageInClipboard = value);
+  }
+
+  bool _handleNativeTextPaste(String text) {
+    if (!_focusNode.hasFocus || text.isEmpty) return false;
+    _insertTextAtSelection(text);
+    return true;
+  }
+
+  /// On desktop: Enter sends, Shift+Enter inserts newline,
+  /// Tab indents, Shift+Tab dedents.
+  /// Ctrl+K deletes to end of line, Ctrl+D deletes the next character.
+  /// Image paste shortcuts attach clipboard images without blocking normal
+  /// Cmd+V text paste unless the legacy Cmd+V mode is selected.
+  ///
+  /// In the default Ctrl+V mode on Windows/Linux, normal text paste stays
+  /// native while clipboard images are still probed asynchronously.
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final isImeComposing =
+        widget.controller.value.composing.isValid &&
+        !widget.controller.value.composing.isCollapsed;
+    if (!isImeComposing && widget.onCompletionKeyEvent != null) {
+      final completionResult = widget.onCompletionKeyEvent!(event);
+      if (completionResult == KeyEventResult.handled) {
+        return completionResult;
+      }
+    }
+    if (!isDesktopPlatform) return KeyEventResult.ignored;
+
+    if (_isControlStyleTextShortcut(
+      event,
+      key: LogicalKeyboardKey.keyK,
+      controlCharacter: 0x0b,
+    )) {
+      _deleteToEndOfLine();
+      return KeyEventResult.handled;
+    }
+
+    if (_isControlStyleTextShortcut(
+      event,
+      key: LogicalKeyboardKey.keyD,
+      controlCharacter: 0x04,
+    )) {
+      _deleteForwardCharacter();
+      return KeyEventResult.handled;
+    }
+
+    final isModifier =
+        HardwareKeyboard.instance.isMetaPressed ||
+        HardwareKeyboard.instance.isControlPressed;
+    if (widget.onPasteImage != null && _isImagePasteShortcut(event)) {
+      if (widget.imagePasteShortcut == ImagePasteShortcut.ctrlV) {
+        // Keep native text paste on Windows/Linux, and independently attach
+        // clipboard images such as screenshots when present.
+        unawaited(_handleImagePasteOnly());
+        return KeyEventResult.ignored;
+      }
+      if (widget.imagePasteShortcut == ImagePasteShortcut.commandV) {
+        _handleImagePasteWithTextFallback();
+      } else {
+        _handleImagePasteOnly();
+      }
+      return KeyEventResult.handled;
+    }
+
+    // Tab / Shift+Tab: indent / dedent (IDE-like)
+    if (event.logicalKey == LogicalKeyboardKey.tab && !isModifier) {
+      if (isImeComposing) {
+        return KeyEventResult.ignored;
+      }
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        widget.onDedent?.call();
+      } else {
+        widget.onIndent?.call();
+      }
+      return KeyEventResult.handled;
+    }
+
+    if (event.logicalKey != LogicalKeyboardKey.enter) {
+      return KeyEventResult.ignored;
+    }
+    // IME変換中はEnterを無視（変換確定に使われるため）
+    if (isImeComposing) {
+      return KeyEventResult.ignored;
+    }
+    final isShiftPressed = HardwareKeyboard.instance.isShiftPressed;
+    if (isShiftPressed) {
+      // Shift+Enter: let TextField handle newline insertion
+      return KeyEventResult.ignored;
+    }
+    // Enter without Shift: send message
+    if (widget.hasInputText) {
+      widget.onSend();
+    }
+    return KeyEventResult.handled;
+  }
+
+  bool _isControlStyleTextShortcut(
+    KeyEvent event, {
+    required LogicalKeyboardKey key,
+    required int controlCharacter,
+    bool allowNullCharacter = true,
+  }) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
+    if (event.logicalKey != key) return false;
+
+    final hardware = HardwareKeyboard.instance;
+    if (hardware.isMetaPressed ||
+        hardware.isAltPressed ||
+        hardware.isShiftPressed) {
+      return false;
+    }
+    if (hardware.isControlPressed) return true;
+
+    // macOS can deliver Ctrl+letter text-editing bindings without the control
+    // modifier set. Treat non-printing variants as shortcut input, while
+    // allowing normal printable letters to be typed.
+    final character = event.character;
+    if (character == null) return allowNullCharacter;
+    final runes = character.runes.toList(growable: false);
+    return runes.length == 1 && runes.single == controlCharacter;
+  }
+
+  void _deleteToEndOfLine() {
+    final value = widget.controller.value;
+    final selection = value.selection;
+    if (!selection.isValid) return;
+
+    final text = value.text;
+    if (!selection.isCollapsed) {
+      widget.controller.value = _replaceRange(
+        value,
+        selection.start,
+        selection.end,
+        '',
+      );
+      return;
+    }
+
+    final cursor = selection.baseOffset;
+    final lineEnd = text.indexOf('\n', cursor);
+    final end = lineEnd < 0 ? text.length : lineEnd;
+    if (end == cursor) return;
+    widget.controller.value = _replaceRange(value, cursor, end, '');
+  }
+
+  void _deleteForwardCharacter() {
+    final value = widget.controller.value;
+    final selection = value.selection;
+    if (!selection.isValid) return;
+
+    if (!selection.isCollapsed) {
+      widget.controller.value = _replaceRange(
+        value,
+        selection.start,
+        selection.end,
+        '',
+      );
+      return;
+    }
+
+    final cursor = selection.baseOffset;
+    if (cursor >= value.text.length) return;
+    widget.controller.value = _replaceRange(value, cursor, cursor + 1, '');
+  }
+
+  TextEditingValue _replaceRange(
+    TextEditingValue value,
+    int start,
+    int end,
+    String replacement,
+  ) {
+    final text = value.text;
+    final normalizedStart = start.clamp(0, text.length);
+    final normalizedEnd = end.clamp(normalizedStart, text.length);
+    final newText =
+        text.substring(0, normalizedStart) +
+        replacement +
+        text.substring(normalizedEnd);
+    final newCursor = normalizedStart + replacement.length;
+    return TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newCursor),
+    );
+  }
+
+  bool _isImagePasteShortcut(KeyEvent event) {
+    if (event.logicalKey != LogicalKeyboardKey.keyV ||
+        HardwareKeyboard.instance.isShiftPressed) {
+      return false;
+    }
+    final hardware = HardwareKeyboard.instance;
+    return switch (widget.imagePasteShortcut) {
+      ImagePasteShortcut.ctrlV =>
+        !hardware.isMetaPressed &&
+            _isControlStyleTextShortcut(
+              event,
+              key: LogicalKeyboardKey.keyV,
+              controlCharacter: 0x16,
+              allowNullCharacter: false,
+            ),
+      ImagePasteShortcut.commandV =>
+        hardware.isMetaPressed && !hardware.isControlPressed,
+    };
+  }
+
+  Future<void> _handleImagePasteOnly() async {
+    await widget.onPasteImage!();
+  }
+
+  Future<void> _handleImagePasteWithTextFallback() async {
+    // Try image paste first
+    final pasted = await widget.onPasteImage!();
+    if (pasted) return;
+
+    // Fall back to text paste from system clipboard
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data?.text != null && data!.text!.isNotEmpty) {
+      _insertTextAtSelection(data.text!);
+    }
+  }
+
+  void _insertTextAtSelection(String insertedText) {
+    final text = widget.controller.text;
+    final selection = widget.controller.selection;
+    final start = selection.start < 0 ? text.length : selection.start;
+    final end = selection.end < 0 ? text.length : selection.end;
+    final normalizedStart = start.clamp(0, text.length);
+    final normalizedEnd = end.clamp(normalizedStart, text.length);
+    final newText =
+        text.substring(0, normalizedStart) +
+        insertedText +
+        text.substring(normalizedEnd);
+    final newCursor = normalizedStart + insertedText.length;
+    widget.controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newCursor),
+    );
+  }
+
+  Widget _buildContextMenu(
+    BuildContext context,
+    EditableTextState editableTextState,
+  ) {
+    final pasteImage = widget.onPasteImageFromContextMenu;
+    if (SystemContextMenu.isSupportedByField(editableTextState)) {
+      final items = SystemContextMenu.getDefaultItems(editableTextState);
+      if (pasteImage != null && _hasImageInClipboard) {
+        _insertAfterSystemPaste(
+          items,
+          IOSSystemContextMenuItemCustom(
+            title: AppLocalizations.of(context).pasteImage,
+            onPressed: () {
+              unawaited(pasteImage());
+            },
+          ),
+        );
+      }
+      return SystemContextMenu.editableText(
+        editableTextState: editableTextState,
+        items: items,
+      );
+    }
+
+    final items = List<ContextMenuButtonItem>.of(
+      editableTextState.contextMenuButtonItems,
+    );
+    if (pasteImage != null && _hasImageInClipboard) {
+      _insertAfterFlutterPaste(
+        items,
+        ContextMenuButtonItem(
+          label: AppLocalizations.of(context).pasteImage,
+          onPressed: () {
+            editableTextState.hideToolbar();
+            unawaited(pasteImage());
+          },
+        ),
+      );
+    }
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      buttonItems: items,
+      anchors: editableTextState.contextMenuAnchors,
+    );
+  }
+
+  void _insertAfterSystemPaste(
+    List<IOSSystemContextMenuItem> items,
+    IOSSystemContextMenuItemCustom pasteImageItem,
+  ) {
+    final pasteIndex = items.indexWhere(
+      (item) => item is IOSSystemContextMenuItemPaste,
+    );
+    items.insert(pasteIndex < 0 ? 0 : pasteIndex + 1, pasteImageItem);
+  }
+
+  void _insertAfterFlutterPaste(
+    List<ContextMenuButtonItem> items,
+    ContextMenuButtonItem pasteImageItem,
+  ) {
+    final pasteIndex = items.indexWhere(
+      (item) => item.type == ContextMenuButtonType.paste,
+    );
+    items.insert(pasteIndex < 0 ? 0 : pasteIndex + 1, pasteImageItem);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return Listener(
+      key: const ValueKey('message_input_clipboard_listener'),
+      onPointerDown: _handlePointerDown,
+      onPointerUp: _cancelClipboardProbe,
+      onPointerCancel: _cancelClipboardProbe,
+      child: TextField(
+        key: const ValueKey('message_input'),
+        focusNode: _focusNode,
+        controller: widget.controller,
+        decoration: InputDecoration(
+          hintText: widget.hintText ?? l.messagePlaceholder,
+          filled: true,
+          fillColor: cs.surfaceContainerLow,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(24),
+            borderSide: BorderSide.none,
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(24),
+            borderSide: BorderSide(color: cs.outlineVariant, width: 0.5),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(24),
+            borderSide: BorderSide(
+              color: cs.primary.withValues(alpha: 0.5),
+              width: 1.5,
+            ),
+          ),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 10,
+          ),
+        ),
+        enabled: widget.status != ProcessStatus.starting,
+        autofillHints: null,
+        maxLines: 6,
+        minLines: 1,
+        keyboardType: TextInputType.multiline,
+        textInputAction: TextInputAction.newline,
+        contextMenuBuilder: _buildContextMenu,
+      ),
+    );
+  }
+}
+
+class _ActionButton extends StatelessWidget {
+  const _ActionButton({
+    required this.status,
+    required this.hasInputText,
+    required this.onSend,
+    required this.onStop,
+    required this.onInterrupt,
+  });
+  final ProcessStatus status;
+  final bool hasInputText;
+  final VoidCallback onSend;
+  final VoidCallback onStop;
+  final VoidCallback onInterrupt;
+
+  @override
+  Widget build(BuildContext context) {
+    if (status == ProcessStatus.starting) {
+      return _SendButton(onSend: onSend, enabled: false);
+    }
+    if (status != ProcessStatus.idle && !hasInputText) {
+      return _StopButton(onInterrupt: onInterrupt, onStop: onStop);
+    }
+    return _SendButton(onSend: onSend, enabled: hasInputText);
+  }
+}
+
+class _StopButton extends StatelessWidget {
+  const _StopButton({required this.onInterrupt, required this.onStop});
+  final VoidCallback onInterrupt;
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return Tooltip(
+      message: l.tapInterruptHoldStop,
+      child: Material(
+        color: cs.error,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          key: const ValueKey('stop_button'),
+          onTap: onInterrupt,
+          onLongPress: onStop,
+          borderRadius: BorderRadius.circular(20),
+          child: SizedBox(
+            width: 40,
+            height: 40,
+            child: Icon(Icons.stop_rounded, color: cs.onError, size: 20),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VoiceButton extends StatelessWidget {
+  const _VoiceButton({required this.isRecording, required this.onTap});
+  final bool isRecording;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    return Tooltip(
+      message: isRecording ? l.tooltipStopRecording : l.tooltipVoiceInput,
+      child: Material(
+        color: isRecording ? cs.error : cs.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          key: const ValueKey('voice_button'),
+          borderRadius: BorderRadius.circular(20),
+          onTap: onTap,
+          child: Container(
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
+            child: Icon(
+              isRecording ? Icons.stop : Icons.mic,
+              size: 18,
+              color: isRecording ? cs.onError : cs.primary,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SendButton extends StatelessWidget {
+  const _SendButton({required this.onSend, this.enabled = true});
+  final VoidCallback onSend;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
+    final opacity = enabled ? 1.0 : 0.4;
+    return Opacity(
+      opacity: opacity,
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [cs.primary, cs.primary.withValues(alpha: 0.8)],
+          ),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: IconButton(
+          key: const ValueKey('send_button'),
+          tooltip: l.tooltipSendMessage,
+          onPressed: enabled ? onSend : null,
+          icon: Icon(Icons.arrow_upward, color: cs.onPrimary, size: 20),
+          constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+          padding: EdgeInsets.zero,
+        ),
+      ),
+    );
+  }
+}

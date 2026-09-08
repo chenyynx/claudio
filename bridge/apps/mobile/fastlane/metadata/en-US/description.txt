@@ -1,0 +1,34 @@
+Your agents. In your pocket.
+
+CC Pocket brings Codex and Claude to a chat UI made for your phone. Start a task, approve the next step, and review the result. Your agents run on your own computer; you can pick up the same work on another device.
+
+CHAT FIRST
+Each session is a room for prompts, replies, approvals, and questions. Send images, use voice input, or write with Markdown. Handle waiting approvals from the session list.
+
+CONTINUE ACROSS DEVICES
+Move between your phone, tablet, and Mac. Resume sessions from the CLI or app. On larger screens, keep chat, project files, and Git changes side by side. Native macOS is available; Linux and Windows desktop builds are experimental.
+
+KEEP YOUR PLACE ON WEAK NETWORKS
+Outgoing messages wait while you are offline and resend after reconnecting. Missed streaming updates are recovered. New requests and approvals need a connection to the Bridge Server.
+
+CREATE AND PREVIEW
+Generate images with Codex Imagegen and open the results in chat. Play video and audio files without leaving the app.
+
+REVIEW AND SHIP
+Browse project files, inspect code and image diffs, stage changes, commit, push, or revert. Keep parallel tasks separate with git worktrees.
+
+YOUR OWN MACHINES
+Run the Bridge Server on your Mac, Linux, or Windows computer. Connect by QR code or saved host. Tailscale supports access away from your local network, and SSH lets you manage the Bridge remotely.
+
+GET STARTED
+1. Install Node.js 20.18.1 or later and Codex or Claude on your computer.
+2. Run: npx @ccpocket/bridge@latest
+3. Scan the QR code in CC Pocket and choose a project.
+
+A reachable Bridge Server and a configured agent account are required. CC Pocket is free to use, with optional Supporter purchases. Agent service fees are separate.
+
+CC Pocket is open source and is not affiliated with Anthropic or OpenAI.
+https://github.com/K9i-0/ccpocket
+
+TERMS OF USE
+https://www.apple.com/legal/internet-services/itunes/dev/stdeula/

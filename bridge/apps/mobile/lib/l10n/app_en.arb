@@ -1,0 +1,1194 @@
+{
+  "@@locale": "en",
+
+  "appTitle": "CC Pocket",
+
+  "projects": "Projects",
+  "manageProjects": "Manage",
+  "createProject": "Create project",
+  "editProject": "Edit project",
+  "projectName": "Project name",
+  "sourceFolders": "Source folders",
+  "primary": "Primary",
+  "makePrimary": "Make primary",
+  "removeFolder": "Remove folder",
+  "addFolder": "Add folder",
+  "removeWorkspaceProject": "Remove project",
+  "noProjectsYet": "No projects yet",
+  "unavailable": "Unavailable",
+
+  "cancel": "Cancel",
+  "save": "Save",
+  "delete": "Delete",
+  "remove": "Remove",
+  "removeProjectTitle": "Remove Project",
+  "removeProjectConfirm": "Remove \"{name}\" from recent projects?",
+  "@removeProjectConfirm": {
+    "placeholders": {
+      "name": {
+        "type": "Object"
+      }
+    }
+  },
+  "rename": "Rename",
+  "renameSession": "Rename Session",
+  "pin": "Pin session",
+  "unpin": "Unpin session",
+  "pinProject": "Pin project",
+  "unpinProject": "Unpin project",
+  "sessionNameHint": "Session name",
+  "clearName": "Clear name",
+  "connect": "Connect",
+  "protocolIncompatibleTitle": "App and Bridge versions are incompatible",
+  "protocolUpdateAppBody": "Update CC Pocket from the source where you installed it, then reconnect.",
+  "protocolUpdateBridgeBody": "Update the Bridge to a compatible release, then reconnect.",
+  "protocolUpdateBothBody": "The protocol declaration is invalid or incomplete. Update both CC Pocket and the Bridge before reconnecting.",
+  "protocolRangeDetails": "App protocol {appMin}–{appMax}; Bridge protocol {bridgeMin}–{bridgeMax}",
+  "@protocolRangeDetails": {
+    "placeholders": {
+      "appMin": { "type": "int" },
+      "appMax": { "type": "int" },
+      "bridgeMin": { "type": "int" },
+      "bridgeMax": { "type": "int" }
+    }
+  },
+  "toolSuggestionTitle": "Add {toolName} to Codex?",
+  "@toolSuggestionTitle": {
+    "placeholders": {
+      "toolName": {
+        "type": "Object"
+      }
+    }
+  },
+  "toolSuggestionInstall": "Install {toolName}",
+  "@toolSuggestionInstall": {
+    "placeholders": {
+      "toolName": {
+        "type": "Object"
+      }
+    }
+  },
+  "toolSuggestionInstalling": "Installing…",
+  "toolSuggestionNotNow": "Not now",
+  "toolSuggestionAuthDescription": "Connect the required app, then confirm when you're done.",
+  "toolSuggestionConnect": "Connect {appName}",
+  "@toolSuggestionConnect": {
+    "placeholders": {
+      "appName": {
+        "type": "Object"
+      }
+    }
+  },
+  "toolSuggestionComplete": "I've finished connecting",
+  "toolSuggestionFailed": "Installation failed",
+  "toolSuggestionOpenFailed": "Could not open the connection page.",
+  "copy": "Copy",
+  "copyEntireMessage": "Copy entire message",
+  "markdownLinkOpenFailed": "Could not open this link.",
+  "markdownLinkUnsupported": "This link type is not supported.",
+  "markdownFileUnavailable": "This file cannot be previewed here.",
+  "filePreviewShowSource": "View source",
+  "filePreviewShowPreview": "Show preview",
+  "filePreviewRenderedHtml": "Rendered HTML preview",
+  "filePreviewMediaUnavailable": "This media file cannot be played here.",
+  "filePreviewMediaLoadFailed": "The media file could not be loaded.",
+  "filePreviewPlay": "Play",
+  "filePreviewPause": "Pause",
+  "filePreviewRewind10": "Rewind 10 seconds",
+  "filePreviewForward10": "Forward 10 seconds",
+  "filePreviewPlaybackSpeed": "Playback speed",
+  "filePreviewMute": "Mute",
+  "filePreviewUnmute": "Unmute",
+  "filePreviewVolume": "Volume",
+  "filePreviewFullscreen": "Enter full screen",
+  "filePreviewExitFullscreen": "Exit full screen",
+  "fileTransferShareOrSave": "Share or save",
+  "fileUploadTitle": "Upload files",
+  "fileUploadAction": "Upload",
+  "fileUploadDestination": "Destination",
+  "fileUploadConflictLabel": "If a file already exists",
+  "fileUploadKeepBoth": "Keep both",
+  "fileUploadReplace": "Replace",
+  "fileUploadSkip": "Skip",
+  "fileUploadPreparing": "Preparing…",
+  "fileUploadUploading": "Uploading…",
+  "fileUploadFinalizing": "Verifying…",
+  "fileUploadComplete": "Upload complete",
+  "fileUploadSkipped": "Skipped",
+  "fileUploadTooMany": "You can upload up to 20 files at once.",
+  "fileUploadTotalTooLarge": "The selected files exceed the 1 GB total limit.",
+  "fileUploadSelectionFailed": "The selected files could not be opened.",
+  "fileUploadFileTooLarge": "Each file must be 512 MB or smaller.",
+  "fileUploadErrorNotAllowed": "The current folder or file name is not allowed for uploads.",
+  "fileUploadErrorTooLarge": "This file exceeds the Bridge upload size limit.",
+  "fileUploadErrorUnavailable": "File uploads are unavailable. Update or restart the Bridge.",
+  "fileUploadErrorBridgeUpdate": "Update the Bridge to upload files.",
+  "fileUploadErrorFailed": "The file could not be uploaded.",
+  "fileTransferPreparing": "Preparing download…",
+  "fileTransferDownloading": "Downloading…",
+  "fileTransferOpeningShareSheet": "Opening share sheet…",
+  "fileTransferErrorNotAllowed": "This file is outside the current project or is not allowed.",
+  "fileTransferErrorNotFound": "The file no longer exists.",
+  "fileTransferErrorNotFile": "Only regular files can be downloaded.",
+  "fileTransferErrorTooLarge": "This file exceeds the Bridge download size limit.",
+  "fileTransferErrorUnavailable": "File downloads are unavailable. Update or restart the Bridge.",
+  "fileTransferErrorBridgeUpdate": "Update the Bridge to download files.",
+  "fileTransferErrorFailed": "The file could not be downloaded.",
+  "fileTransferErrorShareFailed": "The system share sheet could not be opened.",
+  "copied": "Copied",
+  "copiedToClipboard": "Copied to clipboard",
+  "lineCopied": "Line copied",
+  "start": "Start",
+  "stop": "Stop",
+  "send": "Send",
+  "settings": "Settings",
+  "gallery": "Gallery",
+  "git": "Git",
+  "explorer": "Explorer",
+  "gitUnavailableTip": "Git not detected — Git features are unavailable",
+  "gitUnavailableTitle": "Git Not Available",
+  "gitUnavailableHint": "Git features are not available for this project",
+  "autoModeFallbackDefaultTip": "Auto mode is not available in this environment, so Default mode was selected",
+  "galleryWithCount": "Gallery ({count})",
+  "disconnect": "Disconnect",
+  "back": "Back",
+  "next": "Next",
+  "done": "Done",
+  "skip": "Skip",
+  "edit": "Edit",
+  "share": "Share",
+  "all": "All",
+  "none": "None",
+  "dismissKeyboard": "Dismiss keyboard",
+
+  "serverUnreachable": "Server Unreachable",
+  "serverUnreachableBody": "Could not reach the Bridge server at:",
+  "setupSteps": "Setup Steps:",
+  "setupStep1Title": "Start the Bridge server",
+  "setupStep1Command": "npx --yes @ccpocket/bridge@latest",
+  "setupStep2Title": "For persistent startup, register as service",
+  "setupStep2Command": "npx --yes @ccpocket/bridge@1 setup",
+  "setupNetworkHint": "Make sure both devices are on the same network (or use Tailscale).",
+  "connectAnyway": "Connect Anyway",
+
+  "stopSession": "Stop Session",
+  "stopSessionConfirm": "Stop this session? The Claude process will be terminated.",
+
+  "startNewWithSameSettings": "Start New with Same Settings",
+  "copyResumeCommand": "Copy Resume Command",
+  "copyResumeCommandSubtitle": "Hand off to macOS / Linux",
+  "resumeCommandCopied": "Resume command copied",
+  "editSettingsThenStart": "Edit Settings Then Start",
+
+  "serverRequiresApiKey": "This server requires an API key",
+  "bridgeServerUpdated": "Bridge Server updated",
+  "bridgeUpdateStarted": "Updating Bridge. Closing this connection and returning to the machine list.",
+  "bridgeUpdateReconnectHint": "Bridge Server updated. Reconnect from the machine list.",
+  "failedToUpdateServer": "Failed to update server",
+  "bridgeServerStarted": "Bridge Server started",
+  "failedToStartServer": "Failed to start server",
+  "bridgeServerStopped": "Bridge Server stopped",
+  "failedToStopServer": "Failed to stop server",
+
+  "sshPassword": "SSH Password",
+  "sshPasswordPrompt": "Enter SSH password for {machineName}",
+  "password": "Password",
+  "machineEditAddTitle": "Add Machine",
+  "machineEditEditTitle": "Edit Machine",
+  "machineEditDismissKeyboardTooltip": "Dismiss keyboard",
+  "machineEditBasicInfo": "Basic Info",
+  "machineEditName": "Name",
+  "machineEditNameHint": "Home Mac",
+  "machineEditHostLabel": "Host (IP or hostname)",
+  "machineEditHostHint": "100.64.1.2",
+  "machineEditPort": "Port",
+  "machineEditBridgePortHint": "8765",
+  "machineEditApiKey": "API Key",
+  "machineEditOptional": "Optional",
+  "machineEditUseSecureConnection": "Use secure connection",
+  "machineEditUseSecureConnectionSubtitle": "Connect with WSS and use HTTPS for health checks",
+  "machineEditConnectionMode": "Connection method",
+  "machineEditConnectionModeAutomatic": "Automatic (recommended)",
+  "machineEditConnectionModeAutomaticSubtitle": "Checks without credentials and connects automatically, preferring HTTPS",
+  "machineEditConnectionModeAutomaticSshSubtitle": "Uses WS inside the SSH tunnel; the SSH connection encrypts the traffic",
+  "machineEditConnectionModeSecureOnly": "Secure only (WSS)",
+  "machineEditConnectionModeSecureOnlySubtitle": "Requires TLS and never falls back to WS",
+  "machineEditConnectionModeStandardOnly": "Standard (WS)",
+  "machineEditConnectionModeStandardOnlySubtitle": "Use on a local network or through a VPN such as Tailscale",
+  "machineErrorBridgeNotFound": "Bridge not found. Check that it is running and that this device is on the same network or VPN.",
+  "machineErrorSecureConnectionUnavailable": "A secure connection could not be established. Check TLS, or explicitly choose Standard (WS) if intended.",
+  "machineAutomaticWsApiKeyWarningTitle": "Standard connection detected",
+  "machineAutomaticWsApiKeyWarningBody": "This Bridge was found over unencrypted WS. The API key will be sent without transport encryption. Continue only on a trusted local network or VPN.",
+  "machineAutomaticWsApiKeyWarningConnect": "Connect with WS",
+  "machineEditSshConfiguration": "SSH Configuration",
+  "machineEditEnableSshRemoteStartup": "Enable SSH remote startup",
+  "machineEditEnableSshRemoteStartupSubtitle": "Remotely start Bridge Server when offline",
+  "machineEditSshUsername": "SSH Username",
+  "machineEditSshUsernameHint": "myuser",
+  "machineEditSshPort": "SSH Port",
+  "machineEditSshPortHint": "22",
+  "machineEditTargetAuthentication": "Target Authentication",
+  "machineEditPrivateKey": "Private Key",
+  "machineEditSshPrivateKeyPem": "SSH Private Key (PEM)",
+  "machineEditOpenSshPrivateKeyHint": "-----BEGIN OPENSSH PRIVATE KEY-----",
+  "machineEditSavedPrivateKeyIndicator": "Private key is saved. Enter a new one to replace it.",
+  "machineEditUseSshJumpHost": "Use SSH jump host",
+  "machineEditUseSshJumpHostSubtitle": "Connect through a bastion or intermediate SSH host",
+  "machineEditSshJumpHost": "SSH Jump Host",
+  "machineEditJumpHost": "Jump Host",
+  "machineEditJumpHostHint": "bastion.example.com",
+  "machineEditJumpPort": "Jump Port",
+  "machineEditJumpUsername": "Jump Username",
+  "machineEditJumpUsernameHint": "Defaults to SSH Username",
+  "machineEditJumpHostAuthentication": "Jump Host Authentication",
+  "machineEditJumpHostAuthenticationSubtitle": "Leave blank to reuse target SSH credentials",
+  "machineEditJumpPassword": "Jump Password",
+  "machineEditSavedJumpHostPasswordIndicator": "Jump host password is saved. Enter a new one to replace it.",
+  "machineEditJumpPrivateKeyPem": "Jump Private Key (PEM)",
+  "machineEditSavedJumpHostPrivateKeyIndicator": "Jump host private key is saved. Enter a new one to replace it.",
+  "machineEditTesting": "Testing...",
+  "machineEditTestConnection": "Test Connection",
+  "machineEditConnectionSuccessful": "Connection successful!",
+  "machineEditFillSshCredentials": "Please fill in SSH credentials",
+  "machineEditAddAndConnect": "Add & Connect",
+
+  "deleteMachine": "Delete Machine",
+  "deleteMachineConfirm": "Delete \"{displayName}\"? This will remove all saved credentials.",
+
+  "connectToBridgeServer": "Connect to Bridge Server",
+  "orConnectManually": "or connect manually",
+  "serverUrl": "Server URL",
+  "serverUrlHint": "ws://<host-ip>:8765",
+  "apiKeyOptional": "API Key (optional)",
+  "apiKeyHint": "Leave empty if no auth",
+  "scanQrCode": "Scan QR Code",
+  "setupGuide": "Setup Guide",
+  "showSessions": "Show left pane",
+  "hideSessions": "Hide left pane",
+  "workspaceLandingSelectSessionMessage": "Select a session in the left pane.",
+  "workspaceLandingCreateSessionMessage": "Create a session from New in the left pane.",
+  "workspaceLandingDisconnectedMessage": "Bridge is not connected. Connect from the left pane, or open Setup Guide to configure a machine.",
+  "running": "Running",
+  "recentSessions": "Recent Sessions",
+  "search": "Search",
+  "searchSessions": "Search sessions...",
+  "sessionDisplayModeFirst": "First",
+  "sessionDisplayModeLast": "Last",
+  "sessionDisplayModeSummary": "Summary",
+  "allAiTools": "All AI Tools",
+  "allProjects": "All Projects",
+  "named": "Named",
+  "machines": "Machines",
+  "refreshStatus": "Refresh status",
+  "add": "Add",
+  "noSavedMachinesDescription": "No saved machines.\nAdd one to quickly connect or remotely start the Bridge Server.",
+
+  "readyToStart": "Ready to start",
+  "readyToStartDescription": "Press the + button to create a new session and start coding with Claude.",
+  "newSession": "New Session",
+
+  "neverConnected": "Never connected",
+  "justNow": "Just now",
+  "minutesAgo": "{minutes}m ago",
+  "hoursAgo": "{hours}h ago",
+  "daysAgo": "{days}d ago",
+  "unfavorite": "Unfavorite",
+  "favorite": "Favorite",
+  "updateBridge": "Update Bridge",
+  "bridgeIsUpToDate": "Bridge is up to date",
+  "bridgeUpdateAvailable": "Update available",
+  "bridgeUpdateRequiresSetup": "Requires SSH and Bridge auto-start setup",
+  "bridgeVersionUnknown": "Bridge version unknown",
+  "bridgeVersionCurrentExpected": "Current v{current}, recommended v{expected}+",
+  "@bridgeVersionCurrentExpected": {
+    "placeholders": {
+      "current": { "type": "String" },
+      "expected": { "type": "String" }
+    }
+  },
+  "bridgeVersionCurrentLatest": "Current v{current}, latest v{latest}",
+  "@bridgeVersionCurrentLatest": {
+    "placeholders": {
+      "current": { "type": "String" },
+      "latest": { "type": "String" }
+    }
+  },
+  "bridgeLatestVersionChecking": "Checking latest Bridge version...",
+  "bridgeLatestVersionUnavailable": "Could not check latest Bridge version",
+  "bridgeLatestVersionRetry": "Retry latest version check",
+  "bridgeUpdateSetupTitle": "Prepare Bridge updates",
+  "bridgeUpdateSetupDescription": "To update Bridge from this app, the machine needs SSH access and Bridge auto-start setup.",
+  "bridgeUpdateSetupEnableSsh": "Enable SSH in the Bridge connection settings.",
+  "bridgeUpdateSetupRunCommand": "Run the setup command on the target machine.",
+  "bridgeUpdateSetupCommand": "npx @ccpocket/bridge@1 setup",
+  "stopServer": "Stop Server",
+  "update": "Update",
+  "download": "Download",
+  "appUpdateAvailable": "v{version} is available",
+  "@appUpdateAvailable": {
+    "placeholders": {
+      "version": { "type": "String" }
+    }
+  },
+  "macosNativeAppBannerTitle": "Use the native macOS app",
+  "macosNativeAppBannerSubtitle": "CC Pocket is optimized for macOS in the native desktop app. Install it from GitHub Releases.",
+  "openGitHubReleases": "Open GitHub Releases",
+  "macosNativeAppSettingsTitle": "macOS native app",
+  "macosNativeAppSettingsSubtitle": "Recommended on Mac because it is optimized for macOS.",
+  "supportBannerTitle": "CC Pocket has been useful",
+  "supportBannerSubtitle": "Support can help keep development moving.",
+  "supportBannerAction": "View support",
+  "offline": "Offline",
+  "unreachable": "Unreachable",
+  "checking": "Checking...",
+
+  "recentProjects": "Recent Projects",
+  "orEnterPath": "or enter path",
+  "projectPath": "Project Path",
+  "projectPathHint": "/path/to/your/project",
+  "permission": "Permission",
+  "approval": "Approval",
+  "restart": "Restart",
+  "worktree": "Worktree",
+  "advanced": "Advanced",
+  "modelOptional": "Model (optional)",
+  "effort": "Effort",
+  "defaultLabel": "Default",
+  "codexProfilePrecedenceNote": "If the selected profile includes the same setting, it takes precedence over the options below.",
+  "maxTurns": "Max Turns",
+  "maxTurnsHint": "e.g. 8",
+  "maxTurnsError": "Must be an integer > 0",
+  "maxBudgetUsd": "Max Budget (USD)",
+  "maxBudgetHint": "e.g. 1.00",
+  "maxBudgetError": "Must be a number >= 0",
+  "fallbackModel": "Fallback Model",
+  "forkSessionOnResume": "Fork Session on Resume",
+  "persistSessionHistory": "Persist Session History",
+  "model": "Model",
+  "sandbox": "Sandbox",
+  "reasoning": "Reasoning",
+  "webSearch": "Web Search",
+  "networkAccess": "Network Access",
+  "additionalWritableRootsTitle": "Additional accessible directories",
+  "additionalWritableRootsDescription": "These are added on top of writable_roots from Codex config.toml for this session.",
+  "additionalWritableRootsTooltip": "Use this when this Codex session needs to read or edit files from another project in addition to the selected project.",
+  "additionalWritableRootsSuggestions": "Recent projects",
+  "addDirectory": "Add directory",
+  "directoryPath": "Directory path",
+  "directoryPathOutsideAllowedRoots": "Directory path is outside the allowed roots",
+  "browseDirectory": "Browse directory",
+  "selectDirectory": "Select directory",
+  "noSubdirectories": "No subdirectories",
+  "directoryBrowserRoots": "Allowed directories",
+  "directoryBrowserBridgeUpdateRequired": "This feature requires a newer Bridge server. Update Bridge and try again.",
+  "worktreeNew": "New",
+  "worktreeExisting": "Existing ({count})",
+  "branchOptional": "Branch (optional)",
+  "branchHint": "feature/...",
+  "noExistingWorktrees": "No existing worktrees",
+
+  "planApprovalSummary": "Review the plan above and approve or continue planning",
+  "planApprovalSummaryCard": "Review the plan and approve or continue planning",
+  "toolApprovalSummary": "Tool execution requires approval",
+  "planApproval": "Plan Approval",
+  "approvalRequired": "Approval Required",
+  "approvalStatusPending": "Pending",
+  "approvalStatusApproved": "Approved",
+  "approvalStatusApprovedForSession": "Approved for session",
+  "approvalStatusRejected": "Rejected",
+  "approvalStatusResolved": "Resolved",
+  "viewEditPlan": "View Plan",
+  "keepPlanning": "Keep Planning",
+  "keepPlanningHint": "What should be changed...",
+  "sendFeedbackKeepPlanning": "Send feedback & keep planning",
+  "acceptAndClear": "Accept & Clear",
+  "acceptPlan": "Accept Plan",
+  "continuePlanning": "Keep Planning",
+  "reject": "Reject",
+  "approve": "Approve",
+  "always": "Always",
+  "approveOnce": "Allow Once",
+  "approveForSession": "Allow for This Session",
+  "approveAlways": "Permanently",
+  "approveAlwaysSub": "allow",
+  "approveSessionMain": "This Session",
+  "approveSessionSub": "allow",
+  "permissionDefaultDescription": "Standard permission prompts",
+  "permissionAutoDescription": "Let Claude auto-handle approvals with built-in safety checks",
+  "permissionAcceptEditsDescription": "Auto-approve file edits",
+  "permissionPlanDescription": "Analyze and plan before executing changes",
+  "permissionBypassDescription": "Run without most approval prompts",
+  "executionDefaultDescription": "Standard permission prompts",
+  "executionAcceptEditsDescription": "Auto-approve file edits",
+  "executionFullAccessDescription": "Run without most approval prompts",
+  "codexPlanModeDescription": "Draft a plan first, then wait for approval before executing",
+  "sandboxRestrictedDescription": "Run commands in restricted environment",
+  "sandboxNativeDescription": "Run commands natively",
+  "sandboxNativeCautionDescription": "Run commands natively (CAUTION)",
+
+  "sheetSubtitleApproval": "Controls which actions require your approval",
+  "sheetSubtitleSandboxCodex": "Sandbox is on by default for safety. Disabling allows full system access.",
+  "sheetSubtitleSandboxClaude": "Claude runs natively by default. Enabling sandbox restricts access.",
+  "sheetSubtitleModel": "Different models vary in speed, capability, and cost.",
+  "sheetSubtitleEffort": "Higher effort produces more thorough analysis but takes longer.",
+
+  "claudeEffortLowDesc": "Faster responses, less thorough",
+  "claudeEffortMediumDesc": "Balanced speed and quality",
+  "claudeEffortHighDesc": "More thorough analysis",
+  "claudeEffortXHighDesc": "Extended reasoning for complex work",
+  "claudeEffortMaxDesc": "Most thorough, slowest",
+
+  "reasoningEffortNoneDesc": "No reasoning",
+  "reasoningEffortMinimalDesc": "Fastest, least analysis",
+  "reasoningEffortLowDesc": "Faster responses, less thorough",
+  "reasoningEffortMediumDesc": "Balanced speed and quality",
+  "reasoningEffortHighDesc": "More thorough analysis",
+  "reasoningEffortXhighDesc": "Most thorough, slowest",
+  "reasoningEffortMaxDesc": "Maximum reasoning for the hardest problems",
+  "reasoningEffortUltraDesc": "Maximum reasoning with automatic task delegation",
+  "reasoningEffortModelSpecificDesc": "Model-specific reasoning level",
+
+  "changePermissionModeTitle": "Change Permission Mode",
+  "changePermissionModeBody": "Switching to {mode} will restart the session. Your conversation will be preserved.",
+  "@changePermissionModeBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "changeExecutionModeTitle": "Change Execution Mode",
+  "changeExecutionModeBody": "Switching to {mode} will restart the session. Your conversation will be preserved.",
+  "@changeExecutionModeBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "changeApprovalPolicyTitle": "Change Approval Policy",
+  "changeApprovalPolicyBody": "Switching to {mode} will restart the session. Your conversation will be preserved.",
+  "@changeApprovalPolicyBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "codexApprovalUntrustedDescription": "Auto-run only trusted commands; ask for everything else",
+  "codexApprovalOnRequestDescription": "Ask only when the agent decides approval is needed",
+  "codexApprovalOnFailureDescription": "Run without asking first; ask only when a command fails (Deprecated)",
+  "codexApprovalNeverDescription": "Never ask for approval; failures are returned immediately",
+  "codexAutoReview": "Auto Review",
+  "codexAutoReviewDescription": "Let Codex review approval requests automatically",
+  "codexAutoReviewDisabledByPolicy": "Disabled by your organization's Browser Use policy",
+  "codexAutoReviewUnavailableDescription": "Unavailable when approvals are disabled",
+  "guardianApprovalTitle": "Auto Review approved",
+  "guardianApprovalMediumRisk": "Medium risk",
+  "guardianApprovalHighRisk": "High risk",
+  "guardianApprovalDetails": "Details",
+  "guardianApprovalHideDetails": "Hide details",
+  "guardianApprovalAuthorization": "Authorization: {authorization}",
+  "@guardianApprovalAuthorization": {
+    "placeholders": {
+      "authorization": {"type": "String"}
+    }
+  },
+  "enablePlanModeTitle": "Enable Plan Mode",
+  "disablePlanModeTitle": "Disable Plan Mode",
+  "enablePlanModeBody": "Enabling Plan Mode will restart the session. Your conversation will be preserved.",
+  "disablePlanModeBody": "Disabling Plan Mode will restart the session. Your conversation will be preserved.",
+  "changeSandboxModeTitle": "Change Sandbox Mode",
+  "changeSandboxModeBody": "Switching to {mode} will restart the session. Your conversation will be preserved.",
+  "@changeSandboxModeBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+
+  "messagePlaceholder": "Message Claude...",
+  "codexMessagePlaceholder": "Message Codex...",
+  "queuedInputForReconnect": "Queued for reconnect",
+  "queuedInputPendingDelivery": "Pending delivery",
+  "queuedInputForNextTurn": "Queued for next turn",
+  "sessionCardQueuedInput": "Queued",
+  "queuedInputImageCount": "{count, plural, =1{{count} image} other{{count} images}}",
+  "@queuedInputImageCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "tooltipSteerQueuedMessage": "Steer queued message",
+  "tooltipMoveQueuedMessageToInput": "Move queued message to input",
+  "tooltipCancelQueuedMessage": "Cancel queued message",
+  "reconnecting": "Bridge connection was interrupted. Reconnecting automatically...",
+  "reconnectingQueuedMessages": "Bridge connection was interrupted. Reconnecting automatically; queued messages are safe.",
+  "disconnectedMessagesQueued": "Bridge is unavailable. Actions are saved on this device and sent after reconnecting.",
+  "sessionQueuedForReconnect": "Session queued for reconnect",
+  "resumeAlreadyQueued": "Resume is already queued",
+  "resumeQueuedForReconnect": "Resume queued for reconnect",
+  "pendingActionWillCreateOnReconnect": "Will create when the bridge reconnects",
+  "pendingActionWillResumeOnReconnect": "Will resume when the bridge reconnects",
+  "pendingActionStatus": "Pending",
+  "pendingActionProcessingStatus": "Restoring",
+  "pendingActionProcessingStartStatus": "Preparing",
+  "pendingActionProcessingStartDescription": "Bridge is preparing the session",
+  "pendingActionProcessingResumeDescription": "Sessions with many images may take longer",
+  "pendingActionProcessingStartTitle": "Creating new session",
+  "pendingActionProcessingResumeTitle": "Loading session history",
+  "tooltipCancelPendingAction": "Cancel pending action",
+  "queuedLocally": "Queued locally",
+  "processingOnBridge": "Processing on Bridge",
+  "offlinePendingNewSessionTitle": "New session pending",
+  "offlinePendingResumeTitle": "Resume pending",
+  "diffLines": "{count} diff lines",
+  "changedLines": "{count, plural, =1{{count} changed line} other{{count} changed lines}}",
+  "@changedLines": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "hunkCount": "{count, plural, =1{{count} hunk} other{{count} hunks}}",
+  "@hunkCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fileCount": "{count, plural, =1{{count} file} other{{count} files}}",
+  "@fileCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "tapInterruptHoldStop": "Tap: interrupt, Hold: stop",
+
+  "rewind": "Rewind",
+  "rewindToHere": "Rewind to here",
+  "rewindModeConversationAndCode": "Restore conversation & code",
+  "rewindModeConversationOnly": "Restore conversation only",
+  "rewindModeCodeOnly": "Restore code only",
+  "rewindConfirmTitle": "Confirm Rewind",
+  "rewindConfirmBody": "Mode: {mode}\n\nThis action cannot be undone. Proceed?",
+  "@rewindConfirmBody": {
+    "placeholders": {
+      "mode": {}
+    }
+  },
+  "rewindCannotRewindFiles": "Cannot rewind files",
+  "codexRewindConfirmTitle": "Rewind conversation?",
+  "codexRewindConfirmBody": "Restore the chat to just before this message and put the message back in the composer. File changes stay untouched.",
+  "fork": "Fork",
+  "forkConversation": "Fork conversation",
+  "forkConversationTitle": "Fork conversation?",
+  "forkConversationBody": "Create a new Codex session from this response. The current session will remain unchanged.",
+  "forkTargetNotFound": "Cannot find a user turn to fork from",
+  "tapToRetry": "Tap to retry",
+
+  "diffSummaryAddedRemoved": "+{added}/-{removed} lines",
+  "lineCountSummary": "{count} lines",
+  "toolResult": "Tool Result",
+
+  "answered": "Answered",
+  "agentIsAsking": "{agent} is asking",
+  "@agentIsAsking": {
+    "placeholders": {
+      "agent": {}
+    }
+  },
+  "submitAllAnswers": "Submit All Answers",
+  "submitWithCount": "Submit ({count} selected)",
+  "selectOptionsToSubmit": "Select options to submit",
+  "typeYourAnswer": "Type your answer...",
+  "orTypeCustomAnswer": "Or type a custom answer...",
+  "otherAnswer": "Other answer...",
+  "selectAllThatApply": "Select all that apply",
+
+  "noScreenshotsYet": "No screenshots yet",
+  "screenshotButtonHint": "Use the screenshot button in the chat toolbar to capture screenshots.",
+  "screenshotsWillAppearHere": "Screenshots from Claude sessions will appear here.",
+  "allWithCount": "All ({count})",
+  "noImages": "No images",
+  "failedToDeleteImage": "Failed to delete image",
+  "failedToDownloadImage": "Failed to download image",
+  "failedToShareImage": "Failed to share image",
+  "deleteScreenshot": "Delete screenshot?",
+  "cannotBeUndone": "This action cannot be undone.",
+
+  "changes": "Changes",
+  "refresh": "Refresh",
+  "diffCompareSideBySide": "Side by Side",
+  "diffCompareSlider": "Slider",
+  "diffCompareOverlay": "Overlay",
+  "diffCompareToggle": "Toggle",
+  "diffBefore": "Before",
+  "diffAfter": "After",
+  "diffNewFile": "New file",
+  "diffDeleted": "Deleted",
+  "diffNoImage": "No image",
+  "noChanges": "No changes",
+  "showAll": "Show all",
+
+  "setupGuideTitle": "Setup Guide",
+
+  "guideAboutTitle": "What is CC Pocket?",
+  "guideAboutDescription": "A mobile client that lets you use Codex and Claude from your smartphone through the Bridge Server.",
+  "guideAboutSdkNoteTitle": "About Claude Agent SDK",
+  "guideAboutSdkNoteBody": "It is the library version of Claude Code. It can share history and project config files such as .claude and CLAUDE.md, and the approval flow feels mostly the same.",
+  "guideAboutDiagramTitle": "How it works",
+  "guideAboutDiagramPhone": "iPhone",
+  "guideAboutDiagramBridge": "Bridge Server",
+  "guideAboutDiagramClaude": "Codex CLI\n/ Claude Agent SDK",
+  "guideAboutDiagramCaption": "The Bridge Server on your PC connects to Codex CLI and Claude Agent SDK,\nthen your phone connects to the Bridge.",
+
+  "guideBridgeTitle": "Bridge Server\nSetup",
+  "guideBridgeDescription": "Start the Bridge Server on your PC. Claude requires an API key, or explicit opt-in for subscription authentication.",
+  "guideBridgePrerequisites": "Prerequisites",
+  "guideBridgePrereq1": "Mac / PC with Node.js installed",
+  "guideBridgePrereq2": "For Claude, set ANTHROPIC_API_KEY or BRIDGE_ALLOW_CLAUDE_OAUTH=1",
+  "guideBridgePrereq3": "If you use Codex, complete Codex authentication",
+  "guideBridgeStep1": "Run with npx (recommended)",
+  "guideBridgeStep1Command": "npx --yes @ccpocket/bridge@latest",
+  "guideBridgeStep2": "Or install globally",
+  "guideBridgeStep2Command": "npm install -g @ccpocket/bridge\nccpocket-bridge",
+  "guideBridgeQrNote": "A QR code will appear in the terminal when started",
+
+  "guideConnectionTitle": "Connection Methods",
+  "guideConnectionDescription": "If on the same Wi-Fi network, you can connect right away.",
+  "guideConnectionQr": "QR Code Scan",
+  "guideConnectionQrDescription": "Just scan the QR code displayed in the terminal. The easiest method.",
+  "guideConnectionMdns": "Auto-discovery (mDNS)",
+  "guideConnectionMdnsDescription": "Automatically finds Bridge Servers on the same LAN.",
+  "guideConnectionManual": "Manual Entry",
+  "guideConnectionManualDescription": "Enter directly in the format ws://<IP address>:8765.",
+  "guideConnectionRecommended": "Recommended",
+
+  "guideTailscaleTitle": "Remote Access",
+  "guideTailscaleDescription": "To use from outside your home, Tailscale (a VPN) enables secure remote connections.",
+  "guideTailscaleStep1": "Install Tailscale on both Mac and iPhone",
+  "guideTailscaleStep2": "Log in with the same account",
+  "guideTailscaleStep3": "Use Tailscale IP for Bridge URL\n(e.g. ws://100.x.x.x:8765)",
+  "guideTailscaleWebsite": "Tailscale Website",
+  "guideTailscaleWebsiteHint": "Visit the official site for detailed setup instructions.",
+
+  "guideLaunchdTitle": "Auto-start Setup",
+  "guideLaunchdDescription": "If manually starting the Bridge Server is tedious, you can configure it to start automatically when your machine boots.",
+  "guideLaunchdCommand": "Setup Command",
+  "guideLaunchdCommandValue": "npx --yes @ccpocket/bridge@1 setup",
+  "guideLaunchdRecommendation": "We recommend verifying with manual startup first, then registering as a service once stable.",
+  "guideAutostartMacDescription": "Registers with launchd. Shell environment (nvm, Homebrew, etc.) is inherited automatically.",
+  "guideAutostartLinuxDescription": "Creates a systemd user service. Works with Raspberry Pi and other Linux hosts.",
+
+  "guideReadyTitle": "All Set!",
+  "guideReadyDescription": "Start the Bridge Server and\nscan the QR code to\nget started.",
+  "guideReadyStart": "Let's Get Started",
+  "guideReadyHint": "You can revisit this guide anytime from Settings",
+
+  "creatingSession": "Creating session...",
+  "resolvingLinkedSession": "Finding session...",
+  "resumingLinkedSession": "Resuming session...",
+  "sessionUnavailableTitle": "Session unavailable",
+  "sessionUnavailableDescription": "This session isn't available on this Bridge. Open Recent Sessions to find another session.",
+  "openRecentSessions": "Open Recent Sessions",
+  "copyForAgent": "Copy for Agent",
+  "messageHistory": "Message History",
+  "viewChanges": "View Changes",
+  "screenshot": "Screenshot",
+
+  "debug": "Debug",
+  "logs": "Logs",
+  "viewApplicationLogs": "View application logs",
+  "mockPreview": "Mock Preview",
+  "viewMockChatScenarios": "View mock chat scenarios",
+  "updateTrack": "Update Track",
+  "updateTrackDescription": "Restart app after changing to apply",
+  "updateTrackStable": "Stable",
+  "updateTrackStaging": "Staging",
+  "updateDownloaded": "Update downloaded. Restart app to apply.",
+
+  "promptHistory": "Prompt History",
+  "frequent": "Frequent",
+  "recent": "Recent",
+  "searchHint": "Search...",
+  "noMatchingPrompts": "No matching prompts",
+  "noPromptHistoryYet": "No prompt history yet",
+  "promptHistoryFilters": "Filters",
+  "promptHistoryFilterThisDevice": "Used on this device",
+  "promptHistoryFilterThisProject": "Open project",
+  "promptHistoryFilterThisBridge": "Connected Bridge",
+  "promptHistoryFilterFavorites": "Favorites",
+  "promptHistoryFilterCommands": "Commands and skills",
+  "promptHistoryOpenProjectEmptyHint": "Open project filtering only works for history recorded by the newer app.",
+  "promptHistorySectionTitle": "Prompt History",
+  "promptHistorySyncTitle": "Sync prompt history",
+  "promptHistoryReplaceTitle": "Overwrite Bridge with old-format history",
+  "promptHistoryReplaceSubtitle": "Old-format history was managed by the app. The new format is managed by Bridge. This is usually unnecessary if you already migrated on your main device. Use it when a secondary device accidentally initialized Bridge history; it overwrites the connected Bridge history with this device's old-format history.",
+  "promptHistoryReplaceConfirmAction": "Overwrite",
+  "promptHistoryReplaceDismissAction": "Already migrated",
+  "promptHistoryNotSyncedYet": "Not synced yet",
+  "promptHistoryLatestSync": "Last sync: {time}",
+  "@promptHistoryLatestSync": {
+    "placeholders": {
+      "time": { "type": "String" }
+    }
+  },
+  "promptHistorySyncedBridges": "Synced Bridges: {count}",
+  "@promptHistorySyncedBridges": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "promptHistorySyncSummaryWithFailures": "{synced} synced, {failed} failed",
+  "@promptHistorySyncSummaryWithFailures": {
+    "placeholders": {
+      "synced": { "type": "int" },
+      "failed": { "type": "int" }
+    }
+  },
+  "promptHistoryBridgeId": "Bridge ID: {id}",
+  "@promptHistoryBridgeId": {
+    "placeholders": {
+      "id": { "type": "String" }
+    }
+  },
+  "promptHistoryOtherBridgeRegistrations": "Other registrations: {registrations}",
+  "@promptHistoryOtherBridgeRegistrations": {
+    "placeholders": {
+      "registrations": { "type": "String" }
+    }
+  },
+  "promptHistoryNoSyncTime": "No sync time",
+
+  "approvalQueue": "Approval Queue",
+  "resetQueue": "Reset queue",
+  "swipeSkip": "SKIP",
+  "swipeSend": "SEND",
+  "swipeDismiss": "DISMISS",
+  "swipeApprove": "APPROVE",
+  "swipeReject": "REJECT",
+  "allClear": "All Clear!",
+  "itemsProcessed": "{count} items processed",
+  "bestStreak": "Best streak: {count}",
+  "tryAgain": "Try Again",
+  "waitingForTasks": "Waiting for tasks",
+  "agentReadyForPrompt": "The agent is ready for your next prompt.",
+  "backToSessions": "Back to Sessions",
+  "working": "Working...",
+  "waitingForApprovalRequests": "Waiting for approval requests from the agent.",
+  "noActiveSessions": "No active sessions",
+  "startSessionToBegin": "Start a session to begin receiving approval requests.",
+
+  "settingsTitle": "Settings",
+  "sectionGeneral": "GENERAL",
+  "sectionConnectionAccounts": "Connection & Accounts",
+  "sectionNotifications": "Notifications",
+  "sectionSupport": "Support",
+  "sectionEditor": "EDITOR",
+  "textDensity": "Text density",
+  "textDensityDescription": "Multiplies the system text size by this app scale. 100% keeps the OS setting unchanged.",
+  "codeFontSize": "Code font size",
+  "codeFontFamily": "Code font",
+  "codeFontPreview": "Preview",
+  "indentSize": "Indent size",
+  "indentSizeSubtitle": "Number of spaces for list indentation",
+  "gitDiffInteractionMode": "Git diff gestures",
+  "gitDiffQuickActions": "Quick actions",
+  "gitDiffQuickActionsDescription": "One-finger horizontal swipes stage, unstage, or revert hunks. Long lines wrap.",
+  "gitDiffScrollFirst": "Scroll first",
+  "gitDiffScrollFirstDescription": "Long lines stay unwrapped for hunk-level horizontal scrolling. Use long press menus or the bottom buttons for Git actions.",
+  "imagePasteShortcut": "Image paste shortcut",
+  "imagePasteShortcutCtrlV": "Ctrl+V",
+  "imagePasteShortcutCtrlVDescription": "Recommended on macOS. Keeps Cmd+V for normal paste and dictation tools.",
+  "imagePasteShortcutCommandV": "Cmd+V",
+  "imagePasteShortcutCommandVDescription": "May conflict with dictation apps, clipboard managers, and text expanders.",
+  "gitDiffFocusAutoLandscape": "Rotate diff focus mode to landscape",
+  "gitDiffFocusAutoLandscapeDescription": "On mobile layouts, entering diff focus mode locks the screen to landscape. Exiting focus mode restores normal rotation.",
+  "remoteGitStatusBadge": "Show a subtle badge for unsynced Git commits",
+  "remoteGitStatusBadgeDescription": "Shows a lighter badge on the session Git button when the current branch can push or pull after fetch.",
+  "sectionAbout": "ABOUT",
+  "theme": "Theme",
+  "themeSystem": "System",
+  "themeLight": "Light",
+  "themeDark": "Dark",
+  "appIconTitle": "App Icon",
+  "appIconMonthlySupporterPerk": "This is a Monthly Supporter perk.",
+  "appIconSettingsSubtitle": "Change the icon on your {device} Home Screen.",
+  "@appIconSettingsSubtitle": {
+    "placeholders": {
+      "device": {"type": "String"}
+    }
+  },
+  "appIconSupporterDialogTitle": "Monthly Supporter Perk",
+  "appIconSupporterSectionLabel": "Monthly Supporter Perk",
+  "appIconPickerTitle": "Choose app icon",
+  "appIconPickerSubtitle": "Pick the icon shown on your home screen.",
+  "appIconOptionDefaultTitle": "Dark",
+  "appIconOptionDefaultSubtitle": "The standard CC Pocket icon.",
+  "appIconOptionLightOutlineTitle": "Light",
+  "appIconOptionLightOutlineSubtitle": "A brighter variation with a lighter outline.",
+  "appIconOptionCopperEmeraldTitle": "Metallic",
+  "appIconOptionCopperEmeraldSubtitle": "A special edition with a glossy finish.",
+  "language": "Language",
+  "languageSystem": "System Default",
+  "voiceInput": "Voice Input",
+  "pushNotifications": "Push Notifications",
+  "pushNotificationsSubtitle": "Receive session notifications via Bridge",
+  "pushNotificationsUnavailable": "Available after Firebase setup",
+  "version": "Version",
+  "loading": "Loading...",
+  "loadingSessions": "Loading sessions...",
+  "setupGuideSubtitle": "New here? Start with this",
+  "openSourceLicenses": "Open Source Licenses",
+  "githubRepository": "GitHub Repository",
+  "changelog": "Changelog",
+  "changelogTitle": "Changelog",
+  "showAllMain": "Show all (main)",
+  "changelogFetchError": "Failed to load changelog",
+
+  "fcmBridgeNotInitialized": "Bridge not initialized",
+  "fcmTokenFailed": "Failed to get FCM token",
+  "fcmRegistrationFailed": "Failed to register notifications with Bridge",
+  "fcmEnabled": "Notifications enabled",
+  "fcmEnabledPending": "Will register after Bridge reconnects",
+  "fcmDisabled": "Notifications disabled",
+  "fcmDisabledPending": "Will unregister after Bridge reconnects",
+  "pushPrivacyMode": "Privacy mode",
+  "pushPrivacyModeSubtitle": "Hide project names and content from notifications",
+  "updateNotificationLanguage": "Update notification language",
+  "notificationLanguageUpdated": "Notification language updated",
+
+  "defaultNotRecommended": "Default (not recommended)",
+
+  "imageAttached": "Image attached",
+
+  "usageConnectToView": "Connect to Bridge to view usage",
+  "usageFetchFailed": "Failed to fetch",
+  "usageFiveHour": "5 hours",
+  "usageSevenDay": "7 days",
+  "settingsUsageSectionTitle": "Usage",
+  "settingsUsageNoCodexData": "No Codex usage data found.",
+  "usageDisplayModeRemaining": "Remaining",
+  "usageDisplayModeUsed": "Used",
+  "usageOpenSettingsHint": "Open usage details",
+  "usagePaceOnTrack": "On pace",
+  "usagePaceSlightlyAhead": "Slightly fast",
+  "usagePaceAhead": "Fast",
+  "usagePaceFarAhead": "Very fast",
+  "usagePaceSlightlyBehind": "Slightly under pace",
+  "usagePaceBehind": "Plenty of headroom",
+  "usagePaceFarBehind": "Lots of headroom",
+  "usagePaceExpected": "Expected {percent}% used",
+  "@usagePaceExpected": {
+    "placeholders": {
+      "percent": {"type": "int"}
+    }
+  },
+  "usagePaceWillLast": "On track to last until reset",
+  "usagePaceRunsOutIn": "Projected to reach the limit in about {duration}",
+  "@usagePaceRunsOutIn": {
+    "placeholders": {
+      "duration": {"type": "String"}
+    }
+  },
+  "usagePaceAtLimit": "Limit reached",
+  "settingsClaudeUsageDescription": "Open Claude's official billing pages in your browser.",
+  "settingsClaudeApiBilling": "API Key billing",
+  "settingsClaudeSubscriptionUsage": "Subscription usage",
+  "settingsNewSessionTabs": "New Session Tabs",
+  "settingsNewSessionTabsDescription": "Choose which AI tools appear for new sessions and change their order.",
+  "showHiddenDirectories": "Show Hidden Directories",
+  "showHiddenDirectoriesSubtitle": "Include folders beginning with . in the new session directory browser.",
+  "showBridgeNameInSessionList": "Show Bridge name",
+  "showBridgeNameInSessionListSubtitle": "Show the connected Bridge name in the session list when multiple Bridges are registered.",
+  "autoRenameCodexSessions": "Auto Rename (Codex)",
+  "autoRenameCodexSessionsSubtitle": "Name Codex sessions automatically after the first agent response",
+  "showExtendedCodexEfforts": "Max / Ultra in Effort slider",
+  "showExtendedCodexEffortsSubtitle": "Show Max and Ultra on the slider when supported by the selected Codex model",
+  "autoRenameClaudeSessions": "Auto Rename (Claude)",
+  "autoRenameClaudeSessionsSubtitle": "Name Claude sessions automatically after the first agent response. Uses an additional Claude request when API key billing is active.",
+  "newSessionTabCodex": "Codex",
+  "newSessionTabClaudeCode": "Claude",
+  "usageResetAt": "Reset: {time}",
+  "@usageResetAt": {
+    "placeholders": {
+      "time": {"type": "String"}
+    }
+  },
+  "usageAlreadyReset": "Already reset",
+
+  "attachedImages": "Attached Images ({count})",
+  "@attachedImages": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "attachedImagesNoCount": "Attached Images",
+  "failedToFetchImages": "Could not fetch images",
+  "responseTimedOut": "Response timed out",
+  "failedToFetchImagesWithError": "Failed to fetch images: {error}",
+  "@failedToFetchImagesWithError": {
+    "placeholders": {
+      "error": {"type": "String"}
+    }
+  },
+  "retry": "Retry",
+  "codexWriterConflictGuidance": "Close Codex Desktop or the Codex App, then try again.",
+
+  "clipboardNotAvailable": "Cannot access clipboard",
+  "failedToLoadImage": "Failed to load image",
+  "generatedImagePromptLabel": "Prompt",
+  "generatedImageDetailsLabel": "Details",
+  "generatedImageHideDetailsLabel": "Hide details",
+  "generatedImageStatusLabel": "Status",
+  "generatedImageSavedPathLabel": "Saved file",
+  "previousImage": "Previous image",
+  "nextImage": "Next image",
+  "generatedImagePositionLabel": "Generated image {current} of {total}",
+  "@generatedImagePositionLabel": {
+    "placeholders": {
+      "current": {"type": "int"},
+      "total": {"type": "int"}
+    }
+  },
+  "noImageInClipboard": "No image in clipboard",
+  "failedToReadClipboard": "Failed to read clipboard",
+  "imageLimitReached": "Maximum {max} images allowed",
+  "@imageLimitReached": {
+    "placeholders": {
+      "max": {"type": "int"}
+    }
+  },
+  "imageLimitTruncated": "Only first {max} images attached ({dropped} dropped)",
+  "@imageLimitTruncated": {
+    "placeholders": {
+      "max": {"type": "int"},
+      "dropped": {"type": "int"}
+    }
+  },
+  "selectFromGallery": "Select from Gallery",
+  "pasteFromClipboard": "Paste from Clipboard",
+  "pasteImage": "Paste Image",
+
+  "voiceInputLanguage": "Voice Input Language",
+  "hideVoiceInput": "Hide voice input button",
+  "hideVoiceInputSubtitle": "Useful when using a third-party voice input keyboard",
+  "openGalleryDirectly": "Open gallery directly from image button",
+  "openGalleryDirectlySubtitle": "Skip the attachment menu and start selecting images immediately",
+
+  "archive": "Archive",
+  "archiveConfirm": "Archive this session?",
+  "archiveConfirmMessage": "This session will be hidden from the list. You can still access it from Claude Code.",
+  "sessionArchived": "Session archived",
+  "archiveFailed": "Failed to archive session",
+  "archiveFailedWithError": "Failed to archive session: {error}",
+  "@archiveFailedWithError": {
+    "placeholders": {
+      "error": {"type": "String"}
+    }
+  },
+  "noRecentSessions": "No recent sessions",
+  "noSessionsMatchFilters": "No sessions match the current filters",
+  "adjustFiltersAndSearch": "Try changing filters or search terms",
+
+  "tooltipDisplayMode": "Change which message is shown on cards",
+  "tooltipProviderFilter": "Filter by AI tool",
+  "tooltipProjectFilter": "Filter by project",
+  "tooltipNamedOnly": "Only sessions you've named",
+  "tooltipIndent": "Increase indent",
+  "tooltipDedent": "Decrease indent",
+  "tooltipSlashCommand": "Insert command or skill",
+  "tooltipMention": "Mention file or plugin",
+  "tooltipDollarMention": "Insert skill or app",
+  "tooltipPermissionMode": "Permission mode",
+  "tooltipAttachImage": "Attach image",
+  "tooltipPromptHistory": "Open prompt history",
+  "tooltipVoiceInput": "Start voice input",
+  "tooltipStopRecording": "Stop recording",
+  "tooltipSendMessage": "Send message",
+  "tooltipRemoveImage": "Remove image",
+  "tooltipClearDiff": "Clear diff selection",
+
+  "showMore": "Show more",
+  "showLess": "Show less",
+
+  "authErrorTitle": "Claude login required",
+  "authErrorBody": "Claude needs to sign in again on the Bridge machine.",
+  "authErrorPrimaryCommandLabel": "Step 1",
+  "authErrorSecondaryCommandLabel": "Step 2",
+  "authErrorAlternativeLabel": "Shell alternative",
+  "claudeOAuthOptInTitle": "Subscription authentication requires opt-in",
+  "claudeOAuthOptInBody": "Anthropic permits users to sign in to unmodified Claude Code on hosted platforms, but its Agent SDK guide still directs third-party products to API keys. CC Pocket therefore keeps subscription authentication off by default.",
+  "claudeOAuthOptInHint": "Review the details, set the option on the Bridge machine, and restart it. To avoid policy uncertainty, use an API key instead:",
+
+  "authHelpTitle": "Auth Troubleshooting",
+  "authHelpFetchError": "Failed to load the troubleshooting guide",
+  "authHelpButton": "View steps",
+  "authHelpLanguageJa": "日本語",
+  "authHelpLanguageEn": "English",
+  "authHelpLanguageZhHans": "Simplified Chinese",
+  "authHelpLanguageKo": "한국어",
+
+  "terminalApp": "Terminal App",
+  "terminalAppSubtitle": "Open projects in an external terminal app",
+  "terminalAppNone": "Not configured",
+  "terminalAppCustom": "Custom",
+  "terminalAppName": "App Name",
+  "terminalUrlTemplate": "URL Template",
+  "terminalUrlTemplateHint": "Variables: host, user, port, project_path",
+  "terminalSshUser": "SSH User",
+  "terminalSshUserHint": "Defaults to machine SSH user",
+  "openInTerminal": "Open in Terminal",
+  "terminalAppNotInstalled": "Could not open terminal app",
+  "terminalAppExperimental": "Preview",
+  "terminalAppExperimentalNote": "This feature is in preview. Presets may not work with all apps or configurations. Contributions for new presets are welcome on GitHub!",
+
+  "sectionSpread": "ENJOYING CC POCKET?",
+  "spreadAppealMessage": "CC Pocket still has a small user base, and continued development is hard without more users. If you like it, a quick store rating or sharing it with someone would really help.",
+  "shareApp": "Share with Friends",
+  "shareAppSubtitle": "Tell your friends & colleagues",
+  "shareText": "CC Pocket: Claude & Codex\nControl your coding agent from your phone \ud83d\udcf1\n#ccpocket\n{url}",
+  "@shareText": {
+    "placeholders": {
+      "url": { "type": "String" }
+    }
+  },
+  "starOnGithub": "Star on GitHub",
+  "rateOnStore": "Rate on App Store",
+  "rateOnStoreAndroid": "Rate on Google Play",
+  "supporterTitle": "Supporter",
+  "supporterMonthlyTitle": "Supporter Monthly",
+  "supporterMonthlyPlusTitle": "Supporter Monthly Plus",
+  "supporterSnackTitle": "Snack Support",
+  "supporterCoffeeTitle": "Buy Me a Drink",
+  "supporterLunchTitle": "Buy Me Lunch",
+  "supporterStatusActive": "Thanks for backing CC Pocket.",
+  "supporterStatusInactive": "CC Pocket stays fully free. You can support ongoing development here.",
+  "supporterStatusLoading": "Checking supporter status...",
+  "supportEntryInactiveTitle": "Support",
+  "supportEntryInactiveSubtitle": "If CC Pocket has been useful, I'd appreciate your support for ongoing development.",
+  "supportEntryOneTimeTitle": "Thanks for your support",
+  "supportEntryOneTimeSubtitle": "Thanks for supporting CC Pocket.",
+  "supportEntryActiveTitle": "Supporting",
+  "supportEntryActiveSubtitle": "Thank you. You’ve been supporting CC Pocket since {date}.",
+  "@supportEntryActiveSubtitle": {
+    "placeholders": {
+      "date": { "type": "String" }
+    }
+  },
+  "supporterMonthlyDescription": "Ongoing support to keep the app improving.",
+  "supporterMonthlyPerkLabel": "Includes alternate app icon perks",
+  "supporterSnackDescription": "If you feel like buying me a snack, I'd really appreciate the support.",
+  "supporterCoffeeDescription": "If you feel like buying me a drink, I'd really appreciate the support.",
+  "supporterLunchDescription": "If you feel like buying me lunch, I'd really appreciate the support.",
+  "supporterBuyButton": "Support",
+  "supporterActiveButton": "Active",
+  "supporterSubscribedButton": "Subscribed",
+  "supporterRestoreButton": "Restore",
+  "supporterRetryButton": "Retry",
+  "supporterProductsUnavailable": "No support options are currently available.",
+  "supporterRestoreNoticeTitle": "About restore",
+  "supporterRestoreNoticeBody": "Restore works with the same Apple ID or Google account. Supporter status does not carry between iOS and Android.",
+  "supporterSummaryTitle": "Your support",
+  "supporterSummarySinceChip": "Since {date}",
+  "@supporterSummarySinceChip": {
+    "placeholders": {
+      "date": { "type": "String" }
+    }
+  },
+  "supporterSummaryStreakChip": "Streak: {duration}",
+  "@supporterSummaryStreakChip": {
+    "placeholders": {
+      "duration": { "type": "String" }
+    }
+  },
+  "supporterSummaryOneTimeCount": "One-time ×{count}",
+  "@supporterSummaryOneTimeCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "supporterSummarySnackCount": "Snacks ×{count}",
+  "@supporterSummarySnackCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "supporterSummaryCoffeeCount": "Drinks ×{count}",
+  "@supporterSummaryCoffeeCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "supporterSummaryLunchCount": "Lunch ×{count}",
+  "@supporterSummaryLunchCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "supporterSummaryLessThanMonth": "<1 month",
+  "supporterSummaryDurationMonths": "{count, plural, =1{1 month} other{{count} months}}",
+  "@supporterSummaryDurationMonths": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "supporterSummarySinceLabel": "Started",
+  "supporterSummaryStreakLabel": "Active for",
+  "supporterSummaryOngoingLabel": "Supporting",
+  "supporterSummarySupportPeriodLabel": "Support period",
+  "supporterImpactTitle": "What support helps make possible",
+  "supporterImpactBody": "If you like CC Pocket, I'd really appreciate your support for ongoing development. The app will continue as free OSS.",
+  "supporterImpactAiTitle": "Development and operating costs",
+  "supporterImpactAiBody": "AI usage, device checks, testing, and shipping all add recurring costs.",
+  "supporterImpactDevicesTitle": "Devices and testing",
+  "supporterImpactDevicesBody": "Keeping the app reliable across phones, tablets, and platform updates.",
+  "supporterImpactMotivationTitle": "Momentum to keep building",
+  "supporterImpactMotivationBody": "Knowing the app is useful makes it much easier to keep shipping new features and improvements.",
+  "supporterPackagesTitle": "Choose a way to support",
+  "supporterSubscriptionGroupTitle": "Monthly support",
+  "supporterSubscriptionGroupBody": "I'd really appreciate ongoing support here.",
+  "supporterOneTimeGroupTitle": "One-time support",
+  "supporterOneTimeGroupBody": "If you feel like buying me lunch or a drink, I’d really appreciate the support.",
+  "supporterPurchaseInfoTitle": "About purchases",
+  "supporterPurchaseInfoBody": "Restore works with the same Apple ID or Google account. Supporter status does not carry between iOS and Android.",
+  "supporterPurchaseInfoLink": "Learn more",
+  "supporterPrivacyPolicyLink": "Privacy Policy",
+  "supporterTermsOfUseLink": "Terms of Use (Apple Standard EULA)",
+  "supporterLearnMoreTitle": "About purchases and support",
+  "supporterLearnMoreBody": "Read why CC Pocket stays free, how restore works, and what Supporter includes.",
+  "supporterOpenLinkFailed": "Could not open the info page.",
+  "supporterPurchaseSuccess": "Thanks for supporting CC Pocket!",
+  "supporterPurchaseCancelled": "Purchase cancelled.",
+  "supporterPurchaseFailed": "Purchase failed: {message}",
+  "@supporterPurchaseFailed": {
+    "placeholders": {
+      "message": { "type": "String" }
+    }
+  },
+  "supporterRestoreSuccess": "Purchases restored.",
+  "supporterRestoreFailed": "Restore failed: {message}",
+  "@supporterRestoreFailed": {
+    "placeholders": {
+      "message": { "type": "String" }
+    }
+  },
+  "gitDiscardAllChangesTitle": "Discard all changes?",
+  "gitDiscardVisibleUnstagedChangesMessage": "Discard all visible unstaged changes.",
+  "gitDiscardChangeTitle": "Discard this change?",
+  "gitDiscardFileUnstagedChangesMessage": "Discard all unstaged changes in this file.",
+  "gitDiscardHunkUnstagedChangesMessage": "Discard unstaged changes in this hunk.",
+  "googleSearchSelectionAction": "Search with Google",
+  "approvalQuestionNotificationTitle": "Question - ccpocket",
+  "approvalRequiredNotificationTitle": "Approval Required - ccpocket",
+  "exitPlanModeNotificationBody": "The generated plan needs your review",
+  "renderErrorFallback": "This content couldn't be displayed."
+}

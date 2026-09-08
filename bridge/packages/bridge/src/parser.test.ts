@@ -1,0 +1,1447 @@
+import { describe, it, expect } from "vitest";
+import { normalizeToolResultContent, parseClientMessage } from "./parser.js";
+
+// ---- normalizeToolResultContent ----
+
+describe("normalizeToolResultContent", () => {
+  it("returns string as-is", () => {
+    expect(normalizeToolResultContent("hello")).toBe("hello");
+  });
+
+  it("returns empty string for empty string input", () => {
+    expect(normalizeToolResultContent("")).toBe("");
+  });
+
+  it("extracts text blocks from array", () => {
+    const content = [
+      { type: "text", text: "line1" },
+      { type: "text", text: "line2" },
+    ];
+    expect(normalizeToolResultContent(content)).toBe("line1\nline2");
+  });
+
+  it("filters out non-text blocks", () => {
+    const content = [
+      { type: "text", text: "keep" },
+      { type: "image", data: "abc" },
+      { type: "text", text: "also keep" },
+    ];
+    expect(normalizeToolResultContent(content)).toBe("keep\nalso keep");
+  });
+
+  it("returns empty string for empty array", () => {
+    expect(normalizeToolResultContent([])).toBe("");
+  });
+
+  it("handles non-string non-array via String()", () => {
+    expect(normalizeToolResultContent(42 as unknown as string)).toBe("42");
+  });
+
+  it("handles null/undefined via fallback", () => {
+    expect(normalizeToolResultContent(null as unknown as string)).toBe("");
+    expect(normalizeToolResultContent(undefined as unknown as string)).toBe("");
+  });
+});
+
+// ---- parseClientMessage ----
+
+describe("parseClientMessage", () => {
+  it("parses start request correlation", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"start","projectPath":"/p","requestId":"start-1"}',
+      ),
+    ).toMatchObject({
+      type: "start",
+      projectPath: "/p",
+      requestId: "start-1",
+    });
+  });
+  it("parses file upload lifecycle messages and rejects invalid policies", () => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "prepare_file_upload",
+          projectPath: "/repo",
+          directoryPath: "docs",
+          fileName: "report.pdf",
+          sizeBytes: 10,
+          conflictPolicy: "rename",
+          requestId: "upload-1",
+        }),
+      ),
+    ).toMatchObject({ type: "prepare_file_upload", sizeBytes: 10 });
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "prepare_file_upload",
+          projectPath: "/repo",
+          directoryPath: "",
+          fileName: "report.pdf",
+          sizeBytes: 10,
+          conflictPolicy: "delete",
+          requestId: "upload-1",
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "finalize_file_upload",
+          uploadToken: "a".repeat(48),
+          sha256: "b".repeat(64),
+          requestId: "upload-1",
+        }),
+      ),
+    ).toMatchObject({ type: "finalize_file_upload" });
+  });
+
+  it("parses client capabilities", () => {
+    const msg = parseClientMessage(
+      '{"type":"client_capabilities","protocolVersion":1,"minimumProtocolVersion":1,"appVersion":"1.72.1","supportedServerMessages":["conversation_queue"]}',
+    );
+    expect(msg).toEqual({
+      type: "client_capabilities",
+      protocolVersion: 1,
+      minimumProtocolVersion: 1,
+      appVersion: "1.72.1",
+      supportedServerMessages: ["conversation_queue"],
+    });
+  });
+
+  it("rejects an invalid client protocol range", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"client_capabilities","protocolVersion":1,"minimumProtocolVersion":2}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"client_capabilities","minimumProtocolVersion":1}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects client capabilities with invalid supported messages", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"client_capabilities","supportedServerMessages":[123]}',
+      ),
+    ).toBeNull();
+  });
+
+  it("parses prompt history sync messages", () => {
+    const msg = parseClientMessage(
+      JSON.stringify({
+        type: "sync_prompt_history",
+        clientId: "phone",
+        clientName: "iPhone",
+        sinceRevision: 3,
+        includeDeleted: true,
+        entries: [{ text: "/test", projectPath: "/repo", totalUseCount: 2 }],
+      }),
+    );
+    expect(msg).toEqual({
+      type: "sync_prompt_history",
+      clientId: "phone",
+      clientName: "iPhone",
+      sinceRevision: 3,
+      includeDeleted: true,
+      entries: [{ text: "/test", projectPath: "/repo", totalUseCount: 2 }],
+    });
+  });
+
+  it("parses prompt history custom Project identity", () => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "record_prompt_history",
+          text: "same prompt",
+          projectPath: "/shared/primary",
+          projectId: "project-a",
+          projectName: "Flutter apps",
+          clientId: "phone",
+          sessionId: "session-a",
+        }),
+      ),
+    ).toMatchObject({
+      projectId: "project-a",
+      projectName: "Flutter apps",
+    });
+  });
+
+  it("rejects prompt history entries without text", () => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "import_prompt_history_v1",
+          clientId: "phone",
+          entries: [{ projectPath: "/repo" }],
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects migration import modes because v1 import is replace-only", () => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "import_prompt_history_v1",
+          clientId: "phone",
+          mode: "merge",
+          entries: [{ text: "/test", projectPath: "/repo" }],
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("parses start message", () => {
+    const msg = parseClientMessage('{"type":"start","projectPath":"/tmp/foo"}');
+    expect(msg).toEqual({ type: "start", projectPath: "/tmp/foo" });
+  });
+
+  it("parses start with optional fields", () => {
+    const msg = parseClientMessage(
+      '{"type":"start","projectPath":"/p","sessionId":"s1","continue":true,"permissionMode":"acceptEdits","profile":"ccpocket","approvalPolicy":"on-request","approvalsReviewer":"auto_review","codexPermissionsMode":"autoReview","additionalWritableRoots":["/tmp/extra"],"autoRename":true}',
+    );
+    expect(msg).toEqual({
+      type: "start",
+      projectPath: "/p",
+      sessionId: "s1",
+      continue: true,
+      permissionMode: "acceptEdits",
+      profile: "ccpocket",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+      codexPermissionsMode: "autoReview",
+      additionalWritableRoots: ["/tmp/extra"],
+      autoRename: true,
+    });
+  });
+
+  it("parses Project session identity", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"start","projectPath":"/p","projectId":"project-1","workspaceKind":"project"}',
+      ),
+    ).toMatchObject({ projectId: "project-1", workspaceKind: "project" });
+  });
+
+  it("parses auto permission mode", () => {
+    const msg = parseClientMessage(
+      '{"type":"set_permission_mode","mode":"auto","sessionId":"s1"}',
+    );
+    expect(msg).toEqual({
+      type: "set_permission_mode",
+      mode: "auto",
+      sessionId: "s1",
+    });
+  });
+
+  it("parses start with advanced Claude options", () => {
+    const msg = parseClientMessage(
+      '{"type":"start","projectPath":"/p","model":"claude-sonnet","effort":"xhigh","maxTurns":5,"maxBudgetUsd":1.5,"fallbackModel":"claude-haiku","forkSession":true,"persistSession":false}',
+    );
+    expect(msg).toEqual({
+      type: "start",
+      projectPath: "/p",
+      model: "claude-sonnet",
+      effort: "xhigh",
+      maxTurns: 5,
+      maxBudgetUsd: 1.5,
+      fallbackModel: "claude-haiku",
+      forkSession: true,
+      persistSession: false,
+    });
+  });
+
+  it("rejects start with invalid maxTurns", () => {
+    expect(
+      parseClientMessage('{"type":"start","projectPath":"/p","maxTurns":0}'),
+    ).toBeNull();
+  });
+
+  it("rejects start without projectPath", () => {
+    expect(parseClientMessage('{"type":"start"}')).toBeNull();
+  });
+
+  it.each([
+    ["provider", "other"],
+    ["sandboxMode", 1],
+    ["model", 1],
+    ["effort", "turbo"],
+    ["maxTurns", 0],
+    ["maxBudgetUsd", -1],
+    ["fallbackModel", false],
+    ["forkSession", "true"],
+    ["persistSession", 1],
+    ["profile", false],
+    ["modelReasoningEffort", ""],
+    ["serviceTier", ""],
+    ["networkAccessEnabled", "true"],
+    ["permissionMode", "unrestricted"],
+    ["executionMode", "unrestricted"],
+    ["approvalPolicy", "always"],
+    ["approvalsReviewer", "bot"],
+    ["codexPermissionsMode", "reviewEverything"],
+    ["planMode", "true"],
+    ["webSearchMode", "auto"],
+    ["additionalWritableRoots", [42]],
+  ])("rejects invalid shared session option %s", (field, value) => {
+    const start = { type: "start", projectPath: "/p", [field]: value };
+    const resume = {
+      type: "resume_session",
+      sessionId: "s1",
+      projectPath: "/p",
+      [field]: value,
+    };
+
+    expect(parseClientMessage(JSON.stringify(start))).toBeNull();
+    expect(parseClientMessage(JSON.stringify(resume))).toBeNull();
+  });
+
+  it.each([
+    ["sessionId", 1],
+    ["continue", "true"],
+    ["useWorktree", "true"],
+    ["worktreeBranch", false],
+    ["existingWorktreePath", false],
+    ["autoRename", "true"],
+  ])("rejects invalid start option %s", (field, value) => {
+    expect(
+      parseClientMessage(
+        JSON.stringify({ type: "start", projectPath: "/p", [field]: value }),
+      ),
+    ).toBeNull();
+  });
+
+  it("parses input message", () => {
+    const msg = parseClientMessage('{"type":"input","text":"hello"}');
+    expect(msg).toEqual({ type: "input", text: "hello" });
+  });
+
+  it("parses input strict ack metadata", () => {
+    const msg = parseClientMessage(
+      '{"type":"input","sessionId":"s1","text":"hello","clientMessageId":"cm-1","baseSeq":42}',
+    );
+    expect(msg).toEqual({
+      type: "input",
+      sessionId: "s1",
+      text: "hello",
+      clientMessageId: "cm-1",
+      baseSeq: 42,
+    });
+  });
+
+  it("rejects input without text", () => {
+    expect(parseClientMessage('{"type":"input"}')).toBeNull();
+  });
+
+  it("rejects input with invalid strict ack metadata", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"input","text":"hello","clientMessageId":1}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage('{"type":"input","text":"hello","baseSeq":-1}'),
+    ).toBeNull();
+  });
+
+  it("parses push_register message", () => {
+    const msg = parseClientMessage(
+      '{"type":"push_register","token":"t1","platform":"ios","requestId":"req-1"}',
+    );
+    expect(msg).toEqual({
+      type: "push_register",
+      token: "t1",
+      platform: "ios",
+      requestId: "req-1",
+    });
+  });
+
+  it("rejects push_register with invalid platform", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"push_register","token":"t1","platform":"desktop"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects push_register with invalid requestId", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"push_register","token":"t1","platform":"ios","requestId":1}',
+      ),
+    ).toBeNull();
+  });
+
+  it("parses push_unregister message", () => {
+    const msg = parseClientMessage('{"type":"push_unregister","token":"t1"}');
+    expect(msg).toEqual({ type: "push_unregister", token: "t1" });
+  });
+
+  it("rejects push_unregister without token", () => {
+    expect(parseClientMessage('{"type":"push_unregister"}')).toBeNull();
+  });
+
+  it("parses set_permission_mode message", () => {
+    const msg = parseClientMessage(
+      '{"type":"set_permission_mode","mode":"plan","sessionId":"s1","approvalsReviewer":"guardian_subagent","codexPermissionsMode":"custom"}',
+    );
+    expect(msg).toEqual({
+      type: "set_permission_mode",
+      mode: "plan",
+      sessionId: "s1",
+      approvalsReviewer: "guardian_subagent",
+      codexPermissionsMode: "custom",
+    });
+  });
+
+  it("rejects set_permission_mode with invalid mode", () => {
+    expect(
+      parseClientMessage('{"type":"set_permission_mode","mode":"unsupported"}'),
+    ).toBeNull();
+  });
+
+  it("parses set_codex_model message", () => {
+    const msg = parseClientMessage(
+      '{"type":"set_codex_model","model":"gpt-5.4-mini","modelReasoningEffort":"low","sessionId":"s1"}',
+    );
+    expect(msg).toEqual({
+      type: "set_codex_model",
+      model: "gpt-5.4-mini",
+      modelReasoningEffort: "low",
+      sessionId: "s1",
+    });
+  });
+
+  it("parses GPT-5.6 max and ultra reasoning efforts", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"start","projectPath":"/p","provider":"codex","model":"gpt-5.6-sol","modelReasoningEffort":"ultra"}',
+      ),
+    ).toMatchObject({ modelReasoningEffort: "ultra" });
+    expect(
+      parseClientMessage(
+        '{"type":"set_codex_model","model":"gpt-5.6-luna","modelReasoningEffort":"max"}',
+      ),
+    ).toMatchObject({ modelReasoningEffort: "max" });
+  });
+
+  it("accepts model-advertised reasoning effort strings", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"set_codex_model","model":"future-model","modelReasoningEffort":"future-tier"}',
+      ),
+    ).toMatchObject({ modelReasoningEffort: "future-tier" });
+  });
+
+  it("rejects set_codex_model with invalid fields", () => {
+    expect(parseClientMessage('{"type":"set_codex_model"}')).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"set_codex_model","model":"gpt-5.4-mini","modelReasoningEffort":""}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"set_codex_model","model":"gpt-5.4-mini","modelReasoningEffort":1}',
+      ),
+    ).toBeNull();
+  });
+
+  it("parses set_codex_speed messages", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"set_codex_speed","serviceTier":"fast","sessionId":"s1"}',
+      ),
+    ).toEqual({
+      type: "set_codex_speed",
+      serviceTier: "fast",
+      sessionId: "s1",
+    });
+    expect(
+      parseClientMessage('{"type":"set_codex_speed","serviceTier":""}'),
+    ).toBeNull();
+  });
+
+  it("parses Codex goal messages", () => {
+    expect(
+      parseClientMessage('{"type":"get_goal","sessionId":"s1"}'),
+    ).toEqual({ type: "get_goal", sessionId: "s1" });
+    expect(
+      parseClientMessage(
+        '{"type":"set_goal","sessionId":"s1","objective":"Ship Goal UI","status":"active"}',
+      ),
+    ).toEqual({
+      type: "set_goal",
+      sessionId: "s1",
+      objective: "Ship Goal UI",
+      status: "active",
+    });
+    expect(
+      parseClientMessage(
+        '{"type":"set_goal","sessionId":"s1","status":"paused"}',
+      ),
+    ).toEqual({ type: "set_goal", sessionId: "s1", status: "paused" });
+    expect(
+      parseClientMessage('{"type":"clear_goal","sessionId":"s1"}'),
+    ).toEqual({ type: "clear_goal", sessionId: "s1" });
+  });
+
+  it("rejects invalid Codex goal messages", () => {
+    expect(parseClientMessage('{"type":"get_goal"}')).toBeNull();
+    expect(
+      parseClientMessage('{"type":"set_goal","sessionId":"s1"}'),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"set_goal","sessionId":"s1","objective":"   "}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"set_goal","sessionId":"s1","status":"unknown"}',
+      ),
+    ).toBeNull();
+    expect(parseClientMessage('{"type":"clear_goal"}')).toBeNull();
+  });
+
+  it("rejects invalid approvalsReviewer", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"start","projectPath":"/p","approvalsReviewer":"bot"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects invalid codexPermissionsMode", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"start","projectPath":"/p","codexPermissionsMode":"reviewEverything"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"set_permission_mode","mode":"default","codexPermissionsMode":"reviewEverything"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects invalid additionalWritableRoots", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"start","projectPath":"/p","additionalWritableRoots":"/tmp"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"resume_session","sessionId":"s3","projectPath":"/p","additionalWritableRoots":[42]}',
+      ),
+    ).toBeNull();
+  });
+
+  it("parses approve message", () => {
+    const msg = parseClientMessage('{"type":"approve","id":"tu1"}');
+    expect(msg).toEqual({ type: "approve", id: "tu1" });
+  });
+
+  it("rejects approve without id", () => {
+    expect(parseClientMessage('{"type":"approve"}')).toBeNull();
+  });
+
+  it("parses approve_always message", () => {
+    const msg = parseClientMessage('{"type":"approve_always","id":"tu2"}');
+    expect(msg).toEqual({ type: "approve_always", id: "tu2" });
+  });
+
+  it("rejects approve_always without id", () => {
+    expect(parseClientMessage('{"type":"approve_always"}')).toBeNull();
+  });
+
+  it("parses reject message", () => {
+    const msg = parseClientMessage(
+      '{"type":"reject","id":"tu3","message":"no"}',
+    );
+    expect(msg).toEqual({ type: "reject", id: "tu3", message: "no" });
+  });
+
+  it("rejects reject without id", () => {
+    expect(parseClientMessage('{"type":"reject"}')).toBeNull();
+  });
+
+  it("parses answer message", () => {
+    const msg = parseClientMessage(
+      '{"type":"answer","toolUseId":"tu4","result":"yes"}',
+    );
+    expect(msg).toEqual({ type: "answer", toolUseId: "tu4", result: "yes" });
+  });
+
+  it("rejects answer without toolUseId", () => {
+    expect(parseClientMessage('{"type":"answer","result":"yes"}')).toBeNull();
+  });
+
+  it("rejects answer without result", () => {
+    expect(
+      parseClientMessage('{"type":"answer","toolUseId":"tu4"}'),
+    ).toBeNull();
+  });
+
+  it("parses install_tool_suggestion message", () => {
+    const msg = parseClientMessage(
+      '{"type":"install_tool_suggestion","toolUseId":"approval-0","sessionId":"session-1"}',
+    );
+    expect(msg).toEqual({
+      type: "install_tool_suggestion",
+      toolUseId: "approval-0",
+      sessionId: "session-1",
+    });
+  });
+
+  it("rejects install_tool_suggestion without toolUseId", () => {
+    expect(
+      parseClientMessage('{"type":"install_tool_suggestion"}'),
+    ).toBeNull();
+  });
+
+  it("parses list_sessions message", () => {
+    const msg = parseClientMessage('{"type":"list_sessions"}');
+    expect(msg).toEqual({ type: "list_sessions" });
+  });
+
+  it("parses stop_session message", () => {
+    const msg = parseClientMessage('{"type":"stop_session","sessionId":"s1"}');
+    expect(msg).toEqual({ type: "stop_session", sessionId: "s1" });
+  });
+
+  it("rejects stop_session without sessionId", () => {
+    expect(parseClientMessage('{"type":"stop_session"}')).toBeNull();
+  });
+
+  it("parses get_history message", () => {
+    const msg = parseClientMessage('{"type":"get_history","sessionId":"s2"}');
+    expect(msg).toEqual({ type: "get_history", sessionId: "s2" });
+  });
+
+  it("parses get_session_context message", () => {
+    const msg = parseClientMessage(
+      '{"type":"get_session_context","sessionId":"s2"}',
+    );
+    expect(msg).toEqual({ type: "get_session_context", sessionId: "s2" });
+  });
+
+  it("rejects get_session_context without sessionId", () => {
+    expect(parseClientMessage('{"type":"get_session_context"}')).toBeNull();
+  });
+
+  it("parses resolve_session_link message", () => {
+    const msg = parseClientMessage(
+      '{"type":"resolve_session_link","requestId":"req-1","sessionId":"session-1","provider":"claude"}',
+    );
+    expect(msg).toEqual({
+      type: "resolve_session_link",
+      requestId: "req-1",
+      sessionId: "session-1",
+      provider: "claude",
+    });
+  });
+
+  it("rejects resolve_session_link without requestId", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"resolve_session_link","sessionId":"session-1"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects get_history without sessionId", () => {
+    expect(parseClientMessage('{"type":"get_history"}')).toBeNull();
+  });
+
+  it("parses get_history_delta message", () => {
+    const msg = parseClientMessage(
+      '{"type":"get_history_delta","sessionId":"s2","sinceSeq":12}',
+    );
+    expect(msg).toEqual({
+      type: "get_history_delta",
+      sessionId: "s2",
+      sinceSeq: 12,
+    });
+  });
+
+  it("rejects get_history_delta without valid sinceSeq", () => {
+    expect(
+      parseClientMessage('{"type":"get_history_delta","sessionId":"s2"}'),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"get_history_delta","sessionId":"s2","sinceSeq":-1}',
+      ),
+    ).toBeNull();
+  });
+
+  it("parses list_recent_sessions message", () => {
+    const msg = parseClientMessage('{"type":"list_recent_sessions"}');
+    expect(msg).toEqual({ type: "list_recent_sessions" });
+  });
+
+  it("parses list_recent_sessions with workspace filters", () => {
+    const msg = parseClientMessage(
+      '{"type":"list_recent_sessions","limit":10,"offset":20,"projectPath":"/tmp/project","projectId":"project-1","workspaceKind":"project","requestScope":"project","requestId":"recent-1","provider":"codex","namedOnly":true,"searchQuery":"needle"}',
+    );
+    expect(msg).toEqual({
+      type: "list_recent_sessions",
+      limit: 10,
+      offset: 20,
+      projectPath: "/tmp/project",
+      projectId: "project-1",
+      workspaceKind: "project",
+      requestScope: "project",
+      requestId: "recent-1",
+      provider: "codex",
+      namedOnly: true,
+      searchQuery: "needle",
+    });
+  });
+
+  it("parses Project CRUD messages", () => {
+    expect(parseClientMessage('{"type":"list_projects"}')).toEqual({
+      type: "list_projects",
+    });
+    expect(
+      parseClientMessage(
+        '{"type":"create_project","name":"App","rootPaths":["/app","/api"]}',
+      ),
+    ).toMatchObject({ name: "App", rootPaths: ["/app", "/api"] });
+    expect(
+      parseClientMessage(
+        '{"type":"update_project","projectId":"p1","name":"App 2","rootPaths":["/app"]}',
+      ),
+    ).toMatchObject({ projectId: "p1", name: "App 2" });
+    expect(
+      parseClientMessage('{"type":"remove_project","projectId":"p1"}'),
+    ).toMatchObject({ projectId: "p1" });
+  });
+
+  it("rejects invalid Project mutations", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"create_project","name":"App","rootPaths":[]}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"update_project","projectId":"p1","name":" ","rootPaths":["/app"]}',
+      ),
+    ).toBeNull();
+    expect(parseClientMessage('{"type":"remove_project"}')).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"start","projectPath":"/tasks","workspaceKind":"projectless"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"set_projectless_root","projectlessRoot":"/tasks"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects invalid list_recent_sessions options", () => {
+    const invalidMessages = [
+      '{"type":"list_recent_sessions","limit":0}',
+      '{"type":"list_recent_sessions","limit":501}',
+      '{"type":"list_recent_sessions","limit":1.5}',
+      '{"type":"list_recent_sessions","offset":-1}',
+      '{"type":"list_recent_sessions","offset":100001}',
+      '{"type":"list_recent_sessions","offset":1.5}',
+      '{"type":"list_recent_sessions","projectPath":42}',
+      '{"type":"list_recent_sessions","requestScope":"global"}',
+      '{"type":"list_recent_sessions","requestId":42}',
+      '{"type":"list_recent_sessions","requestId":""}',
+      '{"type":"list_recent_sessions","requestId":"   "}',
+      JSON.stringify({
+        type: "list_recent_sessions",
+        requestId: "r".repeat(129),
+      }),
+      '{"type":"list_recent_sessions","provider":"other"}',
+      '{"type":"list_recent_sessions","namedOnly":"true"}',
+      '{"type":"list_recent_sessions","searchQuery":42}',
+    ];
+
+    for (const raw of invalidMessages) {
+      expect(parseClientMessage(raw), raw).toBeNull();
+    }
+  });
+
+  it("parses resume_session message", () => {
+    const msg = parseClientMessage(
+      '{"type":"resume_session","sessionId":"s3","projectPath":"/p"}',
+    );
+    expect(msg).toEqual({
+      type: "resume_session",
+      sessionId: "s3",
+      projectPath: "/p",
+    });
+  });
+
+  it("parses resume_session with provider", () => {
+    const msg = parseClientMessage(
+      '{"type":"resume_session","sessionId":"s3","projectPath":"/p","provider":"codex","profile":"ccpocket","approvalsReviewer":"auto_review","additionalWritableRoots":["/tmp/extra"],"resumeRequestId":"link-request-1"}',
+    );
+    expect(msg).toEqual({
+      type: "resume_session",
+      sessionId: "s3",
+      projectPath: "/p",
+      provider: "codex",
+      profile: "ccpocket",
+      approvalsReviewer: "auto_review",
+      additionalWritableRoots: ["/tmp/extra"],
+      resumeRequestId: "link-request-1",
+    });
+  });
+
+  it("rejects resume_session with a non-string resumeRequestId", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"resume_session","sessionId":"s3","projectPath":"/p","resumeRequestId":42}',
+      ),
+    ).toBeNull();
+  });
+
+  it("parses resume_session with advanced Claude options", () => {
+    const msg = parseClientMessage(
+      '{"type":"resume_session","sessionId":"s3","projectPath":"/p","model":"claude-sonnet","effort":"medium","maxTurns":3,"maxBudgetUsd":0.8,"fallbackModel":"claude-haiku","forkSession":true,"persistSession":false}',
+    );
+    expect(msg).toEqual({
+      type: "resume_session",
+      sessionId: "s3",
+      projectPath: "/p",
+      model: "claude-sonnet",
+      effort: "medium",
+      maxTurns: 3,
+      maxBudgetUsd: 0.8,
+      fallbackModel: "claude-haiku",
+      forkSession: true,
+      persistSession: false,
+    });
+  });
+
+  it("parses resume_session with xhigh effort", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"resume_session","sessionId":"s3","projectPath":"/p","effort":"xhigh"}',
+      ),
+    ).toEqual({
+      type: "resume_session",
+      sessionId: "s3",
+      projectPath: "/p",
+      effort: "xhigh",
+    });
+  });
+
+  it("rejects resume_session without sessionId", () => {
+    expect(
+      parseClientMessage('{"type":"resume_session","projectPath":"/p"}'),
+    ).toBeNull();
+  });
+
+  it("rejects resume_session without projectPath", () => {
+    expect(
+      parseClientMessage('{"type":"resume_session","sessionId":"s3"}'),
+    ).toBeNull();
+  });
+
+  it("rejects resume_session with invalid provider", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"resume_session","sessionId":"s3","projectPath":"/p","provider":"foo"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("parses correlated list_gallery metadata", () => {
+    const msg = parseClientMessage(
+      '{"type":"list_gallery","projectPath":"/p","project":"/p","sessionId":"session-1","requestId":"gallery-1"}',
+    );
+    expect(msg).toEqual({
+      type: "list_gallery",
+      projectPath: "/p",
+      project: "/p",
+      sessionId: "session-1",
+      requestId: "gallery-1",
+    });
+  });
+
+  it("rejects invalid list_gallery correlation metadata", () => {
+    const invalidMessages = [
+      '{"type":"list_gallery","projectPath":42}',
+      '{"type":"list_gallery","projectPath":""}',
+      '{"type":"list_gallery","project":"/legacy","projectPath":"/canonical"}',
+      '{"type":"list_gallery","sessionId":42}',
+      '{"type":"list_gallery","sessionId":""}',
+      '{"type":"list_gallery","requestId":42}',
+      '{"type":"list_gallery","requestId":""}',
+      JSON.stringify({ type: "list_gallery", projectPath: "p".repeat(4097) }),
+      JSON.stringify({ type: "list_gallery", sessionId: "s".repeat(513) }),
+      JSON.stringify({ type: "list_gallery", requestId: "r".repeat(129) }),
+      '{"type":"list_gallery","unexpected":true}',
+    ];
+
+    for (const raw of invalidMessages) {
+      expect(parseClientMessage(raw), raw).toBeNull();
+    }
+  });
+
+  it("parses list_files message", () => {
+    const msg = parseClientMessage('{"type":"list_files","projectPath":"/p"}');
+    expect(msg).toEqual({ type: "list_files", projectPath: "/p" });
+  });
+
+  it("parses scoped list_files request metadata", () => {
+    const msg = parseClientMessage(
+      '{"type":"list_files","projectPath":"/p","requestId":"files-1"}',
+    );
+    expect(msg).toEqual({
+      type: "list_files",
+      projectPath: "/p",
+      requestId: "files-1",
+    });
+  });
+
+  it("parses read_media_file message", () => {
+    const msg = parseClientMessage(
+      '{"type":"read_media_file","projectPath":"/p","filePath":"output.mp4"}',
+    );
+    expect(msg).toEqual({
+      type: "read_media_file",
+      projectPath: "/p",
+      filePath: "output.mp4",
+    });
+  });
+
+  it("parses prepare_file_download message", () => {
+    const msg = parseClientMessage(
+      '{"type":"prepare_file_download","projectPath":"/p","filePath":"build/report.pdf","requestId":"download-1"}',
+    );
+    expect(msg).toEqual({
+      type: "prepare_file_download",
+      projectPath: "/p",
+      filePath: "build/report.pdf",
+      requestId: "download-1",
+    });
+  });
+
+  it("rejects invalid prepare_file_download messages", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"prepare_file_download","projectPath":"/p","filePath":"report.pdf"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"prepare_file_download","projectPath":"/p","filePath":" ","requestId":"download-1"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"prepare_file_download","projectPath":"/p","filePath":"report.pdf","requestId":"download-1","extra":true}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects list_files without projectPath", () => {
+    expect(parseClientMessage('{"type":"list_files"}')).toBeNull();
+  });
+
+  it("parses list_directory message", () => {
+    const msg = parseClientMessage(
+      '{"type":"list_directory","path":"/workspace","requestId":"dir-1","includeHidden":true}',
+    );
+    expect(msg).toEqual({
+      type: "list_directory",
+      path: "/workspace",
+      requestId: "dir-1",
+      includeHidden: true,
+    });
+  });
+
+  it("rejects list_directory without a non-empty path", () => {
+    expect(parseClientMessage('{"type":"list_directory"}')).toBeNull();
+    expect(
+      parseClientMessage('{"type":"list_directory","path":"   "}'),
+    ).toBeNull();
+    expect(
+      parseClientMessage('{"type":"list_directory","path":123}'),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"list_directory","path":"/workspace","requestId":123}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"list_directory","path":"/workspace","includeHidden":"yes"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects list_directory with unknown fields", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"list_directory","path":"/workspace","includeFiles":true}',
+      ),
+    ).toBeNull();
+  });
+
+  it("parses interrupt message", () => {
+    const msg = parseClientMessage('{"type":"interrupt"}');
+    expect(msg).toEqual({ type: "interrupt" });
+  });
+
+  it("parses steer_queued_input message", () => {
+    const msg = parseClientMessage(
+      '{"type":"steer_queued_input","sessionId":"s1","itemId":"q1"}',
+    );
+    expect(msg).toEqual({
+      type: "steer_queued_input",
+      sessionId: "s1",
+      itemId: "q1",
+    });
+  });
+
+  it("returns null for unknown type", () => {
+    expect(parseClientMessage('{"type":"unknown_type"}')).toBeNull();
+  });
+
+  it("returns null for missing type", () => {
+    expect(parseClientMessage('{"foo":"bar"}')).toBeNull();
+  });
+
+  it("returns null for non-string type", () => {
+    expect(parseClientMessage('{"type":123}')).toBeNull();
+  });
+
+  it("returns null for invalid JSON", () => {
+    expect(parseClientMessage("not json")).toBeNull();
+  });
+
+  it("parses list_project_history message", () => {
+    const msg = parseClientMessage('{"type":"list_project_history"}');
+    expect(msg).toEqual({ type: "list_project_history" });
+  });
+
+  it("parses get_debug_bundle message", () => {
+    const msg = parseClientMessage(
+      '{"type":"get_debug_bundle","sessionId":"s1","traceLimit":120,"includeDiff":false}',
+    );
+    expect(msg).toEqual({
+      type: "get_debug_bundle",
+      sessionId: "s1",
+      traceLimit: 120,
+      includeDiff: false,
+    });
+  });
+
+  it("rejects get_debug_bundle without sessionId", () => {
+    expect(parseClientMessage('{"type":"get_debug_bundle"}')).toBeNull();
+  });
+
+  it("parses remove_project_history message", () => {
+    const msg = parseClientMessage(
+      '{"type":"remove_project_history","projectPath":"/p"}',
+    );
+    expect(msg).toEqual({ type: "remove_project_history", projectPath: "/p" });
+  });
+
+  it("rejects remove_project_history without projectPath", () => {
+    expect(parseClientMessage('{"type":"remove_project_history"}')).toBeNull();
+  });
+
+  it("parses approve with clearContext: true", () => {
+    const msg = parseClientMessage(
+      '{"type":"approve","id":"tu1","clearContext":true}',
+    );
+    expect(msg).toEqual({
+      type: "approve",
+      id: "tu1",
+      clearContext: true,
+    });
+  });
+
+  it("parses approve without clearContext (backward compat)", () => {
+    const msg = parseClientMessage('{"type":"approve","id":"tu1"}');
+    expect(msg).not.toBeNull();
+    expect((msg as Record<string, unknown>).clearContext).toBeUndefined();
+  });
+
+  // ---- rewind ----
+
+  it("parses rewind with mode=both", () => {
+    const msg = parseClientMessage(
+      '{"type":"rewind","sessionId":"s1","targetUuid":"uuid-abc","mode":"both"}',
+    );
+    expect(msg).toEqual({
+      type: "rewind",
+      sessionId: "s1",
+      targetUuid: "uuid-abc",
+      mode: "both",
+    });
+  });
+
+  it("parses rewind with mode=conversation", () => {
+    const msg = parseClientMessage(
+      '{"type":"rewind","sessionId":"s1","targetUuid":"uuid-abc","mode":"conversation"}',
+    );
+    expect(msg).toEqual({
+      type: "rewind",
+      sessionId: "s1",
+      targetUuid: "uuid-abc",
+      mode: "conversation",
+    });
+  });
+
+  it("parses rewind with mode=code", () => {
+    const msg = parseClientMessage(
+      '{"type":"rewind","sessionId":"s1","targetUuid":"uuid-abc","mode":"code"}',
+    );
+    expect(msg).toEqual({
+      type: "rewind",
+      sessionId: "s1",
+      targetUuid: "uuid-abc",
+      mode: "code",
+    });
+  });
+
+  it("rejects rewind with invalid mode", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"rewind","sessionId":"s1","targetUuid":"uuid-abc","mode":"invalid"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects rewind without sessionId", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"rewind","targetUuid":"uuid-abc","mode":"both"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects rewind without targetUuid", () => {
+    expect(
+      parseClientMessage('{"type":"rewind","sessionId":"s1","mode":"both"}'),
+    ).toBeNull();
+  });
+
+  // ---- rewind_dry_run ----
+
+  it("parses rewind_dry_run message", () => {
+    const msg = parseClientMessage(
+      '{"type":"rewind_dry_run","sessionId":"s1","targetUuid":"uuid-abc"}',
+    );
+    expect(msg).toEqual({
+      type: "rewind_dry_run",
+      sessionId: "s1",
+      targetUuid: "uuid-abc",
+    });
+  });
+
+  it("rejects rewind_dry_run without sessionId", () => {
+    expect(
+      parseClientMessage('{"type":"rewind_dry_run","targetUuid":"uuid-abc"}'),
+    ).toBeNull();
+  });
+
+  it("rejects rewind_dry_run without targetUuid", () => {
+    expect(
+      parseClientMessage('{"type":"rewind_dry_run","sessionId":"s1"}'),
+    ).toBeNull();
+  });
+
+  it("parses fork message", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"fork","sessionId":"s1","targetUuid":"codex:user-turn:1"}',
+      ),
+    ).toEqual({
+      type: "fork",
+      sessionId: "s1",
+      targetUuid: "codex:user-turn:1",
+    });
+  });
+
+  // ---- Git Operations (Phase 1-3) ----
+
+  // git_stage
+  it("parses git_stage with files", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_stage","projectPath":"/p","files":["a.txt","b.txt"]}',
+    );
+    expect(msg).toEqual({
+      type: "git_stage",
+      projectPath: "/p",
+      files: ["a.txt", "b.txt"],
+    });
+  });
+
+  it("parses git_stage with hunks", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_stage","projectPath":"/p","hunks":[{"file":"a.txt","hunkIndex":0}]}',
+    );
+    expect(msg).toEqual({
+      type: "git_stage",
+      projectPath: "/p",
+      hunks: [{ file: "a.txt", hunkIndex: 0 }],
+    });
+  });
+
+  it("parses git_stage with both files and hunks", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_stage","projectPath":"/p","files":["a.txt"],"hunks":[{"file":"b.txt","hunkIndex":1}]}',
+    );
+    expect(msg).not.toBeNull();
+  });
+
+  it("rejects git_stage without projectPath", () => {
+    expect(
+      parseClientMessage('{"type":"git_stage","files":["a.txt"]}'),
+    ).toBeNull();
+  });
+
+  it("rejects git_stage without files or hunks", () => {
+    expect(
+      parseClientMessage('{"type":"git_stage","projectPath":"/p"}'),
+    ).toBeNull();
+  });
+
+  it("rejects git_stage with invalid hunk shape", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"git_stage","projectPath":"/p","hunks":[{"file":123}]}',
+      ),
+    ).toBeNull();
+  });
+
+  // git_unstage
+  it("parses git_unstage", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_unstage","projectPath":"/p","files":["a.txt"]}',
+    );
+    expect(msg).toEqual({
+      type: "git_unstage",
+      projectPath: "/p",
+      files: ["a.txt"],
+    });
+  });
+
+  it("rejects git_unstage without projectPath", () => {
+    expect(
+      parseClientMessage('{"type":"git_unstage","files":["a.txt"]}'),
+    ).toBeNull();
+  });
+
+  it("parses git_unstage_hunks", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_unstage_hunks","projectPath":"/p","hunks":[{"file":"a.txt","hunkIndex":0}]}',
+    );
+    expect(msg).toEqual({
+      type: "git_unstage_hunks",
+      projectPath: "/p",
+      hunks: [{ file: "a.txt", hunkIndex: 0 }],
+    });
+  });
+
+  it("rejects git_unstage_hunks without hunks", () => {
+    expect(
+      parseClientMessage('{"type":"git_unstage_hunks","projectPath":"/p"}'),
+    ).toBeNull();
+  });
+
+  // git_commit
+  it("parses git_commit with message", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_commit","projectPath":"/p","message":"feat: add feature"}',
+    );
+    expect(msg).toEqual({
+      type: "git_commit",
+      projectPath: "/p",
+      message: "feat: add feature",
+    });
+  });
+
+  it("parses git_commit with autoGenerate", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_commit","projectPath":"/p","autoGenerate":true}',
+    );
+    expect(msg).toEqual({
+      type: "git_commit",
+      projectPath: "/p",
+      autoGenerate: true,
+    });
+  });
+
+  it("parses git_commit with sessionId", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_commit","projectPath":"/p","sessionId":"s-1","autoGenerate":true}',
+    );
+    expect(msg).toEqual({
+      type: "git_commit",
+      projectPath: "/p",
+      sessionId: "s-1",
+      autoGenerate: true,
+    });
+  });
+
+  it("parses git_commit with request correlation metadata", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_commit","projectPath":"/p","message":"fix: scope result","requestId":"commit-1"}',
+    );
+    expect(msg).toEqual({
+      type: "git_commit",
+      projectPath: "/p",
+      message: "fix: scope result",
+      requestId: "commit-1",
+    });
+  });
+
+  it("rejects git_commit with unknown fields", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"git_commit","projectPath":"/p","message":"feat: add feature","forceLease":true}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects git_commit without projectPath", () => {
+    expect(
+      parseClientMessage('{"type":"git_commit","message":"x"}'),
+    ).toBeNull();
+  });
+
+  // git_push
+  it("parses git_push", () => {
+    const msg = parseClientMessage('{"type":"git_push","projectPath":"/p"}');
+    expect(msg).toEqual({ type: "git_push", projectPath: "/p" });
+  });
+
+  it("rejects git_push with removed forceLease field", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"git_push","projectPath":"/p","forceLease":true}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects git_push without projectPath", () => {
+    expect(parseClientMessage('{"type":"git_push"}')).toBeNull();
+  });
+
+  // git_branches
+  it("parses git_branches", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_branches","projectPath":"/p"}',
+    );
+    expect(msg).toEqual({ type: "git_branches", projectPath: "/p" });
+  });
+
+  it("rejects git_branches with removed query field", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"git_branches","projectPath":"/p","query":"feat"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects git_branches without projectPath", () => {
+    expect(parseClientMessage('{"type":"git_branches"}')).toBeNull();
+  });
+
+  // git_create_branch
+  it("parses git_create_branch", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_create_branch","projectPath":"/p","name":"feat/x","checkout":true}',
+    );
+    expect(msg).toEqual({
+      type: "git_create_branch",
+      projectPath: "/p",
+      name: "feat/x",
+      checkout: true,
+    });
+  });
+
+  it("rejects git_create_branch without name", () => {
+    expect(
+      parseClientMessage('{"type":"git_create_branch","projectPath":"/p"}'),
+    ).toBeNull();
+  });
+
+  it("rejects git_create_branch without projectPath", () => {
+    expect(
+      parseClientMessage('{"type":"git_create_branch","name":"feat/x"}'),
+    ).toBeNull();
+  });
+
+  // git_checkout_branch
+  it("parses git_checkout_branch", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_checkout_branch","projectPath":"/p","branch":"main"}',
+    );
+    expect(msg).toEqual({
+      type: "git_checkout_branch",
+      projectPath: "/p",
+      branch: "main",
+    });
+  });
+
+  it("rejects git_checkout_branch without branch", () => {
+    expect(
+      parseClientMessage('{"type":"git_checkout_branch","projectPath":"/p"}'),
+    ).toBeNull();
+  });
+
+  it("rejects git_checkout_branch without projectPath", () => {
+    expect(
+      parseClientMessage('{"type":"git_checkout_branch","branch":"main"}'),
+    ).toBeNull();
+  });
+
+  // git_revert_file
+  it("parses git_revert_file", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_revert_file","projectPath":"/p","files":["a.txt"]}',
+    );
+    expect(msg).toEqual({
+      type: "git_revert_file",
+      projectPath: "/p",
+      files: ["a.txt"],
+    });
+  });
+
+  it("rejects git_revert_file without files", () => {
+    expect(
+      parseClientMessage('{"type":"git_revert_file","projectPath":"/p"}'),
+    ).toBeNull();
+  });
+
+  it("parses git_revert_hunks", () => {
+    const msg = parseClientMessage(
+      '{"type":"git_revert_hunks","projectPath":"/p","hunks":[{"file":"a.txt","hunkIndex":1}]}',
+    );
+    expect(msg).toEqual({
+      type: "git_revert_hunks",
+      projectPath: "/p",
+      hunks: [{ file: "a.txt", hunkIndex: 1 }],
+    });
+  });
+
+  it("rejects git_revert_hunks with invalid hunk shape", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"git_revert_hunks","projectPath":"/p","hunks":[{"file":"a.txt"}]}',
+      ),
+    ).toBeNull();
+  });
+});

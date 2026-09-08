@@ -1,0 +1,355 @@
+import 'package:flutter/material.dart';
+
+import '../l10n/app_localizations.dart';
+import '../models/messages.dart';
+import '../features/chat_session/permission_transcript.dart';
+import '../theme/app_spacing.dart';
+import '../theme/app_theme.dart';
+import '../features/file_peek/file_path_syntax.dart';
+import 'bubbles/assistant_bubble.dart';
+import 'bubbles/error_bubble.dart';
+import 'bubbles/guardian_approval_notice.dart';
+import 'bubbles/permission_request_bubble.dart';
+import 'bubbles/result_chip.dart';
+import 'bubbles/status_chip.dart';
+import 'bubbles/streaming_bubble.dart';
+import 'bubbles/system_chip.dart';
+import 'bubbles/tip_chip.dart';
+import 'bubbles/tool_result_bubble.dart';
+import 'bubbles/tool_use_summary_bubble.dart';
+import 'bubbles/user_bubble.dart';
+
+export 'bubbles/ask_user_question_widget.dart';
+
+class ChatEntryWidget extends StatelessWidget {
+  final ChatEntry entry;
+  final ChatEntry? previous;
+  final String? httpBaseUrl;
+  final void Function(UserChatEntry)? onRetryMessage;
+  final void Function(UserChatEntry)? onRewindMessage;
+  final void Function(AssistantServerMessage)? onForkMessage;
+  final ValueNotifier<int>? collapseToolResults;
+  final String? resolvedPlanText;
+  final bool showSuccessResultText;
+  final PermissionTranscriptStatus? permissionTranscriptStatus;
+
+  /// Tool use IDs that should be hidden (replaced by a tool_use_summary).
+  final Set<String> hiddenToolUseIds;
+
+  /// Called when the user taps the image attachment indicator.
+  final void Function(UserChatEntry)? onImageTap;
+
+  /// Callback for tapping file paths in assistant messages.
+  final FilePathTapCallback? onFileTap;
+  final VoidCallback? onBeforeStreamingTextUpdate;
+  final bool isCodex;
+
+  const ChatEntryWidget({
+    super.key,
+    required this.entry,
+    this.previous,
+    this.httpBaseUrl,
+    this.onRetryMessage,
+    this.onRewindMessage,
+    this.onForkMessage,
+    this.collapseToolResults,
+    this.resolvedPlanText,
+    this.showSuccessResultText = false,
+    this.permissionTranscriptStatus,
+    this.hiddenToolUseIds = const {},
+    this.onImageTap,
+    this.onFileTap,
+    this.onBeforeStreamingTextUpdate,
+    this.isCodex = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        if (_shouldShowTimestamp())
+          _TimestampWidget(timestamp: entry.timestamp),
+        switch (entry) {
+          ServerChatEntry(:final message) => ServerMessageWidget(
+            message: message,
+            httpBaseUrl: httpBaseUrl,
+            collapseToolResults: collapseToolResults,
+            resolvedPlanText: resolvedPlanText,
+            showSuccessResultText: showSuccessResultText,
+            permissionTranscriptStatus: permissionTranscriptStatus,
+            hiddenToolUseIds: hiddenToolUseIds,
+            onFileTap: onFileTap,
+            onForkMessage: onForkMessage,
+            isCodex: isCodex,
+          ),
+          final UserChatEntry user => UserBubble(
+            text: user.text,
+            status: user.status,
+            onRetry: onRetryMessage != null
+                ? () => onRetryMessage!(user)
+                : null,
+            onRewind: onRewindMessage != null && user.messageUuid != null
+                ? () => onRewindMessage!(user)
+                : null,
+            imageUrls: user.imageUrls,
+            httpBaseUrl: httpBaseUrl,
+            imageBytesList: user.imageBytesList,
+            imageCount: user.imageCount,
+          ),
+          StreamingChatEntry(:final text) => StreamingBubble(
+            text: text,
+            onFileTap: onFileTap,
+            onBeforeTextUpdate: onBeforeStreamingTextUpdate,
+          ),
+        },
+        // Image attachment tap button — placed below the bubble to avoid
+        // gesture conflicts with the bubble's GestureDetector.
+        if (entry case final UserChatEntry user
+            when user.imageCount > 0 &&
+                user.imageUrls.isEmpty &&
+                user.imageBytesList.isEmpty &&
+                onImageTap != null &&
+                user.messageUuid != null)
+          _ImageAttachmentButton(
+            imageCount: user.imageCount,
+            onTap: () => onImageTap!(user),
+          ),
+      ],
+    );
+  }
+
+  bool _shouldShowTimestamp() {
+    if (previous == null) return true;
+    // Show if sender type changed
+    if (entry.runtimeType != previous.runtimeType) return true;
+    // Show if more than 2 minutes apart
+    final diff = entry.timestamp.difference(previous!.timestamp);
+    return diff.inMinutes >= 2;
+  }
+}
+
+class _TimestampWidget extends StatelessWidget {
+  final DateTime timestamp;
+  const _TimestampWidget({required this.timestamp});
+
+  @override
+  Widget build(BuildContext context) {
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    final time =
+        '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    return Padding(
+      padding: const EdgeInsets.only(top: 12, bottom: 6),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+          decoration: BoxDecoration(
+            color: appColors.subtleText.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            time,
+            style: TextStyle(fontSize: 10, color: appColors.subtleText),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ServerMessageWidget extends StatelessWidget {
+  final ServerMessage message;
+  final String? httpBaseUrl;
+  final ValueNotifier<int>? collapseToolResults;
+  final String? resolvedPlanText;
+  final bool showSuccessResultText;
+  final PermissionTranscriptStatus? permissionTranscriptStatus;
+
+  /// Tool use IDs that should be hidden (replaced by a tool_use_summary).
+  final Set<String> hiddenToolUseIds;
+
+  /// Callback for tapping file paths in assistant messages.
+  final FilePathTapCallback? onFileTap;
+  final void Function(AssistantServerMessage)? onForkMessage;
+  final bool isCodex;
+
+  const ServerMessageWidget({
+    super.key,
+    required this.message,
+    this.httpBaseUrl,
+    this.collapseToolResults,
+    this.resolvedPlanText,
+    this.showSuccessResultText = false,
+    this.permissionTranscriptStatus,
+    this.hiddenToolUseIds = const {},
+    this.onFileTap,
+    this.onForkMessage,
+    this.isCodex = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return switch (message) {
+      final SystemMessage msg =>
+        msg.subtype == 'tip' ? TipChip(message: msg) : SystemChip(message: msg),
+      final AssistantServerMessage msg => AssistantBubble(
+        message: msg,
+        resolvedPlanText: resolvedPlanText,
+        hiddenToolUseIds: hiddenToolUseIds,
+        onFileTap: onFileTap,
+        onFork: onForkMessage != null ? () => onForkMessage!(msg) : null,
+      ),
+      // Hide tool results that are summarized by a tool_use_summary
+      final ToolResultMessage msg =>
+        hiddenToolUseIds.contains(msg.toolUseId)
+            ? const SizedBox.shrink()
+            : ToolResultBubble(
+                message: msg,
+                httpBaseUrl: httpBaseUrl,
+                collapseNotifier: collapseToolResults,
+              ),
+      final ResultMessage msg => ResultChip(
+        message: msg,
+        onFileTap: onFileTap,
+        showSuccessResultText: showSuccessResultText,
+      ),
+      final GuardianApprovalMessage msg => GuardianApprovalNotice(message: msg),
+      final ErrorMessage msg => ErrorBubble(message: msg),
+      PushRegistrationResultMessage() => const SizedBox.shrink(),
+      SessionLinkResolutionMessage() => const SizedBox.shrink(),
+      SessionContextMessage() => const SizedBox.shrink(),
+      final StatusMessage msg => StatusChip(message: msg),
+      HistoryMessage() => const SizedBox.shrink(),
+      HistoryDeltaMessage() => const SizedBox.shrink(),
+      HistorySnapshotMessage() => const SizedBox.shrink(),
+      final PermissionRequestMessage msg =>
+        msg.toolName == 'ExitPlanMode' ||
+                msg.toolName == 'AskUserQuestion' ||
+                msg.toolName == 'McpElicitation' ||
+                msg.toolName == 'ToolSuggestion'
+            ? const SizedBox.shrink()
+            : PermissionRequestBubble(
+                message: msg,
+                isCodex: isCodex,
+                status:
+                    permissionTranscriptStatus ??
+                    PermissionTranscriptStatus.resolved,
+              ),
+      PermissionResolvedMessage() => const SizedBox.shrink(),
+      StreamDeltaMessage() => const SizedBox.shrink(),
+      ThinkingDeltaMessage() => const SizedBox.shrink(),
+      RecentSessionsMessage() => const SizedBox.shrink(),
+      ProjectsMessage() => const SizedBox.shrink(),
+      PastHistoryMessage() => const SizedBox.shrink(),
+      SessionListMessage() => const SizedBox.shrink(),
+      GalleryListMessage() => const SizedBox.shrink(),
+      GalleryNewImageMessage() => const SizedBox.shrink(),
+      FileListMessage() => const SizedBox.shrink(),
+      FileContentMessage() => const SizedBox.shrink(),
+      FileDownloadReadyMessage() => const SizedBox.shrink(),
+      FileUploadReadyMessage() => const SizedBox.shrink(),
+      FileUploadCompleteMessage() => const SizedBox.shrink(),
+      ProjectHistoryMessage() => const SizedBox.shrink(),
+      DirectoryListingMessage() => const SizedBox.shrink(),
+      DiffResultMessage() => const SizedBox.shrink(),
+      DiffImageResultMessage() => const SizedBox.shrink(),
+      WorktreeListMessage() => const SizedBox.shrink(),
+      WorktreeRemovedMessage() => const SizedBox.shrink(),
+      WindowListMessage() => const SizedBox.shrink(),
+      ScreenshotResultMessage() => const SizedBox.shrink(),
+      DebugBundleMessage() => const SizedBox.shrink(),
+      final ToolUseSummaryMessage msg => ToolUseSummaryBubble(message: msg),
+      RewindPreviewMessage() => const SizedBox.shrink(),
+      RewindResultMessage() => const SizedBox.shrink(),
+      UserInputMessage() => const SizedBox.shrink(),
+      InputAckMessage() => const SizedBox.shrink(),
+      InputRejectedMessage() => const SizedBox.shrink(),
+      ConversationQueueMessage() => const SizedBox.shrink(),
+      GoalStateMessage() => const SizedBox.shrink(),
+      UsageResultMessage() => const SizedBox.shrink(),
+      RecordingListMessage() => const SizedBox.shrink(),
+      RecordingContentMessage() => const SizedBox.shrink(),
+      MessageImagesResultMessage() => const SizedBox.shrink(),
+      PromptHistoryBackupResultMessage() => const SizedBox.shrink(),
+      PromptHistoryRestoreResultMessage() => const SizedBox.shrink(),
+      PromptHistoryBackupInfoMessage() => const SizedBox.shrink(),
+      PromptHistorySyncResultMessage() => const SizedBox.shrink(),
+      PromptHistoryMutationResultMessage() => const SizedBox.shrink(),
+      PromptHistoryStatusMessage() => const SizedBox.shrink(),
+      RenameResultMessage() => const SizedBox.shrink(),
+      ArchiveResultMessage() => const SizedBox.shrink(),
+      BranchUpdateMessage() => const SizedBox.shrink(),
+      // Git Operations (Phase 1-3) — routed via BridgeService streams
+      GitStageResultMessage() => const SizedBox.shrink(),
+      GitUnstageResultMessage() => const SizedBox.shrink(),
+      GitUnstageHunksResultMessage() => const SizedBox.shrink(),
+      GitCommitResultMessage() => const SizedBox.shrink(),
+      GitPushResultMessage() => const SizedBox.shrink(),
+      GitBranchesResultMessage() => const SizedBox.shrink(),
+      GitCreateBranchResultMessage() => const SizedBox.shrink(),
+      GitCheckoutBranchResultMessage() => const SizedBox.shrink(),
+      GitRevertFileResultMessage() => const SizedBox.shrink(),
+      GitRevertHunksResultMessage() => const SizedBox.shrink(),
+      GitFetchResultMessage() => const SizedBox.shrink(),
+      GitPullResultMessage() => const SizedBox.shrink(),
+      GitStatusResultMessage() => const SizedBox.shrink(),
+      GitRemoteStatusResultMessage() => const SizedBox.shrink(),
+    };
+  }
+}
+
+/// Standalone tappable button shown below a user bubble when the message
+/// has image attachments that can be loaded from JSONL.
+class _ImageAttachmentButton extends StatelessWidget {
+  final int imageCount;
+  final VoidCallback onTap;
+
+  const _ImageAttachmentButton({required this.imageCount, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Padding(
+        padding: const EdgeInsets.only(
+          right: AppSpacing.bubbleMarginH,
+          bottom: 4,
+        ),
+        child: Material(
+          color: appColors.subtleText.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(12),
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.image_outlined,
+                    size: 14,
+                    color: appColors.subtleText,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    imageCount > 1
+                        ? '${AppLocalizations.of(context).imageAttached} x$imageCount'
+                        : AppLocalizations.of(context).imageAttached,
+                    style: TextStyle(fontSize: 12, color: appColors.subtleText),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    Icons.chevron_right,
+                    size: 16,
+                    color: appColors.subtleText,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

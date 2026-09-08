@@ -1,0 +1,33 @@
+{
+  "name": "ccpocket",
+  "description": "Mobile client for Claude and Codex with WebSocket bridge server",
+  "private": true,
+  "license": "MIT",
+  "author": "K9i",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/K9i-0/ccpocket.git"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "prepare": "bash scripts/setup-hooks.sh",
+    "bridge": "npm run dev --workspace=packages/bridge",
+    "bridge:build": "npm run build --workspace=packages/bridge",
+    "dev": "bash scripts/dev-restart.sh",
+    "setup": "bash scripts/setup-launchd.sh",
+    "bridge:doctor": "npm run doctor --workspace=packages/bridge",
+    "test:bridge": "npm run test --workspace=packages/bridge",
+    "test:bridge:coverage": "npm run test:coverage --workspace=packages/bridge",
+    "test:pr-readiness": "node --test scripts/pr-readiness.test.mjs",
+    "test:release-tools": "node --test scripts/release/*.test.mjs",
+    "functions:typecheck": "npm --prefix functions run typecheck",
+    "functions:build": "npm --prefix functions run build",
+    "functions:deploy": "firebase deploy --only functions --project ccpocket-ca33b",
+    "release-card": "node scripts/release-card/generate.mjs",
+    "shorebird:patch:android": "bash .claude/skills/shorebird-patch/patch.sh android",
+    "shorebird:patch:ios": "bash .claude/skills/shorebird-patch/patch.sh ios",
+    "shorebird:promote": "bash .claude/skills/shorebird-patch/promote.sh"
+  }
+}

@@ -1,0 +1,1064 @@
+import { execFileSync, spawn } from "node:child_process";
+import { realpathSync, type Dir, type Dirent } from "node:fs";
+import { opendir, stat } from "node:fs/promises";
+import { join, relative, resolve, sep } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+
+// ---- Types ----
+
+export interface HunkRef {
+  file: string;
+  hunkIndex: number;
+}
+
+export interface CommitResult {
+  hash: string;
+  message: string;
+}
+
+export interface BranchRemoteStatus {
+  ahead: number;
+  behind: number;
+  hasUpstream: boolean;
+}
+
+export interface BranchListResult {
+  current: string;
+  branches: string[];
+  /** Branches currently checked out by main repo or worktrees (cannot switch to). */
+  checkedOutBranches: string[];
+  remoteStatusByBranch: Record<string, BranchRemoteStatus>;
+}
+
+export interface GitStatusResult {
+  hasUncommittedChanges: boolean;
+  stagedCount: number;
+  unstagedCount: number;
+  untrackedCount: number;
+  remoteStatusIncluded: boolean;
+  hasRemoteChanges: boolean;
+  commitsAhead: number;
+  commitsBehind: number;
+  hasUpstream: boolean;
+  branch?: string;
+  remoteError?: string;
+}
+
+export interface FileSystemFileListOptions {
+  maxDepth?: number;
+  maxFiles?: number;
+  excludedDirs?: ReadonlySet<string> | readonly string[];
+  /** [Plan B②] Per-directory file quota for the BFS walk. */
+  perDirFiles?: number;
+}
+
+export interface ClientFileListOptions extends FileSystemFileListOptions {
+  maxEntries: number;
+  maxBytes: number;
+}
+
+export interface ClientFileListResult {
+  files: string[];
+  truncated: boolean;
+  totalFiles?: number;
+  ignored?: boolean[];
+  modifiedAt?: Record<string, number>;
+}
+
+export /** [Plan B② 2026-09-07] Max files contributed per directory before the
+ * BFS moves on — keeps one huge subtree (node_modules-less but still big,
+ * e.g. ~/Applications) from starving sibling project dirs of budget. */
+const DEFAULT_FILESYSTEM_FILE_LIST_PER_DIR_FILES = 50;
+const DEFAULT_FILESYSTEM_FILE_LIST_MAX_DEPTH = 8;
+export const DEFAULT_FILESYSTEM_FILE_LIST_MAX_FILES = 5000;
+export const DEFAULT_FILESYSTEM_FILE_LIST_EXCLUDED_DIRS = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".dart_tool",
+  ".next",
+  ".nuxt",
+  ".gradle",
+  ".symlinks",
+  ".venv",
+  "__pycache__",
+  "build",
+  "dist",
+  "ephemeral",
+  "node_modules",
+  "Pods",
+  "vendor",
+]);
+
+// ---- Helpers ----
+
+function resolveProject(projectPath: string): string {
+  return realpathSync(resolve(projectPath));
+}
+
+function withGitPathConfig(args: string[]): string[] {
+  return ["-c", "core.quotePath=false", ...args];
+}
+
+function git(args: string[], cwd: string): string {
+  return execFileSync("git", withGitPathConfig(args), {
+    cwd,
+    encoding: "utf-8",
+  }).trim();
+}
+
+function buildHunkPatch(
+  diffText: string,
+  file: string,
+  indices: number[],
+): string | null {
+  if (!diffText) return null;
+
+  const lines = diffText.split("\n");
+  const hunkStarts: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith("@@")) {
+      hunkStarts.push(i);
+    }
+  }
+
+  if (hunkStarts.length === 0) return null;
+
+  const header = lines.slice(0, hunkStarts[0]).join("\n") + "\n";
+  const sortedIndices = [...new Set(indices)].sort((a, b) => a - b);
+  let patch = header;
+
+  for (const idx of sortedIndices) {
+    if (idx < 0 || idx >= hunkStarts.length) {
+      throw new Error(
+        `Hunk index ${idx} out of range for file ${file} (${hunkStarts.length} hunks)`,
+      );
+    }
+    const start = hunkStarts[idx];
+    const end =
+      idx + 1 < hunkStarts.length ? hunkStarts[idx + 1] : lines.length;
+    patch += lines.slice(start, end).join("\n") + "\n";
+  }
+
+  return patch;
+}
+
+function applyHunks(
+  projectPath: string,
+  hunks: HunkRef[],
+  options: {
+    diffArgs: string[];
+    applyArgs: string[];
+    includeUntracked?: boolean;
+  },
+): void {
+  const cwd = resolveProject(projectPath);
+  const byFile = new Map<string, number[]>();
+
+  for (const h of hunks) {
+    const list = byFile.get(h.file) ?? [];
+    list.push(h.hunkIndex);
+    byFile.set(h.file, list);
+  }
+
+  for (const [file, indices] of byFile) {
+    let diffText = "";
+    let addedIntentToAdd = false;
+
+    if (options.includeUntracked) {
+      const tracked = git(["ls-files", "--", file], cwd);
+      if (!tracked) {
+        execFileSync("git", ["add", "--intent-to-add", "--", file], {
+          cwd,
+          encoding: "utf-8",
+        });
+        addedIntentToAdd = true;
+      }
+    }
+
+    try {
+      diffText = git([...options.diffArgs, "--", file], cwd);
+    } finally {
+      if (addedIntentToAdd) {
+        execFileSync("git", ["reset", "--", file], {
+          cwd,
+          encoding: "utf-8",
+        });
+      }
+    }
+
+    const patch = buildHunkPatch(diffText, file, indices);
+    if (!patch) continue;
+
+    execFileSync("git", [...options.applyArgs, "-"], {
+      cwd,
+      encoding: "utf-8",
+      input: patch,
+    });
+  }
+}
+
+// ---- Phase 1: Staging ----
+
+/** Stage entire files. */
+export function stageFiles(projectPath: string, files: string[]): void {
+  const cwd = resolveProject(projectPath);
+  execFileSync("git", ["add", "--", ...files], { cwd, encoding: "utf-8" });
+}
+
+/**
+ * Stage specific hunks by extracting them from `git diff` and applying via `git apply --cached`.
+ *
+ * Groups hunks by file, extracts the diff header + requested hunks, then pipes through `git apply`.
+ */
+export function stageHunks(projectPath: string, hunks: HunkRef[]): void {
+  applyHunks(projectPath, hunks, {
+    diffArgs: ["diff", "--unified=0"],
+    applyArgs: ["apply", "--cached", "--unidiff-zero"],
+    includeUntracked: true,
+  });
+}
+
+/** Unstage files (remove from index, keep working tree changes). */
+export function unstageFiles(projectPath: string, files: string[]): void {
+  const cwd = resolveProject(projectPath);
+  execFileSync("git", ["reset", "HEAD", "--", ...files], {
+    cwd,
+    encoding: "utf-8",
+  });
+}
+
+/** Unstage specific hunks from the index, leaving the working tree intact. */
+export function unstageHunks(projectPath: string, hunks: HunkRef[]): void {
+  applyHunks(projectPath, hunks, {
+    diffArgs: ["diff", "--cached", "--unified=0"],
+    applyArgs: ["apply", "-R", "--cached", "--unidiff-zero"],
+  });
+}
+
+// ---- Phase 2: Commit / Push ----
+
+/** Create a commit with the given message. Throws if nothing is staged. */
+export function gitCommit(projectPath: string, message: string): CommitResult {
+  const cwd = resolveProject(projectPath);
+
+  // Check if there's anything staged
+  const staged = git(["diff", "--cached", "--name-only"], cwd);
+  if (!staged) {
+    throw new Error("Nothing to commit: no files are staged");
+  }
+
+  execFileSync("git", ["commit", "-m", message], { cwd, encoding: "utf-8" });
+
+  const hash = git(["rev-parse", "--short", "HEAD"], cwd);
+  return { hash, message };
+}
+
+/** Return staged diff content for commit-message generation. */
+export function getStagedDiff(projectPath: string): string {
+  const cwd = resolveProject(projectPath);
+  return execFileSync(
+    "git",
+    withGitPathConfig(["diff", "--cached", "--no-color"]),
+    {
+      cwd,
+      encoding: "utf-8",
+    },
+  );
+}
+
+/** Return tracked and untracked project files for autocomplete/explorer views. */
+export function listGitFiles(projectPath: string): string[] {
+  const cwd = resolveProject(projectPath);
+  const output = execFileSync(
+    "git",
+    withGitPathConfig([
+      "ls-files",
+      "-z",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+    ]),
+    {
+      cwd,
+      encoding: "utf-8",
+      maxBuffer: 10 * 1024 * 1024,
+    },
+  );
+  return output.split("\0").filter(Boolean);
+}
+
+/** Stream a bounded Git file list without buffering the complete command output. */
+export function listGitFilesForClient(
+  projectPath: string,
+  options: Pick<ClientFileListOptions, "maxEntries" | "maxBytes">,
+): Promise<ClientFileListResult> {
+  const cwd = resolveProject(projectPath);
+  return listGitFilesWithArgsForClient(
+    cwd,
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    options,
+  );
+}
+
+function listGitIgnoredFilesForClient(
+  projectPath: string,
+  options: ClientFileListOptions,
+): Promise<ClientFileListResult> {
+  const cwd = resolveProject(projectPath);
+  const excludedDirs = [
+    ...(options.excludedDirs ?? DEFAULT_FILESYSTEM_FILE_LIST_EXCLUDED_DIRS),
+  ];
+  const excludedPathspecs = excludedDirs.map(
+    (dir) => `:(exclude,glob)**/${dir}/**`,
+  );
+  return listGitFilesWithArgsForClient(
+    cwd,
+    [
+      "ls-files",
+      "-z",
+      "--others",
+      "--ignored",
+      "--exclude-standard",
+      "--",
+      ...excludedPathspecs,
+    ],
+    options,
+  );
+}
+
+function listGitFilesWithArgsForClient(
+  cwd: string,
+  args: string[],
+  options: Pick<ClientFileListOptions, "maxEntries" | "maxBytes">,
+): Promise<ClientFileListResult> {
+  const maxEntries = requirePositiveLimit(options.maxEntries, "maxEntries");
+  const maxBytes = requirePositiveLimit(options.maxBytes, "maxBytes");
+
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(
+      "git",
+      withGitPathConfig(args),
+      { cwd, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const decoder = new StringDecoder("utf8");
+    const files: string[] = [];
+    const stderr: Buffer[] = [];
+    let stderrBytes = 0;
+    let pending = "";
+    let entryBytes = 0;
+    let truncated = false;
+    let settled = false;
+
+    const settle = (result: ClientFileListResult) => {
+      if (settled) return;
+      settled = true;
+      resolvePromise(result);
+    };
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      rejectPromise(error);
+    };
+    const stopAtLimit = () => {
+      truncated = true;
+      child.kill("SIGTERM");
+    };
+    const acceptFile = (file: string): boolean => {
+      if (!file) return true;
+      const nextBytes = serializedFileEntryBytes(file, files.length > 0);
+      if (
+        files.length >= maxEntries ||
+        entryBytes + nextBytes > maxBytes
+      ) {
+        stopAtLimit();
+        return false;
+      }
+      files.push(file);
+      entryBytes += nextBytes;
+      return true;
+    };
+    const consume = (text: string) => {
+      pending += text;
+      const parts = pending.split("\0");
+      pending = parts.pop() ?? "";
+      for (const part of parts) {
+        if (!acceptFile(part)) return;
+      }
+    };
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (!truncated) consume(decoder.write(chunk));
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderrBytes >= 64 * 1024) return;
+      stderr.push(chunk);
+      stderrBytes += chunk.length;
+    });
+    child.on("error", fail);
+    child.on("close", (code) => {
+      if (!truncated) {
+        consume(decoder.end());
+        if (pending) acceptFile(pending);
+      }
+      if (code === 0 || truncated) {
+        settle({
+          files,
+          truncated,
+          totalFiles: truncated ? undefined : files.length,
+        });
+        return;
+      }
+      fail(
+        new Error(
+          Buffer.concat(stderr).toString("utf8").trim() ||
+            `git ls-files failed with exit code ${code}`,
+        ),
+      );
+    });
+  });
+}
+
+/** Return project files, using Git when available and filesystem fallback otherwise. */
+export async function listProjectFiles(
+  projectPath: string,
+  options: FileSystemFileListOptions = {},
+): Promise<string[]> {
+  try {
+    return listGitFiles(projectPath);
+  } catch (err) {
+    if (!isGitFileListingUnavailable(err)) {
+      throw err;
+    }
+    return listFileSystemFiles(projectPath, options);
+  }
+}
+
+/** Return project file paths plus directory mention candidates. */
+export async function listProjectFilesAndDirectories(
+  projectPath: string,
+  options: FileSystemFileListOptions = {},
+): Promise<string[]> {
+  return withDirectoryCandidates(await listProjectFiles(projectPath, options));
+}
+
+/** Return a bounded client-facing file and directory list. */
+export async function listProjectFilesAndDirectoriesForClient(
+  projectPath: string,
+  options: ClientFileListOptions,
+): Promise<ClientFileListResult> {
+  const maxEntries = requirePositiveLimit(options.maxEntries, "maxEntries");
+  const maxBytes = requirePositiveLimit(options.maxBytes, "maxBytes");
+  let listed: ClientFileListResult;
+  let ignoredFiles = new Set<string>();
+
+  try {
+    const [visible, ignored] = await Promise.all([
+      listGitFilesForClient(projectPath, { maxEntries, maxBytes }),
+      listGitIgnoredFilesForClient(projectPath, {
+        ...options,
+        maxEntries,
+        maxBytes,
+      }),
+    ]);
+    ignoredFiles = new Set(ignored.files);
+    listed = {
+      files: visible.files,
+      truncated: visible.truncated || ignored.truncated,
+      totalFiles:
+        visible.truncated || ignored.truncated
+          ? undefined
+          : visible.files.length + ignored.files.length,
+    };
+  } catch (err) {
+    if (!isGitFileListingUnavailable(err)) throw err;
+    const fileSystemResult = await collectFileSystemFiles(projectPath, {
+      ...options,
+      maxFiles: maxEntries + 1,
+    });
+    const candidates = fileSystemResult.files;
+    const rawTruncated = candidates.length > maxEntries;
+    listed = {
+      files: candidates.slice(0, maxEntries),
+      truncated: rawTruncated || fileSystemResult.traversalTruncated,
+      totalFiles:
+        rawTruncated || fileSystemResult.traversalTruncated
+          ? undefined
+          : candidates.length,
+    };
+  }
+
+  // Keep regular tracked/untracked entries ahead of ignored entries so a large
+  // ignored tree cannot consume the client limit and hide source files.
+  const primaryCandidates = withDirectoryCandidates(listed.files);
+  const primarySet = new Set(primaryCandidates);
+  const ignoredCandidates = withDirectoryCandidates([...ignoredFiles]).filter(
+    (file) => !primarySet.has(file),
+  );
+  const filesAndDirs = [...primaryCandidates, ...ignoredCandidates];
+  const limited = limitClientFileList(filesAndDirs, {
+    maxEntries,
+    maxBytes,
+  });
+  const modifiedAt = await readDuplicateFileModificationTimes(
+    projectPath,
+    limited.files,
+  );
+  const payload = fitClientFileListPayload(
+    limited.files,
+    ignoredFiles,
+    modifiedAt,
+    maxBytes,
+  );
+  return {
+    ...payload,
+    truncated:
+      listed.truncated ||
+      limited.truncated ||
+      payload.files.length < limited.files.length,
+    totalFiles: listed.truncated ? undefined : filesAndDirs.length,
+  };
+}
+
+async function readDuplicateFileModificationTimes(
+  projectPath: string,
+  files: readonly string[],
+): Promise<Record<string, number>> {
+  const root = resolveProject(projectPath);
+  const basenameCounts = new Map<string, number>();
+  for (const file of files) {
+    if (file.endsWith("/")) continue;
+    const basename = file.slice(file.lastIndexOf("/") + 1);
+    basenameCounts.set(basename, (basenameCounts.get(basename) ?? 0) + 1);
+  }
+  const duplicates = files.filter((file) => {
+    if (file.endsWith("/")) return false;
+    const basename = file.slice(file.lastIndexOf("/") + 1);
+    return (basenameCounts.get(basename) ?? 0) > 1;
+  });
+  const result: Record<string, number> = {};
+  const batchSize = 64;
+  for (let start = 0; start < duplicates.length; start += batchSize) {
+    await Promise.all(
+      duplicates.slice(start, start + batchSize).map(async (file) => {
+        try {
+          result[file] = (await stat(join(root, file))).mtimeMs;
+        } catch {
+          // A file may disappear between listing and stat; omit its metadata.
+        }
+      }),
+    );
+  }
+  return result;
+}
+
+function fitClientFileListPayload(
+  files: readonly string[],
+  ignoredFiles: ReadonlySet<string>,
+  modifiedAt: Readonly<Record<string, number>>,
+  maxBytes: number,
+): Pick<ClientFileListResult, "files" | "ignored" | "modifiedAt"> {
+  const buildPayload = (count: number) => {
+    const includedFiles = files.slice(0, count);
+    const includedSet = new Set(includedFiles);
+    return {
+      files: includedFiles,
+      ignored: includedFiles.map((file) => ignoredFiles.has(file)),
+      modifiedAt: Object.fromEntries(
+        Object.entries(modifiedAt).filter(([file]) => includedSet.has(file)),
+      ),
+    };
+  };
+
+  let low = 0;
+  let high = files.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const bytes = Buffer.byteLength(
+      JSON.stringify(buildPayload(middle)),
+      "utf8",
+    );
+    if (bytes <= maxBytes) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return buildPayload(low);
+}
+
+function limitClientFileList(
+  files: readonly string[],
+  options: Pick<ClientFileListOptions, "maxEntries" | "maxBytes">,
+): ClientFileListResult {
+  const limited: string[] = [];
+  let bytes = 0;
+  for (const file of files) {
+    const nextBytes = serializedFileEntryBytes(file, limited.length > 0);
+    if (
+      limited.length >= options.maxEntries ||
+      bytes + nextBytes > options.maxBytes
+    ) {
+      break;
+    }
+    limited.push(file);
+    bytes += nextBytes;
+  }
+  return {
+    files: limited,
+    truncated: limited.length < files.length,
+    totalFiles: files.length,
+  };
+}
+
+function serializedFileEntryBytes(file: string, hasPrevious: boolean): number {
+  return Buffer.byteLength(JSON.stringify(file), "utf8") + (hasPrevious ? 1 : 0);
+}
+
+function requirePositiveLimit(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
+export function withDirectoryCandidates(files: readonly string[]): string[] {
+  const entries = new Set<string>();
+  for (const file of files) {
+    const normalized = toPosixRelativePath(file).replace(/^\/+/, "");
+    if (!normalized) continue;
+
+    const filePath = normalized.endsWith("/")
+      ? normalized.slice(0, -1)
+      : normalized;
+    if (!filePath) continue;
+
+    const segments = filePath.split("/").filter(Boolean);
+    for (let i = 1; i < segments.length; i++) {
+      entries.add(`${segments.slice(0, i).join("/")}/`);
+    }
+    entries.add(filePath);
+  }
+  return [...entries].sort((a, b) => a.localeCompare(b));
+}
+
+/** Return regular files under a non-Git project directory for explorer views. */
+export async function listFileSystemFiles(
+  projectPath: string,
+  options: FileSystemFileListOptions = {},
+): Promise<string[]> {
+  return (await collectFileSystemFiles(projectPath, options)).files;
+}
+
+async function collectFileSystemFiles(
+  projectPath: string,
+  options: FileSystemFileListOptions,
+): Promise<{ files: string[]; traversalTruncated: boolean }> {
+  const root = resolveProject(projectPath);
+  const maxDepth =
+    options.maxDepth ?? DEFAULT_FILESYSTEM_FILE_LIST_MAX_DEPTH;
+  const maxFiles =
+    options.maxFiles ?? DEFAULT_FILESYSTEM_FILE_LIST_MAX_FILES;
+  const perDirFiles =
+    options.perDirFiles ?? DEFAULT_FILESYSTEM_FILE_LIST_PER_DIR_FILES;
+  const excludedDirs = toExcludedDirSet(
+    options.excludedDirs ?? DEFAULT_FILESYSTEM_FILE_LIST_EXCLUDED_DIRS,
+  );
+  const files: string[] = [];
+  let traversalTruncated = false;
+
+  // [Plan B② 2026-09-07] BFS with a per-directory file quota. The previous
+  // alphabetical DFS starved sibling dirs on broad non-Git roots (e.g. a
+  // home directory: ~/Applications alone could eat the whole entry budget
+  // before ~/claudio was ever reached). Quota per dir keeps breadth: every
+  // top-level project's shallow files land in the list; deep trees get
+  // truncated instead of monopolising it.
+  type BfsDir = { absDir: string; relDir: string; depth: number };
+  const queue: BfsDir[] = [{ absDir: root, relDir: "", depth: 0 }];
+
+  while (queue.length > 0) {
+    if (files.length >= maxFiles) {
+      traversalTruncated = true;
+      break;
+    }
+    const { absDir, relDir, depth } = queue.shift()!;
+    if (depth >= maxDepth) {
+      traversalTruncated = true;
+      continue;
+    }
+
+    let dir: Dir;
+    try {
+      dir = await opendir(absDir);
+    } catch (err) {
+      if (relDir === "") throw err;
+      traversalTruncated = true;
+      continue;
+    }
+
+    const entries: Dirent[] = [];
+    for await (const entry of dir) {
+      entries.push(entry);
+    }
+
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    const subdirs: BfsDir[] = [];
+    let filesFromThisDir = 0;
+
+    for (const entry of entries) {
+      if (entry.name === "." || entry.name === "..") continue;
+
+      const absPath = join(absDir, entry.name);
+      const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
+
+      if (entry.isSymbolicLink()) continue;
+
+      if (entry.isDirectory()) {
+        if (excludedDirs.has(entry.name)) continue;
+        subdirs.push({ absDir: absPath, relDir: relPath, depth: depth + 1 });
+        continue;
+      }
+
+      if (entry.isFile()) {
+        if (filesFromThisDir >= perDirFiles) {
+          traversalTruncated = true;
+          continue;
+        }
+        if (files.length >= maxFiles) {
+          traversalTruncated = true;
+          break;
+        }
+        files.push(toPosixRelativePath(relative(root, absPath)));
+        filesFromThisDir += 1;
+      }
+    }
+
+    // Depth-first within the queue order would defeat breadth: enqueue
+    // subdirs after the parent's files so level order is preserved.
+    queue.push(...subdirs);
+  }
+
+  if (files.length > maxFiles) files.length = maxFiles;
+  return {
+    files: files.sort((a, b) => a.localeCompare(b)),
+    traversalTruncated,
+  };
+}
+
+function isGitFileListingUnavailable(err: unknown): boolean {
+  const error = err as NodeJS.ErrnoException;
+  if (error.code === "ENOENT") return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return /not a git repository/i.test(message);
+}
+
+function toExcludedDirSet(
+  dirs: ReadonlySet<string> | readonly string[],
+): ReadonlySet<string> {
+  return dirs instanceof Set ? dirs : new Set(dirs);
+}
+
+function toPosixRelativePath(path: string): string {
+  return sep === "/" ? path : path.split(sep).join("/");
+}
+
+/** Push to remote. */
+export function gitPush(projectPath: string): void {
+  const cwd = resolveProject(projectPath);
+  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+  execFileSync("git", ["push", "--set-upstream", "origin", branch], {
+    cwd,
+    encoding: "utf-8",
+  });
+}
+
+// ---- Phase 3: Branch Operations ----
+
+/** List branches and branches checked out by worktrees. */
+export function listBranches(projectPath: string): BranchListResult {
+  const cwd = resolveProject(projectPath);
+  const current = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+
+  const output = git([
+    "branch",
+    "--list",
+    "--format=%(refname:short)%09%(upstream:short)%09%(upstream:track)",
+  ], cwd);
+  const branchRows = output
+    ? output.split("\n").filter(Boolean).map((line) => {
+        const [branch, upstream = "", track = ""] = line.split("\t");
+        return {
+          branch,
+          remoteStatus: parseBranchRemoteStatus(upstream, track),
+        };
+      })
+    : [];
+  const branches = branchRows.map((row) => row.branch);
+
+  // Collect branches checked out by worktrees (+ main repo)
+  const checkedOutBranches: string[] = [];
+  try {
+    const wtOutput = execFileSync("git", ["worktree", "list", "--porcelain"], {
+      cwd,
+      encoding: "utf-8",
+    });
+    for (const line of wtOutput.split("\n")) {
+      if (line.startsWith("branch ")) {
+        const branch = line
+          .slice("branch ".length)
+          .replace(/^refs\/heads\//, "");
+        checkedOutBranches.push(branch);
+      }
+    }
+  } catch {
+    /* ignore if worktree command fails */
+  }
+
+  const remoteStatusByBranch = Object.fromEntries(
+    branchRows.map((row) => [row.branch, row.remoteStatus]),
+  );
+
+  return { current, branches, checkedOutBranches, remoteStatusByBranch };
+}
+
+function parseBranchRemoteStatus(
+  upstream: string,
+  track: string,
+): BranchRemoteStatus {
+  if (!upstream) {
+    return { ahead: 0, behind: 0, hasUpstream: false };
+  }
+
+  const ahead = parseTrackCount(track, /ahead (\d+)/);
+  const behind = parseTrackCount(track, /behind (\d+)/);
+
+  return { ahead, behind, hasUpstream: true };
+}
+
+function parseTrackCount(track: string, pattern: RegExp): number {
+  const match = track.match(pattern);
+  return match ? parseInt(match[1], 10) || 0 : 0;
+}
+
+/** Create a new branch, optionally checking it out. */
+export function createBranch(
+  projectPath: string,
+  name: string,
+  checkout?: boolean,
+): void {
+  const cwd = resolveProject(projectPath);
+  if (checkout) {
+    execFileSync("git", ["checkout", "-b", name], { cwd, encoding: "utf-8" });
+  } else {
+    execFileSync("git", ["branch", name], { cwd, encoding: "utf-8" });
+  }
+}
+
+/** Checkout an existing branch. */
+export function checkoutBranch(projectPath: string, branch: string): void {
+  const cwd = resolveProject(projectPath);
+  execFileSync("git", ["checkout", branch], { cwd, encoding: "utf-8" });
+}
+
+/** Revert (discard) unstaged changes for specific files. */
+export function revertFiles(projectPath: string, files: string[]): void {
+  const cwd = resolveProject(projectPath);
+  if (files.length === 0) return;
+
+  const trackedOutput = git(["ls-files", "--", ...files], cwd);
+  const trackedFiles = trackedOutput ? trackedOutput.split("\n").filter(Boolean) : [];
+  const trackedSet = new Set(trackedFiles);
+  const untrackedFiles = files.filter((file) => !trackedSet.has(file));
+
+  if (trackedFiles.length > 0) {
+    execFileSync("git", ["checkout", "--", ...trackedFiles], {
+      cwd,
+      encoding: "utf-8",
+    });
+  }
+
+  if (untrackedFiles.length > 0) {
+    execFileSync("git", ["clean", "-fd", "--", ...untrackedFiles], {
+      cwd,
+      encoding: "utf-8",
+    });
+  }
+}
+
+/** Revert specific working-tree hunks, leaving the index intact. */
+export function revertHunks(projectPath: string, hunks: HunkRef[]): void {
+  applyHunks(projectPath, hunks, {
+    diffArgs: ["diff", "--unified=0"],
+    applyArgs: ["apply", "-R", "--unidiff-zero"],
+    includeUntracked: true,
+  });
+}
+
+// ---- Remote Operations ----
+
+export interface RemoteStatusResult {
+  ahead: number;
+  behind: number;
+  branch: string;
+  hasUpstream: boolean;
+}
+
+/** Fetch from remote (non-blocking, returns when done). */
+export function gitFetch(projectPath: string): void {
+  const cwd = resolveProject(projectPath);
+  execFileSync("git", ["fetch", "--quiet"], {
+    cwd,
+    encoding: "utf-8",
+    timeout: 30000,
+  });
+}
+
+/** Get lightweight working tree/index status. Remote state is optional. */
+export function gitStatus(
+  projectPath: string,
+  options: { includeRemote?: boolean } = {},
+): GitStatusResult {
+  const cwd = resolveProject(projectPath);
+  const output = execFileSync(
+    "git",
+    withGitPathConfig([
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=normal",
+    ]),
+    {
+      cwd,
+      encoding: "utf-8",
+    },
+  );
+  if (!output.trim()) {
+    const cleanResult = {
+      hasUncommittedChanges: false,
+      stagedCount: 0,
+      unstagedCount: 0,
+      untrackedCount: 0,
+    };
+    return withOptionalRemoteStatus(projectPath, cleanResult, options);
+  }
+
+  let stagedCount = 0;
+  let unstagedCount = 0;
+  let untrackedCount = 0;
+
+  for (const line of output.split("\n")) {
+    if (!line) continue;
+    const x = line[0];
+    const y = line[1];
+
+    if (x === "?" && y === "?") {
+      untrackedCount++;
+      continue;
+    }
+    if (x !== " ") stagedCount++;
+    if (y !== " ") unstagedCount++;
+  }
+
+  return withOptionalRemoteStatus(
+    projectPath,
+    {
+      hasUncommittedChanges: stagedCount + unstagedCount + untrackedCount > 0,
+      stagedCount,
+      unstagedCount,
+      untrackedCount,
+    },
+    options,
+  );
+}
+
+function withOptionalRemoteStatus(
+  projectPath: string,
+  local: Pick<
+    GitStatusResult,
+    | "hasUncommittedChanges"
+    | "stagedCount"
+    | "unstagedCount"
+    | "untrackedCount"
+  >,
+  options: { includeRemote?: boolean },
+): GitStatusResult {
+  const base: GitStatusResult = {
+    ...local,
+    remoteStatusIncluded: false,
+    hasRemoteChanges: false,
+    commitsAhead: 0,
+    commitsBehind: 0,
+    hasUpstream: false,
+  };
+
+  if (!options.includeRemote) return base;
+
+  try {
+    gitFetch(projectPath);
+    const remote = gitRemoteStatus(projectPath);
+    return {
+      ...base,
+      remoteStatusIncluded: true,
+      hasRemoteChanges: remote.ahead > 0 || remote.behind > 0,
+      commitsAhead: remote.ahead,
+      commitsBehind: remote.behind,
+      hasUpstream: remote.hasUpstream,
+      branch: remote.branch,
+    };
+  } catch (err) {
+    return {
+      ...base,
+      remoteStatusIncluded: true,
+      remoteError: String(err),
+    };
+  }
+}
+
+/** Get ahead/behind counts relative to upstream. */
+export function gitRemoteStatus(projectPath: string): RemoteStatusResult {
+  const cwd = resolveProject(projectPath);
+  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+
+  // Check if upstream is configured
+  let hasUpstream = false;
+  try {
+    git(["rev-parse", "--abbrev-ref", `${branch}@{upstream}`], cwd);
+    hasUpstream = true;
+  } catch {
+    return { ahead: 0, behind: 0, branch, hasUpstream: false };
+  }
+
+  let ahead = 0;
+  let behind = 0;
+  try {
+    const aheadStr = git(["rev-list", "--count", `@{upstream}..HEAD`], cwd);
+    ahead = parseInt(aheadStr, 10) || 0;
+  } catch {
+    /* ignore */
+  }
+  try {
+    const behindStr = git(["rev-list", "--count", `HEAD..@{upstream}`], cwd);
+    behind = parseInt(behindStr, 10) || 0;
+  } catch {
+    /* ignore */
+  }
+
+  return { ahead, behind, branch, hasUpstream };
+}
+
+/** Pull from remote (fetch + merge). */
+export function gitPull(projectPath: string): {
+  success: boolean;
+  message: string;
+} {
+  const cwd = resolveProject(projectPath);
+  try {
+    const output = execFileSync("git", ["pull"], {
+      cwd,
+      encoding: "utf-8",
+    }).trim();
+    return { success: true, message: output };
+  } catch (err) {
+    return { success: false, message: String(err) };
+  }
+}

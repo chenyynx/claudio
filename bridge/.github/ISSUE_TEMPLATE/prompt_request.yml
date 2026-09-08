@@ -1,0 +1,73 @@
+name: Prompt Request
+description: Share a prompt that implements a feature or fix
+labels: ["prompt-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share a prompt that achieved a feature addition or bug fix.
+        Maintainers will re-run and adjust the prompt to apply it to the codebase.
+
+        ---
+
+        AI に渡したプロンプトで機能追加や修正ができた場合、ここで共有してください。
+        メンテナがプロンプトを再実行・調整してコードベースに適用します。
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of CC Pocket does this relate to?
+      options:
+        - Mobile App
+        - Bridge Server
+        - Both
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What did you want to achieve?
+      placeholder: e.g. Add dark mode support to the settings screen
+    validations:
+      required: true
+
+  - type: textarea
+    id: prompt
+    attributes:
+      label: Prompt
+      description: The prompt(s) you gave to the AI. Paste the exact text so it can be reproduced.
+      render: markdown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ai_tool
+    attributes:
+      label: AI Tool
+      description: Which AI tool did you use?
+      options:
+        - Claude Code
+        - Codex
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: result
+    attributes:
+      label: Result
+      description: What happened? Include screenshots, logs, or a brief description of the outcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Any caveats, workarounds, or things the maintainer should know.
+    validations:
+      required: false

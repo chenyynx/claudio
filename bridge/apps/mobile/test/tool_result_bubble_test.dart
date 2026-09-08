@@ -1,0 +1,370 @@
+import 'package:ccpocket/features/generated_image_preview/generated_image_preview_screen.dart';
+import 'package:ccpocket/features/generated_image_preview/widgets/generated_image_chat_group.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:ccpocket/l10n/app_localizations.dart';
+import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/theme/app_theme.dart';
+import 'package:ccpocket/widgets/bubbles/tool_result_bubble.dart';
+
+Widget _wrap(Widget child) {
+  return MaterialApp(
+    theme: AppTheme.darkTheme,
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    locale: const Locale('en'),
+    home: Scaffold(body: SingleChildScrollView(child: child)),
+  );
+}
+
+ToolResultMessage _msg({
+  String content = 'line1\nline2\nline3',
+  String? toolName = 'Read',
+  List<ImageRef> images = const [],
+}) {
+  return ToolResultMessage(
+    toolUseId: 'test-tool-1',
+    content: content,
+    toolName: toolName,
+    images: images,
+  );
+}
+
+void main() {
+  group('ToolResultBubble - collapsed state', () {
+    testWidgets('collapsed shows no background container', (tester) async {
+      await tester.pumpWidget(_wrap(ToolResultBubble(message: _msg())));
+
+      // Collapsed: should show tool name and chevron_right
+      expect(find.text('Read'), findsOneWidget);
+      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+
+      // Should NOT show expand_more or expand_less
+      expect(find.byIcon(Icons.expand_more), findsNothing);
+      expect(find.byIcon(Icons.expand_less), findsNothing);
+
+      // The category icon should be present (12px icon replacing the old dot)
+      // For Bash tool, the icon is Icons.terminal
+      final iconFinder = find.byWidgetPredicate((w) {
+        if (w is Icon && w.size == 12) {
+          return true;
+        }
+        return false;
+      });
+      expect(iconFinder, findsOneWidget);
+
+      // No card-style background container with toolResultBackground
+      final cardFinder = find.byWidgetPredicate((w) {
+        if (w is Container && w.decoration is BoxDecoration) {
+          final deco = w.decoration as BoxDecoration;
+          return deco.borderRadius != null && deco.color != null;
+        }
+        return false;
+      });
+      expect(cardFinder, findsNothing);
+    });
+
+    testWidgets('collapsed shows summary as plain text', (tester) async {
+      await tester.pumpWidget(_wrap(ToolResultBubble(message: _msg())));
+
+      // Summary should be "3 lines"
+      expect(find.text('3 lines'), findsOneWidget);
+    });
+
+    testWidgets('large collapsed output shows its line count', (tester) async {
+      final content = List.generate(10000, (index) => 'line $index').join('\n');
+
+      await tester.pumpWidget(
+        _wrap(ToolResultBubble(message: _msg(content: content))),
+      );
+      await tester.pump();
+
+      expect(find.text('10000 lines'), findsOneWidget);
+    });
+
+    testWidgets('collapsed hides images', (tester) async {
+      final msg = ToolResultMessage(
+        toolUseId: 'test-img',
+        content: 'some content',
+        toolName: 'Read',
+        images: [
+          const ImageRef(
+            id: 'img-1',
+            url: '/images/test.png',
+            mimeType: 'image/png',
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        _wrap(ToolResultBubble(message: msg, httpBaseUrl: 'http://localhost')),
+      );
+
+      // In collapsed state, no ImagePreviewWidget should render
+      // (Image.network won't be present)
+      expect(find.byType(Image), findsNothing);
+    });
+  });
+
+  group('ToolResultBubble - expansion cycle', () {
+    testWidgets('tap cycles collapsed → preview → expanded → collapsed', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(
+          ToolResultBubble(
+            message: _msg(
+              content: 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8',
+            ),
+          ),
+        ),
+      );
+
+      // Initially collapsed — chevron_right
+      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+
+      // Tap → preview
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.expand_more), findsOneWidget);
+      expect(find.textContaining('more lines'), findsOneWidget);
+
+      // Tap → expanded
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.expand_less), findsOneWidget);
+
+      // Tap → back to collapsed
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+    });
+
+    testWidgets('preview shows card background', (tester) async {
+      await tester.pumpWidget(_wrap(ToolResultBubble(message: _msg())));
+
+      // Tap to enter preview
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pumpAndSettle();
+
+      // Card background should now exist
+      final cardFinder = find.byWidgetPredicate((w) {
+        if (w is Container && w.decoration is BoxDecoration) {
+          final deco = w.decoration as BoxDecoration;
+          return deco.borderRadius != null && deco.color != null;
+        }
+        return false;
+      });
+      expect(cardFinder, findsOneWidget);
+    });
+
+    testWidgets('large preview only renders the first five lines', (
+      tester,
+    ) async {
+      final content = List.generate(10000, (index) => 'line $index').join('\n');
+      await tester.pumpWidget(
+        _wrap(ToolResultBubble(message: _msg(content: content))),
+      );
+
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('line 0\nline 1\nline 2\nline 3\nline 4'),
+        findsOneWidget,
+      );
+      expect(find.text('... 9995 more lines'), findsOneWidget);
+      expect(find.textContaining('line 5'), findsNothing);
+    });
+  });
+
+  group('ToolResultBubble - long press copy', () {
+    testWidgets('long press copies content to clipboard', (tester) async {
+      // Set up clipboard mock
+      String? clipboardContent;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (MethodCall methodCall) async {
+          if (methodCall.method == 'Clipboard.setData') {
+            final args = methodCall.arguments as Map;
+            clipboardContent = args['text'] as String?;
+          }
+          return null;
+        },
+      );
+
+      await tester.pumpWidget(
+        _wrap(ToolResultBubble(message: _msg(content: 'test content'))),
+      );
+
+      // Long press on collapsed row
+      await tester.longPress(find.byType(InkWell).first);
+      await tester.pumpAndSettle();
+
+      expect(clipboardContent, 'test content');
+      expect(find.text('Copied to clipboard'), findsOneWidget);
+    });
+  });
+
+  group('ToolResultBubble - collapseNotifier', () {
+    testWidgets('auto-collapses when notifier fires', (tester) async {
+      final notifier = ValueNotifier<int>(0);
+
+      await tester.pumpWidget(
+        _wrap(ToolResultBubble(message: _msg(), collapseNotifier: notifier)),
+      );
+
+      // Expand to preview
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.expand_more), findsOneWidget);
+
+      // Fire notifier
+      notifier.value++;
+      await tester.pumpAndSettle();
+
+      // Should be collapsed again
+      expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+    });
+  });
+
+  group('ToolResultBubble - ImageGeneration', () {
+    ToolResultMessage imageGenerationMessage() {
+      return _msg(
+        toolName: 'ImageGeneration',
+        content:
+            'status: completed\n'
+            'revisedPrompt: A neon bridge for mobile coding agents\n'
+            'savedPath: /tmp/generated-image.png',
+        images: const [
+          ImageRef(
+            id: 'img-generated',
+            url:
+                'data:image/png;base64,'
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ'
+                'AAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==',
+            mimeType: 'image/png',
+          ),
+        ],
+      );
+    }
+
+    testWidgets('renders only the generated image in chat', (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          ToolResultBubble(
+            message: imageGenerationMessage(),
+            httpBaseUrl: 'http://localhost',
+          ),
+        ),
+      );
+
+      expect(
+        find.byKey(const ValueKey('generated_image_chat_group')),
+        findsOneWidget,
+      );
+      expect(find.byType(GeneratedImageChatGroup), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('generated_image_chat_thumbnail_0')),
+        findsOneWidget,
+      );
+      expect(find.text('Generated image'), findsNothing);
+      expect(find.text('completed'), findsNothing);
+      expect(find.text('A neon bridge for mobile coding agents'), findsNothing);
+      expect(find.text('ImageGeneration'), findsNothing);
+      expect(find.textContaining('savedPath'), findsNothing);
+    });
+
+    testWidgets('renders a data URL without an HTTP base URL', (tester) async {
+      await tester.pumpWidget(
+        _wrap(ToolResultBubble(message: imageGenerationMessage())),
+      );
+
+      expect(find.byType(GeneratedImageChatGroup), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('generated_image_chat_thumbnail_0')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('opens the metadata preview when the image is tapped', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(
+          ToolResultBubble(
+            message: imageGenerationMessage(),
+            httpBaseUrl: 'http://localhost',
+          ),
+        ),
+      );
+
+      expect(find.textContaining('/tmp/generated-image.png'), findsNothing);
+
+      await tester.tap(
+        find.byKey(const ValueKey('generated_image_chat_thumbnail_0')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(GeneratedImagePreviewScreen), findsOneWidget);
+      expect(find.text('1 / 1'), findsOneWidget);
+      expect(
+        find.text('A neon bridge for mobile coding agents'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('keeps the generated image visible on notifier updates', (
+      tester,
+    ) async {
+      final notifier = ValueNotifier<int>(0);
+
+      await tester.pumpWidget(
+        _wrap(
+          ToolResultBubble(
+            message: imageGenerationMessage(),
+            httpBaseUrl: 'http://localhost',
+            collapseNotifier: notifier,
+          ),
+        ),
+      );
+
+      notifier.value++;
+      await tester.pump();
+
+      expect(
+        find.byKey(const ValueKey('generated_image_chat_group')),
+        findsOneWidget,
+      );
+      expect(find.byType(Image), findsOneWidget);
+      expect(find.text('Generated image'), findsNothing);
+    });
+  });
+
+  group('ToolResultBubble - summary formatting', () {
+    testWidgets('Edit tool shows +/-  summary', (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          ToolResultBubble(
+            message: _msg(
+              toolName: 'Edit',
+              content: '--- a/file\n+++ b/file\n+added\n-removed\n+added2',
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('+2/-1 lines'), findsOneWidget);
+    });
+
+    testWidgets('short single line shows content as summary', (tester) async {
+      await tester.pumpWidget(
+        _wrap(ToolResultBubble(message: _msg(content: 'OK'))),
+      );
+
+      expect(find.text('OK'), findsOneWidget);
+    });
+  });
+}

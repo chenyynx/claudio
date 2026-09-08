@@ -1,0 +1,110 @@
+# Project-local MCP config. Execpolicy lives in .codex/rules/default.rules.
+
+[mcp_servers.marionette]
+command = "marionette_mcp"
+args = []
+enabled_tools = [
+  "connect",
+  "disconnect",
+  "get_interactive_elements",
+  "get_logs",
+  "scroll_to",
+  "tap",
+  "double_tap",
+  "long_press",
+  "enter_text",
+  "swipe",
+  "pinch_zoom",
+  "press_back_button",
+  "take_screenshots",
+  "list_custom_extensions",
+  "call_custom_extension",
+]
+
+[mcp_servers.marionette.tools.connect]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.disconnect]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.get_interactive_elements]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.get_logs]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.scroll_to]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.tap]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.double_tap]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.long_press]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.enter_text]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.swipe]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.pinch_zoom]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.press_back_button]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.take_screenshots]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.list_custom_extensions]
+approval_mode = "approve"
+
+[mcp_servers.marionette.tools.call_custom_extension]
+approval_mode = "approve"
+
+[mcp_servers.dart-mcp]
+command = "dart"
+args = ["mcp-server"]
+env = {}
+enabled_tools = [
+  "launch_app",
+  "stop_app",
+  "get_app_logs",
+  "list_running_apps",
+  "connect_dart_tooling_daemon",
+  "hot_reload",
+  "hot_restart",
+  "get_widget_tree",
+  "get_runtime_errors",
+]
+
+[mcp_servers.dart-mcp.tools.launch_app]
+approval_mode = "approve"
+
+[mcp_servers.dart-mcp.tools.stop_app]
+approval_mode = "approve"
+
+[mcp_servers.dart-mcp.tools.get_app_logs]
+approval_mode = "approve"
+
+[mcp_servers.dart-mcp.tools.list_running_apps]
+approval_mode = "approve"
+
+[mcp_servers.dart-mcp.tools.connect_dart_tooling_daemon]
+approval_mode = "approve"
+
+[mcp_servers.dart-mcp.tools.hot_reload]
+approval_mode = "approve"
+
+[mcp_servers.dart-mcp.tools.hot_restart]
+approval_mode = "approve"
+
+[mcp_servers.dart-mcp.tools.get_widget_tree]
+approval_mode = "approve"
+
+[mcp_servers.dart-mcp.tools.get_runtime_errors]
+approval_mode = "approve"

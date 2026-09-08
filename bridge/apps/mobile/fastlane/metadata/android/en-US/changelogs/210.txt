@@ -1,0 +1,3 @@
+• Browse existing folders within Bridge-allowed roots when choosing a project path for a new session.
+• Improved directory selection for symlinked roots, Windows drive and UNC paths, and POSIX paths containing backslashes.
+• Directory browsing requires Bridge 1.70.0 or later.

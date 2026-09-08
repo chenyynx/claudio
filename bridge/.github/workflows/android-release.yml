@@ -1,0 +1,112 @@
+name: Android Release (Shorebird)
+on:
+  push:
+    tags:
+      - 'android/v*'
+  workflow_dispatch: {}
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  test-gate:
+    uses: ./.github/workflows/app-release-test-gate.yml
+    with:
+      release_sha: ${{ github.sha }}
+
+  release:
+    needs: test-gate
+    # Quality checks run once in the Test workflow and are enforced by test-gate.
+    runs-on: ubuntu-latest
+    env:
+      SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+      REVENUECAT_PUBLIC_KEY: ${{ secrets.REVENUECAT_PUBLIC_KEY_ANDROID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read Flutter version from .mise.toml
+        id: mise
+        run: echo "flutter_version=$(grep 'flutter' .mise.toml | sed 's/.*= *\"//' | sed 's/\"//')" >> "$GITHUB_OUTPUT"
+      - uses: shorebirdtech/setup-shorebird@4dd9d7dc2d7930bfeadb053b6e94b5110779d1e5 # v1.0.1
+        with:
+          cache: true
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ steps.mise.outputs.flutter_version }}
+          cache: true
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android NDK
+        run: |
+          SDKMANAGER="${ANDROID_HOME:?}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null
+          "$SDKMANAGER" "ndk;29.0.13846066"
+      - uses: gradle/gradle-build-action@ac2d340dc04d9e1113182899e983b5400c17cda1 # v3.5.0
+      # Android signing: decode keystore from base64 secret
+      - name: Setup Android signing
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > apps/mobile/android/keystore.jks
+          cat > apps/mobile/android/keystore.properties << EOF
+          storeFile=${{ github.workspace }}/apps/mobile/android/keystore.jks
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          EOF
+      - name: Setup Firebase config
+        run: echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > apps/mobile/android/app/google-services.json
+      - name: Use precompiled Rust artifacts for Shorebird
+        run: |
+          printf '%s\n' 'use_precompiled_binaries: true' > apps/mobile/cargokit_options.yaml
+      - run: flutter pub get
+        working-directory: apps/mobile
+      - name: Shorebird Release Android
+        working-directory: apps/mobile
+        # --no-tree-shake-icons: Prevent MaterialIcons-Regular.otf from changing
+        # between release and patch builds, which causes Shorebird asset diff warnings
+        # and prevents patches from being applied on devices.
+        # TODO: Remove once Shorebird supports asset patching (https://github.com/shorebirdtech/shorebird/issues/318)
+        run: |
+          shorebird release android \
+            --flutter-version="${{ steps.mise.outputs.flutter_version }}" \
+            -- \
+            --dart-define=REVENUECAT_PUBLIC_KEY="${REVENUECAT_PUBLIC_KEY}" \
+            --no-tree-shake-icons
+      - name: Upload to Google Play
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GCLOUD_SERVICE_ACCOUNT_CREDENTIALS }}
+          packageName: com.k9i.ccpocket
+          releaseFiles: apps/mobile/build/app/outputs/bundle/release/*.aab
+          track: internal
+          status: draft
+
+      # GitHub Release (only when triggered by tag push)
+      - name: Extract version from tag
+        if: startsWith(github.ref, 'refs/tags/')
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#android/v}" >> "$GITHUB_OUTPUT"
+      - name: Extract changelog section
+        if: startsWith(github.ref, 'refs/tags/')
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SEMVER="${VERSION%%+*}"
+          NOTES=$(awk "/^## \\[${SEMVER}\\]/{found=1; next} /^## \\[/{if(found) exit} found{print}" CHANGELOG.md)
+          {
+            echo "notes<<EOF"
+            echo "$NOTES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: ${{ steps.changelog.outputs.notes }}
+        run: |
+          printf '%s\n' "$RELEASE_NOTES" > /tmp/release_notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Android ${{ steps.version.outputs.version }}" \
+            --notes-file /tmp/release_notes.md

@@ -1,0 +1,705 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:highlight/highlight.dart' as hl;
+import 'package:markdown/markdown.dart' as md;
+import 'package:syntax_highlight/syntax_highlight.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/services.dart';
+
+import '../core/logger.dart';
+import '../l10n/app_localizations.dart';
+import '../widgets/google_search_text_selection.dart';
+import 'app_theme.dart';
+import 'code_text_style.dart';
+
+final _syntaxHighlight = _SyntaxHighlightRegistry();
+final markdownPerformanceProbe = MarkdownPerformanceProbe();
+final _highlightCache = _HighlightSpanCache(maxEntries: 80);
+
+const _maxHighlightedCodeBlockChars = 1800;
+
+class MarkdownPerformanceProbe {
+  var codeBlockBuilds = 0;
+  var codeBlockBuildMicros = 0;
+  var highlightCalls = 0;
+  var highlightMicros = 0;
+  var highlightCacheHits = 0;
+  var highlightSkipped = 0;
+
+  void reset() {
+    codeBlockBuilds = 0;
+    codeBlockBuildMicros = 0;
+    highlightCalls = 0;
+    highlightMicros = 0;
+    highlightCacheHits = 0;
+    highlightSkipped = 0;
+  }
+
+  Map<String, Object?> summary() {
+    return {
+      'codeBlockBuilds': codeBlockBuilds,
+      'codeBlockBuildMs': _roundMs(codeBlockBuildMicros),
+      'avgCodeBlockBuildMs': codeBlockBuilds == 0
+          ? 0
+          : _roundMs(codeBlockBuildMicros / codeBlockBuilds),
+      'highlightCalls': highlightCalls,
+      'highlightMs': _roundMs(highlightMicros),
+      'avgHighlightMs': highlightCalls == 0
+          ? 0
+          : _roundMs(highlightMicros / highlightCalls),
+      'highlightCacheHits': highlightCacheHits,
+      'highlightSkipped': highlightSkipped,
+    };
+  }
+
+  double _roundMs(num micros) {
+    return (micros / 1000 * 10).roundToDouble() / 10;
+  }
+}
+
+Future<void> initializeMarkdownSyntaxHighlight() async {
+  await _syntaxHighlight.initialize();
+}
+
+/// Handles tapping on markdown links by opening them in browser.
+Future<void> handleMarkdownLink(String text, String? href, String title) async {
+  if (href == null || href.isEmpty) return;
+
+  final uri = Uri.tryParse(href);
+  if (uri == null) return;
+
+  await launchMarkdownUri(uri);
+}
+
+/// Opens a markdown URI and reports whether the platform accepted it.
+Future<bool> launchMarkdownUri(Uri uri) async {
+  try {
+    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!launched) {
+      logger.warning('Failed to open URL: $uri');
+    }
+    return launched;
+  } catch (error, stackTrace) {
+    logger.error('Failed to open URL: $uri', error, stackTrace);
+    return false;
+  }
+}
+
+MarkdownStyleSheet buildMarkdownStyle(BuildContext context) {
+  final appColors = Theme.of(context).extension<AppColors>()!;
+  final theme = Theme.of(context);
+  final baseStyle = theme.textTheme.bodyMedium ?? const TextStyle();
+  final codeSettings = codeTextSettingsOf(context);
+
+  return MarkdownStyleSheet.fromTheme(theme).copyWith(
+    p: baseStyle,
+    strong: GoogleFonts.ibmPlexSans(
+      textStyle: baseStyle,
+      fontWeight: FontWeight.w700,
+    ),
+    em: baseStyle.copyWith(fontStyle: FontStyle.italic),
+    code: codeSettings.style(
+      color: baseStyle.color,
+      fontWeight: FontWeight.w600,
+      backgroundColor: Colors.transparent,
+    ),
+    codeblockDecoration: BoxDecoration(
+      color: appColors.codeBackground,
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: appColors.codeBorder),
+    ),
+    codeblockPadding: const EdgeInsets.all(12),
+    blockquoteDecoration: BoxDecoration(
+      border: Border(left: BorderSide(color: appColors.subtleText, width: 3)),
+    ),
+    blockquotePadding: const EdgeInsets.only(left: 12, top: 4, bottom: 4),
+    listBullet: baseStyle.copyWith(fontSize: 14),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Color code preview: shows a colored circle next to HEX color codes
+// ---------------------------------------------------------------------------
+
+/// Inline syntax that matches HEX color codes in backtick-quoted inline code.
+///
+/// Matches patterns like `#f00`, `#FF5733`, `#FF5733AA` inside backticks and
+/// emits a custom `colorCode` element so [ColorCodeBuilder] can render a
+/// colored swatch next to the code text.
+class ColorCodeSyntax extends md.InlineSyntax {
+  // Match backtick-wrapped hex color: `#fff`, `#FF5733`, `#FF5733AA`
+  // Negative lookbehind for backtick prevents matching inside fenced code.
+  ColorCodeSyntax()
+    : super(
+        r'`(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8}))`',
+        startCharacter: 0x60, // backtick '`'
+      );
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final colorText = match[1]!; // e.g. "#FF5733"
+    final el = md.Element('colorCode', [md.Text(colorText)]);
+    el.attributes['color'] = colorText;
+    parser.addNode(el);
+    return true;
+  }
+}
+
+/// Builds a widget for `colorCode` elements produced by [ColorCodeSyntax].
+///
+/// Renders a small colored circle followed by the color code text styled as
+/// inline code.
+class ColorCodeBuilder extends MarkdownElementBuilder {
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final colorHex = element.attributes['color'] ?? '';
+    final color = _parseHexColor(colorHex);
+    if (color == null) return null;
+
+    final codeStyle = codeTextSettingsOf(
+      context,
+    ).style(color: preferredStyle?.color, backgroundColor: Colors.transparent);
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: Theme.of(context).colorScheme.outline
+                  .withValues(alpha: 0.3),
+              width: 0.5,
+            ),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(colorHex, style: codeStyle),
+      ],
+    );
+  }
+}
+
+/// Builds fenced code blocks with language-aware syntax highlighting.
+class FencedCodeBlockBuilder extends MarkdownElementBuilder {
+  @override
+  bool isBlockElement() => true;
+
+  @override
+  Widget? visitText(md.Text text, TextStyle? preferredStyle) {
+    // flutter_markdown keeps an internal inline stack for `pre > code > text`.
+    // Returning a placeholder here ensures that stack is drained correctly
+    // before the block-level widget is produced in visitElementAfterWithContext.
+    return const SizedBox.shrink();
+  }
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final buildWatch = kDebugMode ? (Stopwatch()..start()) : null;
+    final codeElement = element.children
+        ?.whereType<md.Element>()
+        .cast<md.Element?>()
+        .firstWhere((child) => child?.tag == 'code', orElse: () => null);
+
+    final source = (codeElement?.textContent ?? element.textContent)
+        .trimRight();
+    if (source.isEmpty) return const SizedBox.shrink();
+
+    final className = codeElement?.attributes['class'] ?? '';
+    final language = _normalizeLanguage(_extractFenceLanguage(className));
+    final displayLanguage = language ?? 'text';
+    final hasExplicitLanguage = language != null;
+
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    final baseStyle = codeTextSettingsOf(context)
+        .style(height: 1.45, color: Theme.of(context).colorScheme.onSurface);
+    final highlightedSpans = highlightToTextSpans(
+      context: context,
+      source: source,
+      baseStyle: baseStyle,
+      language: language,
+    );
+    if (buildWatch != null) {
+      buildWatch.stop();
+      markdownPerformanceProbe
+        ..codeBlockBuilds += 1
+        ..codeBlockBuildMicros += buildWatch.elapsedMicroseconds;
+    }
+
+    return Container(
+      key: ValueKey(
+        'code_block_container_${displayLanguage}_${source.length}_${source.hashCode}',
+      ),
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: appColors.codeBackground,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: appColors.codeBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _CodeBlockToolbar(
+            displayLanguage: displayLanguage,
+            hasExplicitLanguage: hasExplicitLanguage,
+            baseStyle: baseStyle,
+            source: source,
+          ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: SelectableText.rich(
+              TextSpan(style: baseStyle, children: highlightedSpans),
+              contextMenuBuilder: googleSearchSelectableTextContextMenuBuilder,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CodeBlockToolbar extends StatelessWidget {
+  const _CodeBlockToolbar({
+    required this.displayLanguage,
+    required this.hasExplicitLanguage,
+    required this.baseStyle,
+    required this.source,
+  });
+
+  final String displayLanguage;
+  final bool hasExplicitLanguage;
+  final TextStyle baseStyle;
+  final String source;
+
+  @override
+  Widget build(BuildContext context) {
+    final subtleColor = Theme.of(context).colorScheme.onSurface
+        .withValues(alpha: 0.52);
+    return SizedBox(
+      height: 44,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          if (hasExplicitLanguage)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Text(
+                displayLanguage,
+                key: ValueKey('code_block_language_$displayLanguage'),
+                style: baseStyle.copyWith(
+                  fontSize: 10,
+                  letterSpacing: 0.2,
+                  color: subtleColor,
+                ),
+              ),
+            ),
+          IconButton(
+            key: ValueKey('code_block_copy_button_$displayLanguage'),
+            tooltip: AppLocalizations.of(context).copy,
+            onPressed: () => _copyCodeBlock(context, source),
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+            padding: EdgeInsets.zero,
+            iconSize: 18,
+            color: subtleColor,
+            icon: const Icon(Icons.content_copy_rounded),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+void _copyCodeBlock(BuildContext context, String source) {
+  Clipboard.setData(ClipboardData(text: source));
+  HapticFeedback.lightImpact();
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(AppLocalizations.of(context).copied),
+      duration: const Duration(seconds: 1),
+    ),
+  );
+}
+
+String? _extractFenceLanguage(String className) {
+  if (className.isEmpty) return null;
+  for (final token in className.split(' ')) {
+    if (token.startsWith('language-') && token.length > 9) {
+      return token.substring(9);
+    }
+    if (token.startsWith('lang-') && token.length > 5) {
+      return token.substring(5);
+    }
+  }
+  return null;
+}
+
+String? _normalizeLanguage(String? language) {
+  if (language == null || language.isEmpty) return null;
+  switch (language.toLowerCase()) {
+    case 'ts':
+      return 'typescript';
+    case 'js':
+      return 'javascript';
+    case 'py':
+      return 'python';
+    case 'kt':
+      return 'kotlin';
+    case 'rs':
+      return 'rust';
+    case 'sh':
+    case 'zsh':
+      return 'bash';
+    case 'yml':
+      return 'yaml';
+    case 'objc':
+      return 'objectivec';
+    case 'plain':
+    case 'plaintext':
+    case 'text':
+      return null;
+    default:
+      return language.toLowerCase();
+  }
+}
+
+List<TextSpan> highlightToTextSpans({
+  required BuildContext context,
+  required String source,
+  required TextStyle baseStyle,
+  required String? language,
+}) {
+  if (source.length > _maxHighlightedCodeBlockChars) {
+    if (kDebugMode) markdownPerformanceProbe.highlightSkipped += 1;
+    return [TextSpan(text: source, style: baseStyle)];
+  }
+
+  final isDark = Theme.of(context).brightness == Brightness.dark;
+  final cacheKey = _HighlightCacheKey(
+    language: language ?? 'text',
+    source: source,
+    brightness: isDark ? Brightness.dark : Brightness.light,
+  );
+  final cached = _highlightCache.get(cacheKey);
+  if (cached != null) {
+    if (kDebugMode) markdownPerformanceProbe.highlightCacheHits += 1;
+    return cached;
+  }
+
+  final watch = kDebugMode ? (Stopwatch()..start()) : null;
+  List<TextSpan> finish(List<TextSpan> spans) {
+    if (watch != null) {
+      watch.stop();
+      markdownPerformanceProbe
+        ..highlightCalls += 1
+        ..highlightMicros += watch.elapsedMicroseconds;
+    }
+    _highlightCache.put(cacheKey, spans);
+    return spans;
+  }
+
+  if (language == null) {
+    return finish([TextSpan(text: source, style: baseStyle)]);
+  }
+
+  TextSpan? editorStyleSpan;
+  try {
+    // Temporary fallback until syntax_highlight merges
+    // https://github.com/serverpod/syntax_highlight/pull/21.
+    editorStyleSpan = _syntaxHighlight.highlight(
+      context: context,
+      source: source,
+      language: language,
+    );
+  } catch (error, stackTrace) {
+    logger.warning(
+      '[markdown] syntax_highlight failed for language=$language',
+      error,
+      stackTrace,
+    );
+  }
+  if (editorStyleSpan != null) {
+    return finish([editorStyleSpan]);
+  }
+
+  hl.Result? result;
+  try {
+    result = hl.highlight.parse(source, language: language);
+  } catch (_) {
+    result = null;
+  }
+
+  if (result == null || result.nodes == null || result.nodes!.isEmpty) {
+    return finish([TextSpan(text: source, style: baseStyle)]);
+  }
+
+  return finish(
+    _nodesToTextSpans(
+      context: context,
+      nodes: result.nodes!,
+      baseStyle: baseStyle,
+    ),
+  );
+}
+
+List<TextSpan> _nodesToTextSpans({
+  required BuildContext context,
+  required List<hl.Node> nodes,
+  required TextStyle baseStyle,
+}) {
+  final spans = <TextSpan>[];
+  for (final node in nodes) {
+    if (node.value != null) {
+      spans.add(
+        TextSpan(
+          text: node.value,
+          style: _styleForHighlightClass(context, baseStyle, node.className),
+        ),
+      );
+      continue;
+    }
+    if (node.children != null && node.children!.isNotEmpty) {
+      spans.add(
+        TextSpan(
+          style: _styleForHighlightClass(context, baseStyle, node.className),
+          children: _nodesToTextSpans(
+            context: context,
+            nodes: node.children!,
+            baseStyle: baseStyle,
+          ),
+        ),
+      );
+    }
+  }
+  return spans;
+}
+
+TextStyle _styleForHighlightClass(
+  BuildContext context,
+  TextStyle baseStyle,
+  String? className,
+) {
+  if (className == null || className.isEmpty) return baseStyle;
+
+  final cs = Theme.of(context).colorScheme;
+  final appColors = Theme.of(context).extension<AppColors>()!;
+  final token = className.toLowerCase();
+
+  if (token.contains('comment') || token.contains('quote')) {
+    return baseStyle.copyWith(
+      color: appColors.subtleText,
+      fontStyle: FontStyle.italic,
+    );
+  }
+  if (token.contains('string') ||
+      token.contains('regexp') ||
+      token.contains('subst')) {
+    return baseStyle.copyWith(color: cs.tertiary);
+  }
+  if (token.contains('number') ||
+      token.contains('literal') ||
+      token.contains('symbol')) {
+    return baseStyle.copyWith(color: cs.secondary);
+  }
+  if (token.contains('keyword') ||
+      token.contains('selector-tag') ||
+      token.contains('doctag')) {
+    return baseStyle.copyWith(color: cs.primary, fontWeight: FontWeight.w600);
+  }
+  if (token.contains('title') ||
+      token.contains('function') ||
+      token.contains('class') ||
+      token.contains('type') ||
+      token.contains('built_in')) {
+    return baseStyle.copyWith(color: cs.primary, fontWeight: FontWeight.w600);
+  }
+  if (token.contains('attr') ||
+      token.contains('attribute') ||
+      token.contains('variable') ||
+      token.contains('name') ||
+      token.contains('params')) {
+    return baseStyle.copyWith(color: cs.onSurface);
+  }
+  if (token.contains('meta') || token.contains('bullet')) {
+    return baseStyle.copyWith(color: cs.secondary, fontWeight: FontWeight.w500);
+  }
+  return baseStyle;
+}
+
+class _HighlightCacheKey {
+  final String language;
+  final String source;
+  final Brightness brightness;
+
+  const _HighlightCacheKey({
+    required this.language,
+    required this.source,
+    required this.brightness,
+  });
+
+  @override
+  bool operator ==(Object other) {
+    return other is _HighlightCacheKey &&
+        other.language == language &&
+        other.source == source &&
+        other.brightness == brightness;
+  }
+
+  @override
+  int get hashCode => Object.hash(language, source, brightness);
+}
+
+class _HighlightSpanCache {
+  final int maxEntries;
+  final Map<_HighlightCacheKey, List<TextSpan>> _entries = {};
+
+  _HighlightSpanCache({required this.maxEntries});
+
+  List<TextSpan>? get(_HighlightCacheKey key) {
+    final value = _entries.remove(key);
+    if (value == null) return null;
+    _entries[key] = value;
+    return value;
+  }
+
+  void put(_HighlightCacheKey key, List<TextSpan> value) {
+    _entries.remove(key);
+    _entries[key] = value;
+    while (_entries.length > maxEntries) {
+      _entries.remove(_entries.keys.first);
+    }
+  }
+}
+
+class _SyntaxHighlightRegistry {
+  static const _supportedLanguages = <String>[
+    'css',
+    'dart',
+    'go',
+    'html',
+    'java',
+    'javascript',
+    'json',
+    'kotlin',
+    'python',
+    'rust',
+    'sql',
+    'swift',
+    'typescript',
+    'yaml',
+  ];
+
+  final Map<String, Highlighter> _light = {};
+  final Map<String, Highlighter> _dark = {};
+  bool _initialized = false;
+
+  Future<void> initialize() async {
+    if (_initialized) return;
+    await Highlighter.initialize(_supportedLanguages);
+    final lightTheme = await HighlighterTheme.loadLightTheme();
+    final darkTheme = await HighlighterTheme.loadDarkTheme();
+    for (final language in _supportedLanguages) {
+      _light[language] = Highlighter(language: language, theme: lightTheme);
+      _dark[language] = Highlighter(language: language, theme: darkTheme);
+    }
+    _initialized = true;
+  }
+
+  TextSpan? highlight({
+    required BuildContext context,
+    required String source,
+    required String language,
+  }) {
+    if (!_initialized) return null;
+    final normalized = _syntaxLanguage(language);
+    if (normalized == null) return null;
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final highlighter = isDark ? _dark[normalized] : _light[normalized];
+    return highlighter?.highlight(source);
+  }
+
+  String? _syntaxLanguage(String language) {
+    switch (language) {
+      case 'js':
+        return 'javascript';
+      case 'ts':
+        return 'typescript';
+      case 'py':
+        return 'python';
+      case 'kt':
+        return 'kotlin';
+      case 'rs':
+        return 'rust';
+      case 'yml':
+        return 'yaml';
+      case 'dart':
+      case 'go':
+      case 'html':
+      case 'java':
+      case 'javascript':
+      case 'json':
+      case 'kotlin':
+      case 'python':
+      case 'rust':
+      case 'sql':
+      case 'swift':
+      case 'typescript':
+      case 'yaml':
+      case 'css':
+        return language;
+      default:
+        return null;
+    }
+  }
+}
+
+/// Parses a HEX color string into a [Color].
+///
+/// Supports 3-digit (#RGB), 4-digit (#RGBA), 6-digit (#RRGGBB),
+/// and 8-digit (#RRGGBBAA) formats.
+Color? _parseHexColor(String hex) {
+  if (!hex.startsWith('#')) return null;
+  final h = hex.substring(1);
+  switch (h.length) {
+    case 3: // #RGB → #RRGGBB
+      final r = h[0], g = h[1], b = h[2];
+      return Color(int.parse('FF$r$r$g$g$b$b', radix: 16));
+    case 4: // #RGBA → #RRGGBBAA
+      final r = h[0], g = h[1], b = h[2], a = h[3];
+      return Color(int.parse('$a$a$r$r$g$g$b$b', radix: 16));
+    case 6: // #RRGGBB
+      return Color(int.parse('FF$h', radix: 16));
+    case 8: // #RRGGBBAA
+      final rgb = h.substring(0, 6);
+      final alpha = h.substring(6, 8);
+      return Color(int.parse('$alpha$rgb', radix: 16));
+    default:
+      return null;
+  }
+}
+
+/// Custom inline syntaxes for color code preview.
+List<md.InlineSyntax> get colorCodeInlineSyntaxes => [ColorCodeSyntax()];
+
+/// Custom element builders for color code preview.
+Map<String, MarkdownElementBuilder> get markdownBuilders => {
+  'colorCode': ColorCodeBuilder(),
+  'pre': FencedCodeBlockBuilder(),
+};

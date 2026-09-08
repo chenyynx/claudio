@@ -1,0 +1,2 @@
+• Fixed reasoning-effort options for GPT-6 Astra. Unsupported None and Minimal options are hidden, and saved selections are moved to Light.
+• Requires Bridge 1.81.2 or later.

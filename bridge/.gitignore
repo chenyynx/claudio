@@ -1,0 +1,88 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment
+.env
+.env.local
+.env.*
+!.env.example
+!.env.template
+
+# Firebase / FlutterFire local state
+.firebaserc
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+**/.firebase/
+**/firebase-debug.log
+**/firebase-debug.*.log
+**/.runtimeconfig.json
+**/.secret.local
+apps/mobile/android/app/google-services.json
+apps/mobile/ios/Runner/GoogleService-Info.plist
+apps/mobile/lib/firebase_options.dart
+
+# Secrets / signing keys / certificates
+*.pem
+*.key
+*.crt
+*.cer
+*.p8
+*.p12
+*.mobileprovision
+*.jks
+*.keystore
+key.properties
+keystore.properties
+*service-account*.json
+*firebase-adminsdk*.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Flutter
+apps/mobile/.dart_tool/
+apps/mobile/.packages
+apps/mobile/.pub-cache/
+apps/mobile/.pub/
+apps/mobile/build/
+apps/mobile/.flutter-plugins
+apps/mobile/.flutter-plugins-dependencies
+
+# TypeScript
+*.tsbuildinfo
+
+# Coverage
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Agent memory (local scope)
+.claude/agent-memory-local/
+
+# Playwright CLI
+.playwright-cli/
+
+# Web preview artifacts
+web-preview.png
+
+# Codex investigation artifacts
+.codex-tmp/
+
+# Local verification fixture repos
+tmp/verification/issue54-path/
+
+# SSH smoke test generated credentials
+tools/ssh-jump-smoke/generated/

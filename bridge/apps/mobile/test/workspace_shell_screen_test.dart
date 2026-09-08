@@ -1,0 +1,1982 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
+import 'package:ccpocket/features/session_list/session_list_screen.dart';
+import 'package:ccpocket/features/session_list/workspace_shell_screen.dart';
+import 'package:ccpocket/features/settings/state/settings_cubit.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
+import 'package:ccpocket/models/machine.dart';
+import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/providers/bridge_cubits.dart';
+import 'package:ccpocket/providers/machine_manager_cubit.dart';
+import 'package:ccpocket/providers/server_discovery_cubit.dart';
+import 'package:ccpocket/services/app_icon_service.dart';
+import 'package:ccpocket/services/bridge_service.dart';
+import 'package:ccpocket/services/draft_service.dart';
+import 'package:ccpocket/services/in_app_review_service.dart';
+import 'package:ccpocket/services/machine_manager_service.dart';
+import 'package:ccpocket/services/notification_service.dart';
+import 'package:ccpocket/services/revenuecat_service.dart';
+import 'package:ccpocket/services/ssh_startup_service.dart';
+import 'package:ccpocket/services/support_banner_service.dart';
+import 'package:ccpocket/theme/app_theme.dart';
+import 'package:ccpocket/widgets/session_card.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart' hide Provider;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'helpers/bridge_version_test_values.dart';
+
+class _MockBridgeService extends BridgeService {
+  final _connectionController =
+      StreamController<BridgeConnectionState>.broadcast();
+  final _messageController = StreamController<ServerMessage>.broadcast();
+  final _activeSessionsController =
+      StreamController<List<SessionInfo>>.broadcast();
+  final _stoppedSessionsController = StreamController<String>.broadcast();
+  final _recentSessionsController =
+      StreamController<List<RecentSession>>.broadcast();
+  final _galleryController = StreamController<List<GalleryImage>>.broadcast();
+  final _projectHistoryController = StreamController<List<String>>.broadcast();
+  final _fileListController = StreamController<List<String>>.broadcast();
+
+  BridgeConnectionState _state;
+  List<SessionInfo> _sessions = const [];
+  List<GalleryImage> _images = const [];
+  final String? _lastUrl;
+  final sentMessages = <ClientMessage>[];
+  bool disconnectCalled = false;
+
+  _MockBridgeService({
+    BridgeConnectionState initialState = BridgeConnectionState.connected,
+    String? lastUrl,
+  }) : _state = initialState,
+       _lastUrl = lastUrl;
+
+  @override
+  Stream<BridgeConnectionState> get connectionStatus =>
+      _connectionController.stream;
+
+  @override
+  Stream<ServerMessage> get messages => _messageController.stream;
+
+  @override
+  Stream<List<SessionInfo>> get sessionList => _activeSessionsController.stream;
+
+  @override
+  Stream<String> get stoppedSessions => _stoppedSessionsController.stream;
+
+  @override
+  Stream<List<RecentSession>> get recentSessionsStream =>
+      _recentSessionsController.stream;
+
+  @override
+  Stream<List<GalleryImage>> get galleryStream => _galleryController.stream;
+
+  @override
+  Stream<List<String>> get projectHistoryStream =>
+      _projectHistoryController.stream;
+
+  @override
+  Stream<List<String>> get fileList => _fileListController.stream;
+
+  @override
+  bool get isConnected => _state == BridgeConnectionState.connected;
+
+  @override
+  String? get lastUrl => _lastUrl;
+
+  @override
+  List<SessionInfo> get sessions => _sessions;
+
+  @override
+  String? get httpBaseUrl => 'http://localhost:8765';
+
+  @override
+  bool get recentSessionsHasMore => false;
+
+  @override
+  String? get currentProjectFilter => null;
+
+  @override
+  List<GalleryImage> get galleryImages => _images;
+
+  void emitConnection(BridgeConnectionState state) {
+    _state = state;
+    _connectionController.add(state);
+  }
+
+  void emitSessions(List<SessionInfo> sessions) {
+    _sessions = sessions;
+    _activeSessionsController.add(sessions);
+  }
+
+  void emitStopped(String sessionId) {
+    _stoppedSessionsController.add(sessionId);
+  }
+
+  void emitRecentSessions(List<RecentSession> sessions) {
+    _recentSessionsController.add(sessions);
+  }
+
+  void emitMessage(ServerMessage message) {
+    _messageController.add(message);
+  }
+
+  void setGalleryImages(List<GalleryImage> images) {
+    _images = images;
+    _galleryController.add(images);
+  }
+
+  @override
+  void requestSessionList() {}
+
+  @override
+  void requestProjectHistory() {}
+
+  @override
+  void requestRecentSessions({int? limit, int? offset, String? projectPath}) {}
+
+  @override
+  void switchFilter({
+    String? projectPath,
+    String? provider,
+    bool? namedOnly,
+    String? searchQuery,
+    int pageSize = 20,
+  }) {}
+
+  @override
+  void loadMoreRecentSessions({
+    int pageSize = 20,
+    String? projectPath,
+    int? offset,
+    String requestScope = 'list',
+  }) {}
+
+  @override
+  void requestGallery({String? projectPath, String? sessionId}) {
+    _galleryController.add(_images);
+  }
+
+  @override
+  void stopSession(String sessionId) {
+    emitStopped(sessionId);
+  }
+
+  @override
+  void requestSessionHistory(String sessionId) {}
+
+  @override
+  void requestFileList(String projectPath) {}
+
+  @override
+  void interrupt(String sessionId) {}
+
+  @override
+  void send(ClientMessage message) {
+    sentMessages.add(message);
+  }
+
+  @override
+  void disconnect() {
+    disconnectCalled = true;
+    emitConnection(BridgeConnectionState.disconnected);
+  }
+
+  @override
+  void dispose() {
+    _connectionController.close();
+    _messageController.close();
+    _activeSessionsController.close();
+    _stoppedSessionsController.close();
+    _recentSessionsController.close();
+    _galleryController.close();
+    _projectHistoryController.close();
+    _fileListController.close();
+  }
+}
+
+class _FakeRevenueCatService extends RevenueCatService {
+  _FakeRevenueCatService()
+    : super(publicApiKey: '', platform: TargetPlatform.macOS) {
+    supporterState.value = const SupporterState.inactive();
+    catalogState.value = const SupportCatalogState.unavailable();
+  }
+}
+
+class _SeededSettingsCubit extends SettingsCubit {
+  _SeededSettingsCubit(super.prefs, {required String? activeMachineId}) {
+    emit(state.copyWith(activeMachineId: activeMachineId));
+  }
+}
+
+class _FakeSshStartupService extends SshStartupService {
+  final Completer<SshResult> updateCompleter = Completer<SshResult>();
+
+  _FakeSshStartupService(super.machineManager);
+
+  @override
+  Future<SshResult> updateBridgeServer(
+    String machineId, {
+    String? password,
+    Future<String?> Function()? promptForPassword,
+  }) {
+    return updateCompleter.future;
+  }
+}
+
+class _StaticMachineManagerService implements MachineManagerService {
+  final _controller = StreamController<List<MachineWithStatus>>.broadcast();
+  List<MachineWithStatus> statuses;
+  final String? sshPassword;
+
+  _StaticMachineManagerService({this.statuses = const [], this.sshPassword});
+
+  @override
+  Stream<List<MachineWithStatus>> get machines => _controller.stream;
+
+  @override
+  List<Machine> get currentMachines =>
+      statuses.map((status) => status.machine).toList();
+
+  @override
+  List<MachineWithStatus> get machinesWithStatus => statuses;
+
+  @override
+  Future<void> init() async {
+    _controller.add(statuses);
+  }
+
+  @override
+  Future<void> checkAllHealth() async {
+    _controller.add(statuses);
+  }
+
+  @override
+  Future<MachineStatus> checkHealth(
+    String machineId, {
+    Duration timeout = const Duration(seconds: 5),
+    String? password,
+    Future<String?> Function()? promptForPassword,
+  }) async {
+    for (final status in statuses) {
+      if (status.machine.id == machineId) return status.status;
+    }
+    return MachineStatus.unknown;
+  }
+
+  @override
+  Future<Machine> recordConnection({
+    required String host,
+    required int port,
+    String? apiKey,
+    String? name,
+    bool? useSsl,
+    BridgeConnectionMode? connectionMode,
+  }) async => Machine(
+    id: 'recorded',
+    host: host,
+    port: port,
+    name: name,
+    useSsl: useSsl ?? false,
+    connectionMode: connectionMode ?? BridgeConnectionMode.automatic,
+  );
+
+  @override
+  Future<void> addMachine(
+    Machine machine, {
+    String? apiKey,
+    String? sshPassword,
+    String? sshPrivateKey,
+    String? sshJumpPassword,
+    String? sshJumpPrivateKey,
+  }) async {}
+
+  @override
+  Future<void> updateMachine(
+    Machine machine, {
+    String? apiKey,
+    String? sshPassword,
+    String? sshPrivateKey,
+    String? sshJumpPassword,
+    String? sshJumpPrivateKey,
+    bool clearApiKey = false,
+    bool clearCredentials = false,
+    bool clearJumpCredentials = false,
+  }) async {}
+
+  @override
+  Future<void> deleteMachine(String id) async {}
+
+  @override
+  Future<void> toggleFavorite(String machineId) async {}
+
+  @override
+  Machine? getMachine(String id) {
+    for (final status in statuses) {
+      if (status.machine.id == id) return status.machine;
+    }
+    return null;
+  }
+
+  @override
+  Future<String?> getApiKey(String machineId) async => null;
+
+  @override
+  Future<String?> getSshPassword(String machineId) async => sshPassword;
+
+  @override
+  Future<String?> getSshPrivateKey(String machineId) async => null;
+
+  @override
+  Future<String?> getSshJumpPassword(String machineId) async => null;
+
+  @override
+  Future<String?> getSshJumpPrivateKey(String machineId) async => null;
+
+  @override
+  Future<String> buildWsUrl(String machineId) async => 'ws://127.0.0.1:8765';
+
+  @override
+  Future<String> buildWsUrlWithSshCredentials(
+    String machineId, {
+    String? password,
+    Future<String?> Function()? promptForPassword,
+  }) async => 'ws://127.0.0.1:8765';
+
+  @override
+  void configureBridgeTunnelResolvers({
+    BridgeWsUrlResolver? wsUrlResolver,
+    BridgeHttpBaseUrlResolver? httpBaseUrlResolver,
+  }) {}
+
+  @override
+  Machine createNew({
+    String? name,
+    required String host,
+    int port = 8765,
+    bool useSsl = false,
+  }) => Machine(id: 'new', host: host, port: port, name: name, useSsl: useSsl);
+
+  @override
+  Machine? findByHostPort(String host, int port) {
+    for (final status in statuses) {
+      final machine = status.machine;
+      if (machine.host == host && machine.port == port) return machine;
+    }
+    return null;
+  }
+
+  @override
+  void startPeriodicHealthCheck({Duration? interval}) {}
+
+  @override
+  void stopPeriodicHealthCheck() {}
+
+  @override
+  void dispose() {
+    _controller.close();
+  }
+
+  void replaceStatuses(List<MachineWithStatus> nextStatuses) {
+    statuses = nextStatuses;
+    _controller.add(statuses);
+  }
+}
+
+Widget _buildWorkspaceApp({
+  required _MockBridgeService bridge,
+  required SettingsCubit settingsCubit,
+  required DraftService draftService,
+  required RevenueCatService revenueCatService,
+  required SupportBannerService supportBannerService,
+  List<RecentSession>? debugRecentSessions,
+  GlobalKey<WorkspaceShellScreenState>? shellKey,
+  TargetPlatform platform = TargetPlatform.macOS,
+  Locale locale = const Locale('en'),
+  bool sessionListOnly = false,
+  MachineManagerCubit? machineManagerCubit,
+  ValueChanged<WorkspaceSessionSelection>? onSelectWorkspaceSession,
+}) {
+  final sessionListCubit = SessionListCubit(bridge: bridge);
+  final connectionCubit = ConnectionCubit(
+    bridge.isConnected
+        ? BridgeConnectionState.connected
+        : BridgeConnectionState.disconnected,
+    bridge.connectionStatus,
+  );
+  final activeSessionsCubit = ActiveSessionsCubit(const [], bridge.sessionList);
+  final galleryCubit = GalleryCubit(const [], bridge.galleryStream);
+  final fileListCubit = FileListCubit(const [], bridge.fileList);
+  final projectHistoryCubit = ProjectHistoryCubit(
+    const [],
+    bridge.projectHistoryStream,
+  );
+  final workspaceProjectsCubit = WorkspaceProjectsCubit(
+    bridge.projectsState,
+    bridge.projectsStream,
+  );
+  final resolvedMachineManagerCubit =
+      machineManagerCubit ??
+      MachineManagerCubit(_StaticMachineManagerService(), null);
+
+  return MultiRepositoryProvider(
+    providers: [
+      RepositoryProvider<BridgeService>.value(value: bridge),
+      RepositoryProvider<DraftService>.value(value: draftService),
+      RepositoryProvider<RevenueCatService>.value(value: revenueCatService),
+      ChangeNotifierProvider<SupportBannerService>.value(
+        value: supportBannerService,
+      ),
+    ],
+    child: MultiBlocProvider(
+      providers: [
+        BlocProvider<ConnectionCubit>.value(value: connectionCubit),
+        BlocProvider<ActiveSessionsCubit>.value(value: activeSessionsCubit),
+        BlocProvider<GalleryCubit>.value(value: galleryCubit),
+        BlocProvider<FileListCubit>.value(value: fileListCubit),
+        BlocProvider<ProjectHistoryCubit>.value(value: projectHistoryCubit),
+        BlocProvider<WorkspaceProjectsCubit>.value(
+          value: workspaceProjectsCubit,
+        ),
+        BlocProvider<SessionListCubit>.value(value: sessionListCubit),
+        BlocProvider<MachineManagerCubit>.value(
+          value: resolvedMachineManagerCubit,
+        ),
+        BlocProvider<SettingsCubit>.value(value: settingsCubit),
+        BlocProvider<ServerDiscoveryCubit>(
+          create: (_) => ServerDiscoveryCubit(),
+        ),
+      ],
+      child: MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: locale,
+        theme: AppTheme.darkTheme.copyWith(platform: platform),
+        home: Scaffold(
+          body: SizedBox(
+            width: 1400,
+            height: 900,
+            child: sessionListOnly
+                ? SessionListScreen(
+                    debugRecentSessions: debugRecentSessions,
+                    embedded: onSelectWorkspaceSession != null,
+                    onSelectWorkspaceSession: onSelectWorkspaceSession,
+                  )
+                : WorkspaceShellScreen(
+                    key: shellKey,
+                    debugRecentSessions: debugRecentSessions,
+                  ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+RecentSession _recentSession(String id) => RecentSession(
+  sessionId: id,
+  firstPrompt: 'Prompt $id',
+  created: '2025-01-01T00:00:00Z',
+  modified: '2025-01-01T00:00:00Z',
+  gitBranch: 'main',
+  projectPath: '/Users/demo/project-$id',
+  isSidechain: false,
+);
+
+SessionInfo _runningSession({
+  required String id,
+  Provider provider = Provider.claude,
+}) => SessionInfo(
+  id: id,
+  provider: provider.value,
+  projectPath: '/Users/demo/project-$id',
+  status: 'idle',
+  createdAt: '2025-01-01T00:00:00Z',
+  lastActivityAt: '2025-01-01T00:00:00Z',
+  gitBranch: 'main',
+  lastMessage: 'Waiting',
+);
+
+Future<SettingsCubit> _createSettingsCubit(_MockBridgeService bridge) async {
+  final prefs = await SharedPreferences.getInstance();
+  final revenueCatService = _FakeRevenueCatService();
+  return SettingsCubit(
+    prefs,
+    bridgeService: bridge,
+    revenueCatService: revenueCatService,
+    appIconService: AppIconService(platform: TargetPlatform.macOS),
+  );
+}
+
+Future<SupportBannerService> _createSupportBannerService() async {
+  final prefs = await SharedPreferences.getInstance();
+  return SupportBannerService(
+    prefs: prefs,
+    reviewService: InAppReviewService(prefs: prefs),
+  );
+}
+
+Future<void> _pumpUi(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 100));
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    NotificationService.instance.clearActiveSession();
+  });
+
+  testWidgets('shows a scoped localized Codex writer conflict', (tester) async {
+    final bridge = _MockBridgeService();
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        debugRecentSessions: [_recentSession('one')],
+        locale: const Locale('ja'),
+        sessionListOnly: true,
+      ),
+    );
+    bridge.emitRecentSessions([_recentSession('one')]);
+    await _pumpUi(tester);
+
+    await tester.tap(find.byKey(const ValueKey('recent_session_one')));
+    await _pumpUi(tester);
+    final firstResumeRequestId =
+        (jsonDecode(bridge.sentMessages.last.toJson())
+                as Map<String, dynamic>)['resumeRequestId']
+            as String;
+
+    bridge.emitMessage(
+      SystemMessage(
+        subtype: 'session_resume_failed',
+        sourceSessionId: 'other-session',
+        resumeRequestId: firstResumeRequestId,
+      ),
+    );
+    await tester.pump();
+
+    bridge.emitMessage(
+      ErrorMessage(
+        message: 'writer conflict',
+        errorCode: 'codex_thread_writer_conflict',
+        sessionId: 'other-session',
+        requestId: firstResumeRequestId,
+      ),
+    );
+    await tester.pump();
+    expect(
+      find.text('Codex Desktop または Codex App を閉じてから、もう一度お試しください。'),
+      findsNothing,
+    );
+
+    bridge.emitMessage(
+      SystemMessage(
+        subtype: 'session_resume_failed',
+        sourceSessionId: 'one',
+        resumeRequestId: firstResumeRequestId,
+      ),
+    );
+    bridge.emitMessage(
+      ErrorMessage(
+        message: 'writer conflict',
+        errorCode: 'codex_thread_writer_conflict',
+        sessionId: 'one',
+        requestId: firstResumeRequestId,
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.text('Codex Desktop または Codex App を閉じてから、もう一度お試しください。'),
+      findsOneWidget,
+    );
+
+    final messenger = tester.state<ScaffoldMessengerState>(
+      find.byType(ScaffoldMessenger),
+    );
+    messenger.hideCurrentSnackBar();
+    await tester.pumpAndSettle();
+    bridge.emitMessage(
+      ErrorMessage(
+        message: 'writer conflict',
+        errorCode: 'codex_thread_writer_conflict',
+        sessionId: 'one',
+        requestId: firstResumeRequestId,
+      ),
+    );
+    await tester.pump();
+    expect(
+      find.text('Codex Desktop または Codex App を閉じてから、もう一度お試しください。'),
+      findsNothing,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('recent_session_one')));
+    await _pumpUi(tester);
+    final secondResumeRequestId =
+        (jsonDecode(bridge.sentMessages.last.toJson())
+                as Map<String, dynamic>)['resumeRequestId']
+            as String;
+    expect(secondResumeRequestId, isNot(firstResumeRequestId));
+    bridge.emitMessage(
+      SystemMessage(
+        subtype: 'session_resume_failed',
+        sourceSessionId: 'one',
+        resumeRequestId: secondResumeRequestId,
+      ),
+    );
+    bridge.emitMessage(
+      ErrorMessage(
+        message: 'restore timed out',
+        sessionId: 'one',
+        requestId: secondResumeRequestId,
+      ),
+    );
+    bridge.emitMessage(
+      ErrorMessage(
+        message: 'late writer conflict',
+        errorCode: 'codex_thread_writer_conflict',
+        sessionId: 'one',
+        requestId: secondResumeRequestId,
+      ),
+    );
+    await tester.pump();
+    expect(
+      find.text('Codex Desktop または Codex App を閉じてから、もう一度お試しください。'),
+      findsNothing,
+    );
+  });
+
+  testWidgets(
+    'matching resume creation selects session and clears correlation',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      WorkspaceSessionSelection? selectedSession;
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          debugRecentSessions: [_recentSession('one')],
+          sessionListOnly: true,
+          onSelectWorkspaceSession: (selection) => selectedSession = selection,
+        ),
+      );
+      bridge.emitRecentSessions([_recentSession('one')]);
+      await _pumpUi(tester);
+
+      final recentSession = find.byKey(const ValueKey('recent_session_one'));
+      await tester.scrollUntilVisible(
+        recentSession,
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(recentSession);
+      await _pumpUi(tester);
+      final resumeRequestId =
+          (jsonDecode(bridge.sentMessages.last.toJson())
+                  as Map<String, dynamic>)['resumeRequestId']
+              as String;
+
+      bridge.emitMessage(
+        SystemMessage(
+          subtype: 'session_created',
+          sessionId: 'resumed-one',
+          resumeRequestId: resumeRequestId,
+          provider: 'codex',
+          projectPath: '/Users/demo/project-one',
+        ),
+      );
+      await _pumpUi(tester);
+
+      expect(selectedSession?.sessionId, 'resumed-one');
+
+      bridge.emitMessage(
+        SystemMessage(
+          subtype: 'session_resume_failed',
+          sourceSessionId: 'one',
+          resumeRequestId: resumeRequestId,
+        ),
+      );
+      bridge.emitMessage(
+        ErrorMessage(
+          message: 'late writer conflict',
+          errorCode: 'codex_thread_writer_conflict',
+          sessionId: 'one',
+          requestId: resumeRequestId,
+        ),
+      );
+      await tester.pump();
+      expect(
+        find.text('Close Codex Desktop or the Codex App, then try again.'),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets('settings overlay back restores selected session root', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService();
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+    final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        debugRecentSessions: [_recentSession('one')],
+        shellKey: shellKey,
+      ),
+    );
+    await _pumpUi(tester);
+
+    shellKey.currentState!.selectSession(
+      const WorkspaceSessionSelection(
+        sessionId: 'pending-1',
+        projectPath: '/Users/demo/project-one',
+        provider: Provider.codex,
+        isPending: true,
+      ),
+    );
+    await _pumpUi(tester);
+
+    expect(find.text('Creating session...'), findsOneWidget);
+    expect(find.byKey(const ValueKey('session_back_button')), findsNothing);
+
+    shellKey.currentState!.openSettingsCenter();
+    await _pumpUi(tester);
+    expect(find.text('Settings'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('embedded_settings_back_button')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('embedded_settings_back_button')),
+    );
+    await _pumpUi(tester);
+    expect(find.text('Creating session...'), findsOneWidget);
+    expect(NotificationService.instance.activeSessionId, 'pending-1');
+  });
+
+  testWidgets('settings overlay back restores offline landing root', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService();
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+    final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        shellKey: shellKey,
+      ),
+    );
+    await _pumpUi(tester);
+
+    shellKey.currentState!.openSettingsCenter();
+    await _pumpUi(tester);
+
+    expect(find.text('Settings'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('embedded_settings_back_button')),
+    );
+    await _pumpUi(tester);
+
+    expect(
+      find.text('Create a session from New in the left pane.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'opening gallery overlay replaces settings and back restores session root',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      bridge.setGalleryImages([
+        const GalleryImage(
+          id: 'img-1',
+          url: '/api/gallery/img-1',
+          mimeType: 'image/png',
+          projectPath: '/Users/demo/project-one',
+          projectName: 'project-one',
+          addedAt: '2025-01-01T00:00:00Z',
+          sizeBytes: 100,
+        ),
+      ]);
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          debugRecentSessions: [_recentSession('one')],
+          shellKey: shellKey,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'pending-1',
+          projectPath: '/Users/demo/project-one',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.openSettingsCenter();
+      await _pumpUi(tester);
+
+      shellKey.currentState!.openGlobalGalleryCenter();
+      await _pumpUi(tester);
+      expect(
+        find.byKey(const ValueKey('embedded_gallery_back_button')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Gallery'), findsWidgets);
+
+      await tester.tap(
+        find.byKey(const ValueKey('embedded_gallery_back_button')),
+      );
+      await _pumpUi(tester);
+
+      expect(find.text('Creating session...'), findsOneWidget);
+      expect(NotificationService.instance.activeSessionId, 'pending-1');
+    },
+  );
+
+  testWidgets(
+    'opening gallery overlay replaces settings and back restores offline landing',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      bridge.setGalleryImages([
+        const GalleryImage(
+          id: 'img-1',
+          url: '/api/gallery/img-1',
+          mimeType: 'image/png',
+          projectPath: '/Users/demo/project-one',
+          projectName: 'project-one',
+          addedAt: '2025-01-01T00:00:00Z',
+          sizeBytes: 100,
+        ),
+      ]);
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          shellKey: shellKey,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.openSettingsCenter();
+      await _pumpUi(tester);
+
+      shellKey.currentState!.openGlobalGalleryCenter();
+      await _pumpUi(tester);
+
+      expect(
+        find.byKey(const ValueKey('embedded_gallery_back_button')),
+        findsOneWidget,
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('embedded_gallery_back_button')),
+      );
+      await _pumpUi(tester);
+
+      expect(
+        find.text('Create a session from New in the left pane.'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'selecting another session while overlay is open clears overlay',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      bridge.setGalleryImages([
+        const GalleryImage(
+          id: 'img-1',
+          url: '/api/gallery/img-1',
+          mimeType: 'image/png',
+          projectPath: '/Users/demo/project-one',
+          projectName: 'project-one',
+          addedAt: '2025-01-01T00:00:00Z',
+          sizeBytes: 100,
+        ),
+      ]);
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          debugRecentSessions: [_recentSession('one')],
+          shellKey: shellKey,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'pending-1',
+          projectPath: '/Users/demo/project-one',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.openGlobalGalleryCenter();
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'pending-2',
+          projectPath: '/Users/demo/project-two',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+
+      expect(find.text('Creating session...'), findsOneWidget);
+      expect(NotificationService.instance.activeSessionId, 'pending-2');
+      expect(
+        find.byKey(const ValueKey('embedded_gallery_back_button')),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets('shows guided disconnected landing', (tester) async {
+    final bridge = _MockBridgeService(
+      initialState: BridgeConnectionState.disconnected,
+    );
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+      ),
+    );
+    await _pumpUi(tester);
+
+    expect(
+      find.text(
+        'Bridge is not connected. Connect from the left pane, or open Setup Guide to configure a machine.',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('workspace_setup_guide_button')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'connecting shows session skeleton and disconnect returns to machines',
+    (tester) async {
+      final bridge = _MockBridgeService(
+        initialState: BridgeConnectionState.disconnected,
+      );
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await _pumpUi(tester);
+
+      bridge.emitConnection(BridgeConnectionState.connecting);
+      await _pumpUi(tester);
+
+      expect(find.text('Loading sessions...'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('session_list_loading')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('disconnect_button')), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('disconnect_button')));
+      await _pumpUi(tester);
+
+      expect(bridge.disconnectCalled, isTrue);
+      expect(find.byKey(const ValueKey('session_list_loading')), findsNothing);
+      expect(find.text('Machines'), findsOneWidget);
+    },
+  );
+
+  testWidgets('disconnecting while overlay is open clears overlay to landing', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService();
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+    final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        shellKey: shellKey,
+      ),
+    );
+    await _pumpUi(tester);
+
+    shellKey.currentState!.openSettingsCenter();
+    await _pumpUi(tester);
+    expect(
+      find.byKey(const ValueKey('embedded_settings_back_button')),
+      findsOneWidget,
+    );
+
+    bridge.emitConnection(BridgeConnectionState.disconnected);
+    await _pumpUi(tester);
+
+    expect(
+      find.byKey(const ValueKey('embedded_settings_back_button')),
+      findsNothing,
+    );
+    expect(
+      find.text(
+        'Bridge is not connected. Connect from the left pane, or open Setup Guide to configure a machine.',
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'bridge update from settings disconnects and returns to machine list',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1400, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final machine = Machine(
+        id: 'machine-1',
+        name: 'Remote Mac',
+        host: '100.64.0.1',
+        sshEnabled: true,
+        sshUsername: 'k9i',
+      );
+      final machineManagerService = _StaticMachineManagerService(
+        statuses: [
+          MachineWithStatus(
+            machine: machine,
+            status: MachineStatus.online,
+            versionInfo: BridgeVersionInfo(
+              version: olderThanRecommendedBridgeVersion,
+            ),
+          ),
+        ],
+        sshPassword: 'secret',
+      );
+      final sshService = _FakeSshStartupService(machineManagerService);
+      final machineManagerCubit = MachineManagerCubit(
+        machineManagerService,
+        sshService,
+      );
+      final bridge = _MockBridgeService(lastUrl: 'ws://100.64.0.1:8765');
+      final settingsCubit = _SeededSettingsCubit(
+        await SharedPreferences.getInstance(),
+        activeMachineId: 'machine-1',
+      );
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          shellKey: shellKey,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.openSettingsCenter(focusConnection: true);
+      await _pumpUi(tester);
+      expect(
+        find.byKey(const ValueKey('settings_update_bridge_button')),
+        findsOneWidget,
+      );
+
+      final updateButton = tester.widget<FilledButton>(
+        find.byKey(const ValueKey('settings_update_bridge_button')),
+      );
+      updateButton.onPressed!();
+      await tester.pump();
+
+      expect(bridge.disconnectCalled, isTrue);
+      expect(machineManagerCubit.state.updatingMachineId, 'machine-1');
+      expect(
+        find.byKey(const ValueKey('embedded_settings_back_button')),
+        findsNothing,
+      );
+      expect(find.text('Machines'), findsOneWidget);
+
+      machineManagerService.replaceStatuses([
+        MachineWithStatus(
+          machine: machine,
+          status: MachineStatus.online,
+          versionInfo: BridgeVersionInfo(version: recommendedBridgeVersion),
+        ),
+      ]);
+      sshService.updateCompleter.complete(SshResult.success());
+      await tester.pump();
+      await tester.pump();
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      machineManagerService.dispose();
+      bridge.dispose();
+    },
+  );
+
+  testWidgets('opens session gallery in right pane', (tester) async {
+    final bridge = _MockBridgeService();
+    bridge.setGalleryImages([
+      const GalleryImage(
+        id: 'img-1',
+        url: '/api/gallery/img-1',
+        mimeType: 'image/png',
+        projectPath: '/Users/demo/project-one',
+        projectName: 'project-one',
+        sessionId: 'session-1',
+        addedAt: '2025-01-01T00:00:00Z',
+        sizeBytes: 100,
+      ),
+    ]);
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+    final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        debugRecentSessions: [_recentSession('one')],
+        shellKey: shellKey,
+      ),
+    );
+    await _pumpUi(tester);
+
+    shellKey.currentState!.openSessionGalleryPane(sessionId: 'session-1');
+    await _pumpUi(tester);
+
+    expect(
+      find.byKey(const ValueKey('embedded_gallery_close_button')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'right pane hides for other sessions and restores when returning',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          shellKey: shellKey,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'session-a',
+          projectPath: '/Users/demo/project-a',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      shellKey.currentState!.openExplorePane(
+        sessionId: 'session-a',
+        projectPath: '/Users/demo/project-a',
+        initialFiles: const ['lib/main.dart'],
+      );
+      await _pumpUi(tester);
+
+      expect(
+        find.byKey(const ValueKey('close_explore_pane_button')),
+        findsOneWidget,
+      );
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'session-b',
+          projectPath: '/Users/demo/project-b',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+
+      expect(
+        find.byKey(const ValueKey('close_explore_pane_button')),
+        findsNothing,
+      );
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'session-a',
+          projectPath: '/Users/demo/project-a',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+
+      expect(
+        find.byKey(const ValueKey('close_explore_pane_button')),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('git right pane snapshot follows selected session', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService();
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+    final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        shellKey: shellKey,
+      ),
+    );
+    await _pumpUi(tester);
+
+    shellKey.currentState!.selectSession(
+      const WorkspaceSessionSelection(
+        sessionId: 'session-a',
+        projectPath: '/Users/demo/project-a',
+        provider: Provider.codex,
+        isPending: true,
+      ),
+    );
+    shellKey.currentState!.openGitPane(
+      projectPath: '/Users/demo/project-a',
+      sessionId: 'session-a',
+    );
+
+    expect(
+      shellKey.currentState!.isToolPaneOpen(
+        'git:/Users/demo/project-a:session-a:',
+      ),
+      isTrue,
+    );
+
+    shellKey.currentState!.selectSession(
+      const WorkspaceSessionSelection(
+        sessionId: 'session-b',
+        projectPath: '/Users/demo/project-b',
+        provider: Provider.codex,
+        isPending: true,
+      ),
+    );
+
+    expect(
+      shellKey.currentState!.isToolPaneOpen(
+        'git:/Users/demo/project-a:session-a:',
+      ),
+      isFalse,
+    );
+
+    shellKey.currentState!.selectSession(
+      const WorkspaceSessionSelection(
+        sessionId: 'session-a',
+        projectPath: '/Users/demo/project-a',
+        provider: Provider.codex,
+        isPending: true,
+      ),
+    );
+
+    expect(
+      shellKey.currentState!.isToolPaneOpen(
+        'git:/Users/demo/project-a:session-a:',
+      ),
+      isTrue,
+    );
+
+    shellKey.currentState!.selectSession(
+      const WorkspaceSessionSelection(
+        sessionId: 'session-b',
+        projectPath: '/Users/demo/project-b',
+        provider: Provider.codex,
+        isPending: true,
+      ),
+    );
+    await _pumpUi(tester);
+  });
+
+  testWidgets(
+    'right pane remembers one pane per session and forgets closed pane',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          shellKey: shellKey,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'session-a',
+          projectPath: '/Users/demo/project-a',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      shellKey.currentState!.openExplorePane(
+        sessionId: 'session-a',
+        projectPath: '/Users/demo/project-a',
+        initialFiles: const ['lib/main.dart'],
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'session-b',
+          projectPath: '/Users/demo/project-b',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      shellKey.currentState!.openSessionGalleryPane(sessionId: 'session-b');
+      await _pumpUi(tester);
+
+      expect(
+        find.byKey(const ValueKey('embedded_gallery_close_button')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('close_explore_pane_button')),
+        findsNothing,
+      );
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'session-a',
+          projectPath: '/Users/demo/project-a',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+
+      expect(
+        find.byKey(const ValueKey('close_explore_pane_button')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('embedded_gallery_close_button')),
+        findsNothing,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('close_explore_pane_button')));
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'session-b',
+          projectPath: '/Users/demo/project-b',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+      expect(
+        find.byKey(const ValueKey('embedded_gallery_close_button')),
+        findsOneWidget,
+      );
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'session-a',
+          projectPath: '/Users/demo/project-a',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+
+      expect(
+        find.byKey(const ValueKey('close_explore_pane_button')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('embedded_gallery_close_button')),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets(
+    'workspace session keeps show sessions button when left pane is collapsed',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          shellKey: shellKey,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'pending-1',
+          projectPath: '/Users/demo/project-one',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.toggleLeftPaneVisibility();
+      await _pumpUi(tester);
+
+      expect(find.byKey(const ValueKey('session_back_button')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('show_left_pane_button')),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('macOS adaptive left pane hides pane title wordmark', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService();
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        platform: TargetPlatform.macOS,
+      ),
+    );
+    await _pumpUi(tester);
+
+    expect(find.byKey(const ValueKey('session_list_pane_title')), findsNothing);
+  });
+
+  testWidgets('non-mac adaptive left pane keeps pane title wordmark', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService();
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        platform: TargetPlatform.iOS,
+      ),
+    );
+    await _pumpUi(tester);
+
+    expect(
+      find.byKey(const ValueKey('session_list_pane_title')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'selected running session remains highlighted while a popup menu is open',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+      final session = _runningSession(
+        id: 'session-1',
+        provider: Provider.codex,
+      );
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          shellKey: shellKey,
+        ),
+      );
+      await _pumpUi(tester);
+
+      bridge.emitSessions([session]);
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'session-1',
+          projectPath: '/Users/demo/project-session-1',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+
+      expect(
+        tester
+            .widget<RunningSessionCard>(find.byType(RunningSessionCard))
+            .isSelected,
+        isTrue,
+      );
+
+      unawaited(
+        showMenu<void>(
+          context: tester.element(find.byType(WorkspaceShellScreen)),
+          position: const RelativeRect.fromLTRB(120, 120, 0, 0),
+          items: const [PopupMenuItem<void>(child: Text('Menu item'))],
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(
+        tester
+            .widget<RunningSessionCard>(find.byType(RunningSessionCard))
+            .isSelected,
+        isTrue,
+      );
+    },
+  );
+
+  testWidgets(
+    'selected running session remains highlighted while a modal sheet is open',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+      final session = _runningSession(
+        id: 'session-1',
+        provider: Provider.codex,
+      );
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          shellKey: shellKey,
+        ),
+      );
+      await _pumpUi(tester);
+
+      bridge.emitSessions([session]);
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'session-1',
+          projectPath: '/Users/demo/project-session-1',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+
+      unawaited(
+        showModalBottomSheet<void>(
+          context: tester.element(find.byType(WorkspaceShellScreen)),
+          builder: (_) => const SizedBox(height: 120),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(
+        tester
+            .widget<RunningSessionCard>(find.byType(RunningSessionCard))
+            .isSelected,
+        isTrue,
+      );
+    },
+  );
+
+  testWidgets(
+    'stopping selected running session clears center pane in workspace layout',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+      final session = _runningSession(
+        id: 'session-1',
+        provider: Provider.codex,
+      );
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          shellKey: shellKey,
+        ),
+      );
+      await _pumpUi(tester);
+
+      bridge.emitSessions([session]);
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(
+        const WorkspaceSessionSelection(
+          sessionId: 'session-1',
+          projectPath: '/Users/demo/project-session-1',
+          provider: Provider.codex,
+          isPending: true,
+        ),
+      );
+      await _pumpUi(tester);
+
+      expect(find.text('Creating session...'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('running_session_stop_button')),
+        findsOneWidget,
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('running_session_stop_button')),
+      );
+      await _pumpUi(tester);
+
+      expect(find.text('Creating session...'), findsNothing);
+      expect(find.text('Select a session in the left pane.'), findsOneWidget);
+      expect(NotificationService.instance.activeSessionId, isNull);
+    },
+  );
+
+  testWidgets('remote stopped notification clears selected workspace session', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService();
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+    final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        shellKey: shellKey,
+      ),
+    );
+    await _pumpUi(tester);
+
+    shellKey.currentState!.selectSession(
+      const WorkspaceSessionSelection(
+        sessionId: 'session-remote',
+        projectPath: '/Users/demo/project-remote',
+        provider: Provider.codex,
+        isPending: true,
+      ),
+    );
+    await _pumpUi(tester);
+
+    expect(find.text('Creating session...'), findsOneWidget);
+
+    bridge.emitStopped('session-remote');
+    await _pumpUi(tester);
+
+    expect(find.text('Creating session...'), findsNothing);
+    expect(
+      find.text('Create a session from New in the left pane.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('disconnected connect form opens setup guide in center pane', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService(
+      initialState: BridgeConnectionState.disconnected,
+    );
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+      ),
+    );
+    await _pumpUi(tester);
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('setup_guide_button')),
+    );
+    await tester.tap(find.byKey(const ValueKey('setup_guide_button')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('embedded_setup_guide_back_button')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('offline landing setup guide button opens center overlay', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService(
+      initialState: BridgeConnectionState.disconnected,
+    );
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+      ),
+    );
+    await _pumpUi(tester);
+
+    await tester.tap(
+      find.byKey(const ValueKey('workspace_setup_guide_button')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('embedded_setup_guide_back_button')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('embedded setup guide back skip and done restore offline root', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService(
+      initialState: BridgeConnectionState.disconnected,
+    );
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+
+    Future<void> expectOfflineRoot() async {
+      await _pumpUi(tester);
+      expect(
+        find.text(
+          'Bridge is not connected. Connect from the left pane, or open Setup Guide to configure a machine.',
+        ),
+        findsOneWidget,
+      );
+    }
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+      ),
+    );
+    await expectOfflineRoot();
+
+    await tester.tap(
+      find.byKey(const ValueKey('workspace_setup_guide_button')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('embedded_setup_guide_back_button')),
+    );
+    await expectOfflineRoot();
+
+    await tester.tap(
+      find.byKey(const ValueKey('workspace_setup_guide_button')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('guide_skip_button')));
+    await expectOfflineRoot();
+
+    await tester.tap(
+      find.byKey(const ValueKey('workspace_setup_guide_button')),
+    );
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 5; i++) {
+      await tester.tap(find.byKey(const ValueKey('guide_next_button')));
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(find.byKey(const ValueKey('guide_done_button')));
+    await expectOfflineRoot();
+  });
+}

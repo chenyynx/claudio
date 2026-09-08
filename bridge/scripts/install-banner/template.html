@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@500&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 900px;
+    height: 420px;
+    overflow: hidden;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: #09090b;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+    background-size: 24px 24px;
+    color: #fafafa;
+    position: relative;
+    display: flex;
+  }
+
+  /* Stunning glowing background */
+  body::before {
+    content: '';
+    position: absolute;
+    inset: -50%;
+    background:
+      radial-gradient(circle at 15% 50%, rgba(232, 120, 50, 0.15) 0%, transparent 40%),
+      radial-gradient(circle at 85% 50%, rgba(45, 212, 191, 0.15) 0%, transparent 40%);
+    filter: blur(60px);
+    z-index: 0;
+  }
+
+  .container {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    padding: 32px 48px;
+    gap: 40px;
+  }
+
+  /* Left: Focus on Value Prop & Steps */
+  .left {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .logo-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo-img {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    background: #18181b;
+  }
+  .logo-img img { width: 100%; height: 100%; object-fit: cover; }
+
+  .app-name {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: #fff;
+  }
+
+  .badges {
+    display: flex;
+    gap: 8px;
+  }
+  
+  .badge {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.05);
+  }
+  .badge.orange { color: #fdba74; border-color: rgba(253, 186, 116, 0.25); background: rgba(253, 186, 116, 0.1); }
+  .badge.teal { color: #5eead4; border-color: rgba(94, 234, 212, 0.25); background: rgba(94, 234, 212, 0.1); }
+
+  .headline {
+    font-size: 42px;
+    font-weight: 800;
+    line-height: 1.15;
+    letter-spacing: -1.5px;
+    margin-top: 24px;
+    margin-bottom: 28px;
+    color: #ffffff;
+  }
+  
+  .headline span {
+    background: linear-gradient(135deg, #fdba74 0%, #5eead4 100%);
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .steps {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .step {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .step-num {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.02) 100%);
+    color: #e4e4e7;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.15);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  }
+
+  .step-content {
+    flex: 1;
+    font-size: 15px;
+    color: #e4e4e7;
+    font-weight: 500;
+  }
+
+  .terminal {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 8px;
+    padding: 6px 12px;
+    background: #000;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    font-family: 'Fira Code', 'Menlo', 'Consolas', monospace;
+    font-size: 13px;
+    color: #5eead4;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+  }
+  
+  .terminal-prompt {
+    color: #e87832;
+    margin-right: 8px;
+    user-select: none;
+  }
+
+  .highlight {
+    color: #fff;
+    font-weight: 600;
+  }
+
+  /* Right: Massive QR Card */
+  .right {
+    width: 320px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: linear-gradient(145deg, rgba(24, 24, 27, 0.6) 0%, rgba(9, 9, 11, 0.8) 100%);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-top: 1px solid rgba(255,255,255,0.15);
+    border-radius: 32px;
+    padding: 32px;
+    box-shadow: 0 24px 48px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+    text-align: center;
+  }
+
+  .cta-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 24px;
+    letter-spacing: -0.5px;
+  }
+
+  .qr-wrapper {
+    width: 200px;
+    height: 200px;
+    background: #1a1a1a;
+    padding: 8px;
+    border-radius: 16px;
+    border: 1px solid rgba(255,255,255,0.1);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+    margin-bottom: 24px;
+  }
+
+  .qr-wrapper img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 8px;
+  }
+
+  .stores {
+    font-size: 13px;
+    font-weight: 600;
+    color: #a1a1aa;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <div class="left">
+      <div class="logo-row">
+        <div class="logo-img"><img src="ICON_PATH" alt="CC Pocket"></div>
+        <div class="app-name">CC Pocket</div>
+        <div class="badges" style="margin-left: 12px;">
+          <div class="badge teal">Codex</div>
+          <div class="badge orange">Claude</div>
+        </div>
+      </div>
+
+      <div class="headline">
+        Your Mac's AI agent on your phone.<br>
+        <span style="font-size: 32px;">Setup in 30 seconds.</span>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            Start Bridge on Mac: 
+            <span class="terminal"><span class="terminal-prompt">&gt;</span>npx @ccpocket/bridge@latest</span>
+          </div>
+        </div>
+        
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            Open the app and <span class="highlight">scan the terminal QR code</span>.
+          </div>
+        </div>
+        
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            Scale up with <span class="highlight">Tailscale</span> to code securely from anywhere.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="right">
+      <div class="cta-title">Install the App</div>
+      <div class="qr-wrapper">
+        <img src="QR_PATH" alt="QR">
+      </div>
+      <div class="stores">App Store & Google Play</div>
+    </div>
+  </div>
+</body>
+</html>

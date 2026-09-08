@@ -1,0 +1,4498 @@
+import { EventEmitter } from "node:events";
+import { realpathSync } from "node:fs";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { spawnMock, fakeChildren } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+  fakeChildren: [] as FakeChildProcess[],
+}));
+
+class FakeWritable extends EventEmitter {
+  public writes: string[] = [];
+  write(chunk: string): boolean {
+    this.writes.push(chunk);
+    this.emit("write", chunk);
+    return true;
+  }
+}
+
+class FakeReadable extends EventEmitter {
+  setEncoding(_encoding: string): void {}
+}
+
+class FakeChildProcess extends EventEmitter {
+  public stdout = new FakeReadable();
+  public stderr = new FakeReadable();
+  public stdin = new FakeWritable();
+  public killed = false;
+
+  kill(_signal?: NodeJS.Signals): boolean {
+    this.killed = true;
+    this.emit("exit", 0);
+    return true;
+  }
+}
+
+vi.mock("node:child_process", () => ({
+  spawn: spawnMock,
+}));
+
+import {
+  buildCodexSpawnSpec,
+  codexErrorMessage,
+  CodexProcess,
+  CodexRpcError,
+  normalizeCodexReasoningEffortForModel,
+  parseCodexGoal,
+} from "./codex-process.js";
+import { stopManagedCodexAppServers } from "./codex-transport.js";
+
+const originalCodexAppServerEnv = {
+  bridgePort: process.env.BRIDGE_PORT,
+  mode: process.env.BRIDGE_CODEX_APP_SERVER_MODE,
+  sharedUrl: process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL,
+  port: process.env.BRIDGE_CODEX_APP_SERVER_PORT,
+  url: process.env.BRIDGE_CODEX_APP_SERVER_URL,
+};
+const temporaryPaths: string[] = [];
+
+function restoreCodexAppServerEnv(): void {
+  restoreEnvVar("BRIDGE_PORT", originalCodexAppServerEnv.bridgePort);
+  restoreEnvVar("BRIDGE_CODEX_APP_SERVER_MODE", originalCodexAppServerEnv.mode);
+  restoreEnvVar(
+    "BRIDGE_CODEX_SHARED_APP_SERVER_URL",
+    originalCodexAppServerEnv.sharedUrl,
+  );
+  restoreEnvVar("BRIDGE_CODEX_APP_SERVER_PORT", originalCodexAppServerEnv.port);
+  restoreEnvVar("BRIDGE_CODEX_APP_SERVER_URL", originalCodexAppServerEnv.url);
+}
+
+function restoreEnvVar(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = value;
+}
+
+describe("CodexProcess (app-server)", () => {
+  beforeEach(() => {
+    spawnMock.mockReset();
+    fakeChildren.length = 0;
+    temporaryPaths.length = 0;
+    spawnMock.mockImplementation(() => {
+      const child = new FakeChildProcess();
+      fakeChildren.push(child);
+      return child;
+    });
+  });
+
+  it("normalizes unsupported GPT-6 Astra reasoning efforts to low", () => {
+    expect(
+      normalizeCodexReasoningEffortForModel("gpt-6-astra", "none"),
+    ).toBe("low");
+    expect(
+      normalizeCodexReasoningEffortForModel("gpt-6-astra", "minimal"),
+    ).toBe("low");
+    expect(
+      normalizeCodexReasoningEffortForModel("gpt-6-astra", "high"),
+    ).toBe("high");
+    expect(
+      normalizeCodexReasoningEffortForModel("gpt-5.6-sol", "none"),
+    ).toBe("none");
+  });
+
+  afterEach(async () => {
+    stopManagedCodexAppServers();
+    restoreCodexAppServerEnv();
+    for (const child of fakeChildren) {
+      if (!child.killed) {
+        child.kill();
+      }
+    }
+    await Promise.all(
+      temporaryPaths.map((path) => rm(path, { recursive: true, force: true })),
+    );
+  });
+
+  it("reports rejected tool actions when no matching request exists", () => {
+    const proc = new CodexProcess("linux");
+
+    expect(proc.approve("missing")).toBe(false);
+    expect(proc.approveAlways("missing")).toBe(false);
+    expect(proc.reject("missing")).toBe(false);
+    expect(proc.answer("missing", "answer")).toBe(false);
+  });
+
+  it("frames app-server JSONL split across many transport chunks", () => {
+    const proc = new CodexProcess("linux");
+    const internal = proc as any;
+    const handleEnvelope = vi
+      .spyOn(internal, "handleRpcEnvelope")
+      .mockImplementation(() => {});
+    const envelope = {
+      jsonrpc: "2.0",
+      method: "test/large-response",
+      params: { image: "x".repeat(1024 * 1024) },
+    };
+    const line = `${JSON.stringify(envelope)}\n`;
+
+    for (let offset = 0; offset < line.length; offset += 16 * 1024) {
+      internal.handleStdoutChunk(line.slice(offset, offset + 16 * 1024));
+    }
+
+    expect(handleEnvelope).toHaveBeenCalledOnce();
+    expect(handleEnvelope).toHaveBeenCalledWith(envelope);
+    expect(internal.stdoutLineChunks).toEqual([]);
+  });
+
+  it("frames multiple JSONL records while retaining a trailing partial line", () => {
+    const proc = new CodexProcess("linux");
+    const internal = proc as any;
+    const handleEnvelope = vi
+      .spyOn(internal, "handleRpcEnvelope")
+      .mockImplementation(() => {});
+    const first = { jsonrpc: "2.0", id: 1, result: { ok: true } };
+    const second = { jsonrpc: "2.0", id: 2, result: { ok: false } };
+    const third = { jsonrpc: "2.0", id: 3, result: { ok: true } };
+    const thirdLine = JSON.stringify(third);
+
+    internal.handleStdoutChunk(
+      `${JSON.stringify(first)}\n${JSON.stringify(second)}\n${thirdLine.slice(0, 8)}`,
+    );
+
+    expect(handleEnvelope).toHaveBeenCalledTimes(2);
+    expect(handleEnvelope).toHaveBeenNthCalledWith(1, first);
+    expect(handleEnvelope).toHaveBeenNthCalledWith(2, second);
+
+    internal.handleStdoutChunk(`${thirdLine.slice(8)}\n`);
+
+    expect(handleEnvelope).toHaveBeenCalledTimes(3);
+    expect(handleEnvelope).toHaveBeenNthCalledWith(3, third);
+    expect(internal.stdoutLineChunks).toEqual([]);
+  });
+
+  it("maps goal get, set, and clear to app-server RPCs", async () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-1";
+    const goal = {
+      threadId: "thread-1",
+      objective: "Ship Goal support",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 12,
+      timeUsedSeconds: 3,
+      createdAt: 100,
+      updatedAt: 101,
+    };
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({ goal })
+      .mockResolvedValueOnce({ goal: { ...goal, status: "paused" } })
+      .mockResolvedValueOnce({ cleared: true });
+
+    await expect(proc.getGoal()).resolves.toEqual(goal);
+    await expect(
+      proc.setGoal({ objective: "  Ship Goal support  ", status: "paused" }),
+    ).resolves.toMatchObject({ status: "paused" });
+    await expect(proc.clearGoal()).resolves.toBe(true);
+
+    expect(request).toHaveBeenNthCalledWith(1, "thread/goal/get", {
+      threadId: "thread-1",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "thread/goal/set", {
+      threadId: "thread-1",
+      objective: "Ship Goal support",
+      status: "paused",
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "thread/goal/clear", {
+      threadId: "thread-1",
+    });
+  });
+
+  it("validates goal payloads received from app-server", () => {
+    expect(() => parseCodexGoal({ status: "active" })).toThrow(
+      "invalid shape",
+    );
+    expect(() =>
+      parseCodexGoal({
+        threadId: "thread-1",
+        objective: "Goal",
+        status: "unknown",
+        tokenBudget: null,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    ).toThrow("invalid shape");
+  });
+
+  it("preserves structured JSON-RPC error details", () => {
+    const proc = new CodexProcess("linux");
+    let rejected: Error | undefined;
+    (proc as any).pendingRpc.set(42, {
+      resolve: vi.fn(),
+      reject: (error: Error) => {
+        rejected = error;
+      },
+      method: "thread/resume",
+    });
+
+    (proc as any).handleRpcResponse({
+      id: 42,
+      error: {
+        code: -32600,
+        message: "thread thread-1 already has an active writer",
+        data: { threadId: "thread-1" },
+      },
+    });
+
+    expect(rejected).toBeInstanceOf(CodexRpcError);
+    expect(rejected).toMatchObject({
+      method: "thread/resume",
+      code: -32600,
+      message: "thread thread-1 already has an active writer",
+      data: { threadId: "thread-1" },
+    });
+    expect(codexErrorMessage(rejected)).toBe(
+      "This Codex thread is already open in Codex Desktop or the Codex App. Close it there, then try again.",
+    );
+  });
+
+  it("keeps non-writer JSON-RPC error messages unchanged", () => {
+    expect(
+      codexErrorMessage(
+        new CodexRpcError("thread/resume", {
+          code: -32600,
+          message: "invalid thread id",
+        }),
+      ),
+    ).toBe("invalid thread id");
+  });
+
+  it("finalizes streamed agent text before turn completion", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-stream-only" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      itemId: "agent-message-1",
+      delta: "Streamed ",
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      itemId: "agent-message-1",
+      delta: "response",
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: { id: "turn-stream-only", status: "completed" },
+    });
+
+    const assistantIndex = messages.findIndex(
+      (message) => message.type === "assistant",
+    );
+    const resultIndex = messages.findIndex(
+      (message) => message.type === "result",
+    );
+    expect(assistantIndex).toBeGreaterThanOrEqual(0);
+    expect(resultIndex).toBeGreaterThan(assistantIndex);
+    expect(messages[assistantIndex]).toMatchObject({
+      type: "assistant",
+      message: {
+        id: "agent-message-1",
+        role: "assistant",
+        content: [{ type: "text", text: "Streamed response" }],
+      },
+    });
+    expect(messages[resultIndex]).toMatchObject({
+      type: "result",
+      subtype: "success",
+      result: "Streamed response",
+    });
+  });
+
+  it("repairs truncated streamed text from the turn completion summary", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-summary-repair" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      itemId: "agent-message-summary",
+      delta: "Partial response",
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-summary-repair",
+        status: "completed",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-summary",
+            type: "agentMessage",
+            text: "Complete response from summary",
+          },
+        ],
+      },
+    });
+
+    const assistants = messages.filter(
+      (message) => message.type === "assistant",
+    );
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({
+      message: {
+        id: "agent-message-summary",
+        content: [{ type: "text", text: "Complete response from summary" }],
+      },
+    });
+    expect(messages.find((message) => message.type === "result")).toMatchObject(
+      { result: "Complete response from summary" },
+    );
+  });
+
+  it("does not duplicate an agent message confirmed before the turn summary", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-summary-dedupe" },
+    });
+    (proc as any).handleNotification("item/completed", {
+      item: {
+        id: "agent-message-confirmed",
+        type: "agentMessage",
+        text: "Confirmed response",
+      },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-summary-dedupe",
+        status: "completed",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-confirmed",
+            type: "agentMessage",
+            text: "Confirmed response",
+          },
+        ],
+      },
+    });
+
+    expect(messages.filter((message) => message.type === "assistant")).toHaveLength(
+      1,
+    );
+    expect(messages.find((message) => message.type === "result")).toMatchObject(
+      { result: "Confirmed response" },
+    );
+  });
+
+  it("keeps canonical item text when the completion summary differs", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-summary-canonical" },
+    });
+    (proc as any).handleNotification("item/completed", {
+      item: {
+        id: "agent-message-canonical",
+        type: "agentMessage",
+        text: "Canonical response",
+      },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-summary-canonical",
+        status: "completed",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-canonical",
+            type: "agentMessage",
+            text: "Different fallback summary",
+          },
+        ],
+      },
+    });
+
+    expect(messages.filter((message) => message.type === "assistant")).toHaveLength(
+      1,
+    );
+    expect(messages.find((message) => message.type === "result")).toMatchObject(
+      { result: "Canonical response" },
+    );
+  });
+
+  it("correlates an unknown-id delta with a matching completion summary", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-summary-unknown-id" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      delta: "Response prefix",
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-summary-unknown-id",
+        status: "completed",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-known",
+            type: "agentMessage",
+            text: "Response prefix and completed suffix",
+          },
+        ],
+      },
+    });
+
+    const assistants = messages.filter(
+      (message) => message.type === "assistant",
+    );
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({
+      message: {
+        id: "agent-message-known",
+        content: [
+          { type: "text", text: "Response prefix and completed suffix" },
+        ],
+      },
+    });
+  });
+
+  it("does not duplicate an unknown-id delta confirmed by item/completed", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-unknown-id-completed" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      delta: "Complete response",
+    });
+    (proc as any).handleNotification("item/completed", {
+      item: {
+        id: "agent-message-known",
+        type: "agentMessage",
+        text: "Complete response",
+      },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-unknown-id-completed",
+        status: "completed",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-known",
+            type: "agentMessage",
+            text: "Complete response",
+          },
+        ],
+      },
+    });
+
+    expect(messages.filter((message) => message.type === "assistant")).toHaveLength(
+      1,
+    );
+    expect(messages.find((message) => message.type === "result")).toMatchObject(
+      { result: "Complete response" },
+    );
+  });
+
+  it("ignores completion summaries for interrupted turns", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-summary-interrupted" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      itemId: "agent-message-interrupted",
+      delta: "Interrupted partial",
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: {
+        id: "turn-summary-interrupted",
+        status: "interrupted",
+        itemsView: "summary",
+        items: [
+          {
+            id: "agent-message-interrupted",
+            type: "agentMessage",
+            text: "Unexpected completed summary",
+          },
+        ],
+      },
+    });
+
+    expect(
+      messages.find((message) => message.type === "assistant"),
+    ).toMatchObject({
+      message: {
+        content: [{ type: "text", text: "Interrupted partial" }],
+      },
+    });
+    expect(messages.find((message) => message.type === "result")).toMatchObject({
+      subtype: "interrupted",
+    });
+  });
+
+  it("finalizes multiple streamed agent items independently", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-multiple-agents" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      itemId: "agent-message-1",
+      delta: "First response",
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      itemId: "agent-message-2",
+      delta: "Second response",
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: { id: "turn-multiple-agents", status: "completed" },
+    });
+
+    const assistants = messages.filter(
+      (message) => message.type === "assistant",
+    );
+    expect(assistants).toMatchObject([
+      {
+        message: {
+          id: "agent-message-1",
+          content: [{ type: "text", text: "First response" }],
+        },
+      },
+      {
+        message: {
+          id: "agent-message-2",
+          content: [{ type: "text", text: "Second response" }],
+        },
+      },
+    ]);
+    expect(messages.find((message) => message.type === "result")).toMatchObject(
+      { result: "Second response" },
+    );
+  });
+
+  it("keeps an unknown-id delta when another agent item completes", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-unknown-agent" },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      delta: "Unknown item response",
+    });
+    (proc as any).handleNotification("item/completed", {
+      item: {
+        id: "known-agent-message",
+        type: "agentMessage",
+        text: "Known item response",
+      },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      turn: { id: "turn-unknown-agent", status: "completed" },
+    });
+
+    const assistantTexts = messages
+      .filter((message) => message.type === "assistant")
+      .map(
+        (message) =>
+          ((message.message as any).content[0] as Record<string, unknown>).text,
+      );
+    expect(assistantTexts).toEqual([
+      "Known item response",
+      "Unknown item response",
+    ]);
+  });
+
+  it("emits goal state for app-server goal notifications", () => {
+    const proc = new CodexProcess("linux");
+    (proc as any)._threadId = "thread-1";
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const goal = {
+      threadId: "thread-1",
+      objective: "Ship Goal support",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+
+    (proc as any).handleNotification("thread/goal/updated", {
+      threadId: "thread-1",
+      turnId: null,
+      goal,
+    });
+    (proc as any).handleNotification("thread/goal/cleared", {
+      threadId: "thread-1",
+    });
+
+    expect(messages).toEqual([
+      { type: "goal_state", goal },
+      { type: "goal_state", goal: null },
+    ]);
+  });
+
+  it("moves the default managed app-server port when Bridge uses 8767", () => {
+    process.env.BRIDGE_PORT = "8767";
+    process.env.BRIDGE_CODEX_APP_SERVER_MODE = "managed";
+    delete process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL;
+    delete process.env.BRIDGE_CODEX_APP_SERVER_PORT;
+    delete process.env.BRIDGE_CODEX_APP_SERVER_URL;
+
+    const proc = new CodexProcess("linux");
+    proc.start("/tmp/project-managed-port");
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      "codex",
+      ["app-server", "--listen", "ws://127.0.0.1:8768"],
+      expect.objectContaining({ cwd: "/tmp/project-managed-port" }),
+    );
+
+    proc.stop();
+  });
+
+  it("returns a clear error when Codex CLI is not installed", () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    proc.on("message", (msg) => messages.push(msg));
+
+    try {
+      proc.start("/tmp/project-missing-codex");
+
+      const err = new Error("spawn codex ENOENT") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      fakeChildren[0].emit("error", err);
+
+      expect(messages).toContainEqual({
+        type: "error",
+        message:
+          "Codex CLI is not installed or not available on PATH on the Bridge machine. Install it with `curl -fsSL https://chatgpt.com/codex/install.sh | sh`, then restart Bridge.",
+        errorCode: "codex_cli_not_found",
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    proc.stop();
+  });
+
+  it("starts codex app-server and sends initialize + thread/start", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-a", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+      model: "gpt-5.3-codex",
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledWith(
+      "codex",
+      ["app-server", "--listen", "stdio://"],
+      expect.objectContaining({ cwd: "/tmp/project-a" }),
+    );
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    expect(initReq.method).toBe("initialize");
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    const initialized = nextOutgoingNotification(child);
+    expect(initialized.method).toBe("initialized");
+
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.method).toBe("thread/start");
+    expect(startReq.params).toMatchObject({
+      cwd: "/tmp/project-a",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "guardian_subagent",
+      sandbox: "workspace-write",
+      model: "gpt-5.3-codex",
+    });
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: startReq.id,
+        result: {
+          thread: { id: "thr_1" },
+          model: "gpt-5.3-codex",
+          approvalPolicy: "on-request",
+          approvalsReviewer: "guardian_subagent",
+          sandbox: {
+            type: "workspaceWrite",
+            networkAccess: false,
+          },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    await expect(proc.waitUntilReady()).resolves.toBeUndefined();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "init",
+        provider: "codex",
+        sessionId: "thr_1",
+        model: "gpt-5.3-codex",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "auto_review",
+        sandboxMode: "workspace-write",
+        networkAccessEnabled: false,
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("leaves approval, reviewer, and sandbox unset for custom permissions", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-custom-permissions", {
+      codexPermissionsMode: "custom",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child);
+
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.method).toBe("thread/start");
+    expect(startReq.params).toMatchObject({
+      cwd: "/tmp/project-custom-permissions",
+    });
+    expect(startReq.params).not.toHaveProperty("approvalPolicy");
+    expect(startReq.params).not.toHaveProperty("approvalsReviewer");
+    expect(startReq.params).not.toHaveProperty("sandbox");
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: startReq.id,
+        result: { thread: { id: "thr_custom" } },
+      })}\n`,
+    );
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "init",
+        provider: "codex",
+        sessionId: "thr_custom",
+        codexPermissionsMode: "custom",
+      }),
+    );
+    const initMessage = messages.find(
+      (msg) =>
+        typeof msg === "object" &&
+        msg !== null &&
+        (msg as { type?: string; subtype?: string }).type === "system" &&
+        (msg as { type?: string; subtype?: string }).subtype === "init",
+    ) as Record<string, unknown>;
+    expect(initMessage).not.toHaveProperty("approvalPolicy");
+    expect(initMessage).not.toHaveProperty("approvalsReviewer");
+    expect(initMessage).not.toHaveProperty("sandboxMode");
+
+    proc.stop();
+  });
+
+  it("reloads config permissions when resuming a custom thread", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-custom-resume", {
+      threadId: "thr_existing",
+      codexPermissionsMode: "custom",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child);
+
+    const configReq = nextOutgoingRequest(child);
+    expect(configReq).toMatchObject({
+      method: "config/read",
+      params: {
+        cwd: "/tmp/project-custom-resume",
+        includeLayers: false,
+      },
+    });
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: configReq.id,
+        result: {
+          config: {
+            approval_policy: "never",
+            approvals_reviewer: "user",
+            sandbox_mode: "danger-full-access",
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+    const resumeReq = nextOutgoingRequest(child);
+    expect(resumeReq).toMatchObject({
+      method: "thread/resume",
+      params: {
+        cwd: "/tmp/project-custom-resume",
+        threadId: "thr_existing",
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandbox: "danger-full-access",
+      },
+    });
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: resumeReq.id,
+        result: {
+          thread: { id: "thr_existing" },
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
+          sandbox: { type: "dangerFullAccess" },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "init",
+        sessionId: "thr_existing",
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandboxMode: "danger-full-access",
+        codexPermissionsMode: "custom",
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("rejects readiness before emitting terminal messages for a writer conflict", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    try {
+      proc.start("/tmp/project-writer-conflict", {
+        threadId: "thr_owned",
+        codexPermissionsMode: "custom",
+      });
+      const readiness = proc.waitUntilReady();
+      const child = fakeChildren[0];
+      await tick();
+
+      const initReq = nextOutgoingRequest(child);
+      child.stdout.emit(
+        "data",
+        `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+      );
+      await tick();
+      nextOutgoingNotification(child);
+
+      const configReq = nextOutgoingRequest(child);
+      child.stdout.emit(
+        "data",
+        `${JSON.stringify({ id: configReq.id, result: { config: {} } })}\n`,
+      );
+      await tick();
+
+      const resumeReq = nextOutgoingRequest(child);
+      expect(resumeReq.method).toBe("thread/resume");
+      child.stdout.emit(
+        "data",
+        `${JSON.stringify({
+          id: resumeReq.id,
+          error: {
+            code: -32600,
+            message: "thread thr_owned already has an active writer",
+          },
+        })}\n`,
+      );
+
+      await expect(readiness).rejects.toMatchObject({
+        method: "thread/resume",
+        code: -32600,
+      });
+      await tick();
+
+      expect(
+        messages.some(
+          (message) =>
+            message.type === "system" && message.subtype === "init",
+        ),
+      ).toBe(false);
+      expect(messages.filter((message) => message.type === "error")).toEqual([
+        expect.objectContaining({
+          message:
+            "Codex error: This Codex thread is already open in Codex Desktop or the Codex App. Close it there, then try again.",
+        }),
+      ]);
+      expect(messages.filter((message) => message.type === "result")).toEqual([
+        expect.objectContaining({ type: "result", subtype: "error" }),
+      ]);
+    } finally {
+      proc.stop();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("applies selected profile permissions on resume without an explicit permissions mode", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-profile-resume", {
+      threadId: "thr_profile",
+      profile: "unrestricted",
+      approvalPolicy: "on-request",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child);
+
+    const configReq = nextOutgoingRequest(child);
+    expect(configReq.method).toBe("config/read");
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: configReq.id,
+        result: {
+          config: {
+            profile: "restricted",
+            approval_policy: "on-request",
+            sandbox_mode: "workspace-write",
+            profiles: {
+              restricted: {
+                approval_policy: "on-request",
+                sandbox_mode: "read-only",
+              },
+              unrestricted: {
+                approval_policy: "never",
+                sandbox_mode: "danger-full-access",
+              },
+            },
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+    const resumeReq = nextOutgoingRequest(child);
+    expect(resumeReq).toMatchObject({
+      method: "thread/resume",
+      params: {
+        threadId: "thr_profile",
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandbox: "danger-full-access",
+        config: { profile: "unrestricted" },
+      },
+    });
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: resumeReq.id,
+        result: {
+          thread: { id: "thr_profile" },
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
+          sandbox: { type: "dangerFullAccess" },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "init",
+        sessionId: "thr_profile",
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandboxMode: "danger-full-access",
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("uses the configured default profile when resuming a custom thread", async () => {
+    const proc = new CodexProcess("linux");
+    proc.start("/tmp/project-default-profile", {
+      threadId: "thr_default_profile",
+      codexPermissionsMode: "custom",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child);
+    const configReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: configReq.id,
+        result: {
+          config: {
+            profile: "restricted",
+            approval_policy: "never",
+            sandbox_mode: "danger-full-access",
+            profiles: {
+              restricted: {
+                approval_policy: "on-request",
+                sandbox_mode: "read-only",
+              },
+            },
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+    const resumeReq = nextOutgoingRequest(child);
+    expect(resumeReq).toMatchObject({
+      method: "thread/resume",
+      params: {
+        threadId: "thr_default_profile",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandbox: "read-only",
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("prefers cwd trust when resetting removed custom permissions", async () => {
+    const fixtureRoot = await mkdtemp(
+      join(tmpdir(), "ccpocket-codex-trust-"),
+    );
+    temporaryPaths.push(fixtureRoot);
+    const repoRoot = join(fixtureRoot, "repo");
+    const nestedProject = join(repoRoot, "packages", "app");
+    const repoLink = join(fixtureRoot, "repo-link");
+    await mkdir(join(repoRoot, ".git"), { recursive: true });
+    await mkdir(nestedProject, { recursive: true });
+    await symlink(
+      repoRoot,
+      repoLink,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const canonicalRepoRoot = realpathSync(repoRoot);
+    const canonicalNestedProject = realpathSync(nestedProject);
+    const linkedNestedProject = join(repoLink, "packages", "app");
+    const proc = new CodexProcess(process.platform);
+    proc.start(linkedNestedProject, {
+      threadId: "thr_trusted",
+      codexPermissionsMode: "custom",
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child);
+    const configReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: configReq.id,
+        result: {
+          config: {
+            projects: {
+              [canonicalRepoRoot]: { trust_level: "trusted" },
+              [canonicalNestedProject]: { trust_level: "untrusted" },
+            },
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+    const resumeReq = nextOutgoingRequest(child);
+    expect(resumeReq).toMatchObject({
+      method: "thread/resume",
+      params: {
+        threadId: "thr_trusted",
+        approvalPolicy: "untrusted",
+        approvalsReviewer: "user",
+        sandbox:
+          process.platform === "win32" ? "read-only" : "workspace-write",
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("preserves granular approval policies across resume and turns", async () => {
+    const proc = new CodexProcess("linux");
+    proc.start("/tmp/project-granular", {
+      threadId: "thr_granular",
+      codexPermissionsMode: "custom",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child);
+    const configReq = nextOutgoingRequest(child);
+    const granularPolicy = {
+      granular: {
+        sandbox_approval: true,
+        rules: false,
+        mcp_elicitations: true,
+      },
+    };
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: configReq.id,
+        result: {
+          config: {
+            approval_policy: granularPolicy,
+            sandbox_mode: "read-only",
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+    const resumeReq = nextOutgoingRequest(child);
+    expect(resumeReq).toMatchObject({
+      method: "thread/resume",
+      params: {
+        threadId: "thr_granular",
+        approvalPolicy: granularPolicy,
+      },
+    });
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: resumeReq.id,
+        result: {
+          thread: { id: "thr_granular" },
+          approvalPolicy: granularPolicy,
+          sandbox: { type: "readOnly" },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(proc.approvalPolicy).toBe("on-request");
+    proc.sendInput("continue");
+    await tick();
+    const turnReq = nextOutgoingRequest(child);
+    expect(turnReq).toMatchObject({
+      method: "turn/start",
+      params: { approvalPolicy: granularPolicy },
+    });
+
+    proc.stop();
+  });
+
+  it("handles managed app-server spawn errors without crashing", () => {
+    process.env.BRIDGE_CODEX_APP_SERVER_MODE = "managed";
+    process.env.BRIDGE_CODEX_SHARED_APP_SERVER_URL = "ws://127.0.0.1:18767";
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const proc = new CodexProcess("linux");
+      proc.start("/tmp/project-managed-error");
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        "codex",
+        ["app-server", "--listen", "ws://127.0.0.1:18767"],
+        expect.objectContaining({ cwd: "/tmp/project-managed-error" }),
+      );
+
+      expect(() => {
+        fakeChildren[0].emit("error", new Error("spawn failed"));
+      }).not.toThrow();
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[codex-app-server] Failed to start: spawn failed",
+      );
+
+      const nextProc = new CodexProcess("linux");
+      nextProc.start("/tmp/project-managed-error-next");
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+
+      proc.stop();
+      nextProc.stop();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("falls back to requested approval reviewer in init when thread response omits it", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-auto-review", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child);
+
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.params).toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "guardian_subagent",
+      sandbox: "workspace-write",
+    });
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: startReq.id,
+        result: {
+          thread: { id: "thr_auto_review" },
+          model: "gpt-5.5",
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "init",
+        provider: "codex",
+        sessionId: "thr_auto_review",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "auto_review",
+        sandboxMode: "workspace-write",
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("forces user review when managed Browser Use policy disables auto-review", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-managed-browser-use", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+      codexPermissionsMode: "autoReview",
+      autoReviewDisabledByPolicy: true,
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child);
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.method).toBe("thread/start");
+    expect(startReq.params).toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandbox: "workspace-write",
+    });
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: startReq.id,
+        result: {
+          thread: { id: "thr_managed_browser_use" },
+          approvalsReviewer: "guardian_subagent",
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "init",
+        sessionId: "thr_managed_browser_use",
+        approvalsReviewer: "user",
+        codexPermissionsMode: "default",
+      }),
+    );
+    proc.setApprovalsReviewer("auto_review");
+    expect(proc.approvalsReviewer).toBe("user");
+    proc.stop();
+  });
+
+  it("forces user review under managed policy when reviewer is omitted", async () => {
+    const proc = new CodexProcess("linux");
+
+    proc.start("/tmp/project-managed-default-reviewer", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      autoReviewDisabledByPolicy: true,
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child);
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.params).toMatchObject({
+      approvalsReviewer: "user",
+    });
+    proc.stop();
+  });
+
+  it("sends reasoning effort via config override on thread/start", async () => {
+    const proc = new CodexProcess("linux");
+
+    proc.start("/tmp/project-effort", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      modelReasoningEffort: "xhigh",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child); // initialized
+
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.method).toBe("thread/start");
+    expect(startReq.params).toMatchObject({
+      config: {
+        model_reasoning_effort: "xhigh",
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("starts GPT-6 Astra with low when the client requests none", async () => {
+    const proc = new CodexProcess("linux");
+
+    proc.start("/tmp/project-astra-effort", {
+      model: "gpt-6-astra",
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      modelReasoningEffort: "none",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child);
+
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.method).toBe("thread/start");
+    expect(startReq.params).toMatchObject({
+      model: "gpt-6-astra",
+      config: {
+        model_reasoning_effort: "low",
+      },
+    });
+    expect(proc.modelReasoningEffort).toBe("low");
+
+    proc.stop();
+  });
+
+  it("sends selected profile via config override on thread/start", async () => {
+    const proc = new CodexProcess("linux");
+
+    proc.start("/tmp/project-profile", {
+      profile: "ccpocket",
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child); // initialized
+
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.method).toBe("thread/start");
+    expect(startReq.params).toMatchObject({
+      cwd: "/tmp/project-profile",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      config: {
+        profile: "ccpocket",
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("merges additional writable roots with config/read roots on thread/start", async () => {
+    const proc = new CodexProcess("linux");
+
+    proc.start("/tmp/project-roots", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      additionalWritableRoots: [
+        "/tmp/extra",
+        "/tmp/project-roots/../extra",
+        "/tmp/other",
+      ],
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child); // initialized
+
+    const configReq = nextOutgoingRequest(child);
+    expect(configReq.method).toBe("config/read");
+    expect(configReq.params).toEqual({
+      includeLayers: false,
+      cwd: "/tmp/project-roots",
+    });
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: configReq.id,
+        result: {
+          config: {
+            sandbox_workspace_write: {
+              writable_roots: ["/tmp/project-roots", "/tmp/extra"],
+            },
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.method).toBe("thread/start");
+    expect(startReq.params).toMatchObject({
+      cwd: "/tmp/project-roots",
+      config: {
+        sandbox_workspace_write: {
+          writable_roots: [
+            "/tmp/project-roots",
+            "/tmp/extra",
+            "/tmp/other",
+          ],
+        },
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("uses cmd.exe to launch codex app-server on Windows", () => {
+    const proc = new CodexProcess("win32");
+
+    proc.start("D:\\Users\\alice\\repo");
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledWith(
+      "cmd.exe",
+      ["/d", "/s", "/c", "codex app-server --listen stdio://"],
+      expect.objectContaining({
+        cwd: "D:\\Users\\alice\\repo",
+        windowsVerbatimArguments: true,
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("builds a normalized Windows spawn spec", () => {
+    expect(buildCodexSpawnSpec("\\\\?\\D:\\Users\\alice\\repo", "win32")).toEqual(
+      {
+        command: "cmd.exe",
+        args: ["/d", "/s", "/c", "codex app-server --listen stdio://"],
+        options: expect.objectContaining({
+          cwd: "D:\\Users\\alice\\repo",
+          stdio: "pipe",
+          windowsVerbatimArguments: true,
+        }),
+      },
+    );
+  });
+
+  it("sends thread/rollback for the active thread", async () => {
+    const proc = new CodexProcess("linux");
+    proc.start("/tmp/project-a");
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child);
+    const startReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: startReq.id, result: { thread: { id: "thr_rollback" } } })}\n`,
+    );
+    await tick();
+    drainSkillsList(child);
+
+    const rollbackPromise = proc.rollbackThread(2);
+    const rollbackReq = nextOutgoingRequest(child);
+    expect(rollbackReq.method).toBe("thread/rollback");
+    expect(rollbackReq.params).toEqual({
+      threadId: "thr_rollback",
+      numTurns: 2,
+    });
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: rollbackReq.id,
+        result: { thread: { id: "thr_rollback", turns: [] } },
+      })}\n`,
+    );
+    await expect(rollbackPromise).resolves.toEqual({
+      id: "thr_rollback",
+      turns: [],
+    });
+  });
+
+  it("ignores a late archive reply and allows retry after timeout", async () => {
+    vi.useFakeTimers();
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    try {
+      const archiveResult = expect(
+        proc.archiveThread("thread-stalled"),
+      ).rejects.toThrow(
+        "Codex RPC thread/archive timed out after 15000ms",
+      );
+      const stalledRequest = nextOutgoingRequest(child);
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      await archiveResult;
+      expect((proc as any).pendingRpc.size).toBe(0);
+
+      (proc as any).handleRpcEnvelope({ id: stalledRequest.id, result: {} });
+      expect((proc as any).pendingRpc.size).toBe(0);
+
+      const retry = proc.archiveThread("thread-retry");
+      const retryRequest = nextOutgoingRequest(child);
+      (proc as any).handleRpcEnvelope({ id: retryRequest.id, result: {} });
+      await expect(retry).resolves.toBeUndefined();
+      expect((proc as any).pendingRpc.size).toBe(0);
+    } finally {
+      proc.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends thread/read with includeTurns", async () => {
+    const proc = new CodexProcess("linux");
+    const initializePromise = proc.initializeOnly("/tmp/project-a");
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    await initializePromise;
+
+    const readPromise = proc.readThread("thr_read", true);
+    const readReq = nextOutgoingRequest(child);
+    expect(readReq.method).toBe("thread/read");
+    expect(readReq.params).toEqual({
+      threadId: "thr_read",
+      includeTurns: true,
+    });
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: readReq.id,
+        result: { thread: { id: "thr_read", turns: [] } },
+      })}\n`,
+    );
+    await expect(readPromise).resolves.toEqual({
+      id: "thr_read",
+      turns: [],
+    });
+  });
+
+  it("reads Browser Use auto-review policy without RPC params", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    const requirementsPromise = proc.readConfigRequirements();
+    const request = nextOutgoingRequest(child);
+    expect(request).toMatchObject({
+      method: "configRequirements/read",
+    });
+    expect(request).not.toHaveProperty("params");
+
+    (proc as any).handleRpcResponse({
+      id: request.id,
+      result: {
+        requirements: {
+          browserUse: { disableAutoReview: true },
+        },
+      },
+    });
+    await expect(requirementsPromise).resolves.toEqual({
+      autoReviewDisabled: true,
+    });
+    proc.stop();
+  });
+
+  it("treats missing configRequirements/read as an old Codex fallback", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    const requirementsPromise = proc.readConfigRequirements();
+    const request = nextOutgoingRequest(child);
+    (proc as any).handleRpcResponse({
+      id: request.id,
+      error: { code: -32601, message: "Method not found" },
+    });
+
+    await expect(requirementsPromise).resolves.toEqual({
+      autoReviewDisabled: false,
+    });
+    proc.stop();
+  });
+
+  it("ignores placeholder codex model names from resume state", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-placeholder", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      model: "codex",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await tick();
+    nextOutgoingNotification(child); // initialized
+
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.method).toBe("thread/start");
+    expect(startReq.params).not.toHaveProperty("model");
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: startReq.id,
+        result: { thread: { id: "thr_placeholder" } },
+      })}\n`,
+    );
+
+    await tick();
+    drainSkillsList(child);
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "init",
+        provider: "codex",
+        sessionId: "thr_placeholder",
+      }),
+    );
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "init",
+        model: "codex",
+      }),
+    );
+
+    proc.sendInput("continue");
+    await tick();
+    const turnReq = nextOutgoingRequest(child);
+    expect(turnReq.method).toBe("turn/start");
+    expect(turnReq.params).not.toHaveProperty("model");
+    expect(turnReq.params).toMatchObject({
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "gpt-5.5",
+        },
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("can initialize app-server without starting a thread", async () => {
+    const proc = new CodexProcess("linux");
+
+    const initializePromise = proc.initializeOnly("/tmp/project-init-only");
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledWith(
+      "codex",
+      ["app-server", "--listen", "stdio://"],
+      expect.objectContaining({ cwd: "/tmp/project-init-only" }),
+    );
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    expect(initReq.method).toBe("initialize");
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+
+    await initializePromise;
+
+    const initialized = nextOutgoingNotification(child);
+    expect(initialized.method).toBe("initialized");
+    expect(() => nextOutgoingRequest(child)).toThrow();
+
+    proc.stop();
+  });
+
+  it("reads account quota without creating a thread or turn", async () => {
+    const proc = new CodexProcess("linux");
+    const initializing = proc.initializeOnly("/tmp/project-usage", 1000);
+    const child = fakeChildren[0];
+    const init = nextOutgoingRequest(child);
+    child.stdout.emit("data", `${JSON.stringify({ id: init.id, result: {} })}\n`);
+    await initializing;
+    expect(nextOutgoingNotification(child).method).toBe("initialized");
+
+    const reading = proc.readRateLimits();
+    const request = nextOutgoingRequest(child);
+    expect(request.method).toBe("account/rateLimits/read");
+    expect(request.params).toBeUndefined();
+    const result = { rateLimits: { limitId: "codex", primary: null } };
+    child.stdout.emit("data", `${JSON.stringify({ id: request.id, result })}\n`);
+    expect(await reading).toEqual(result);
+    expect(() => nextOutgoingRequest(child)).toThrow();
+    proc.stop();
+    expect(child.killed).toBe(true);
+  });
+
+  it("bounds account initialization and quota reads with timeouts", async () => {
+    vi.useFakeTimers();
+    const proc = new CodexProcess("linux");
+    try {
+      const initializing = proc.initializeOnly("/tmp/project-usage", 1000);
+      const failedInit = expect(initializing).rejects.toThrow("initialize timed out");
+      await vi.advanceTimersByTimeAsync(1000);
+      await failedInit;
+      proc.stop();
+
+      const retry = proc.initializeOnly("/tmp/project-usage", 1000);
+      const child = fakeChildren[1];
+      const init = nextOutgoingRequest(child);
+      child.stdout.emit("data", `${JSON.stringify({ id: init.id, result: {} })}\n`);
+      await retry;
+      nextOutgoingNotification(child);
+      const reading = proc.readRateLimits(1000);
+      const failedRead = expect(reading).rejects.toThrow("account/rateLimits/read timed out");
+      await vi.advanceTimersByTimeAsync(1000);
+      await failedRead;
+    } finally {
+      proc.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("emits user_input for app-server user items from another client", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-copresence");
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const startReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: startReq.id,
+        result: { thread: { id: "thr_copresence" } },
+      })}\n`,
+    );
+    await tick();
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "item/completed",
+        params: {
+          threadId: "thr_copresence",
+          item: {
+            id: "user_1",
+            type: "user_message",
+            content: [{ type: "text", text: "sent from terminal" }],
+            timestamp: "2026-05-12T10:00:00.000Z",
+          },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(messages).toContainEqual({
+      type: "user_input",
+      text: "sent from terminal",
+      userMessageUuid: "user_1",
+      timestamp: "2026-05-12T10:00:00.000Z",
+    });
+
+    proc.stop();
+  });
+
+  it("ignores app-server notifications for other threads", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-thread-filter");
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const startReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: startReq.id,
+        result: {
+          thread: {
+            id: "thr_self",
+            agentNickname: "self-agent",
+            agentRole: "primary",
+          },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(proc.sessionId).toBe("thr_self");
+    expect(proc.agentNickname).toBe("self-agent");
+    expect(proc.agentRole).toBe("primary");
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "thread/started",
+        params: {
+          threadId: "thr_other",
+          thread: {
+            id: "thr_other",
+            agentNickname: "other-agent",
+            agentRole: "secondary",
+          },
+        },
+      })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "turn/started",
+        params: { threadId: "thr_other", turn: { id: "turn_other" } },
+      })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "item/completed",
+        params: {
+          threadId: "thr_other",
+          item: {
+            id: "user_other",
+            type: "userMessage",
+            content: [{ type: "text", text: "foreign input" }],
+          },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(proc.sessionId).toBe("thr_self");
+    expect(proc.agentNickname).toBe("self-agent");
+    expect(proc.agentRole).toBe("primary");
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({ text: "foreign input" }),
+    );
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "item/completed",
+        params: {
+          threadId: "thr_self",
+          item: {
+            id: "user_self",
+            type: "userMessage",
+            content: [{ type: "text", text: "own input" }],
+          },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(messages).toContainEqual({
+      type: "user_input",
+      text: "own input",
+      userMessageUuid: "user_self",
+    });
+
+    proc.stop();
+  });
+
+  it("lists available models via model/list pagination", async () => {
+    const proc = new CodexProcess("linux");
+    const initializePromise = proc.initializeOnly("/tmp/project-model-list");
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await initializePromise;
+    nextOutgoingNotification(child);
+
+    const modelsPromise = proc.listAvailableModelMetadata();
+    await tick();
+
+    const firstReq = nextOutgoingRequest(child);
+    expect(firstReq.method).toBe("model/list");
+    expect(firstReq.params).toEqual({
+      limit: 100,
+      cursor: null,
+      includeHidden: false,
+    });
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: firstReq.id,
+        result: {
+          data: [
+            {
+              model: "gpt-5.5",
+              id: "ignored",
+              hidden: false,
+              supportedReasoningEfforts: [
+                {
+                  reasoningEffort: "low",
+                  description: "Fast responses with lighter reasoning",
+                },
+                {
+                  reasoningEffort: "medium",
+                  description: "Balances speed and reasoning depth",
+                },
+                {
+                  reasoningEffort: "max",
+                  description: "Maximum reasoning depth",
+                },
+                {
+                  reasoningEffort: "ultra",
+                  description: "Maximum reasoning with automatic delegation",
+                },
+              ],
+              defaultReasoningEffort: "medium",
+              additionalSpeedTiers: ["fast"],
+              serviceTiers: [
+                { id: "priority", name: "Fast", description: "1.5x speed" },
+              ],
+              defaultServiceTier: "fast",
+            },
+            { model: "gpt-hidden", hidden: true },
+            { model: "gpt-5.5", hidden: false },
+          ],
+          nextCursor: "1",
+        },
+      })}\n`,
+    );
+
+    await tick();
+    const secondReq = nextOutgoingRequest(child);
+    expect(secondReq.method).toBe("model/list");
+    expect(secondReq.params).toEqual({
+      limit: 100,
+      cursor: "1",
+      includeHidden: false,
+    });
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: secondReq.id,
+        result: {
+          data: [
+            {
+              id: "gpt-5.4-mini",
+              hidden: false,
+              supported_reasoning_levels: ["low", "medium"],
+              default_reasoning_effort: "low",
+            },
+          ],
+          nextCursor: null,
+        },
+      })}\n`,
+    );
+
+    await expect(modelsPromise).resolves.toEqual([
+      {
+        model: "gpt-5.5",
+        supportedReasoningEfforts: ["low", "medium", "max", "ultra"],
+        defaultReasoningEffort: "medium",
+        supportedServiceTiers: ["fast"],
+        defaultServiceTier: "fast",
+      },
+      {
+        model: "gpt-5.4-mini",
+        supportedReasoningEfforts: ["low", "medium"],
+        defaultReasoningEffort: "low",
+        supportedServiceTiers: [],
+      },
+    ]);
+    proc.stop();
+  });
+
+  it("sends reasoning effort on turn/start in default mode", async () => {
+    const proc = new CodexProcess("linux");
+
+    proc.start("/tmp/project-default-effort", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      modelReasoningEffort: "high",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child); // initialized
+
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.params).toMatchObject({
+      config: {
+        model_reasoning_effort: "high",
+      },
+    });
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: startReq.id,
+        result: {
+          thread: { id: "thr_default_effort" },
+          reasoningEffort: "high",
+        },
+      })}\n`,
+    );
+
+    await tick();
+    drainSkillsList(child);
+
+    proc.sendInput("continue");
+    await tick();
+    const turnReq = nextOutgoingRequest(child);
+    expect(turnReq.method).toBe("turn/start");
+    expect(turnReq.params).toMatchObject({
+      effort: "high",
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "gpt-5.5",
+          reasoning_effort: "high",
+        },
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("uses runtime model settings on the next turn/start", async () => {
+    const proc = new CodexProcess("linux");
+
+    proc.start("/tmp/project-runtime-model", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      model: "gpt-5.5",
+      modelReasoningEffort: "high",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child); // initialized
+
+    const startReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: startReq.id,
+        result: {
+          thread: { id: "thr_runtime_model", model: "gpt-5.5" },
+          reasoningEffort: "high",
+        },
+      })}\n`,
+    );
+
+    await tick();
+    drainSkillsList(child);
+
+    proc.setModel("gpt-5.4-mini", "low");
+    proc.setServiceTier("fast");
+    proc.sendInput("continue with a smaller model");
+    await tick();
+
+    const turnReq = nextOutgoingRequest(child);
+    expect(turnReq.method).toBe("turn/start");
+    expect(turnReq.params).toMatchObject({
+      model: "gpt-5.4-mini",
+      effort: "low",
+      serviceTier: "fast",
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "gpt-5.4-mini",
+          reasoning_effort: "low",
+        },
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("does not downgrade reasoning effort to medium in plan mode", async () => {
+    const proc = new CodexProcess("linux");
+
+    proc.start("/tmp/project-plan-effort", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      modelReasoningEffort: "xhigh",
+      collaborationMode: "plan",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child); // initialized
+
+    const startReq = nextOutgoingRequest(child);
+    expect(startReq.params).toMatchObject({
+      config: {
+        model_reasoning_effort: "xhigh",
+      },
+    });
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: startReq.id,
+        result: {
+          thread: { id: "thr_plan_effort" },
+          reasoningEffort: "xhigh",
+        },
+      })}\n`,
+    );
+
+    await tick();
+    drainSkillsList(child);
+
+    proc.sendInput("plan this");
+    await tick();
+    const turnReq = nextOutgoingRequest(child);
+    expect(turnReq.method).toBe("turn/start");
+    expect(turnReq.params).toMatchObject({
+      effort: "xhigh",
+      collaborationMode: {
+        mode: "plan",
+        settings: {
+          model: "gpt-5.5",
+          reasoning_effort: "xhigh",
+        },
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("emits permission_request and responds on approve", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-b");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child); // initialized
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_2" } } })}\n`,
+    );
+
+    await tick();
+    drainSkillsList(child);
+    proc.sendInput("run ls");
+    await tick();
+    const turnReq = nextOutgoingRequest(child);
+    expect(turnReq.method).toBe("turn/start");
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: turnReq.id, result: { turn: { id: "turn_1" } } })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ method: "turn/started", params: { turn: { id: "turn_1" } } })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "req-approval-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "item_cmd_1",
+          command: "ls -la",
+          cwd: "/tmp/project-b",
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "item_cmd_1",
+        toolName: "Bash",
+      }),
+    );
+
+    proc.approve("item_cmd_1");
+    await tick();
+    const approvalResponse = nextOutgoingResponse(child);
+    expect(approvalResponse).toMatchObject({
+      id: "req-approval-1",
+      result: { decision: "accept" },
+    });
+    expect(messages).toContainEqual({
+      type: "tool_result",
+      toolUseId: "item_cmd_1",
+      content: "Approved",
+      permissionOutcome: "approved",
+    });
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "turn/completed",
+        params: { turn: { id: "turn_1", status: "completed" } },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "result",
+        subtype: "success",
+        sessionId: "thr_2",
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("emits AskUserQuestion and responds on answer", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-c");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child); // initialized
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_3" } } })}\n`,
+    );
+
+    await tick();
+    drainSkillsList(child);
+    proc.sendInput("ask me a question");
+    await tick();
+    const turnReq = nextOutgoingRequest(child);
+    expect(turnReq.method).toBe("turn/start");
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: turnReq.id, result: { turn: { id: "turn_2" } } })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ method: "turn/started", params: { turn: { id: "turn_2" } } })}\n`,
+    );
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "req-user-input-1",
+        method: "item/tool/requestUserInput",
+        params: {
+          itemId: "item_user_input_1",
+          questions: [
+            {
+              id: "q1",
+              header: "Runtime",
+              question: "Pick one option",
+              options: [
+                { label: "A", description: "Option A" },
+                { label: "B", description: "Option B" },
+              ],
+            },
+          ],
+          threadId: "thr_3",
+          turnId: "turn_2",
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "item_user_input_1",
+        toolName: "AskUserQuestion",
+      }),
+    );
+
+    proc.answer("item_user_input_1", "A");
+    await tick();
+    const answerResponse = nextOutgoingResponse(child);
+    expect(answerResponse).toMatchObject({
+      id: "req-user-input-1",
+      result: {
+        answers: {
+          q1: { answers: ["A"] },
+        },
+      },
+    });
+    expect(messages).toContainEqual({
+      type: "tool_result",
+      toolUseId: "item_user_input_1",
+      content: "Answered",
+      permissionOutcome: "answered",
+    });
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "turn/completed",
+        params: { turn: { id: "turn_2", status: "completed" } },
+      })}\n`,
+    );
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "result",
+        subtype: "success",
+        sessionId: "thr_3",
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("responds to permission grants with granted scope and requested permissions", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-perms");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_perms" } } })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "req-perms-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm_item_1",
+          threadId: "thr_perms",
+          turnId: "turn_perms",
+          reason: "Need write access",
+          permissions: {
+            fileSystem: {
+              write: ["/tmp/project-perms"],
+            },
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "perm_item_1",
+        toolName: "Permissions",
+      }),
+    );
+
+    proc.approveAlways("perm_item_1");
+    await tick();
+
+    const response = nextOutgoingResponse(child);
+    expect(response).toMatchObject({
+      id: "req-perms-1",
+      result: {
+        scope: "session",
+        permissions: {
+          fileSystem: {
+            write: ["/tmp/project-perms"],
+          },
+        },
+      },
+    });
+    proc.stop();
+  });
+
+  it("maps MCP elicitation form requests to answer flow", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-elicitation");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_elicit" } } })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "req-elicit-1",
+        method: "mcpServer/elicitation/request",
+        params: {
+          threadId: "thr_elicit",
+          turnId: "turn_elicit",
+          serverName: "codex_apps",
+          mode: "form",
+          message: "Confirm this operation",
+          requestedSchema: {
+            type: "object",
+            properties: {
+              confirmed: {
+                type: "boolean",
+                title: "Confirmed",
+                description: "Whether to continue",
+              },
+              count: { type: "number", title: "Count" },
+              location: { type: "string", title: "Location" },
+              retries: { type: "integer", title: "Retries" },
+              note: { type: "string", title: "Note" },
+              scope: {
+                type: "string",
+                title: "Scope",
+                oneOf: [
+                  { const: "repo", title: "Repository" },
+                  { const: "org", title: "Organization" },
+                ],
+              },
+              channels: {
+                type: "array",
+                title: "Channels",
+                items: {
+                  anyOf: [
+                    { const: "issues", title: "Issues" },
+                    { const: "pulls", title: "Pull requests" },
+                  ],
+                },
+              },
+            },
+            required: ["confirmed", "count", "location"],
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "req-elicit-1",
+        toolName: "McpElicitation",
+      }),
+    );
+    expect(proc.getPendingPermission("req-elicit-1")).toMatchObject({
+      toolUseId: "req-elicit-1",
+      toolName: "McpElicitation",
+      input: {
+        questions: expect.arrayContaining([
+          expect.objectContaining({
+            id: "scope",
+            required: false,
+            options: expect.arrayContaining([
+              expect.objectContaining({ label: "Repository", value: "repo" }),
+            ]),
+          }),
+          expect.objectContaining({
+            id: "channels",
+            multiSelect: true,
+          }),
+        ]),
+      },
+    });
+
+    proc.answer(
+      "req-elicit-1",
+      JSON.stringify({
+        answers: {
+          confirmed: "true",
+          count: "3.5",
+          location: "Tokyo, Japan",
+          retries: "2.5",
+          note: "",
+          scope: "repo",
+          channels: ["issues", "pulls"],
+        },
+      }),
+    );
+    await tick();
+
+    const response = nextOutgoingResponse(child);
+    expect(response).toMatchObject({
+      id: "req-elicit-1",
+      result: {
+        action: "accept",
+        content: {
+          confirmed: true,
+          count: 3.5,
+          location: "Tokyo, Japan",
+          scope: "repo",
+          channels: ["issues", "pulls"],
+        },
+      },
+    });
+    expect((response.result as any).content).not.toHaveProperty("retries");
+    expect((response.result as any).content).not.toHaveProperty("note");
+
+    proc.stop();
+  });
+
+  it("responds to current time requests with Unix seconds", () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    (proc as any).handleServerRequest("time-1", "currentTime/read", {
+      threadId: "thr_time",
+    });
+
+    expect(nextOutgoingResponse(child)).toEqual({
+      id: "time-1",
+      result: { currentTimeAt: expect.any(Number) },
+    });
+    proc.stop();
+  });
+
+  it("rejects unsupported server requests instead of returning empty success", () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    (proc as any).handleServerRequest("unknown-1", "future/request", {});
+
+    expect(nextOutgoingError(child)).toEqual({
+      id: "unknown-1",
+      error: {
+        code: -32601,
+        message: "Unsupported server request: future/request",
+      },
+    });
+    proc.stop();
+  });
+
+  it("surfaces Codex warnings and completed review output", () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    (proc as any).handleNotification("configWarning", {
+      summary: "Invalid rule",
+      details: "Check .codex/rules/default.rules",
+    });
+    (proc as any).processItemCompleted({
+      type: "exitedReviewMode",
+      id: "review-1",
+      review: "Review complete: no findings.",
+    });
+
+    expect(messages).toContainEqual({
+      type: "error",
+      errorCode: "codex_warning",
+      message: "Invalid rule\nCheck .codex/rules/default.rules",
+    });
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "assistant",
+        message: expect.objectContaining({
+          id: "review-1",
+          content: [{ type: "text", text: "Review complete: no findings." }],
+        }),
+      }),
+    );
+    proc.stop();
+  });
+
+  it("suppresses low-risk guardian allow decisions", () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    (proc as any).handleNotification("guardianWarning", {
+      message:
+        "Automatic approval review approved (risk: low, authorization: unknown):\nAuto-review returned a\n  low-risk   allow decision.",
+    });
+    expect(messages).toEqual([]);
+    proc.stop();
+  });
+
+  it.each([
+    [
+      "medium",
+      "medium",
+      "Launching the Flutter app writes build files outside the workspace.",
+    ],
+    [
+      "high",
+      "high",
+      "Running this command can change files outside the workspace.",
+    ],
+  ] as const)(
+    "surfaces %s-risk guardian approvals as dedicated notices",
+    (risk, authorization, reason) => {
+      const proc = new CodexProcess("linux");
+      const messages: unknown[] = [];
+      proc.on("message", (message) => messages.push(message));
+
+      (proc as any).handleNotification("guardianWarning", {
+        message: `Automatic approval review approved (risk: ${risk}, authorization: ${authorization}):\n${reason}`,
+      });
+
+      expect(messages).toEqual([
+        {
+          type: "guardian_approval",
+          risk,
+          authorization,
+          reason,
+        },
+      ]);
+      proc.stop();
+    },
+  );
+
+  it("surfaces malformed approved guardian notifications as warnings", () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+    const message = "Automatic approval review approved without metadata.";
+
+    (proc as any).handleNotification("guardianWarning", { message });
+
+    expect(messages).toEqual([
+      { type: "error", errorCode: "codex_warning", message },
+    ]);
+    proc.stop();
+  });
+
+  it("continues to surface actionable guardian and standard warnings", () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (message) => messages.push(message));
+
+    (proc as any).handleNotification("guardianWarning", {
+      message: "Automatic approval review could not verify this command.",
+    });
+    (proc as any).handleNotification("warning", {
+      message: "Model fallback is active.",
+    });
+
+    expect(messages).toContainEqual({
+      type: "error",
+      errorCode: "codex_warning",
+      message: "Automatic approval review could not verify this command.",
+    });
+    expect(messages).toContainEqual({
+      type: "error",
+      errorCode: "codex_warning",
+      message: "Model fallback is active.",
+    });
+    proc.stop();
+  });
+
+  it("logs retryable runtime errors without adding transcript warnings", () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    const warningSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    proc.on("message", (message) => messages.push(message));
+
+    try {
+      (proc as any).handleNotification("error", {
+        error: { message: "Reconnecting... 1/5" },
+        willRetry: true,
+      });
+
+      expect(messages).toEqual([]);
+      expect(warningSpy).toHaveBeenCalledWith(
+        "[codex-process] Codex will retry: Reconnecting... 1/5",
+      );
+
+      (proc as any).handleNotification("error", {
+        error: { message: "Connection failed" },
+        willRetry: false,
+      });
+      expect(messages).toEqual([
+        {
+          type: "error",
+          errorCode: "codex_runtime_error",
+          message: "Connection failed",
+        },
+      ]);
+    } finally {
+      warningSpy.mockRestore();
+      proc.stop();
+    }
+  });
+
+  it("installs a suggested remote plugin before accepting the elicitation", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    (proc as any).handleServerRequest(
+      "req-tool-suggestion-1",
+      "mcpServer/elicitation/request",
+      {
+        serverName: "codex_apps",
+        mode: "form",
+        message: "GitHub makes it easier to inspect forks.",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: {
+          codex_approval_kind: "tool_suggestion",
+          persist: "always",
+          tool_type: "plugin",
+          suggest_type: "install",
+          suggest_reason: "GitHub makes it easier to inspect forks.",
+          tool_id: "github@openai-curated-remote",
+          tool_name: "GitHub",
+          remote_plugin_id: "plugins~github-remote-id",
+          app_connector_ids: ["connector-github"],
+        },
+      },
+    );
+
+    expect(messages).toContainEqual({
+      type: "permission_request",
+      toolUseId: "req-tool-suggestion-1",
+      toolName: "ToolSuggestion",
+      input: expect.objectContaining({
+        toolName: "GitHub",
+        toolType: "plugin",
+        suggestType: "install",
+        installState: "idle",
+      }),
+    });
+
+    const installation = proc.installToolSuggestion("req-tool-suggestion-1");
+    const installRequest = nextOutgoingRequest(child);
+    expect(installRequest).toMatchObject({
+      method: "plugin/install",
+      params: {
+        remoteMarketplaceName: "openai-curated-remote",
+        pluginName: "plugins~github-remote-id",
+      },
+    });
+    (proc as any).handleRpcEnvelope({
+      id: installRequest.id,
+      result: { authPolicy: "ON_USE", appsNeedingAuth: [] },
+    });
+    await installation;
+
+    expect(nextOutgoingResponse(child)).toEqual({
+      id: "req-tool-suggestion-1",
+      result: { action: "accept", content: null, _meta: null },
+    });
+    expect(messages).toContainEqual({
+      type: "permission_resolved",
+      toolUseId: "req-tool-suggestion-1",
+    });
+    expect(proc.getPendingPermission("req-tool-suggestion-1")).toBeUndefined();
+
+    proc.stop();
+  });
+
+  it("does not install tool suggestions claimed by an external MCP server", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    (proc as any).handleServerRequest(
+      "req-untrusted-tool-suggestion",
+      "mcpServer/elicitation/request",
+      {
+        serverName: "untrusted_mcp",
+        mode: "form",
+        message: "Install this plugin.",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: {
+          codex_approval_kind: "tool_suggestion",
+          tool_type: "plugin",
+          suggest_type: "install",
+          tool_id: "github@openai-curated-remote",
+          tool_name: "GitHub",
+          remote_plugin_id: "plugins~untrusted-id",
+        },
+      },
+    );
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "req-untrusted-tool-suggestion",
+        toolName: "McpElicitation",
+      }),
+    );
+    await expect(
+      proc.installToolSuggestion("req-untrusted-tool-suggestion"),
+    ).rejects.toThrow("No pending tool suggestion found");
+
+    proc.stop();
+  });
+
+  it("keeps a tool suggestion pending until required app authentication completes", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    (proc as any).handleServerRequest(
+      "req-tool-suggestion-auth",
+      "mcpServer/elicitation/request",
+      {
+        serverName: "codex_apps",
+        mode: "form",
+        message: "Install GitHub",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: {
+          codex_approval_kind: "tool_suggestion",
+          tool_type: "plugin",
+          suggest_type: "install",
+          tool_id: "github@openai-curated-remote",
+          tool_name: "GitHub",
+          remote_plugin_id: "plugins~github-remote-id",
+        },
+      },
+    );
+
+    const installation = proc.installToolSuggestion(
+      "req-tool-suggestion-auth",
+    );
+    const installRequest = nextOutgoingRequest(child);
+    (proc as any).handleRpcEnvelope({
+      id: installRequest.id,
+      result: {
+        authPolicy: "ON_INSTALL",
+        appsNeedingAuth: [
+          {
+            id: "connector-github",
+            name: "GitHub",
+            description: "Connect GitHub",
+            installUrl: "https://chatgpt.com/connect/github",
+            category: "Developer",
+          },
+        ],
+      },
+    });
+    await installation;
+
+    expect(proc.getPendingPermission("req-tool-suggestion-auth")).toMatchObject(
+      {
+        toolName: "ToolSuggestion",
+        input: {
+          installState: "needs_auth",
+          appsNeedingAuth: [
+            {
+              id: "connector-github",
+              name: "GitHub",
+              installUrl: "https://chatgpt.com/connect/github",
+            },
+          ],
+        },
+      },
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "req-tool-suggestion-auth",
+        input: expect.objectContaining({ installState: "needs_auth" }),
+      }),
+    );
+
+    proc.approve("req-tool-suggestion-auth");
+    expect(nextOutgoingResponse(child)).toEqual({
+      id: "req-tool-suggestion-auth",
+      result: { action: "accept", content: null, _meta: null },
+    });
+
+    proc.stop();
+  });
+
+  it("maps MCP tool approval elicitation to dynamic options and always allow response", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-mcp-approval");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_mcp_approval" } } })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "req-mcp-approval-1",
+        method: "mcpServer/elicitation/request",
+        params: {
+          threadId: "thr_mcp_approval",
+          turnId: "turn_mcp_approval",
+          serverName: "revenuecat",
+          mode: "form",
+          _meta: {
+            codex_approval_kind: "mcp_tool_call",
+            persist: ["session", "always"],
+          },
+          message: 'Allow the revenuecat MCP server to run tool "delete-package-from-offering"?',
+          requestedSchema: {
+            type: "object",
+            properties: {},
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "req-mcp-approval-1",
+        toolName: "McpElicitation",
+        input: expect.objectContaining({
+          questions: [
+            expect.objectContaining({
+              header: "Approve app tool call?",
+              options: [
+                expect.objectContaining({ label: "Allow" }),
+                expect.objectContaining({ label: "Allow for this session" }),
+                expect.objectContaining({ label: "Always allow" }),
+                expect.objectContaining({ label: "Cancel" }),
+              ],
+            }),
+          ],
+        }),
+      }),
+    );
+
+    proc.answer("req-mcp-approval-1", "Always allow");
+    await tick();
+
+    const response = nextOutgoingResponse(child);
+    expect(response).toMatchObject({
+      id: "req-mcp-approval-1",
+      result: {
+        action: "accept",
+        content: null,
+        _meta: {
+          persist: "always",
+        },
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("omits session remember choices when MCP approval persist modes are absent", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-mcp-approval-basic");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_mcp_basic" } } })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "req-mcp-approval-2",
+        method: "mcpServer/elicitation/request",
+        params: {
+          threadId: "thr_mcp_basic",
+          turnId: "turn_mcp_basic",
+          serverName: "revenuecat",
+          mode: "form",
+          _meta: {
+            codex_approval_kind: "mcp_tool_call",
+          },
+          message: 'Allow the revenuecat MCP server to run tool "delete-package-from-offering"?',
+          requestedSchema: {
+            type: "object",
+            properties: {},
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "req-mcp-approval-2",
+        toolName: "McpElicitation",
+        input: expect.objectContaining({
+          questions: [
+            expect.objectContaining({
+              options: [
+                expect.objectContaining({ label: "Allow" }),
+                expect.objectContaining({ label: "Cancel" }),
+              ],
+            }),
+          ],
+        }),
+      }),
+    );
+
+    expect(proc.getPendingPermission("req-mcp-approval-2")).toMatchObject({
+      toolUseId: "req-mcp-approval-2",
+      toolName: "McpElicitation",
+    });
+
+    proc.reject("req-mcp-approval-2");
+    await tick();
+
+    const response = nextOutgoingResponse(child);
+    expect(response).toMatchObject({
+      id: "req-mcp-approval-2",
+      result: {
+        action: "cancel",
+        content: null,
+        _meta: null,
+      },
+    });
+    expect(messages).toContainEqual({
+      type: "tool_result",
+      toolUseId: "req-mcp-approval-2",
+      content: "Rejected",
+      permissionOutcome: "rejected",
+    });
+
+    proc.stop();
+  });
+
+  it("maps message-only MCP elicitations to approval actions", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-computer-use");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_computer_use" } } })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "req-computer-use-1",
+        method: "mcpServer/elicitation/request",
+        params: {
+          threadId: "thr_computer_use",
+          turnId: "turn_computer_use",
+          serverName: "computer-use",
+          mode: "form",
+          _meta: null,
+          message: "Allow Codex to use Safari?",
+          requestedSchema: {
+            type: "object",
+            properties: {},
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "req-computer-use-1",
+        toolName: "McpElicitation",
+        input: expect.objectContaining({
+          availableDecisions: ["accept", "decline"],
+          questions: [
+            expect.objectContaining({
+              header: "Approve app tool call?",
+              question: "Allow Codex to use Safari?",
+              options: [
+                expect.objectContaining({ label: "Allow" }),
+                expect.objectContaining({ label: "Deny" }),
+                expect.objectContaining({ label: "Cancel" }),
+              ],
+            }),
+          ],
+        }),
+      }),
+    );
+
+    proc.approve("req-computer-use-1");
+    await tick();
+
+    const response = nextOutgoingResponse(child);
+    expect(response).toMatchObject({
+      id: "req-computer-use-1",
+      result: {
+        action: "accept",
+        content: null,
+        _meta: null,
+      },
+    });
+
+    proc.stop();
+  });
+
+  it("clears pending requests when serverRequest/resolved arrives", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-resolved");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_resolved" } } })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "req-resolved-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "item_resolved_1",
+          command: "pwd",
+          cwd: "/tmp/project-resolved",
+        },
+      })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "serverRequest/resolved",
+        params: {
+          threadId: "thr_resolved",
+          requestId: "req-resolved-1",
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_resolved",
+        toolUseId: "item_resolved_1",
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("uses acceptForSession for command approvals", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-approve-always");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_always" } } })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "req-always-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "item_always_1",
+          command: "git status",
+          cwd: "/tmp/project-approve-always",
+        },
+      })}\n`,
+    );
+
+    await tick();
+    proc.approveAlways("item_always_1");
+    await tick();
+
+    const response = nextOutgoingResponse(child);
+    expect(response).toMatchObject({
+      id: "req-always-1",
+      result: { decision: "acceptForSession" },
+    });
+    expect(messages).toContainEqual({
+      type: "tool_result",
+      toolUseId: "item_always_1",
+      content: "Approved (always)",
+      permissionOutcome: "approved_for_session",
+    });
+
+    proc.stop();
+  });
+
+  it("maps dynamic tool calls into tool_use and tool_result messages", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-dynamic-tool");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_dynamic" } } })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "item/started",
+        params: {
+          item: {
+            type: "dynamicToolCall",
+            id: "dyn_tool_1",
+            tool: "open_pr",
+            arguments: {
+              repo: "openai/codex",
+              title: "Add protocol support",
+            },
+            status: "inProgress",
+          },
+        },
+      })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "item/completed",
+        params: {
+          item: {
+            type: "dynamicToolCall",
+            id: "dyn_tool_1",
+            tool: "open_pr",
+            arguments: {
+              repo: "openai/codex",
+              title: "Add protocol support",
+            },
+            status: "completed",
+            success: true,
+            contentItems: [
+              {
+                type: "inputText",
+                text: "Created PR #42",
+              },
+            ],
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "assistant",
+        message: expect.objectContaining({
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: "tool_use",
+              id: "dyn_tool_1",
+              name: "open_pr",
+              input: {
+                repo: "openai/codex",
+                title: "Add protocol support",
+              },
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "tool_result",
+        toolUseId: "dyn_tool_1",
+        toolName: "open_pr",
+        content: expect.stringContaining("Created PR #42"),
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "tool_result",
+        toolUseId: "dyn_tool_1",
+        content: expect.stringContaining("success: true"),
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it.each([
+    [
+      "camelCase",
+      {
+        pluginId: "openai.browser",
+        scriptPath: "/tmp/openai.browser/run.sh",
+      },
+    ],
+    [
+      "snake_case",
+      {
+        plugin_id: "openai.browser",
+        script_path: "/tmp/openai.browser/run.sh",
+      },
+    ],
+  ])(
+    "preserves %s command execution attribution in Bash tool input",
+    (_fieldStyle, attribution) => {
+      const proc = new CodexProcess("linux");
+      const messages: unknown[] = [];
+      proc.on("message", (msg) => messages.push(msg));
+
+      (proc as any).processItemStarted({
+        type: "commandExecution",
+        id: "cmd_attributed",
+        command: ["bash", "/tmp/openai.browser/run.sh"],
+        ...attribution,
+      });
+
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          type: "assistant",
+          message: expect.objectContaining({
+            content: [
+              {
+                type: "tool_use",
+                id: "cmd_attributed",
+                name: "Bash",
+                input: {
+                  command: "bash /tmp/openai.browser/run.sh",
+                  pluginId: "openai.browser",
+                  scriptPath: "/tmp/openai.browser/run.sh",
+                },
+              },
+            ],
+          }),
+        }),
+      );
+      proc.stop();
+    },
+  );
+
+  it("maps image generation saved paths into tool_use and tool_result messages", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-image-generation-path");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_image_path" } } })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "item/started",
+        params: {
+          item: {
+            type: "imageGeneration",
+            id: "ig_saved_1",
+            status: "inProgress",
+            revisedPrompt: "a small blue square",
+          },
+        },
+      })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "item/completed",
+        params: {
+          item: {
+            type: "imageGeneration",
+            id: "ig_saved_1",
+            status: "completed",
+            revisedPrompt: "a small blue square",
+            result: "base64-omitted-from-content",
+            savedPath: "/tmp/codex/generated_images/ig_saved_1.png",
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "assistant",
+        message: expect.objectContaining({
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: "tool_use",
+              id: "ig_saved_1",
+              name: "ImageGeneration",
+              input: {
+                status: "inProgress",
+                revisedPrompt: "a small blue square",
+              },
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "tool_result",
+        toolUseId: "ig_saved_1",
+        toolName: "ImageGeneration",
+        content: expect.stringContaining(
+          "savedPath: /tmp/codex/generated_images/ig_saved_1.png",
+        ),
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "tool_result",
+        toolUseId: "ig_saved_1",
+        content: expect.not.stringContaining("base64-omitted-from-content"),
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("preserves image generation base64 results as raw content blocks", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-image-generation-base64");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_image_base64" } } })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "item/completed",
+        params: {
+          item: {
+            type: "imageGeneration",
+            id: "ig_base64_1",
+            status: "completed",
+            revised_prompt: "a small red square",
+            result: "data:image/png;base64,aGVsbG8=",
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "tool_result",
+        toolUseId: "ig_base64_1",
+        toolName: "ImageGeneration",
+        content: expect.stringContaining("Generated 1 image"),
+        rawContentBlocks: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              data: "aGVsbG8=",
+              media_type: "image/png",
+            },
+          },
+        ],
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "tool_result",
+        toolUseId: "ig_base64_1",
+        content: expect.not.stringContaining("aGVsbG8="),
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("preserves MCP image outputs as raw content blocks for downstream rendering", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-mcp-images");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_mcp" } } })}\n`,
+    );
+
+    await tick();
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "item/completed",
+        params: {
+          item: {
+            type: "mcpToolCall",
+            id: "mcp_tool_1",
+            server: "marionette",
+            tool: "take_screenshots",
+            arguments: {},
+            result: {
+              content: [
+                {
+                  type: "image",
+                  data: "aGVsbG8=",
+                  mimeType: "image/png",
+                },
+              ],
+            },
+          },
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "assistant",
+        message: expect.objectContaining({
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: "tool_use",
+              id: "mcp_tool_1",
+              name: "mcp:marionette/take_screenshots",
+              input: {},
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "tool_result",
+        toolUseId: "mcp_tool_1",
+        toolName: "mcp:marionette/take_screenshots",
+        content: "Generated 1 image",
+        rawContentBlocks: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              data: "aGVsbG8=",
+              media_type: "image/png",
+            },
+          },
+        ],
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("emits plan notifications as structured checklist messages", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    proc.start("/tmp/project-d");
+    const child = fakeChildren[0];
+
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child); // initialized
+    const threadReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: threadReq.id, result: { thread: { id: "thr_4" } } })}\n`,
+    );
+
+    await tick();
+    drainSkillsList(child);
+    proc.sendInput("make a plan");
+    await tick();
+    const turnReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: turnReq.id, result: { turn: { id: "turn_3" } } })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ method: "turn/started", params: { turn: { id: "turn_3" } } })}\n`,
+    );
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "item/plan/delta",
+        params: { delta: "1. gather requirements" },
+      })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "turn/plan/updated",
+        params: {
+          explanation: "Initial plan drafted",
+          plan: [{ step: "Gather requirements", status: "inProgress" }],
+        },
+      })}\n`,
+    );
+
+    await tick();
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "thinking_delta",
+        text: "1. gather requirements",
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "assistant",
+        message: expect.objectContaining({
+          role: "assistant",
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: "tool_use",
+              name: "UpdatePlan",
+              input: expect.objectContaining({
+                title: "Plan update",
+                explanation: "Initial plan drafted",
+                todos: [
+                  {
+                    content: "Gather requirements",
+                    status: "in_progress",
+                    activeForm: "",
+                  },
+                ],
+              }),
+            }),
+          ]),
+        }),
+      }),
+    );
+
+    proc.stop();
+  });
+
+  it("ignores completion entity update echoes during fetch cooldown", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const internal = proc as any;
+    attachFakeTransport(internal, child);
+    internal._projectPath = "/tmp/project-completions";
+    const emitRpc = (message: Record<string, unknown>) => {
+      internal.handleStdoutChunk(`${JSON.stringify(message)}\n`);
+    };
+
+    const fetchPromise = internal.fetchCompletionEntities(
+      "/tmp/project-completions",
+    ) as Promise<void>;
+
+    await tick();
+    expect(outgoingRequests(child).map((request) => request.method)).toEqual([
+      "skills/list",
+      "app/list",
+      "plugin/list",
+    ]);
+
+    const skillsReq = await waitForOutgoingRequest(child, "skills/list");
+    expect(skillsReq.method).toBe("skills/list");
+    emitRpc({ id: skillsReq.id, result: { data: [] } });
+    await tick();
+
+    const appsReq = await waitForOutgoingRequest(child, "app/list");
+    expect(appsReq.method).toBe("app/list");
+    emitRpc({ method: "app/list/updated", params: {} });
+    emitRpc({ id: appsReq.id, result: { data: [] } });
+    const pluginsReq = await waitForOutgoingRequest(child, "plugin/list");
+    expect(pluginsReq.method).toBe("plugin/list");
+    emitRpc({ id: pluginsReq.id, result: { marketplaces: [] } });
+    await fetchPromise;
+    await tick();
+
+    expect(outgoingRequests(child)).toHaveLength(0);
+
+    emitRpc({ method: "app/list/updated", params: {} });
+    await tick();
+    expect(outgoingRequests(child)).toHaveLength(0);
+
+    internal._completionFetchCooldownUntil = 0;
+    emitRpc({ method: "app/list/updated", params: {} });
+    await tick();
+
+    const refetchSkillsReq = await waitForOutgoingRequest(
+      child,
+      "skills/list",
+    );
+    expect(refetchSkillsReq.method).toBe("skills/list");
+    emitRpc({ id: refetchSkillsReq.id, result: { data: [] } });
+    const refetchAppsReq = await waitForOutgoingRequest(child, "app/list");
+    expect(refetchAppsReq.method).toBe("app/list");
+    emitRpc({ id: refetchAppsReq.id, result: { data: [] } });
+    const refetchPluginsReq = await waitForOutgoingRequest(
+      child,
+      "plugin/list",
+    );
+    expect(refetchPluginsReq.method).toBe("plugin/list");
+    emitRpc({ id: refetchPluginsReq.id, result: { marketplaces: [] } });
+    await tick();
+
+    proc.stop();
+  });
+
+  it("emits an empty skill snapshot before slower completion sources finish", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+    const internal = proc as any;
+    attachFakeTransport(internal, child);
+    const emitRpc = (message: Record<string, unknown>) => {
+      internal.handleStdoutChunk(`${JSON.stringify(message)}\n`);
+    };
+
+    const fetchPromise = internal.fetchCompletionEntities(
+      "/tmp/project-empty-completions",
+    ) as Promise<void>;
+    const skillsReq = await waitForOutgoingRequest(child, "skills/list");
+    const appsReq = await waitForOutgoingRequest(child, "app/list");
+    const pluginsReq = await waitForOutgoingRequest(child, "plugin/list");
+
+    emitRpc({ id: skillsReq.id, result: { data: [] } });
+    await tick();
+
+    expect(messages).toContainEqual({
+      type: "system",
+      subtype: "supported_commands",
+      skills: [],
+      skillMetadata: [],
+      apps: [],
+      appMetadata: [],
+      plugins: [],
+      pluginMetadata: [],
+    });
+
+    emitRpc({ id: appsReq.id, result: { data: [] } });
+    emitRpc({ id: pluginsReq.id, result: { marketplaces: [] } });
+    await fetchPromise;
+    proc.stop();
+  });
+
+  it("emits installed enabled plugins from plugin/list as completion entities", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+    const internal = proc as any;
+    attachFakeTransport(internal, child);
+    internal._projectPath = "/tmp/project-plugins";
+    const emitRpc = (message: Record<string, unknown>) => {
+      internal.handleStdoutChunk(`${JSON.stringify(message)}\n`);
+    };
+
+    const fetchPromise = internal.fetchCompletionEntities(
+      "/tmp/project-plugins",
+    ) as Promise<void>;
+
+    const skillsReq = await waitForOutgoingRequest(child, "skills/list");
+    emitRpc({ id: skillsReq.id, result: { data: [] } });
+    const appsReq = await waitForOutgoingRequest(child, "app/list");
+    emitRpc({ id: appsReq.id, result: { data: [] } });
+    const pluginsReq = await waitForOutgoingRequest(child, "plugin/list");
+    emitRpc({
+      id: pluginsReq.id,
+      result: {
+        marketplaces: [
+          {
+            name: "test",
+            path: "/tmp/marketplace",
+            plugins: [
+              {
+                id: "sample@test",
+                name: "sample",
+                installed: true,
+                enabled: true,
+                interface: {
+                  displayName: "Sample Plugin",
+                  shortDescription: "Example plugin",
+                  longDescription: "Long plugin description",
+                  defaultPrompt: ["Use sample", "Try another prompt"],
+                  brandColor: "#123456",
+                  composerIcon: ["unexpected", "path"],
+                  composerIconUrl: "https://example.test/icon.png",
+                },
+              },
+              {
+                id: "disabled@test",
+                name: "disabled",
+                installed: true,
+                enabled: false,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await fetchPromise;
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "supported_commands",
+        plugins: ["sample"],
+        pluginMetadata: [
+          expect.objectContaining({
+            id: "sample@test",
+            name: "sample",
+            path: "plugin://sample@test",
+            marketplaceName: "test",
+            marketplacePath: "/tmp/marketplace",
+            displayName: "Sample Plugin",
+            shortDescription: "Example plugin",
+            defaultPrompt: "Use sample",
+          }),
+        ],
+      }),
+    );
+    const supportedCommands = messages.find(
+      (msg): msg is { pluginMetadata: Array<Record<string, unknown>> } =>
+        typeof msg === "object" &&
+        msg !== null &&
+        (msg as { subtype?: unknown }).subtype === "supported_commands" &&
+        Array.isArray(
+          (msg as { pluginMetadata?: unknown }).pluginMetadata,
+        ) &&
+        (msg as { pluginMetadata: unknown[] }).pluginMetadata.length > 0,
+    );
+    expect(supportedCommands?.pluginMetadata[0]?.composerIcon).toBeUndefined();
+
+    proc.stop();
+  });
+
+  it("keeps skills and apps when plugin/list fails", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const messages: unknown[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+    const internal = proc as any;
+    attachFakeTransport(internal, child);
+    internal._projectPath = "/tmp/project-plugin-error";
+    const emitRpc = (message: Record<string, unknown>) => {
+      internal.handleStdoutChunk(`${JSON.stringify(message)}\n`);
+    };
+
+    const fetchPromise = internal.fetchCompletionEntities(
+      "/tmp/project-plugin-error",
+    ) as Promise<void>;
+
+    const skillsReq = await waitForOutgoingRequest(child, "skills/list");
+    emitRpc({
+      id: skillsReq.id,
+      result: {
+        data: [
+          {
+            cwd: "/tmp/project-plugin-error",
+            skills: [
+              {
+                name: "review",
+                path: "/tmp/review/SKILL.md",
+                description: "Review code",
+                enabled: true,
+                scope: "user",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await tick();
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "supported_commands",
+        skills: ["review"],
+        apps: [],
+        plugins: [],
+      }),
+    );
+    const appsReq = await waitForOutgoingRequest(child, "app/list");
+    emitRpc({
+      id: appsReq.id,
+      result: {
+        data: [
+          {
+            id: "demo-app",
+            name: "Demo App",
+            description: "Example connector",
+            isAccessible: true,
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+    const pluginsReq = await waitForOutgoingRequest(child, "plugin/list");
+    emitRpc({
+      id: pluginsReq.id,
+      error: { code: -32601, message: "unknown method" },
+    });
+    await fetchPromise;
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "supported_commands",
+        skills: ["review"],
+        apps: ["demo-app"],
+        plugins: [],
+      }),
+    );
+
+    proc.stop();
+  });
+});
+
+function outgoingRequests(child: FakeChildProcess): Record<string, unknown>[] {
+  return child.stdin.writes
+    .flatMap((chunk) => chunk.split("\n"))
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter(
+      (value) => typeof value.method === "string" && value.id !== undefined,
+    );
+}
+
+async function waitForOutgoingRequest(
+  child: FakeChildProcess,
+  method: string,
+): Promise<Record<string, unknown>> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const match = outgoingRequests(child).some(
+      (value) => value.method === method,
+    );
+    if (match) {
+      return consumeOutgoing(child, (value) => value.method === method);
+    }
+    await tick();
+  }
+  throw new Error(`Expected outgoing ${method} request was not found`);
+}
+
+function consumeOutgoing(
+  child: FakeChildProcess,
+  predicate: (value: Record<string, unknown>) => boolean,
+): Record<string, unknown> {
+  const lines = child.stdin.writes
+    .flatMap((chunk) => chunk.split("\n"))
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const parsed = lines.map(
+    (line) => JSON.parse(line) as Record<string, unknown>,
+  );
+  const index = parsed.findIndex(predicate);
+  if (index < 0) {
+    throw new Error("Expected outgoing JSON-RPC message was not found");
+  }
+  const remaining = lines.filter((_, lineIndex) => lineIndex !== index);
+  child.stdin.writes =
+    remaining.length > 0 ? [`${remaining.join("\n")}\n`] : [];
+
+  return parsed[index];
+}
+
+function nextOutgoingRequest(child: FakeChildProcess): Record<string, unknown> {
+  return consumeOutgoing(
+    child,
+    (value) => typeof value.method === "string" && value.id !== undefined,
+  );
+}
+
+/** Consume and reply to the background skills/list request that fires after thread/start. */
+function drainSkillsList(child: FakeChildProcess): void {
+  try {
+    const req = consumeOutgoing(
+      child,
+      (value) => value.method === "skills/list" && value.id !== undefined,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: req.id, result: { data: [] } })}\n`,
+    );
+  } catch {
+    // skills/list may not have been emitted yet — safe to ignore
+  }
+}
+
+function nextOutgoingNotification(
+  child: FakeChildProcess,
+): Record<string, unknown> {
+  return consumeOutgoing(
+    child,
+    (value) => typeof value.method === "string" && value.id === undefined,
+  );
+}
+
+function nextOutgoingResponse(
+  child: FakeChildProcess,
+): Record<string, unknown> {
+  return consumeOutgoing(
+    child,
+    (value) =>
+      value.id !== undefined &&
+      value.result !== undefined &&
+      value.method === undefined,
+  );
+}
+
+function nextOutgoingError(child: FakeChildProcess): Record<string, unknown> {
+  return consumeOutgoing(
+    child,
+    (value) =>
+      value.id !== undefined &&
+      value.error !== undefined &&
+      value.method === undefined,
+  );
+}
+
+function attachFakeTransport(
+  internal: { transport?: unknown },
+  child: FakeChildProcess,
+): void {
+  internal.transport = {
+    isRunning: true,
+    write(envelope: Record<string, unknown>) {
+      child.stdin.write(`${JSON.stringify(envelope)}\n`);
+    },
+    stop() {},
+    on() {
+      return this;
+    },
+  };
+}
+
+async function tick(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}

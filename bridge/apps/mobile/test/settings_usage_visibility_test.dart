@@ -1,0 +1,1713 @@
+import 'dart:async';
+
+import 'package:ccpocket/features/settings/settings_screen.dart';
+import 'package:ccpocket/features/settings/state/settings_cubit.dart';
+import 'package:ccpocket/features/settings/state/settings_state.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
+import 'package:ccpocket/models/git_diff_interaction_mode.dart';
+import 'package:ccpocket/models/image_paste_shortcut.dart';
+import 'package:ccpocket/models/machine.dart';
+import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/models/new_session_tab.dart';
+import 'package:ccpocket/providers/machine_manager_cubit.dart';
+import 'package:ccpocket/services/bridge_latest_version_service.dart';
+import 'package:ccpocket/services/bridge_service.dart';
+import 'package:ccpocket/services/database_service.dart';
+import 'package:ccpocket/services/in_app_review_service.dart';
+import 'package:ccpocket/services/machine_manager_service.dart';
+import 'package:ccpocket/services/revenuecat_service.dart';
+import 'package:ccpocket/services/ssh_startup_service.dart';
+import 'package:ccpocket/services/support_banner_service.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'helpers/bridge_version_test_values.dart';
+
+class _FakeBridgeService extends BridgeService {
+  final _connectionController =
+      StreamController<BridgeConnectionState>.broadcast();
+  final _usageController = StreamController<UsageResultMessage>.broadcast();
+  bool _connected;
+  final UsageResultMessage? cachedUsage;
+  final String? fakeLastUrl;
+  bool disconnectCalled = false;
+
+  _FakeBridgeService({
+    required bool connected,
+    this.cachedUsage,
+    this.fakeLastUrl,
+  }) : _connected = connected;
+
+  @override
+  bool get isConnected => _connected;
+
+  @override
+  String? get lastUrl => fakeLastUrl;
+
+  @override
+  Stream<BridgeConnectionState> get connectionStatus =>
+      _connectionController.stream;
+
+  @override
+  Stream<UsageResultMessage> get usageResults => _usageController.stream;
+
+  @override
+  UsageResultMessage? get lastUsageResult => cachedUsage;
+
+  @override
+  void requestUsage() {}
+
+  @override
+  void disconnect() {
+    disconnectCalled = true;
+    _connected = false;
+    _connectionController.add(BridgeConnectionState.disconnected);
+  }
+
+  @override
+  void dispose() {
+    _connectionController.close();
+    _usageController.close();
+    super.dispose();
+  }
+}
+
+class _FakeRevenueCatService extends RevenueCatService {
+  _FakeRevenueCatService({required SupportCatalogState catalog})
+    : super(publicApiKey: '', platform: TargetPlatform.iOS) {
+    catalogState.value = catalog;
+  }
+}
+
+class _SeededSettingsCubit extends SettingsCubit {
+  _SeededSettingsCubit(super.prefs, {required String? activeMachineId}) {
+    emit(state.copyWith(activeMachineId: activeMachineId));
+  }
+}
+
+class _FakeSecureStorage extends Fake implements FlutterSecureStorage {
+  @override
+  Future<void> write({
+    required String key,
+    required String? value,
+    AppleOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    AppleOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async {}
+
+  @override
+  Future<String?> read({
+    required String key,
+    AppleOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    AppleOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async => null;
+}
+
+class _FakeSshStartupService extends SshStartupService {
+  final Completer<SshResult> updateCompleter = Completer<SshResult>();
+
+  _FakeSshStartupService(super.machineManager);
+
+  @override
+  Future<SshResult> updateBridgeServer(
+    String machineId, {
+    String? password,
+    Future<String?> Function()? promptForPassword,
+  }) {
+    return updateCompleter.future;
+  }
+}
+
+class _StaticMachineManagerService implements MachineManagerService {
+  final _controller = StreamController<List<MachineWithStatus>>.broadcast();
+  List<MachineWithStatus> _statuses;
+  final String? sshPassword;
+
+  _StaticMachineManagerService(this._statuses, {this.sshPassword});
+
+  @override
+  Stream<List<MachineWithStatus>> get machines => _controller.stream;
+
+  @override
+  Future<void> init() async {
+    _controller.add(_statuses);
+  }
+
+  @override
+  Future<void> checkAllHealth() async {
+    _controller.add(_statuses);
+  }
+
+  @override
+  Future<MachineStatus> checkHealth(
+    String machineId, {
+    Duration timeout = const Duration(seconds: 5),
+    String? password,
+    Future<String?> Function()? promptForPassword,
+  }) async => _findStatus(machineId)?.status ?? MachineStatus.unknown;
+
+  @override
+  Future<Machine> recordConnection({
+    required String host,
+    required int port,
+    String? apiKey,
+    String? name,
+    bool? useSsl,
+    BridgeConnectionMode? connectionMode,
+  }) async {
+    return Machine(
+      id: 'recorded',
+      host: host,
+      port: port,
+      name: name,
+      useSsl: useSsl ?? false,
+      connectionMode: connectionMode ?? BridgeConnectionMode.automatic,
+    );
+  }
+
+  @override
+  Future<void> addMachine(
+    Machine machine, {
+    String? apiKey,
+    String? sshPassword,
+    String? sshPrivateKey,
+    String? sshJumpPassword,
+    String? sshJumpPrivateKey,
+  }) async {}
+
+  @override
+  Future<void> updateMachine(
+    Machine machine, {
+    String? apiKey,
+    String? sshPassword,
+    String? sshPrivateKey,
+    String? sshJumpPassword,
+    String? sshJumpPrivateKey,
+    bool clearApiKey = false,
+    bool clearCredentials = false,
+    bool clearJumpCredentials = false,
+  }) async {}
+
+  @override
+  Future<void> deleteMachine(String id) async {}
+
+  @override
+  Future<void> toggleFavorite(String machineId) async {}
+
+  @override
+  Machine? getMachine(String id) => _findStatus(id)?.machine;
+
+  @override
+  Future<String?> getApiKey(String machineId) async => null;
+
+  @override
+  Future<String?> getSshPassword(String machineId) async => sshPassword;
+
+  @override
+  Future<String?> getSshPrivateKey(String machineId) async => null;
+
+  @override
+  Future<String?> getSshJumpPassword(String machineId) async => null;
+
+  @override
+  Future<String?> getSshJumpPrivateKey(String machineId) async => null;
+
+  @override
+  Future<String> buildWsUrl(String machineId) async => 'ws://127.0.0.1:8765';
+
+  @override
+  Future<String> buildWsUrlWithSshCredentials(
+    String machineId, {
+    String? password,
+    Future<String?> Function()? promptForPassword,
+  }) async => 'ws://127.0.0.1:8765';
+
+  @override
+  void configureBridgeTunnelResolvers({
+    BridgeWsUrlResolver? wsUrlResolver,
+    BridgeHttpBaseUrlResolver? httpBaseUrlResolver,
+  }) {}
+
+  @override
+  Machine createNew({
+    String? name,
+    required String host,
+    int port = 8765,
+    bool useSsl = false,
+  }) {
+    return Machine(
+      id: 'new',
+      host: host,
+      port: port,
+      name: name,
+      useSsl: useSsl,
+    );
+  }
+
+  @override
+  void startPeriodicHealthCheck({Duration? interval}) {}
+
+  @override
+  void stopPeriodicHealthCheck() {}
+
+  @override
+  List<Machine> get currentMachines =>
+      _statuses.map((status) => status.machine).toList();
+
+  @override
+  List<MachineWithStatus> get machinesWithStatus => _statuses;
+
+  @override
+  Machine? findByHostPort(String host, int port) {
+    for (final status in _statuses) {
+      if (status.machine.host == host && status.machine.port == port) {
+        return status.machine;
+      }
+    }
+    return null;
+  }
+
+  @override
+  void dispose() {
+    _controller.close();
+  }
+
+  void replaceStatuses(List<MachineWithStatus> statuses) {
+    _statuses = statuses;
+    _controller.add(_statuses);
+  }
+
+  MachineWithStatus? _findStatus(String id) {
+    for (final status in _statuses) {
+      if (status.machine.id == id) return status;
+    }
+    return null;
+  }
+}
+
+Future<Widget> _buildScreen({
+  required BridgeService bridge,
+  required SettingsCubit settingsCubit,
+  required MachineManagerCubit machineManagerCubit,
+  RevenueCatService? revenueCatService,
+  InAppReviewService? inAppReviewService,
+  SupportBannerService? supportBannerService,
+  bool focusConnection = false,
+  bool focusSupport = false,
+  bool focusUsage = false,
+  bool embedded = false,
+}) async {
+  final prefs = await SharedPreferences.getInstance();
+  final screen = MultiRepositoryProvider(
+    providers: [
+      RepositoryProvider<BridgeService>.value(value: bridge),
+      RepositoryProvider<RevenueCatService>.value(
+        value: revenueCatService ?? RevenueCatService(),
+      ),
+      RepositoryProvider<DatabaseService>.value(value: DatabaseService()),
+      RepositoryProvider<InAppReviewService>.value(
+        value: inAppReviewService ?? InAppReviewService(prefs: prefs),
+      ),
+    ],
+    child: MultiBlocProvider(
+      providers: [
+        BlocProvider<SettingsCubit>.value(value: settingsCubit),
+        BlocProvider<MachineManagerCubit>.value(value: machineManagerCubit),
+      ],
+      child: MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: const Locale('en'),
+        home: SettingsScreen(
+          focusConnection: focusConnection,
+          focusSupport: focusSupport,
+          focusUsage: focusUsage,
+          embedded: embedded,
+        ),
+      ),
+    ),
+  );
+  if (supportBannerService == null) return screen;
+  return ChangeNotifierProvider<SupportBannerService>.value(
+    value: supportBannerService,
+    child: screen,
+  );
+}
+
+BridgeLatestVersionService _recommendedLatestVersionService() {
+  return BridgeLatestVersionService(
+    httpClient: MockClient(
+      (_) async =>
+          http.Response('{"version":"$recommendedBridgeVersion"}', 200),
+    ),
+  );
+}
+
+MachineManagerCubit _createMachineManagerCubit(MachineManagerService service) {
+  return MachineManagerCubit(
+    service,
+    null,
+    latestVersionService: _recommendedLatestVersionService(),
+  );
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  const platformEnvironmentChannel = MethodChannel(
+    'ccpocket/platform_environment',
+  );
+
+  setUp(() {
+    PackageInfo.setMockInitialValues(
+      appName: 'CC Pocket',
+      packageName: 'dev.test.ccpocket',
+      version: '1.0.0',
+      buildNumber: '1',
+      buildSignature: '',
+    );
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(platformEnvironmentChannel, null);
+  });
+
+  group('Settings usage visibility', () {
+    testWidgets(
+      'shows bridge update button only when connected machine is old',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        final prefs = await SharedPreferences.getInstance();
+        final settingsCubit = _SeededSettingsCubit(
+          prefs,
+          activeMachineId: 'machine-1',
+        );
+        final machineManagerService = _StaticMachineManagerService([
+          MachineWithStatus(
+            machine: Machine(
+              id: 'machine-1',
+              name: 'Remote Mac',
+              host: '100.64.0.1',
+              sshEnabled: true,
+              sshUsername: 'k9i',
+            ),
+            status: MachineStatus.online,
+            versionInfo: BridgeVersionInfo(
+              version: olderThanRecommendedBridgeVersion,
+            ),
+          ),
+        ]);
+        final machineManagerCubit = _createMachineManagerCubit(
+          machineManagerService,
+        );
+        final bridge = _FakeBridgeService(
+          connected: true,
+          fakeLastUrl: 'ws://100.64.0.1:8765',
+        );
+
+        await tester.pumpWidget(
+          await _buildScreen(
+            bridge: bridge,
+            settingsCubit: settingsCubit,
+            machineManagerCubit: machineManagerCubit,
+          ),
+        );
+        await tester.pumpAndSettle();
+        final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+
+        expect(find.text(l.bridgeUpdateAvailable), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('settings_update_bridge_button')),
+          findsOneWidget,
+        );
+
+        await settingsCubit.close();
+        await machineManagerCubit.close();
+        machineManagerService.dispose();
+        bridge.dispose();
+      },
+    );
+
+    testWidgets('disconnects and marks machine updating when update starts', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(
+        prefs,
+        activeMachineId: 'machine-1',
+      );
+      final machine = Machine(
+        id: 'machine-1',
+        name: 'Remote Mac',
+        host: '100.64.0.1',
+        sshEnabled: true,
+        sshUsername: 'k9i',
+      );
+      final machineManagerService = _StaticMachineManagerService([
+        MachineWithStatus(
+          machine: machine,
+          status: MachineStatus.online,
+          versionInfo: BridgeVersionInfo(
+            version: olderThanRecommendedBridgeVersion,
+          ),
+        ),
+      ], sshPassword: 'secret');
+      final sshService = _FakeSshStartupService(machineManagerService);
+      final machineManagerCubit = MachineManagerCubit(
+        machineManagerService,
+        sshService,
+        latestVersionService: _recommendedLatestVersionService(),
+      );
+      final bridge = _FakeBridgeService(
+        connected: true,
+        fakeLastUrl: 'ws://100.64.0.1:8765',
+      );
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+          embedded: true,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(const ValueKey('settings_update_bridge_button')),
+      );
+      await tester.pump();
+
+      expect(bridge.disconnectCalled, isTrue);
+      expect(machineManagerCubit.state.updatingMachineId, 'machine-1');
+
+      machineManagerService.replaceStatuses([
+        MachineWithStatus(
+          machine: machine,
+          status: MachineStatus.online,
+          versionInfo: BridgeVersionInfo(version: recommendedBridgeVersion),
+        ),
+      ]);
+      sshService.updateCompleter.complete(SshResult.success());
+      await tester.pump();
+      await tester.pump();
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      machineManagerService.dispose();
+      bridge.dispose();
+    });
+
+    testWidgets(
+      'does not prompt for SSH password when updating with private key',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        final prefs = await SharedPreferences.getInstance();
+        final settingsCubit = _SeededSettingsCubit(
+          prefs,
+          activeMachineId: 'machine-1',
+        );
+        final machine = Machine(
+          id: 'machine-1',
+          name: 'Remote Mac',
+          host: '100.64.0.1',
+          sshEnabled: true,
+          sshUsername: 'k9i',
+          sshAuthType: SshAuthType.privateKey,
+          hasCredentials: true,
+        );
+        final machineManagerService = _StaticMachineManagerService([
+          MachineWithStatus(
+            machine: machine,
+            status: MachineStatus.online,
+            versionInfo: BridgeVersionInfo(
+              version: olderThanRecommendedBridgeVersion,
+            ),
+          ),
+        ]);
+        final sshService = _FakeSshStartupService(machineManagerService);
+        final machineManagerCubit = MachineManagerCubit(
+          machineManagerService,
+          sshService,
+          latestVersionService: _recommendedLatestVersionService(),
+        );
+        final bridge = _FakeBridgeService(
+          connected: true,
+          fakeLastUrl: 'ws://100.64.0.1:8765',
+        );
+
+        await tester.pumpWidget(
+          await _buildScreen(
+            bridge: bridge,
+            settingsCubit: settingsCubit,
+            machineManagerCubit: machineManagerCubit,
+            embedded: true,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(
+          find.byKey(const ValueKey('settings_update_bridge_button')),
+        );
+        await tester.pump();
+
+        final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+        expect(find.text(l.sshPassword), findsNothing);
+        expect(bridge.disconnectCalled, isTrue);
+        expect(machineManagerCubit.state.updatingMachineId, 'machine-1');
+
+        machineManagerService.replaceStatuses([
+          MachineWithStatus(
+            machine: machine,
+            status: MachineStatus.online,
+            versionInfo: BridgeVersionInfo(version: recommendedBridgeVersion),
+          ),
+        ]);
+        sshService.updateCompleter.complete(SshResult.success());
+        await tester.pump();
+        await tester.pump();
+
+        await settingsCubit.close();
+        await machineManagerCubit.close();
+        machineManagerService.dispose();
+        bridge.dispose();
+      },
+    );
+
+    testWidgets(
+      'shows bridge update button when npm latest is newer than required version',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        final prefs = await SharedPreferences.getInstance();
+        final settingsCubit = _SeededSettingsCubit(
+          prefs,
+          activeMachineId: 'machine-1',
+        );
+        final machineManagerService = _StaticMachineManagerService([
+          MachineWithStatus(
+            machine: Machine(
+              id: 'machine-1',
+              name: 'Remote Mac',
+              host: '100.64.0.1',
+              sshEnabled: true,
+              sshUsername: 'k9i',
+            ),
+            status: MachineStatus.online,
+            versionInfo: BridgeVersionInfo(version: recommendedBridgeVersion),
+          ),
+        ]);
+        final machineManagerCubit = MachineManagerCubit(
+          machineManagerService,
+          null,
+          latestVersionService: BridgeLatestVersionService(
+            httpClient: MockClient(
+              (_) async => http.Response(
+                '{"version":"$newerThanRecommendedBridgeVersion"}',
+                200,
+              ),
+            ),
+          ),
+        );
+        await machineManagerCubit.refreshLatestBridgeVersion();
+        final bridge = _FakeBridgeService(
+          connected: true,
+          fakeLastUrl: 'ws://100.64.0.1:8765',
+        );
+
+        await tester.pumpWidget(
+          await _buildScreen(
+            bridge: bridge,
+            settingsCubit: settingsCubit,
+            machineManagerCubit: machineManagerCubit,
+          ),
+        );
+        await tester.pumpAndSettle();
+        final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+
+        expect(find.text(l.bridgeUpdateAvailable), findsOneWidget);
+        expect(
+          find.text(
+            l.bridgeVersionCurrentLatest(
+              recommendedBridgeVersion,
+              newerThanRecommendedBridgeVersion,
+            ),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('settings_update_bridge_button')),
+          findsOneWidget,
+        );
+
+        await settingsCubit.close();
+        await machineManagerCubit.close();
+        machineManagerService.dispose();
+        bridge.dispose();
+      },
+    );
+
+    testWidgets('hides bridge update button when latest or SSH is missing', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final latestSettingsCubit = _SeededSettingsCubit(
+        prefs,
+        activeMachineId: 'machine-1',
+      );
+      final latestService = _StaticMachineManagerService([
+        MachineWithStatus(
+          machine: Machine(
+            id: 'machine-1',
+            name: 'Remote Mac',
+            host: '100.64.0.1',
+            sshEnabled: true,
+            sshUsername: 'k9i',
+          ),
+          status: MachineStatus.online,
+          versionInfo: BridgeVersionInfo(version: recommendedBridgeVersion),
+        ),
+      ]);
+      final latestCubit = _createMachineManagerCubit(latestService);
+      final latestBridge = _FakeBridgeService(
+        connected: true,
+        fakeLastUrl: 'ws://100.64.0.1:8765',
+      );
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: latestBridge,
+          settingsCubit: latestSettingsCubit,
+          machineManagerCubit: latestCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+      final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+
+      expect(find.text(l.bridgeIsUpToDate), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('settings_update_bridge_button')),
+        findsNothing,
+      );
+
+      await latestSettingsCubit.close();
+      await latestCubit.close();
+      latestService.dispose();
+      latestBridge.dispose();
+
+      final latestMissingSshSettingsCubit = _SeededSettingsCubit(
+        prefs,
+        activeMachineId: 'machine-1',
+      );
+      final latestMissingSshService = _StaticMachineManagerService([
+        MachineWithStatus(
+          machine: Machine(
+            id: 'machine-1',
+            name: 'Remote Mac',
+            host: '100.64.0.1',
+            sshEnabled: false,
+          ),
+          status: MachineStatus.online,
+          versionInfo: BridgeVersionInfo(version: recommendedBridgeVersion),
+        ),
+      ]);
+      final latestMissingSshCubit = _createMachineManagerCubit(
+        latestMissingSshService,
+      );
+      final latestMissingSshBridge = _FakeBridgeService(
+        connected: true,
+        fakeLastUrl: 'ws://100.64.0.1:8765',
+      );
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: latestMissingSshBridge,
+          settingsCubit: latestMissingSshSettingsCubit,
+          machineManagerCubit: latestMissingSshCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text(l.bridgeIsUpToDate), findsOneWidget);
+      expect(
+        find.text(
+          l.bridgeVersionCurrentExpected(
+            recommendedBridgeVersion,
+            recommendedBridgeVersion,
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('settings_bridge_update_setup_tile')),
+        findsNothing,
+      );
+
+      await latestMissingSshSettingsCubit.close();
+      await latestMissingSshCubit.close();
+      latestMissingSshService.dispose();
+      latestMissingSshBridge.dispose();
+
+      final missingSshSettingsCubit = _SeededSettingsCubit(
+        prefs,
+        activeMachineId: 'machine-1',
+      );
+      final missingSshService = _StaticMachineManagerService([
+        MachineWithStatus(
+          machine: Machine(
+            id: 'machine-1',
+            name: 'Remote Mac',
+            host: '100.64.0.1',
+            sshEnabled: false,
+          ),
+          status: MachineStatus.online,
+          versionInfo: BridgeVersionInfo(
+            version: olderThanRecommendedBridgeVersion,
+          ),
+        ),
+      ]);
+      final missingSshCubit = _createMachineManagerCubit(missingSshService);
+      final missingSshBridge = _FakeBridgeService(
+        connected: true,
+        fakeLastUrl: 'ws://100.64.0.1:8765',
+      );
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: missingSshBridge,
+          settingsCubit: missingSshSettingsCubit,
+          machineManagerCubit: missingSshCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text(l.bridgeUpdateRequiresSetup), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('settings_update_bridge_button')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('settings_bridge_update_setup_tile')),
+        findsOneWidget,
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('settings_bridge_update_setup_tile')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text(l.bridgeUpdateSetupTitle), findsOneWidget);
+      expect(find.text(l.bridgeUpdateSetupEnableSsh), findsOneWidget);
+      expect(find.text(l.bridgeUpdateSetupCommand), findsOneWidget);
+
+      await missingSshSettingsCubit.close();
+      await missingSshCubit.close();
+      missingSshService.dispose();
+      missingSshBridge.dispose();
+    });
+
+    testWidgets(
+      'hides usage section when disconnected even with cached usage',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        final prefs = await SharedPreferences.getInstance();
+        final settingsCubit = _SeededSettingsCubit(
+          prefs,
+          activeMachineId: null,
+        );
+        final manager = MachineManagerService(prefs, _FakeSecureStorage());
+        final machineManagerCubit = _createMachineManagerCubit(manager);
+        final bridge = _FakeBridgeService(
+          connected: false,
+          cachedUsage: const UsageResultMessage(
+            providers: [
+              UsageInfo(
+                provider: 'codex',
+                fiveHour: UsageWindow(
+                  utilization: 0.08,
+                  resetsAt: '2026-04-12T10:19:42Z',
+                ),
+              ),
+            ],
+          ),
+        );
+        await tester.pumpWidget(
+          await _buildScreen(
+            bridge: bridge,
+            settingsCubit: settingsCubit,
+            machineManagerCubit: machineManagerCubit,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+
+        expect(find.text(l.settingsUsageSectionTitle), findsNothing);
+        expect(find.byKey(const ValueKey('codex_usage_card')), findsNothing);
+        expect(find.byKey(const ValueKey('app_icon_tile')), findsOneWidget);
+
+        await settingsCubit.close();
+        await machineManagerCubit.close();
+        bridge.dispose();
+      },
+    );
+
+    testWidgets('orders general settings by conversion and related controls', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(prefs, activeMachineId: null);
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(connected: false);
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+      final appIconTop = tester
+          .getTopLeft(find.byKey(const ValueKey('app_icon_tile')))
+          .dy;
+      final themeTop = tester.getTopLeft(find.text(l.theme)).dy;
+      final languageTop = tester.getTopLeft(find.text(l.language)).dy;
+      final voiceInputTop = tester.getTopLeft(find.text(l.voiceInput)).dy;
+      final hideVoiceInputTop = tester
+          .getTopLeft(find.text(l.hideVoiceInput))
+          .dy;
+      final openGalleryDirectlyTop = tester
+          .getTopLeft(find.text(l.openGalleryDirectly))
+          .dy;
+      final textDensityTop = tester.getTopLeft(find.text(l.textDensity)).dy;
+
+      expect(appIconTop, lessThan(themeTop));
+      expect(themeTop, lessThan(languageTop));
+      expect(languageTop, lessThan(voiceInputTop));
+      expect(voiceInputTop, lessThan(hideVoiceInputTop));
+      expect(hideVoiceInputTop, lessThan(openGalleryDirectlyTop));
+      expect(openGalleryDirectlyTop, lessThan(textDensityTop));
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    testWidgets('shows both agent controls when both agents are enabled', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(prefs, activeMachineId: null);
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(connected: false);
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('enabled_agents_selector')),
+        180,
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('enabled_agents_selector')),
+        findsOneWidget,
+      );
+      expect(find.text(l.settingsNewSessionTabs), findsOneWidget);
+      expect(find.text(l.showHiddenDirectories), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('show_hidden_directories_toggle')),
+        findsOneWidget,
+      );
+      expect(find.text(l.autoRenameCodexSessions), findsOneWidget);
+      expect(find.text(l.showExtendedCodexEfforts), findsOneWidget);
+      expect(find.text(l.autoRenameClaudeSessions), findsOneWidget);
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    testWidgets('toggles hidden directories from agent settings', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(prefs, activeMachineId: null);
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(connected: false);
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final toggle = find.byKey(
+        const ValueKey('show_hidden_directories_toggle'),
+      );
+      await tester.scrollUntilVisible(toggle, 180);
+      await tester.ensureVisible(toggle);
+      await tester.pumpAndSettle();
+      expect(settingsCubit.state.showHiddenDirectories, isFalse);
+
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+
+      expect(settingsCubit.state.showHiddenDirectories, isTrue);
+      expect(prefs.getBool('settings_show_hidden_directories'), isTrue);
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    testWidgets('toggles extended Codex Efforts from agent settings', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(prefs, activeMachineId: null);
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(connected: false);
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final toggle = find.byKey(
+        const ValueKey('show_extended_codex_efforts_toggle'),
+      );
+      await tester.scrollUntilVisible(toggle, 180);
+      await tester.pumpAndSettle();
+
+      expect(settingsCubit.state.showExtendedCodexEfforts, isFalse);
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+
+      expect(settingsCubit.state.showExtendedCodexEfforts, isTrue);
+      expect(prefs.getBool('settings_show_extended_codex_efforts'), isTrue);
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    testWidgets('hides Claude agent controls when only Codex is enabled', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({
+        'settings_new_session_tabs': tabsToJson(const [NewSessionTab.codex]),
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(prefs, activeMachineId: null);
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(connected: false);
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('enabled_agents_selector')),
+        180,
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('enabled_agents_selector')),
+        findsOneWidget,
+      );
+      expect(find.text(l.autoRenameCodexSessions), findsOneWidget);
+      expect(find.text(l.showExtendedCodexEfforts), findsOneWidget);
+      expect(find.text(l.settingsNewSessionTabs), findsNothing);
+      expect(find.text(l.autoRenameClaudeSessions), findsNothing);
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    testWidgets('shows weekly-only Codex usage without a five-hour row', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(
+        prefs,
+        activeMachineId: 'machine-1',
+      );
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final resetsAt = DateTime.now().add(
+        const Duration(days: 6, hours: 13, minutes: 34, seconds: 55),
+      );
+      final bridge = _FakeBridgeService(
+        connected: true,
+        fakeLastUrl: 'ws://127.0.0.1:8765',
+        cachedUsage: UsageResultMessage(
+          providers: [
+            UsageInfo(
+              provider: 'codex',
+              sevenDay: UsageWindow(
+                utilization: 0.09,
+                resetsAt: resetsAt.toIso8601String(),
+              ),
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+      final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+
+      expect(find.byKey(const ValueKey('app_icon_tile')), findsOneWidget);
+
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('codex_usage_card')),
+        300,
+        scrollable: find.byType(Scrollable),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text(l.settingsUsageSectionTitle), findsOneWidget);
+      expect(find.byKey(const ValueKey('codex_usage_card')), findsOneWidget);
+      expect(find.text(l.usageSevenDay), findsOneWidget);
+      expect(find.text(l.usageFiveHour), findsNothing);
+      expect(find.textContaining('(6d13h34m)'), findsOneWidget);
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    testWidgets('focuses usage and shows pace guidance', (tester) async {
+      tester.view.physicalSize = const Size(390, 560);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(prefs, activeMachineId: null);
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final resetsAt = DateTime.now().add(const Duration(hours: 3));
+      final bridge = _FakeBridgeService(
+        connected: true,
+        fakeLastUrl: 'ws://127.0.0.1:8765',
+        cachedUsage: UsageResultMessage(
+          providers: [
+            UsageInfo(
+              provider: 'codex',
+              fiveHour: UsageWindow(
+                utilization: 40,
+                resetsAt: resetsAt.toIso8601String(),
+              ),
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+          focusUsage: true,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('codex_usage_card')), findsOneWidget);
+      expect(find.text('On pace'), findsOneWidget);
+      expect(find.text('Expected 40% used'), findsOneWidget);
+      expect(find.text('On track to last until reset'), findsOneWidget);
+      final usageRect = tester.getRect(
+        find.byKey(const ValueKey('codex_usage_card')),
+      );
+      final listRect = tester.getRect(
+        find.byKey(const PageStorageKey('settings_list')),
+      );
+      expect(usageRect.overlaps(listRect), isTrue);
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    testWidgets('defaults to remaining mode and toggles to used', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(
+        prefs,
+        activeMachineId: 'machine-1',
+      );
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(
+        connected: true,
+        fakeLastUrl: 'ws://127.0.0.1:8765',
+        cachedUsage: const UsageResultMessage(
+          providers: [
+            UsageInfo(
+              provider: 'codex',
+              fiveHour: UsageWindow(
+                utilization: 14,
+                resetsAt: '2026-04-12T10:19:42Z',
+              ),
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+      final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('codex_usage_card')),
+        300,
+        scrollable: find.byType(Scrollable),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text(l.usageDisplayModeRemaining), findsOneWidget);
+      expect(find.text('86%'), findsOneWidget);
+
+      await Scrollable.ensureVisible(
+        tester.element(find.byKey(const ValueKey('usage_display_mode_button'))),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('usage_display_mode_button')));
+      await tester.pumpAndSettle();
+
+      expect(find.text(l.usageDisplayModeUsed), findsOneWidget);
+      expect(find.text('14%'), findsOneWidget);
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    test('usage display mode persists through SettingsCubit reload', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final firstCubit = SettingsCubit(prefs);
+
+      expect(firstCubit.state.usageDisplayMode, UsageDisplayMode.remaining);
+
+      firstCubit.setUsageDisplayMode(UsageDisplayMode.used);
+      await firstCubit.close();
+
+      final secondCubit = SettingsCubit(prefs);
+      expect(secondCubit.state.usageDisplayMode, UsageDisplayMode.used);
+
+      await secondCubit.close();
+    });
+
+    testWidgets('hides spread appeal before review thresholds are met', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(
+        prefs,
+        activeMachineId: 'machine-1',
+      );
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(
+        connected: true,
+        fakeLastUrl: 'ws://127.0.0.1:8765',
+      );
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+          inAppReviewService: InAppReviewService(
+            prefs: prefs,
+            now: () => DateTime(2026, 4, 15, 12),
+            appVersionLoader: () async => '1.50.0',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+
+      await tester.scrollUntilVisible(
+        find.text(l.shareApp),
+        500,
+        scrollable: find.byType(Scrollable),
+      );
+      await tester.pump();
+
+      expect(find.byKey(const ValueKey('spread_appeal_message')), findsNothing);
+      expect(find.text(l.spreadAppealMessage), findsNothing);
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    testWidgets('shows spread appeal after review thresholds are met', (
+      tester,
+    ) async {
+      final now = DateTime(2026, 4, 15, 12);
+      SharedPreferences.setMockInitialValues({
+        'review.first_seen_at_ms': now
+            .subtract(const Duration(days: 5))
+            .millisecondsSinceEpoch,
+        'review.successful_connections': 3,
+        'review.created_sessions': 3,
+        'review.usage_days': const ['2026-04-13', '2026-04-15'],
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(
+        prefs,
+        activeMachineId: 'machine-1',
+      );
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(
+        connected: true,
+        fakeLastUrl: 'ws://127.0.0.1:8765',
+      );
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+          inAppReviewService: InAppReviewService(
+            prefs: prefs,
+            now: () => now,
+            appVersionLoader: () async => '1.50.0',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('spread_appeal_message')),
+        500,
+        scrollable: find.byType(Scrollable),
+      );
+      await tester.pump();
+
+      expect(find.text(l.spreadAppealMessage), findsOneWidget);
+      expect(l.spreadAppealMessage, isNot(contains('GitHub')));
+      expect(find.text(l.shareApp), findsOneWidget);
+      expect(find.text(l.starOnGithub), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text(l.shareApp)).dy,
+        lessThan(tester.getTopLeft(find.text(l.starOnGithub)).dy),
+      );
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    testWidgets('shows spread appeal when debug force support prompts is on', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(
+        prefs,
+        activeMachineId: 'machine-1',
+      );
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(
+        connected: true,
+        fakeLastUrl: 'ws://127.0.0.1:8765',
+      );
+      final reviewService = InAppReviewService(
+        prefs: prefs,
+        now: () => DateTime(2026, 4, 15, 12),
+        appVersionLoader: () async => '1.50.0',
+      );
+      final supportBannerService = SupportBannerService(
+        prefs: prefs,
+        reviewService: reviewService,
+      );
+      await supportBannerService.setDebugForceShowOverride(true);
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+          inAppReviewService: reviewService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+      final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('spread_appeal_message')),
+        500,
+        scrollable: find.byType(Scrollable),
+      );
+      await tester.pump();
+
+      expect(find.text(l.spreadAppealMessage), findsOneWidget);
+      expect(find.text(l.shareApp), findsOneWidget);
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    testWidgets('focusSupport scrolls support entry into view', (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(390, 560);
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(
+        prefs,
+        activeMachineId: 'machine-1',
+      );
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(
+        connected: true,
+        fakeLastUrl: 'ws://127.0.0.1:8765',
+      );
+      final revenueCat = _FakeRevenueCatService(
+        catalog: const SupportCatalogState(
+          isAvailable: true,
+          isLoading: false,
+          isSupporter: false,
+          packages: [
+            SupportPackage(
+              id: r'$rc_monthly',
+              productId: 'supporter_monthly_10',
+              title: 'Supporter \$9.99/mo',
+              priceLabel: '\$9.99',
+              kind: SupportPackageKind.monthly,
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+          revenueCatService: revenueCat,
+          focusSupport: true,
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 700));
+
+      final supportDy = tester
+          .getTopLeft(find.byKey(const ValueKey('supporter_entry_button')))
+          .dy;
+      expect(supportDy, greaterThanOrEqualTo(0));
+      expect(supportDy, lessThan(560));
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+  });
+
+  group('Settings macOS native app link', () {
+    testWidgets('shows link when iOS app is running on Mac', (tester) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(platformEnvironmentChannel, (call) async {
+            if (call.method == 'isIOSAppOnMac') return true;
+            return null;
+          });
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(prefs, activeMachineId: null);
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(connected: false);
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('macos_native_app_settings_tile')),
+        500,
+        scrollable: find.byType(Scrollable).first,
+      );
+
+      expect(
+        find.byKey(const ValueKey('macos_native_app_settings_tile')),
+        findsOneWidget,
+      );
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+
+    testWidgets('hides link when not running as an iOS app on Mac', (
+      tester,
+    ) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(platformEnvironmentChannel, (call) async {
+            if (call.method == 'isIOSAppOnMac') return false;
+            return null;
+          });
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(prefs, activeMachineId: null);
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(connected: false);
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('macos_native_app_settings_tile')),
+        findsNothing,
+      );
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+  });
+
+  group('Settings git diff interaction mode', () {
+    test('persists through SettingsCubit reload', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final firstCubit = SettingsCubit(prefs);
+
+      expect(
+        firstCubit.state.gitDiffInteractionMode,
+        GitDiffInteractionMode.quickActions,
+      );
+
+      firstCubit.setGitDiffInteractionMode(GitDiffInteractionMode.scrollFirst);
+      await firstCubit.close();
+
+      final secondCubit = SettingsCubit(prefs);
+      expect(
+        secondCubit.state.gitDiffInteractionMode,
+        GitDiffInteractionMode.scrollFirst,
+      );
+      expect(secondCubit.state.gitDiffFocusAutoLandscape, isFalse);
+
+      secondCubit.setGitDiffFocusAutoLandscape(true);
+      await secondCubit.close();
+
+      final thirdCubit = SettingsCubit(prefs);
+      expect(thirdCubit.state.gitDiffFocusAutoLandscape, isTrue);
+      await thirdCubit.close();
+    });
+
+    testWidgets('shows mode selector in editor settings', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(prefs, activeMachineId: null);
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(connected: false);
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+      final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+
+      await tester.scrollUntilVisible(
+        find.text(l.gitDiffInteractionMode),
+        300,
+        scrollable: find.byType(Scrollable),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text(l.gitDiffInteractionMode), findsOneWidget);
+      expect(find.text(l.gitDiffQuickActions), findsOneWidget);
+      expect(find.text(l.gitDiffScrollFirst), findsOneWidget);
+
+      await tester.tap(find.text(l.gitDiffScrollFirst));
+      await tester.pumpAndSettle();
+
+      expect(
+        settingsCubit.state.gitDiffInteractionMode,
+        GitDiffInteractionMode.scrollFirst,
+      );
+
+      final autoLandscapeToggle = find.byKey(
+        const ValueKey('git_diff_focus_auto_landscape_toggle'),
+      );
+      await tester.ensureVisible(autoLandscapeToggle);
+      await tester.pumpAndSettle();
+
+      expect(find.text(l.gitDiffFocusAutoLandscape), findsOneWidget);
+      expect(autoLandscapeToggle, findsOneWidget);
+
+      await tester.tap(autoLandscapeToggle);
+      await tester.pumpAndSettle();
+
+      expect(settingsCubit.state.gitDiffFocusAutoLandscape, isTrue);
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+  });
+
+  group('Settings image paste shortcut', () {
+    test('persists through SettingsCubit reload', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final firstCubit = SettingsCubit(prefs);
+
+      expect(firstCubit.state.imagePasteShortcut, ImagePasteShortcut.ctrlV);
+
+      firstCubit.setImagePasteShortcut(ImagePasteShortcut.commandV);
+      await firstCubit.close();
+
+      final secondCubit = SettingsCubit(prefs);
+      expect(secondCubit.state.imagePasteShortcut, ImagePasteShortcut.commandV);
+      await secondCubit.close();
+    });
+  });
+
+  group('Settings direct gallery selection', () {
+    test('defaults to attachment menu and persists enabled value', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final firstCubit = SettingsCubit(prefs);
+
+      expect(firstCubit.state.openGalleryDirectly, isFalse);
+
+      firstCubit.setOpenGalleryDirectly(true);
+      await firstCubit.close();
+
+      final secondCubit = SettingsCubit(prefs);
+      expect(secondCubit.state.openGalleryDirectly, isTrue);
+      await secondCubit.close();
+    });
+
+    testWidgets('toggle updates the setting', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final settingsCubit = _SeededSettingsCubit(prefs, activeMachineId: null);
+      final manager = MachineManagerService(prefs, _FakeSecureStorage());
+      final machineManagerCubit = _createMachineManagerCubit(manager);
+      final bridge = _FakeBridgeService(connected: false);
+
+      await tester.pumpWidget(
+        await _buildScreen(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          machineManagerCubit: machineManagerCubit,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final toggle = find.byKey(const ValueKey('open_gallery_directly_toggle'));
+      expect(toggle, findsOneWidget);
+      expect(settingsCubit.state.openGalleryDirectly, isFalse);
+
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+
+      expect(settingsCubit.state.openGalleryDirectly, isTrue);
+
+      await settingsCubit.close();
+      await machineManagerCubit.close();
+      bridge.dispose();
+    });
+  });
+}

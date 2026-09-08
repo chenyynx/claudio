@@ -1,0 +1,1223 @@
+# Changelog
+
+All notable changes to `@ccpocket/bridge` will be documented in this file.
+
+## [Unreleased]
+
+## [1.81.3] - 2026-09-06
+
+### Fixed
+- Fetch Codex usage limits from the App Server API so refresh retrieves current quota without running a conversation. Report fetch failures instead of displaying stale session-log values.
+
+## [1.81.2] - 2026-09-05
+
+### Fixed
+- Normalize unsupported GPT-6 Astra `none` and `minimal` reasoning efforts to `low` when starting, resuming, or changing Codex models.
+
+## [1.81.1] - 2026-09-01
+
+### Fixed
+- Preserve named Project and workspace identity across resumed sessions, prompt history, recordings, and workspace updates.
+
+## [1.81.0] - 2026-09-01
+
+### Added
+- Add Bridge-managed named Projects with ordered multi-root workspaces, persistent CRUD, and session assignments for Claude and Codex.
+
+### Changed
+- Restore Project workspace roots when sessions resume and classify Recent Sessions by their explicit Project assignment.
+
+## [1.80.2] - 2026-09-01
+
+### Fixed
+- Fail Codex resume attempts cleanly when another client owns the thread writer, without exposing or retaining a provisional session.
+
+## [1.80.1] - 2026-08-31
+
+### Fixed
+- Keep Codex Fast mode synchronized across session indexing, resume, and runtime updates by normalizing current and legacy service-tier metadata.
+
+## [1.80.0] - 2026-08-31
+
+### Added
+- Negotiate an explicit App–Bridge protocol range and reject incompatible clients before processing normal WebSocket messages.
+- Publish the supported protocol range through session metadata and the version endpoint.
+
+### Changed
+- Pin persistent Bridge service setup to the stable `@ccpocket/bridge@1` major and have doctor detect and migrate legacy unbounded `@latest` configurations.
+
+## [1.79.0] - 2026-08-29
+
+### Added
+- Stream common audio and video formats for File Peek, including MP3, M4A, AAC, FLAC, Ogg, Opus, AIFF, MOV, WebM, MKV, M4V, AVI, and MPEG files.
+
+### Fixed
+- Restore persisted messages and runtime state when a session is opened from a notification.
+
+## [1.78.0] - 2026-08-29
+
+### Added
+- Include Git-ignored project files in Explorer listings with ignored-state metadata, while preserving tracked and untracked source files ahead of large ignored trees.
+- Report modification times for duplicate file names so clients can prioritize the most recently changed match in file peek.
+
+### Changed
+- Exclude additional generated dependency and build directories from ignored-file discovery.
+
+## [1.77.0] - 2026-08-29
+
+### Added
+- Add capability-negotiated request correlation metadata for project-scoped Git, file, worktree, screenshot, and session operations.
+
+### Changed
+- Return operation-specific, project-scoped failure responses so clients can route errors to the originating request.
+
+### Fixed
+- Prevent concurrent sessions and projects from receiving each other's asynchronous project responses.
+
+## [1.76.0] - 2026-08-28
+
+### Added
+- Add secure, project-scoped file uploads with expiring capabilities, streamed HTTP transfers, SHA-256 integrity verification, conflict handling, cancellation, and configurable size and concurrency limits.
+
+## [1.75.0] - 2026-08-28
+
+### Added
+- Add authenticated, project-scoped file downloads with expiring capability URLs, streaming and range support, cancellation, path and file-identity validation, and a configurable 512 MiB default size limit.
+
+## [1.74.0] - 2026-08-28
+
+### Added
+- Support Claude Code sessions on Amazon Bedrock. When `CLAUDE_CODE_USE_BEDROCK` is enabled in the Bridge environment or in the Claude Code user settings `env` block, non-OAuth Bedrock sessions can start and list models without an Anthropic API credential or the subscription opt-in. If Claude Code nevertheless initializes with OAuth, `BRIDGE_ALLOW_CLAUDE_OAUTH=1` is still required. AWS credentials stay on the Bridge host and are resolved through the normal AWS credential provider chain.
+
+### Changed
+- Report Amazon Bedrock in `doctor` as `Amazon Bedrock configured; AWS credentials not verified` instead of warning that Anthropic authentication is missing, warn when the required `AWS_REGION` is absent, and print each provider's authentication detail instead of a generic authenticated label.
+
+## [1.73.1] - 2026-08-28
+
+### Fixed
+- Preserve process event order while generated media is registered so tool results remain before turn completion.
+
+## [1.73.0] - 2026-08-27
+
+### Added
+- Add secure WAV and MP4 file delivery with scoped capability URLs and HTTP range request support for in-app media playback.
+
+## [1.72.3] - 2026-08-25
+
+### Fixed
+- Keep Claude queued input FIFO and recover interrupted turns without duplicate delivery, while surfacing compaction and typed response failures cleanly.
+- Classify Claude API-key and subscription authentication across delayed initialization without leaking estimated subscription cost or accepting subscription login without explicit opt-in.
+- Correlate recent-session and scoped gallery requests across concurrent clients, retries, disconnects, and legacy responses.
+- Bound archive requests with recoverable timeouts and ignore late RPC replies after retry.
+- Keep internal Claude diagnostics, injected task notifications, and retryable Codex runtime warnings out of user transcripts.
+- Derive automatic session titles from the user's actual text.
+
+## [1.72.2] - 2026-08-25
+
+### Changed
+- Share one validation contract between new and resumed sessions to keep supported options consistent.
+
+### Fixed
+- Reject malformed optional session and permission values before they reach provider-specific process handling.
+
+## [1.72.1] - 2026-08-23
+
+### Fixed
+- Refresh Codex approval, reviewer, and sandbox permissions from current Custom or profile configuration when resuming a thread, including granular policies and project-trust defaults.
+
+## [1.72.0] - 2026-08-23
+
+### Added
+- Allow clients to opt in to listing hidden directories while preserving allowed-root and symlink protections.
+
+### Changed
+- Correlate push registration requests and tool-action failures so clients can safely resolve asynchronous outcomes.
+- Restrict push delivery to the Bridge's active token allowlist, including multi-device registration transitions.
+
+### Fixed
+- Prevent stale push registration completions from restoring disabled or superseded tokens.
+- Release notification-link reconnect guards after clear-context session replacement, stopped sessions, and rejected tool actions.
+- Keep approval transcript outcomes consistent across Claude and Codex tool results.
+
+## [1.71.0] - 2026-08-22
+
+### Added
+- Add explicit `BRIDGE_ALLOW_CLAUDE_OAUTH=1` opt-in for using the Bridge machine's Claude subscription login, with authentication-source checks for sessions and model discovery.
+
+### Changed
+- Keep API-key authentication as the default and report a dedicated actionable error when subscription authentication has not been explicitly enabled.
+- Persist the subscription opt-in in launchd and systemd service setup, and align doctor diagnostics and authentication guidance with the selected mode.
+
+## [1.70.2] - 2026-08-19
+
+### Fixed
+- Skip stopped Codex processes for auxiliary RPCs so history, model, and recent-session requests can recover through a healthy or temporary app-server.
+
+## [1.70.1] - 2026-08-19
+
+### Fixed
+- Ignore model-specific Codex rate limits when selecting account-wide usage, preventing the remaining quota from incorrectly appearing as 100%.
+
+## [1.70.0] - 2026-08-10
+
+### Added
+- Add correlated `list_directory` and `directory_listing` WebSocket messages for browsing visible subdirectories within configured allowed roots.
+
+### Fixed
+- Authorize directory listings against canonical paths while preserving configured logical and symlink path namespaces in responses.
+
+## [1.69.6] - 2026-07-31
+
+### Changed
+- Use GPT-5.6 Luna with no reasoning effort for Codex auto-rename and commit-message assistance, reducing credit usage while preserving output quality.
+- Generate more natural and concise session names by preserving the user's language and favoring specific noun phrases.
+
+## [1.69.5] - 2026-07-30
+
+### Changed
+- Reduce image-heavy Codex session restore time by framing large app-server JSONL responses without repeatedly copying the accumulated payload.
+- Advertise and lazily generate cached WebP thumbnails for generated images to reduce mobile transfer sizes while preserving original images for full-screen previews.
+- Align the minimum supported Node.js version with runtime dependencies at 20.18.1.
+
+## [1.69.4] - 2026-07-24
+
+### Fixed
+- Resolve external session links against live Bridge and provider IDs or the exact recent-session index entry, with correlated resume completion and scoped unavailable-history errors.
+
+## [1.69.3] - 2026-07-24
+
+### Fixed
+- Verify session restore lifecycle events consistently across Windows and POSIX Bridge environments.
+
+## [1.69.2] - 2026-07-24
+
+### Fixed
+- Keep image-heavy session restores alive with explicit progress and failure events, idempotent reconnect handling, and bounded restore timeouts.
+- Reduce repeated history and image processing during session restore with reusable Codex history, content-addressed image references, and seven-day HTTP caching.
+
+## [1.69.1] - 2026-07-24
+
+### Fixed
+- Honor managed Codex auto-review restrictions when starting and resuming sessions, and expose the policy state to connected clients.
+- Improve Codex app-server resilience around RPC errors, active-writer conflicts, archived threads, and streamed response recovery.
+
+## [1.69.0] - 2026-07-21
+
+### Added
+- Emit structured Codex Guardian approval notices for medium- and high-risk auto-approved actions, with client capability negotiation and legacy history filtering.
+
+## [1.68.2] - 2026-07-21
+
+### Fixed
+- Preserve live Codex subagent tool logs before the final assistant response when canonical thread snapshots omit subagent activity, including compacted and multi-client history synchronization.
+
+## [1.68.1] - 2026-07-21
+
+### Changed
+- Reduce Codex skill-completion latency by reusing provider- and working-directory-scoped completion metadata and fetching skills, apps, and plugins in parallel with skills prioritized.
+- Log the elapsed time from session start until completion metadata becomes available.
+
+### Fixed
+- Propagate empty completion snapshots so removed skills, apps, and plugins do not remain cached.
+
+## [1.68.0] - 2026-07-20
+
+### Added
+- Support configuring the Codex model and reasoning effort used for session auto-rename and commit-message assistance, including persisted launchd and systemd service settings.
+
+## [1.67.4] - 2026-07-19
+
+### Fixed
+- Preserve streamed Codex assistant responses when completion notifications are missing or delayed.
+- Deduplicate canonical and live Codex history for the same user turn without collapsing distinct responses.
+
+## [1.67.3] - 2026-07-18
+
+### Fixed
+- Replay cached Codex goal state with history responses so active goals remain visible after turn completion and app relaunch.
+
+## [1.67.2] - 2026-07-17
+
+### Fixed
+- Run Codex commit-message and session-name assistance with no reasoning effort instead of inheriting a higher global setting.
+
+## [1.67.1] - 2026-07-16
+
+### Fixed
+- Suppress all approved Codex auto-review notifications regardless of reported risk while continuing to surface actionable warnings.
+
+## [1.67.0] - 2026-07-16
+
+### Changed
+- Limit retained idle sessions to the 30 most recently active sessions so stale processes release background resources.
+
+### Fixed
+- Read Codex history through the process that owns the session instead of an unrelated active process.
+- Suppress informational Codex auto-review approval notifications while continuing to surface actionable warnings.
+
+## [1.66.2] - 2026-07-16
+
+### Fixed
+- Handle Codex tool suggestion dialogs and preserve their pending state until installation or authentication completes.
+- Cover additional Codex app-server requests, warnings, review results, and typed MCP elicitation responses, including required and optional form fields.
+
+## [1.66.1] - 2026-07-16
+
+### Fixed
+- Classify Codex usage limits by window duration so a weekly-only limit is not mislabeled as the five-hour limit.
+
+## [1.66.0] - 2026-07-16
+
+### Added
+- Support selecting and changing Codex Standard and Fast service tiers for new and active sessions.
+- Expose Codex service-tier availability and current Model, Effort, and Speed settings to connected clients.
+
+### Changed
+- Persist Codex Speed across session resumes and restore Standard when the runtime no longer reports Fast mode.
+
+## [1.65.1] - 2026-07-15
+
+### Fixed
+- Disable mDNS advertising on macOS to prevent repeated Bonjour local hostname renaming after Bridge restarts.
+
+## [1.65.0] - 2026-07-14
+
+### Added
+- Add persisted Codex Goal support through the app-server, including get, set, pause, resume, clear, and live goal state notifications.
+
+## [1.64.0] - 2026-07-12
+
+### Added
+- Support GPT-5.6 `max` and `ultra` reasoning efforts, including model-specific availability for Sol, Terra, and Luna.
+
+### Changed
+- Read ordered reasoning effort metadata from the latest Codex app-server protocol while remaining compatible with legacy string responses.
+- Preserve future model-advertised reasoning effort values across session start, resume, and runtime model switching.
+
+## [1.63.6] - 2026-07-11
+
+### Changed
+- Batch session delta broadcasts per client and session to reduce streaming frame overhead without delaying recording or debug output.
+- Limit client file-list payloads, cache Claude message images per session, and cool down repeated connection metadata refreshes.
+
+### Fixed
+- Validate the configured server port before startup and report invalid, missing, or unavailable ports clearly.
+- Derive Codex permission displays from runtime settings and retain permission mode changes made while a session is idle.
+- Map AskUserQuestion answers to their original questions and require explicit opt-in for unrestricted project paths.
+- Preserve queued user input when interrupting or resuming Claude sessions.
+
+## [1.63.5] - 2026-06-12
+
+### Fixed
+- Surface rollout-derived first prompt, last prompt, and summary text for Codex recent sessions loaded through the native thread list.
+
+## [1.63.4] - 2026-06-06
+
+### Fixed
+- Support standalone Codex installs in persistent macOS launchd and Linux systemd Bridge services.
+
+## [1.63.3] - 2026-06-06
+
+### Fixed
+- Include Codex app-server threads in all-provider recent sessions while preserving scan-only Codex sessions.
+
+## [1.63.2] - 2026-05-30
+
+### Fixed
+- Restore Codex session history from canonical app-server threads for complete resume and history delta synchronization.
+
+## [1.63.0] - 2026-05-29
+
+### Added
+- Support switching Codex models for existing sessions through the shared session runtime.
+
+## [1.62.1] - 2026-05-27
+
+### Fixed
+- Preserve Codex Auto Review when switching a running session into Plan mode.
+
+## [1.62.0] - 2026-05-27
+
+### Added
+- Support project-scoped recent session loading with pagination metadata for grouped session lists.
+
+## [1.61.4] - 2026-05-25
+
+### Changed
+- Update the Claude Agent SDK to 0.3.148.
+- Switch the Bridge package license metadata to MIT.
+
+## [1.61.3] - 2026-05-23
+
+### Fixed
+- Support the `bonjour-service` 1.4 CommonJS export shape so mDNS advertising continues to work after fresh installs.
+
+## [1.61.2] - 2026-05-21
+
+### Fixed
+- Persist Claude session renames through the Claude Agent SDK transcript metadata instead of creating incomplete `sessions-index.json` entries.
+
+## [1.61.1] - 2026-05-20
+
+### Fixed
+- Load Codex model reasoning capabilities from the app-server and allow clients to use `none` reasoning effort.
+
+## [1.61.0] - 2026-05-18
+
+### Added
+- Load Claude effort capabilities from the SDK so clients can match the installed CLI capabilities.
+
+## [1.60.0] - 2026-05-17
+
+### Added
+- Add standard help and version commands to the Bridge CLI.
+
+## [1.59.3] - 2026-05-17
+
+### Fixed
+- Show a clear setup error when the Codex CLI is unavailable.
+
+## [1.59.2] - 2026-05-16
+
+### Fixed
+- Sync accepted user messages to other connected clients so multi-client Bridge sessions stay in sync.
+
+## [1.59.1] - 2026-05-15
+
+### Fixed
+- Speed up Codex recent session loading by limiting JSONL metadata reads to the visible app-server thread page.
+
+## [1.59.0] - 2026-05-15
+
+### Added
+- Support official Codex permissions modes, including config-driven custom mode.
+
+## [1.58.1] - 2026-05-15
+
+### Fixed
+- Speed up Codex session resume history loading by caching user image extraction per JSONL file.
+
+## [1.58.0] - 2026-05-13
+
+### Added
+- Add experimental Codex shared app-server co-presence support.
+- Expose session-specific Codex CLI resume commands for clients.
+
+### Changed
+- Document the Codex remote resume command in Bridge setup output.
+
+### Fixed
+- Gate shared Codex app-server configuration behind the experimental mode.
+
+## [1.57.1] - 2026-05-12
+
+### Fixed
+- Recover push relay registration when a persisted Firebase anonymous account has been deleted.
+
+## [1.57.0] - 2026-05-09
+
+### Added
+- Include directories in file mention candidates so clients can mention project folders.
+
+## [1.56.2] - 2026-05-08
+
+### Changed
+- Document Bridge environment variables for deployment and operations.
+
+## [1.56.1] - 2026-05-07
+
+### Fixed
+- Handle non-ASCII untracked file paths in Git diff responses.
+
+## [1.56.0] - 2026-05-06
+
+### Added
+- Load available Codex models from the app-server `model/list` RPC, with the bundled model list kept as a fallback.
+
+## [1.55.1] - 2026-05-05
+
+### Fixed
+- Support Explorer file listings for non-Git projects with a filesystem fallback.
+
+## [1.55.0] - 2026-05-05
+
+### Added
+- Forward Codex plan update events so clients can render them as structured todo lists.
+
+## [1.54.1] - 2026-05-05
+
+### Fixed
+- Improve Git branch loading performance for repositories with many branches and worktrees.
+
+## [1.54.0] - 2026-05-04
+
+### Added
+- Add Claude Opus 4.5 to the available Claude model list.
+
+## [1.53.2] - 2026-05-04
+
+### Fixed
+- Restore image attachments when resuming Codex sessions.
+- Restore user images when loading session history.
+
+## [1.53.1] - 2026-05-03
+
+### Fixed
+- Hide automatic session rename helper runs from recent session history.
+
+## [1.53.0] - 2026-05-02
+
+### Added
+- Add Codex conversation rewind and fork recovery using official app-server thread RPCs.
+- Restore Codex thread history from `thread/read` responses with JSONL history as a fallback.
+
+## [1.52.2] - 2026-05-02
+
+### Fixed
+- Stabilize asynchronous file peek tests in release CI.
+
+## [1.52.1] - 2026-05-02
+
+### Fixed
+- Make the Codex rewind Windows smoke test path expectation platform-aware.
+
+## [1.52.0] - 2026-05-02
+
+### Added
+- Add Codex conversation rewind support.
+- Add image file previews to file peek responses.
+
+## [1.51.0] - 2026-05-02
+
+### Added
+- Add Git dirty status and unsynced branch metadata for session badges.
+- Enable automatic session renaming by default when supported by the client.
+
+## [1.50.0] - 2026-05-02
+
+### Added
+- Add automatic session renaming after the first agent response when enabled by the client.
+- Generate concise session names with the same Codex assist model used for commit messages.
+- Persist generated names through the existing Claude and Codex rename paths.
+
+## [1.49.0] - 2026-05-01
+
+### Added
+- Add Bridge-managed Prompt History 2.0 storage, sync, mutation, and legacy import protocol support.
+- Add prompt history parser and WebSocket tests for the new 2.0 message types.
+
+## [1.48.1] - 2026-04-30
+
+### Fixed
+- Keep compacted session history snapshots in chronological order instead of preserving user messages without assistant replies.
+
+## [1.48.0] - 2026-04-30
+
+### Added
+- Add Korean push notification translations and normalize Korean locale tags.
+
+## [1.47.2] - 2026-04-30
+
+### Changed
+- Publish a patch release to verify remote Bridge update flow from CC Pocket.
+
+## [1.47.1] - 2026-04-30
+
+### Fixed
+- Make launchd and systemd setup services use non-interactive `npx --yes @ccpocket/bridge@latest`
+- Migrate older setup service definitions to the non-interactive `npx --yes` command during remote restarts
+
+## [1.47.0] - 2026-04-28
+
+### Added
+- Add session history delta sync for lower-bandwidth reconnects and session refreshes
+- Add strict input acknowledgements with client message IDs and accepted history sequence metadata
+
+### Fixed
+- Include resumed session history in delta sync responses
+
+## [1.46.2] - 2026-04-27
+
+### Fixed
+- Broadcast session list updates to all connected clients after stopping a session
+
+## [1.46.1] - 2026-04-27
+
+### Fixed
+- Restore Codex MCP tool result screenshots from session JSONL in the original conversation order
+
+## [1.46.0] - 2026-04-27
+
+### Added
+- Add Codex plugin completion metadata from `plugin/list` and emit plugin mention paths as `plugin://...`
+- Include Codex plugin completion metadata in command cache and resumed session command replay
+
+### Fixed
+- Normalize Codex plugin interface fields so array-valued starter prompts do not break mobile parsing
+
+## [1.45.4] - 2026-04-27
+
+### Fixed
+- Handle Codex MCP message-only elicitation approvals, including computer-use prompts, as approval actions instead of free-form questions
+- Return the correct cancel/session decisions for Codex MCP elicitation approval responses
+
+## [1.45.3] - 2026-04-26
+
+### Fixed
+- Preserve non-ASCII, space-containing, and newline-containing file paths in file listings for Explorer and @-mention autocomplete
+
+## [1.45.2] - 2026-04-26
+
+### Fixed
+- Restore Codex image generation results with image UI after stopping and reopening a session
+
+## [1.45.1] - 2026-04-25
+
+### Fixed
+- Prevent Codex app-server completion metadata update notifications from causing an `app/list` refetch loop
+
+## [1.45.0] - 2026-04-25
+
+### Added
+- Add Codex app-server image generation result support, including saved file and base64 image extraction paths
+
+## [1.44.1] - 2026-04-25
+
+### Fixed
+- Suppress Codex `conversation_queue` server messages for clients that have not opted in
+
+## [1.44.0] - 2026-04-25
+
+### Added
+- Add a Bridge-managed Codex conversation queue with synchronized queue state across clients
+- Add queued Codex input steering through app-server `turn/steer`
+
+### Changed
+- Drain queued Codex input automatically when the active turn becomes ready
+
+## [1.43.1] - 2026-04-25
+
+### Fixed
+- Keep Codex approval reviewer changes reflected in active session list metadata
+
+## [1.43.0] - 2026-04-25
+
+### Added
+- Add Codex additional writable roots support for start and resume flows
+
+### Fixed
+- Fall back safely when resuming Codex sessions whose profile is no longer available
+
+## [1.42.1] - 2026-04-24
+
+### Changed
+- Bump `@anthropic-ai/claude-agent-sdk` from 0.2.112 to 0.2.119
+
+## [1.42.0] - 2026-04-24
+
+### Added
+- Add Codex Auto Review as a first-class approval reviewer mode for mobile sessions
+
+### Fixed
+- Hide Codex internal Auto Review subagent sessions from recent session lists
+
+## [1.41.0] - 2026-04-24
+
+### Added
+- Add Codex auto review approval reviewer support across Bridge app-server start, resume, and runtime approval mode flows
+
+## [1.40.0] - 2026-04-24
+
+### Added
+- Add `gpt-5.5` to Codex model selection and default fallback handling
+
+## [1.39.1] - 2026-04-20
+
+### Changed
+- Preserve Codex thread-start reasoning effort by sending `model_reasoning_effort` through app-server config overrides
+
+### Fixed
+- Keep non-ASCII and space-containing Git diff paths readable across Bridge diff/staging flows
+- Preserve Codex reasoning effort consistently across Bridge start, turn-start, and session restoration flows
+
+## [1.39.0] - 2026-04-17
+
+### Added
+- Support Claude `auto` permission mode in Bridge session metadata, parser output, and mobile-facing session state
+
+### Changed
+- Fall back Claude sessions to `default` permission mode when `auto` is unavailable in the current environment
+- Return structured `auto_mode_unavailable` errors so mobile clients can roll back the UI cleanly and show a warning
+
+## [1.38.1] - 2026-04-17
+
+### Changed
+- Update the Claude Agent SDK to support `claude-opus-4-7`
+
+### Fixed
+- Force adaptive thinking for Opus 4.7 sessions to avoid `thinking.type.enabled` API errors
+
+## [1.38.0] - 2026-04-17
+
+### Added
+- Support listing Codex config profiles via app-server `config/read` and expose them to mobile clients
+- Preserve selected Codex profiles in recent-session metadata and pass profiles through start/resume flows
+
+### Changed
+- Treat selected Codex profiles as the source of truth for overlapping session options when starting or resuming from the mobile app
+
+## [1.37.1] - 2026-04-17
+
+### Fixed
+- Prevent TypeScript File Peek rendering from crashing when syntax highlighting hits missing `tsdoc` grammar includes
+- Return a user-friendly error when File Peek opens a symbolic link that points to a directory
+
+## [1.37.0] - 2026-04-17
+
+### Added
+- Add `claude-opus-4-7` and `claude-opus-4-7[1m]` (1M context) to the available Claude model list
+
+### Changed
+- Remove plan approval editing flow from Bridge protocol and Codex process handling
+
+## [1.36.1] - 2026-04-15
+
+### Changed
+- Remove the remaining Claude usage OAuth path from the Bridge codebase and keep the Bridge usage API limited to Codex
+- Update Bridge package metadata and README wording to match the Claude Agent SDK naming
+
+## [1.36.0] - 2026-04-11
+
+### Added
+- Support always-allow approvals for MCP tool requests in Codex sessions
+
+## [1.35.0] - 2026-04-11
+
+### Changed
+- Stop querying Claude usage via the undocumented internal endpoint from the Bridge usage API
+- Return Codex-only usage data so mobile clients can direct Claude users to the official billing and usage pages
+
+## [1.34.1] - 2026-04-08
+
+### Fixed
+- Remove deprecated gpt-5.2-codex model from Codex model list
+- Route McpElicitation through permission path for proper approval UI in Codex sessions
+
+## [1.34.0] - 2026-04-07
+
+### Added
+- Token highlighting and Codex skill completion in composer
+- Split slash and dollar completions for Codex
+
+### Fixed
+- Preserve MCP elicitation approval type in Codex sessions
+
+## [1.33.3] - 2026-04-05
+
+### Fixed
+- Handle `Revert All` and hunk/file revert actions correctly when the git diff includes untracked files
+- Allow hunk stage/revert operations to build patches for untracked files shown in the diff view
+
+## [1.33.2] - 2026-04-05
+
+### Changed
+- Clarify Bridge redistribution terms for unofficial Windows, WSL, proxy, and other hard-to-validate environment-specific distributions
+- Align package license metadata and README guidance with the Bridge redistribution exception
+
+## [1.33.1] - 2026-04-04
+
+### Changed
+- Add Bridge test/typecheck/build to the regular Ubuntu CI workflow
+- Require Windows smoke verification for Bridge releases and support manual Windows smoke runs
+
+### Fixed
+- Handle Windows allowed-directory and `resume_session` path normalization correctly, including `\\?\` extended paths
+- Launch Codex app-server on Windows via a compatible `cmd.exe` spawn path
+
+## [1.33.0] - 2026-04-02
+
+### Added
+- `BRIDGE_DISABLE_MDNS` environment variable and `--no-mdns` CLI flag to disable mDNS auto-discovery advertisement (#34)
+
+## [1.32.0] - 2026-04-02
+
+### Added
+- Codex `approvalPolicy` values (`untrusted`, `on-request`, `on-failure`, `never`) in the Bridge client protocol
+
+### Changed
+- Preserve Codex approval policy directly across start, resume, and mode-change flows instead of mapping everything through legacy execution presets
+
+## [1.31.1] - 2026-04-01
+
+### Fixed
+- Support public startup deep links and QR codes for reverse proxy / ngrok setups via `BRIDGE_PUBLIC_WS_URL` or `--public-ws-url`
+
+## [1.31.0] - 2026-03-30
+
+### Added
+- Auto-generate staged commit messages via the active Claude/Codex session provider
+
+### Changed
+- `git_commit` now requires `sessionId` when `autoGenerate=true`
+
+### Fixed
+- Use Codex Mini for commit message auto-generation
+- Support current Codex exec CLI interface
+
+### Removed
+- Unused post-1.30.0 git API surface: `git_status`, `git_status_result`, `git_branches.query`, `git_push.forceLease`, `git_push_result.remote`, `git_push_result.branch`
+
+## [1.30.0] - 2026-03-29
+
+### Added
+- File Peek: `read_file` handler for viewing file contents from the mobile app
+
+### Removed
+- Unused `list_dir` handler (directory browsing handled client-side via file list)
+
+## [1.29.1] - 2026-03-27
+
+### Fixed
+- Include agent message in Codex completion notification
+
+## [1.29.0] - 2026-03-27
+
+### Added
+- Improve @mention file list with untracked files and relevance scoring
+- Improve resume command copy for worktree and permission modes
+
+## [1.28.0] - 2026-03-24
+
+### Added
+- Emit acceptEdits mode when file-edit tool is always-approved
+- Propagate SDK permission mode changes to connected clients
+
+### Changed
+- Swap default Claude model order: opus 4.6 before opus 4.6[1m]
+
+### Fixed
+- Return updatedPermissions in approveAlways for mode transition
+- Add runtime guard to reject OAuth auth source
+
+## [1.27.0] - 2026-03-21
+
+### Added
+- Codex plan mode toggle without restart when idle
+- Redesigned modes for Codex execution and plan
+
+### Fixed
+- Ignore placeholder model name on Codex session resume
+- Show resolved environment on Codex init
+- Rollback mode changes on bridge error
+
+## [1.26.0] - 2026-03-19
+
+### Added
+- Codex approval protocol support (catch up app-server approval flow)
+- Codex sub-agent session metadata display
+- Codex dynamic tool call normalization
+- Codex thread list for recent sessions (stored threads without active sessions)
+- Simplified Chinese (zh-CN) localization support
+
+### Changed
+- Deprecated all npm package versions older than `1.25.0` for new installs due to potential Anthropic policy concerns around OAuth-based usage
+
+### Fixed
+- Restore MCP images in Codex session history
+- Preserve Codex sandbox mode on session resume
+- Restore Codex recent session settings correctly
+
+## [1.25.0] - 2026-03-19
+
+### Changed
+- Subscription-based (OAuth) authentication is temporarily disabled pending Anthropic policy clarification. API key (`ANTHROPIC_API_KEY`) is now required
+
+### Fixed
+- Prevent false auth error detection on long assistant messages containing auth-related keywords
+
+## [1.24.0] - 2026-03-19
+
+### Changed
+- Claude usage tracking is now opt-in (set `BRIDGE_ENABLE_USAGE=1` to enable). No direct Anthropic API calls by default
+
+## [1.23.0] - 2026-03-18
+
+### Added
+- Add `gpt-5.4-mini` to available Codex model list
+- Graceful degradation for unsupported Bridge message types with per-action client fallback handling
+
+### Changed
+- Doctor check no longer requires unused `codex-sdk`, and skips `systemd` checks on macOS
+
+## [1.22.1] - 2026-03-17
+
+### Fixed
+- "Invalid message format" error when app sends `refresh_branch` message (missing parser case)
+
+## [1.22.0] - 2026-03-17
+
+### Added
+- HTTP/SOCKS5 proxy support for outgoing fetch requests via `HTTPS_PROXY` env var (#16)
+
+### Fixed
+- Refresh git branch display when opening session or tapping branch chip
+
+## [1.21.2] - 2026-03-15
+
+### Changed
+- Session recording is now opt-in via `BRIDGE_RECORDING` env var (disabled by default)
+
+## [1.21.1] - 2026-03-15
+
+### Fixed
+- Read customTitle from JSONL for pipe-created sessions (`claude -p -n`)
+
+## [1.21.0] - 2026-03-15
+
+### Added
+- Auth help screen and improved auth error UX
+
+### Fixed
+- Restore claude sessions with original cwd
+
+## [1.20.2] - 2026-03-15
+
+### Fixed
+- `ANTHROPIC_AUTH_TOKEN` 環境変数による認証をサポート (#12)
+
+## [1.20.1] - 2026-03-15
+
+### Fixed
+- `ccpocket-bridge setup` が生成する launchd plist で `RunAtLoad` / `KeepAlive` が `false` になっていた問題を修正 (#13)
+
+## [1.20.0] - 2026-03-14
+
+### Added
+- Gentle tip message when project has no git repository (persisted in session history)
+- Categorized `errorCode` for git-related diff errors (`git_not_available`)
+
+### Changed
+- Non-git projects return empty file list instead of error on `list_files`
+- Diff errors for non-git projects use user-friendly message instead of raw git error
+
+## [1.19.0] - 2026-03-14
+
+### Added
+- Add `claude-opus-4-6[1m]` (1M context) to available Claude model list
+
+## [1.18.0] - 2026-03-13
+
+### Added
+- Include `bridgeVersion` in `session_list` messages for client-side version checks
+
+### Fixed
+- Send skill descriptions from Claude Code `supportedCommands()` — previously only skill names were forwarded, causing the mobile app to display directory names instead of descriptions
+
+### Changed
+- Update `@anthropic-ai/claude-agent-sdk` to 0.2.74
+
+## [1.17.1] - 2026-03-12
+
+### Changed
+- Sandbox configuration now delegated to Claude Code native `.claude/settings.json` — Bridge passes only `enabled: true/false`
+- Worktree configuration uses `.gtrconfig` only (removed `.ccpocket.toml` priority logic)
+
+### Removed
+- `.ccpocket.toml` support and `smol-toml` dependency — sandbox settings should be configured via `.claude/settings.json`
+
+## [1.17.0] - 2026-03-12
+
+### Added
+- Auto-enable `loginctl enable-linger` on systemd setup to keep the Bridge Server running after logout (SSH disconnect etc.)
+  - Idempotent: skips if linger is already enabled
+  - Graceful fallback: prints manual command if `loginctl` fails
+
+### Removed
+- Unused `@openai/codex-sdk` dependency
+
+## [1.16.0] - 2026-03-12
+
+### Added
+- Linux (systemd) support for `setup` / `setup --uninstall` commands — auto-detects OS and registers appropriate service (launchd on macOS, systemd on Linux)
+- `checkSystemdService` in `doctor` command for Linux service health check
+- Resolves full `npx` path at setup time so nvm/mise/volta-managed Node.js works under systemd
+
+### Changed
+- `setup` command now uses dynamic imports with `platform()` branching instead of static launchd import
+- Unsupported platforms (e.g. Windows) get a clear error message
+
+### Removed
+- `claude auth login` feature removed (refactor: remove claude auth login feature)
+
+## [1.15.0] - 2026-03-12
+
+### Added
+- Claude Code sandbox support — pass sandbox enabled/disabled state from mobile client to Claude SDK via `query()` options
+- Claude sandbox mode toggle — changing sandbox restarts the session with the new setting (sandbox is a query-level config)
+- `.ccpocket.toml` configuration file support with `[worktree]` section, prioritized over legacy `.gtrconfig`
+- `smol-toml` dependency for TOML parsing
+
+### Changed
+- Simplified permission/sandbox mode forwarding — both Claude and Codex sessions now use unified message handling
+
+## [1.14.0] - 2026-03-11
+
+### Added
+- Codex Skills (Prompts) support — fetch full skill metadata (description, defaultPrompt, brandColor) via `skills/list` RPC and forward to Flutter client as `skillMetadata`
+- Send `SkillUserInput` (`{ type: "skill", name, path }`) when a Codex skill is selected, enabling proper skill loading and execution
+- Handle `skills/changed` notification for automatic skill re-fetching
+- Cache skill metadata alongside slash commands for session restore
+
+## [1.13.2] - 2026-03-11
+
+### Fixed
+- Remove misleading WARNING log when BRIDGE_API_KEY is not set — API key authentication is optional (Tailscale handles security)
+
+## [1.13.1] - 2026-03-08
+
+### Fixed
+- Rewind session_created messages now include `sourceSessionId`, preventing duplicate session screens on restart and rewind
+- Codex permission mode changes trigger a session restart (matching sandbox mode behavior) with confirmation dialog
+- Codex session_created response now includes `permissionMode`, ensuring restored sessions retain their permission setting
+
+## [1.13.0] - 2026-03-08
+
+### Added
+- Claude OAuth authentication status endpoint — settings screen can display login state and trigger re-authentication without leaving the app (experimental)
+
+### Fixed
+- Usage API returning persistent 429 errors — refresh OAuth token on rate-limit responses (not just on 401), resolving stale-token rate limits
+- Auth status check no longer probes the upstream API, eliminating redundant requests that could trigger rate limits when opening the settings screen
+
+## [1.12.0] - 2026-03-08
+
+### Added
+- `errorCode` field on error messages for structured client-side display (`auth_login_required`, `auth_token_expired`, `auth_api_error`, `path_not_allowed`)
+
+### Changed
+- Auth and path-not-allowed error messages now include clear problem descriptions and remedy instructions (e.g. `claude auth login`) so users can self-resolve without checking server logs
+- Dev script unsets `CLAUDECODE` env var to allow E2E testing inside a Claude Code session
+
+## [1.11.1] - 2026-03-07
+
+### Fixed
+- Fall back to macOS Keychain for Claude OAuth credentials when `~/.claude/.credentials.json` does not exist (e.g. login performed on older Claude Code version that stored creds in Keychain)
+
+## [1.11.0] - 2026-03-06
+
+### Added
+- Deliver available model lists (Claude / Codex) in `session_list` message so clients can display dynamic dropdowns instead of hardcoded values
+
+### Changed
+- Update model lists to latest versions: Claude 4.6 series (opus, sonnet, haiku), Codex gpt-5.4 default
+
+## [1.10.1] - 2026-03-04
+
+### Fixed
+- Restore slash commands on `get_history` after history eviction — long sessions (100+ messages) lost `init`/`supported_commands` from in-memory history, causing slash completion to fall back to 4 built-in commands when re-entering the session
+- Protect `system` messages from history eviction alongside `user_input`
+
+## [1.10.0] - 2026-03-03
+
+### Added
+- `BRIDGE_ALLOWED_DIRS` environment variable for project path whitelist (defaults to `$HOME`)
+- Path validation on `start`, `resume_session`, `get_diff`, `get_diff_image`, `list_files`, `list_worktrees`, `remove_worktree` — rejects paths outside allowed directories
+- Include `allowedDirs` in `session_list` message for client-side path input assistance
+- Send `project_history` on WebSocket connect so clients receive history immediately
+
+## [1.9.7] - 2026-03-02
+
+### Fixed
+- Auto-refresh expired OAuth access token before starting SDK session (prevents auth errors when token expires between CLI sessions)
+
+## [1.9.6] - 2026-03-02
+
+### Fixed
+- Skip system-injected messages (`<local-command-caveat>`, `<local-command-stderr>`, etc.) when extracting firstPrompt/lastPrompt from JSONL scan
+- Add streaming fallback for sessions with large user messages (embedded images) that exceed the 16KB head-read buffer
+- Supplement missing lastPrompt for Claude sessions via tail-read with growing window (8KB→128KB), enabling distinct Last display mode in session list (+3-5ms overhead)
+
+## [1.9.5] - 2026-03-02
+
+### Fixed
+- Replace `claude auth status` process spawn with lightweight file read for auth pre-check (reduces memory pressure)
+- Preserve extra credential fields (scopes, subscriptionType, rateLimitTier) when refreshing OAuth tokens
+
+## [1.9.4] - 2026-03-02
+
+### Fixed
+- Read Claude OAuth credentials from disk (`~/.claude/.credentials.json`) instead of macOS Keychain, eliminating iCloudHelper keychain dialog
+- Replace keychain-based doctor check with file-based credential check
+
+## [1.9.3] - 2026-03-02
+
+### Fixed
+- Pre-check Claude auth before starting SDK session to prevent macOS keychain access dialog
+- Remove password read (-w flag) from doctor's keychain check to avoid triggering keychain dialog
+- Preserve original user text when merging SDK echo (avoid overwriting with translated text)
+
+## [1.9.2] - 2026-03-01
+
+### Added
+- Include Claude Code model name in session list response (stored from system/init message)
+
+## [1.9.1] - 2026-03-01
+
+### Fixed
+- Make Codex sandbox mode switching actually work (destroy + resume with new sandbox parameter)
+- Fix 0-message session sandbox switch causing "no rollout found" error
+- Always use last turn_context for codex session settings after sandbox mode changes
+- Send sandbox mode in external format ("on"/"off") to clients instead of internal format
+- Pass sandboxMode to navigation when resuming Codex sessions from session list
+
+## [1.9.0] - 2026-02-28
+
+### Added
+- Add macOS Screen Recording permission check to doctor command
+- Add macOS Keychain access check to doctor command
+- Add Health Check section to README
+
+## [1.8.0] - 2026-02-28
+
+### Added
+- Lazy loading, combined requests, and image caching for diff view
+
+### Fixed
+- Prevent server crash when starting a session with an invalid or inaccessible project path
+- Prevent zombie session entries when session creation fails
+
+## [1.7.0] - 2026-02-28
+
+### Added
+- Add doctor command for environment health checks
+- Add image change support for git diff screen
+- Display main repo branch name in worktree list
+
+### Changed
+- Relax diff image thresholds to 1MB auto-display / 5MB max and add env var config (`DIFF_IMAGE_AUTO_DISPLAY_KB`, `DIFF_IMAGE_MAX_SIZE_MB`)
+
+## [1.6.1] - 2026-02-25
+
+### Fixed
+- Add timestamp to `user_input` history entries so client displays original send time
+- Register uploaded images in imageStore and include image URLs in `user_input` history for session re-entry
+- Remove flaky persist-and-reload test
+
+## [1.6.0] - 2026-02-25
+
+### Added
+- Forward SDK `compact_boundary` events as `compacting` process status for auto compact visibility
+
+## [1.5.3] - 2026-02-25
+
+### Changed
+- Optimize JSONL session parsing with head+tail partial file reads (16KB+8KB) and regex-based field extraction (6.6x speedup: 2507ms → 382ms)
+- Optimize namedOnly session path to skip unnamed sessions early
+- Parallelize Claude + Codex session loading with Promise.all
+- Remove messageCount from session index entries to eliminate full-file scanning
+
+## [1.5.2] - 2026-02-25
+
+### Fixed
+- Stabilize busy-path queue handling by deriving `input_ack.queued` and interrupt behavior from actual enqueue results
+- Ensure busy-path logs are emitted consistently when input is queued and interrupted
+- Resolve tool-result image paths relative to project root when CLI outputs project-relative absolute-like paths (e.g. `/images/...`)
+- Fix gallery/image persistence failures caused by unresolved screenshot paths
+
+## [1.5.1] - 2026-02-25
+
+### Fixed
+- Replace single-slot `pendingInput` with FIFO array queue to prevent message loss when multiple inputs arrive while the agent is busy
+- Auto-interrupt the current agent turn when a new message is queued, so queued messages are picked up promptly instead of waiting for the turn to finish
+- Add `queued` flag to `input_ack` response so the client can show a "queued" indicator
+- Preserve queued messages across `interrupt()` calls instead of clearing them
+
+## [1.5.0] - 2026-02-25
+
+### Added
+- Server-side filtering for `list_recent_sessions`: `provider`, `namedOnly`, and `searchQuery` parameters
+- Search matches against session name, first/last prompt, and summary
+
+## [1.4.1] - 2026-02-24
+
+### Changed
+- Recommend `npx @ccpocket/bridge@latest` to ensure users always run the latest version
+- Updated launchd plist template, README, and in-app setup guide
+
+## [1.4.0] - 2026-02-24
+
+### Changed
+- Replace `BRIDGE_HIDE_IP` with `BRIDGE_DEMO_MODE`: hides Tailscale IPs and omits API key from QR code deep links for safe video recording
+
+## [1.3.0] - 2026-02-24
+
+### Added
+- Session archive functionality: hide historical sessions from the session list
+- Archive store persists archived session IDs in `~/.ccpocket/archived-sessions.json`
+- Codex `thread/archive` RPC called best-effort when archiving Codex sessions
+- New WebSocket message: `archive_session` (client→server) / `archive_result` (server→client)
+
+## [1.2.0] - 2026-02-24
+
+### Added
+- Privacy mode for push notifications: hides project names, session names, tool names, and message content
+- Session name (rename) displayed in notification titles, with project name fallback
+- Notification title format: `セッション名 (プロジェクト名)` when both are available
+
+## [1.1.1] - 2026-02-23
+
+### Fixed
+- Persist renamed session name after CLI overwrites sessions-index.json on session end
+
+## [1.1.0] - 2026-02-23
+
+### Added
+- Session rename support for Claude Code and Codex
+- Fetch and display skills for Codex sessions
+- Collaboration mode logging for Codex startup
+- Tag-driven npm publish workflow via GitHub Actions (Trusted Publishing)
+
+### Changed
+- Unified mode system — removed ApprovalPolicy, simplified SandboxMode
+- Codex: use native ApprovalPolicy and collaboration_mode API
+- Extracted permission/sandbox mode mapping helpers
+
+### Fixed
+- Refresh Claude OAuth token for usage API
+- Correctly map bypassPermissions in Codex session list
+- Expose Codex collaborationMode as permissionMode in session list
+- Emit synthetic tool_result after Codex approve/reject/answer
+- Plan approval race condition
+
+## [0.2.0] - 2026-02-22
+
+### Added
+- Prompt history backup & restore via Bridge Server
+- `BRIDGE_HIDE_IP` option to mask IP addresses in QR code and logs
+- Multiple image attachments per message support
+- i18n push notifications with per-device locale (English/Japanese)
+- ExitPlanMode special handling for push notifications
+- Session-targeted push notification improvements with markdown code blocks
+
+### Fixed
+- Clear-context session switch and routing stability
+
+### Changed
+- Updated `@anthropic-ai/claude-agent-sdk` 0.2.29 → 0.2.50
+- Updated `@openai/codex-sdk` 0.101.0 → 0.104.0
+
+## [0.1.1] - 2025-06-17
+
+### Changed
+- Prepared metadata for public release and npm publish
+
+## [0.1.0] - 2025-06-17
+
+### Added
+- Initial release
+- WebSocket bridge between Claude Code CLI / Codex CLI and mobile devices
+- Multi-session management
+- Tool approval/rejection routing
+- QR code connection with mDNS auto-discovery
+- Push notifications via Firebase Cloud Messaging
+- API key authentication support

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Card"
+  short_description: "最新リリース情報からX向け告知カード画像を生成する"
+  default_prompt: "Use $release-card to create X announcement images from the latest release tag and release notes."

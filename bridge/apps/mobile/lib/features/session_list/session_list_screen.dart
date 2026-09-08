@@ -1,0 +1,2780 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:auto_route/auto_route.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../l10n/app_localizations.dart';
+import '../../utils/network_endpoint.dart';
+import '../../utils/platform_helper.dart';
+
+import '../../models/messages.dart';
+import '../../models/machine.dart';
+import '../../models/offline_pending_action.dart';
+import '../../models/protocol_version.dart';
+import '../../providers/bridge_cubits.dart';
+import '../../providers/machine_manager_cubit.dart';
+import '../../providers/unseen_sessions_cubit.dart';
+import '../../providers/server_discovery_cubit.dart';
+import '../../router/app_router.dart';
+import '../../services/app_update_service.dart';
+import '../../services/bridge_endpoint_probe.dart';
+import '../../services/bridge_service.dart';
+import '../../services/connection_url_parser.dart';
+import '../../services/platform_environment_service.dart';
+import '../../services/server_discovery_service.dart';
+import '../../services/ssh_bridge_tunnel_service.dart';
+import '../../widgets/workspace_pane_chrome.dart';
+import '../../widgets/adaptive_context_menu.dart';
+import '../../widgets/new_session_sheet.dart';
+import '../../widgets/rename_session_dialog.dart';
+import '../settings/state/settings_cubit.dart';
+import '../settings/state/settings_state.dart';
+import 'services/codex_project_profile_store.dart';
+import 'state/archive_request_tracker.dart';
+import 'state/session_list_cubit.dart';
+import 'state/session_list_state.dart';
+import 'services/session_start_defaults_store.dart';
+import 'widgets/connect_form.dart';
+import 'widgets/home_content.dart';
+import 'widgets/machine_edit_sheet.dart';
+import 'widgets/session_list_app_bar.dart';
+import 'widgets/session_list_loading_view.dart';
+import 'workspace_shell_screen.dart';
+
+export 'services/session_resume_coordinator.dart'
+    show CodexRecentResumeSettings, factualCodexResumeSettings;
+
+import 'services/session_resume_coordinator.dart';
+
+// ---- Testable helpers (top-level) ----
+
+/// Project name → session count, preserving first-seen order.
+Map<String, int> projectCounts(List<RecentSession> sessions) {
+  final counts = <String, int>{};
+  for (final s in sessions) {
+    counts[s.projectName] = (counts[s.projectName] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/// Filter sessions by project name (null = no filter).
+List<RecentSession> filterByProject(
+  List<RecentSession> sessions,
+  String? projectName,
+) {
+  if (projectName == null) return sessions;
+  return sessions.where((s) => s.projectName == projectName).toList();
+}
+
+/// Unique project paths in first-seen order.
+List<({String path, String name})> recentProjects(
+  List<RecentSession> sessions,
+) {
+  final seen = <String>{};
+  final result = <({String path, String name})>[];
+  for (final s in sessions) {
+    if (seen.add(s.projectPath)) {
+      result.add((path: s.projectPath, name: s.projectName));
+    }
+  }
+  return result;
+}
+
+Future<Machine?> findAutoConnectMachine(
+  MachineManagerCubit? cubit,
+  Uri uri, {
+  Duration loadTimeout = const Duration(seconds: 3),
+}) async {
+  if (cubit == null) return null;
+  await cubit.waitUntilLoaded(timeout: loadTimeout);
+  return cubit.findByHostPort(uri.host, uri.hasPort ? uri.port : 8765);
+}
+
+/// Shorten absolute path by replacing $HOME with ~.
+String shortenPath(String path) {
+  final home = getHomeDirectory();
+  if (home.isNotEmpty && path.startsWith(home)) {
+    return '~${path.substring(home.length)}';
+  }
+  return path;
+}
+
+/// Provider-specific auto rename setting for new sessions.
+bool autoRenameForProvider(SettingsState settings, Provider provider) {
+  return switch (provider) {
+    Provider.codex => settings.autoRenameCodexSessions,
+    Provider.claude => settings.autoRenameClaudeSessions,
+  };
+}
+
+/// Quote a shell argument so it can be pasted safely into POSIX shells.
+String shellQuote(String value) {
+  return "'${value.replaceAll("'", r"'\''")}'";
+}
+
+/// Build a provider-specific CLI resume command for handoff to another machine.
+/// Uses resumeCwd (worktree path) when available so the CLI finds the session
+/// in the correct project slug directory.
+String buildResumeCommand(RecentSession session) {
+  final cwd = (session.resumeCwd?.isNotEmpty ?? false)
+      ? session.resumeCwd!
+      : session.projectPath;
+  final provider = session.provider == Provider.codex.value
+      ? Provider.codex
+      : Provider.claude;
+
+  String resumeCommand;
+  final additionalRoots = (session.workspace?.rootPaths ?? const <String>[])
+      .skip(1)
+      .where((root) => root.isNotEmpty && root != cwd)
+      .toList();
+  if (provider == Provider.codex) {
+    final addDirs = additionalRoots
+        .map((root) => '--add-dir ${shellQuote(root)}')
+        .join(' ');
+    resumeCommand = [
+      'codex',
+      if (addDirs.isNotEmpty) addDirs,
+      'resume ${shellQuote(session.sessionId)}',
+    ].join(' ');
+  } else {
+    final buf = StringBuffer(
+      'claude --resume ${shellQuote(session.sessionId)}',
+    );
+    final pm = session.effectivePermissionMode;
+    for (final root in additionalRoots) {
+      buf.write(' --add-dir ${shellQuote(root)}');
+    }
+    if (pm == PermissionMode.bypassPermissions.value) {
+      buf.write(' --dangerously-skip-permissions');
+    } else if (pm == PermissionMode.auto.value) {
+      buf.write(' --permission-mode auto');
+    } else if (pm == PermissionMode.acceptEdits.value) {
+      buf.write(' --permission-mode acceptEdits');
+    } else if (pm == PermissionMode.plan.value) {
+      buf.write(' --permission-mode plan');
+    }
+    resumeCommand = buf.toString();
+  }
+
+  return 'cd ${shellQuote(cwd)} && $resumeCommand';
+}
+
+/// Filter sessions by text query (matches name, firstPrompt, lastPrompt and summary).
+List<RecentSession> filterByQuery(List<RecentSession> sessions, String query) {
+  if (query.isEmpty) return sessions;
+  final q = query.toLowerCase();
+  return sessions.where((s) {
+    return (s.name?.toLowerCase().contains(q) ?? false) ||
+        s.firstPrompt.toLowerCase().contains(q) ||
+        (s.lastPrompt?.toLowerCase().contains(q) ?? false) ||
+        (s.summary?.toLowerCase().contains(q) ?? false);
+  }).toList();
+}
+
+List<RecentSession> preserveFactualRecentSessions(
+  List<RecentSession> sessions,
+) => sessions;
+
+NewSessionParams? mergeCodexDefaultsIntoInitialSessionDefaults(
+  NewSessionParams? defaults,
+  NewSessionParams? codexDefaults,
+) {
+  if (defaults == null) return codexDefaults;
+  if (defaults.provider == Provider.codex || codexDefaults == null) {
+    return defaults;
+  }
+  return defaults.copyWith(
+    codexApprovalPolicy: codexDefaults.codexApprovalPolicy,
+    codexPermissionsMode: codexDefaults.codexPermissionsMode,
+    codexAutoReviewEnabled: codexDefaults.codexAutoReviewEnabled,
+    codexApprovalPolicyOverridden: codexDefaults.codexApprovalPolicyOverridden,
+    codexAutoReviewOverridden: codexDefaults.codexAutoReviewOverridden,
+  );
+}
+
+// ---- Screen ----
+
+class SessionListScreen extends StatefulWidget {
+  final ValueNotifier<ConnectionParams?>? deepLinkNotifier;
+
+  /// Pre-populated sessions for UI testing (skips bridge connection).
+  final List<RecentSession>? debugRecentSessions;
+  final bool embedded;
+  final VoidCallback? onTogglePaneVisibility;
+  final ValueChanged<WorkspaceSessionSelection>? onSelectWorkspaceSession;
+
+  const SessionListScreen({
+    super.key,
+    this.deepLinkNotifier,
+    this.debugRecentSessions,
+    this.embedded = false,
+    this.onTogglePaneVisibility,
+    this.onSelectWorkspaceSession,
+  });
+
+  @override
+  State<SessionListScreen> createState() => _SessionListScreenState();
+}
+
+class _SessionListScreenState extends State<SessionListScreen>
+    with WidgetsBindingObserver {
+  bool _isAutoConnecting = false;
+
+  /// Key to access HomeContent state for programmatic search (Cmd+K).
+  final _homeContentKey = GlobalKey<HomeContentState>();
+
+  // Debug screen: 5 consecutive taps on title
+  int _debugTapCount = 0;
+  DateTime? _lastDebugTapTime;
+
+  // Cache for resume navigation
+  String? _pendingResumeProjectPath;
+  String? _pendingResumeGitBranch;
+  SessionWorkspaceInfo? _pendingResumeWorkspace;
+  String? _pendingResumeSessionId;
+  String? _pendingResumeRequestId;
+  String? _failedResumeSessionId;
+  String? _failedResumeRequestId;
+  NewSessionParams? _pendingClaudeDefaultsCorrection;
+
+  // Flag: already navigated to chat for pending session creation
+  bool _pendingNavigation = false;
+
+  // Notifier for session_created that fires before chat screen listens.
+  // When session_created arrives while _pendingNavigation is true,
+  // we store the message here so the chat screen can replay it.
+  final _pendingSessionCreated = ValueNotifier<SystemMessage?>(null);
+
+  // Only subscription that remains: session_created navigation
+  StreamSubscription<ServerMessage>? _messageSub;
+  late final ArchiveRequestTracker _archiveRequests;
+
+  // macOS app update
+  AppUpdateInfo? _appUpdateInfo;
+  bool _showMacOSNativeAppBanner = false;
+
+  // Unseen session tracking
+  final _unseenCubit = UnseenSessionsCubit();
+  StreamSubscription<List<SessionInfo>>? _activeSessionsSub;
+
+  static const _prefKeyUrl = 'bridge_url';
+  static const _prefKeyMacOSNativeAppBannerDismissed =
+      'macos_native_app_banner.dismissed';
+  static const _prefKeyClaudeSessionSettingsPrefix = 'claude_session_settings_';
+  static const _codexProjectProfileStore = CodexProjectProfileStore();
+  static const _sessionStartDefaultsStore = SessionStartDefaultsStore();
+
+  @override
+  void initState() {
+    super.initState();
+    _archiveRequests = ArchiveRequestTracker(
+      timeout: const Duration(seconds: 20),
+      onTimeout: _handleArchiveTimeout,
+    );
+    WidgetsBinding.instance.addObserver(this);
+    // session_created navigation (the only manual subscription)
+    final bridge = context.read<BridgeService>();
+    if (bridge.isConnected && bridge.lastUsageResult == null) {
+      bridge.requestUsage();
+    }
+    _messageSub = bridge.messages.listen((msg) {
+      if (msg is SystemMessage && msg.subtype == 'session_created') {
+        unawaited(_syncPendingClaudeDefaultsWithSessionCreated(msg));
+        bridge.requestSessionList();
+        final matchesPendingResume = _matchesPendingResumeSuccess(msg);
+        // Clear-context recreation and session restarts (permission mode /
+        // sandbox mode / rewind) are handled inside the active chat screen.
+        // Navigating from the hidden session list stacks a second chat route.
+        if (msg.clearContext ||
+            (!matchesPendingResume &&
+                (msg.sourceSessionId != null || msg.resumeRequestId != null))) {
+          return;
+        }
+        if (msg.sessionId != null) {
+          // Mark the newly created session as seen so it doesn't
+          // appear as unseen when the user returns to the list.
+          _unseenCubit.markSeen(msg.sessionId!);
+          if (_pendingNavigation) {
+            // Chat screen may not have its listener yet — store for replay.
+            _pendingNavigation = false;
+            _pendingSessionCreated.value = msg;
+          } else {
+            _navigateToChat(
+              msg.sessionId!,
+              projectPath: msg.projectPath ?? _pendingResumeProjectPath,
+              workspace: msg.workspace ?? _pendingResumeWorkspace,
+              gitBranch: _pendingResumeGitBranch,
+              worktreePath: msg.worktreePath,
+              provider: Provider.values
+                  .where((p) => p.value == msg.provider)
+                  .firstOrNull,
+              permissionMode: msg.permissionMode,
+              sandboxMode: msg.sandboxMode,
+              approvalPolicy: msg.approvalPolicy,
+              approvalsReviewer: msg.approvalsReviewer,
+            );
+          }
+          _clearPendingResumeState();
+          _clearFailedResumeCorrelation();
+        }
+        return;
+      }
+
+      if (msg is ErrorMessage &&
+          _pendingClaudeDefaultsCorrection != null &&
+          (msg.message.startsWith('Failed to start session:') ||
+              msg.message.startsWith(
+                'Failed to load Claude session history:',
+              ))) {
+        _pendingClaudeDefaultsCorrection = null;
+        _clearPendingResumeState();
+        _clearFailedResumeCorrelation();
+        _pendingNavigation = false;
+      }
+
+      if (msg is SystemMessage &&
+          msg.subtype == 'session_resume_failed' &&
+          _matchesPendingResumeFailure(msg)) {
+        _failedResumeSessionId = msg.sourceSessionId;
+        _failedResumeRequestId = msg.resumeRequestId;
+        _clearPendingResumeState();
+        return;
+      }
+
+      if (msg is ErrorMessage && _matchesFailedResumeError(msg)) {
+        final showWriterConflict =
+            msg.errorCode == 'codex_thread_writer_conflict';
+        _clearFailedResumeCorrelation();
+        if (showWriterConflict && mounted) {
+          final l = AppLocalizations.of(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l.codexWriterConflictGuidance)),
+          );
+        }
+        return;
+      }
+
+      if (msg is ArchiveResultMessage) {
+        if (_archiveRequests.complete(msg.sessionId) && mounted) {
+          setState(() {});
+        }
+        if (!mounted) return;
+        final l = AppLocalizations.of(context);
+        final text = msg.success
+            ? l.sessionArchived
+            : (msg.error?.isNotEmpty == true
+                  ? l.archiveFailedWithError(msg.error!)
+                  : l.archiveFailed);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(text)));
+      }
+    });
+    widget.deepLinkNotifier?.addListener(_onDeepLink);
+    _loadPreferencesAndAutoConnect();
+
+    // Feed active session updates to the unseen tracker.
+    final activeCubit = context.read<ActiveSessionsCubit>();
+    _unseenCubit.updateSessions(activeCubit.state);
+    _activeSessionsSub = activeCubit.stream.listen(_unseenCubit.updateSessions);
+    unawaited(_loadMacOSNativeAppBannerState());
+    _checkAppUpdate();
+  }
+
+  Future<void> _loadMacOSNativeAppBannerState() async {
+    final isIOSAppOnMac = await PlatformEnvironmentService.instance
+        .isIOSAppOnMac();
+    if (!isIOSAppOnMac) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final dismissed =
+        prefs.getBool(_prefKeyMacOSNativeAppBannerDismissed) ?? false;
+    if (!mounted || dismissed) return;
+    setState(() => _showMacOSNativeAppBanner = true);
+  }
+
+  Future<void> _checkAppUpdate() async {
+    final update = await AppUpdateService.instance.checkForUpdate();
+    if (update != null &&
+        !AppUpdateService.instance.isDismissedByUser &&
+        mounted) {
+      setState(() => _appUpdateInfo = update);
+    }
+  }
+
+  void _dismissAppUpdate() {
+    AppUpdateService.instance.dismissUpdate();
+    setState(() => _appUpdateInfo = null);
+  }
+
+  Future<void> _dismissMacOSNativeAppBanner() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_prefKeyMacOSNativeAppBannerDismissed, true);
+    if (!mounted) return;
+    setState(() => _showMacOSNativeAppBanner = false);
+  }
+
+  void _onDeepLink() {
+    final params = widget.deepLinkNotifier?.value;
+    if (params == null) return;
+    // Reset notifier to avoid re-triggering
+    widget.deepLinkNotifier?.value = null;
+    _connectWithParams(params.serverUrl, params.token);
+  }
+
+  Future<void> _loadPreferencesAndAutoConnect() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    final url = prefs.getString(_prefKeyUrl);
+    if (url != null && url.isNotEmpty) {
+      setState(() => _isAutoConnecting = true);
+      // Try to get API key from SecureStorage via MachineManagerCubit.
+      Machine? machine;
+      MachineManagerCubit? cubit;
+      try {
+        final uri = Uri.tryParse(url);
+        if (uri != null) {
+          cubit = context.read<MachineManagerCubit?>();
+          machine = await findAutoConnectMachine(cubit, uri);
+        }
+      } catch (_) {
+        // Ignore lookup failures — legacy preferences remain available below.
+      }
+      if (machine != null) {
+        final started = await _connectToMachineConfig(
+          cubit?.getMachine(machine.id) ?? machine,
+          shouldConnect: () => _isAutoConnecting,
+        );
+        if (!started && mounted) {
+          setState(() => _isAutoConnecting = false);
+        }
+        return;
+      }
+      if (!mounted || !_isAutoConnecting) return;
+      final attempted = await context.read<BridgeService>().autoConnect(
+        shouldConnect: () => mounted && _isAutoConnecting,
+      );
+      if (!attempted && mounted) {
+        setState(() => _isAutoConnecting = false);
+      }
+    }
+  }
+
+  Future<void> _connectWithParams(
+    String rawUrl,
+    String? apiKey, {
+    BridgeConnectionMode? requestedConnectionMode,
+  }) async {
+    var url = rawUrl.trim();
+    if (url.isEmpty) return;
+    if (!mounted) return;
+    final machineManagerCubit = context.read<MachineManagerCubit?>();
+    final hasExplicitScheme =
+        url.startsWith('ws://') || url.startsWith('wss://');
+    var connectionMode =
+        requestedConnectionMode ?? BridgeConnectionMode.automatic;
+    // Allow shorthand: just IP or host:port without ws:// prefix
+    if (!hasExplicitScheme) {
+      url = 'ws://$url';
+      final candidate = Uri.tryParse(url);
+      if (candidate != null && candidate.host.isNotEmpty) {
+        final port = candidate.hasPort ? candidate.port : 8765;
+        final existing = machineManagerCubit?.findByHostPort(
+          candidate.host,
+          port,
+        );
+        connectionMode =
+            requestedConnectionMode ??
+            existing?.connectionMode ??
+            BridgeConnectionMode.automatic;
+        final probeMode = switch (connectionMode) {
+          BridgeConnectionMode.secureOnly => BridgeConnectionMode.secureOnly,
+          BridgeConnectionMode.standardOnly =>
+            BridgeConnectionMode.standardOnly,
+          BridgeConnectionMode.automatic =>
+            existing?.hasResolvedTransport == true && existing?.useSsl == true
+                ? BridgeConnectionMode.secureOnly
+                : BridgeConnectionMode.automatic,
+        };
+        final probe = await BridgeEndpointProbe().probe(
+          host: candidate.host,
+          port: port,
+          mode: probeMode,
+        );
+        final useSsl = probe.isReachable
+            ? probe.useSsl
+            : probeMode == BridgeConnectionMode.secureOnly;
+        url = formatUriOrigin(
+          scheme: useSsl ? 'wss' : 'ws',
+          host: candidate.host,
+          port: port,
+        );
+      }
+    } else if (requestedConnectionMode == null) {
+      connectionMode = url.startsWith('wss://')
+          ? BridgeConnectionMode.secureOnly
+          : BridgeConnectionMode.standardOnly;
+    }
+
+    if (!mounted) return;
+
+    if (machineManagerCubit != null) {
+      unawaited(machineManagerCubit.refreshLatestBridgeVersionIfStale());
+    }
+
+    // Health check before connecting
+    final health = await BridgeService.checkHealth(url);
+    if (health == null && mounted) {
+      final shouldConnect = await _showSetupGuide(url);
+      if (shouldConnect != true) return;
+    }
+
+    if (!mounted) return;
+    // Auto-save to Machines on successful health check (or user choosing to connect)
+    final trimmedApiKey = apiKey?.trim() ?? '';
+    if (shouldConfirmAutomaticWsWithApiKey(
+      connectionMode: connectionMode,
+      useSsl: url.startsWith('wss://'),
+      usesEncryptedTunnel: false,
+      apiKey: trimmedApiKey,
+    )) {
+      final shouldContinue = await _confirmAutomaticWsWithApiKey();
+      if (shouldContinue != true || !mounted) return;
+    }
+    if (machineManagerCubit != null) {
+      // Parse host and port from URL
+      final uri = Uri.tryParse(
+        url.replaceFirst('ws://', 'http://').replaceFirst('wss://', 'https://'),
+      );
+      if (uri != null) {
+        await machineManagerCubit.recordConnection(
+          host: uri.host,
+          port: uri.port != 0 ? uri.port : 8765,
+          apiKey: trimmedApiKey.isNotEmpty ? trimmedApiKey : null,
+          useSsl: uri.scheme == 'https',
+          connectionMode: connectionMode,
+        );
+      }
+    }
+
+    if (!mounted) return;
+    final tunnelService = context.read<SshBridgeTunnelService?>();
+    if (tunnelService != null) {
+      await tunnelService.closeAll();
+    }
+    if (!mounted) return;
+    var connectUrl = url;
+    if (trimmedApiKey.isNotEmpty) {
+      final sep = connectUrl.contains('?') ? '&' : '?';
+      connectUrl = '$connectUrl${sep}token=$trimmedApiKey';
+    }
+    final bridge = context.read<BridgeService>();
+    bridge.connect(connectUrl);
+    bridge.savePreferences(url);
+  }
+
+  Future<bool?> _confirmAutomaticWsWithApiKey() {
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        final l = AppLocalizations.of(dialogContext);
+        return AlertDialog(
+          title: Text(l.machineAutomaticWsApiKeyWarningTitle),
+          content: Text(l.machineAutomaticWsApiKeyWarningBody),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: Text(l.cancel),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: Text(l.machineAutomaticWsApiKeyWarningConnect),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Show setup guide when health check fails. Returns true if user wants
+  /// to try connecting anyway.
+  Future<bool?> _showSetupGuide(String url) {
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final l = AppLocalizations.of(ctx);
+        return AlertDialog(
+          title: Row(
+            children: [
+              Icon(
+                Icons.warning_amber_rounded,
+                color: Theme.of(ctx).colorScheme.primary,
+              ),
+              SizedBox(width: 8),
+              Expanded(child: Text(l.serverUnreachable)),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  l.serverUnreachableBody,
+                  style: TextStyle(
+                    color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                SelectableText(
+                  url,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(ctx).colorScheme.primary,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  l.setupSteps,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: Theme.of(ctx).colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _SetupStep(
+                  number: '1',
+                  title: l.setupStep1Title,
+                  command: l.setupStep1Command,
+                ),
+                _SetupStep(
+                  number: '2',
+                  title: l.setupStep2Title,
+                  command: l.setupStep2Command,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  l.setupNetworkHint,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(l.cancel),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(l.connectAnyway),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _scanQrCode() async {
+    final result = await context.router.push<ConnectionParams>(
+      const QrScanRoute(),
+    );
+    if (result != null && mounted) {
+      _connectWithParams(result.serverUrl, result.token);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      final bridge = context.read<BridgeService>();
+      bridge.ensureConnected();
+      if (bridge.isConnected) {
+        bridge.requestSessionList();
+        bridge.requestRecentSessions(projectPath: bridge.currentProjectFilter);
+        bridge.requestUsage();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _archiveRequests.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    widget.deepLinkNotifier?.removeListener(_onDeepLink);
+    _messageSub?.cancel();
+    _activeSessionsSub?.cancel();
+    _unseenCubit.close();
+    super.dispose();
+  }
+
+  void _onTitleTap() {
+    final now = DateTime.now();
+    if (_lastDebugTapTime != null &&
+        now.difference(_lastDebugTapTime!).inMilliseconds > 3000) {
+      _debugTapCount = 0;
+    }
+    _lastDebugTapTime = now;
+    _debugTapCount++;
+    if (_debugTapCount >= 5) {
+      _debugTapCount = 0;
+      context.router.push(const DebugRoute());
+    }
+  }
+
+  void _disconnect() {
+    if (_isAutoConnecting) {
+      setState(() => _isAutoConnecting = false);
+    }
+    context.read<BridgeService>().disconnect();
+    final tunnelService = context.read<SshBridgeTunnelService?>();
+    if (tunnelService != null) {
+      unawaited(tunnelService.closeAll());
+    }
+    WorkspaceShellScreen.maybeOf(context)?.resetWorkspace();
+    context.read<SessionListCubit>().resetFilters();
+  }
+
+  Future<void> _openSettings() async {
+    final shell = WorkspaceShellScreen.maybeOf(context);
+    if (widget.embedded && shell != null) {
+      shell.openSettingsCenter();
+      return;
+    }
+    await context.router.push(SettingsRoute());
+  }
+
+  void _openSupportSettings() {
+    final shell = WorkspaceShellScreen.maybeOf(context);
+    if (widget.embedded && shell != null) {
+      shell.openSettingsCenter(focusSupport: true);
+      return;
+    }
+    context.pushRoute(SettingsRoute(focusSupport: true));
+  }
+
+  void _openBridgeSettings() {
+    final shell = WorkspaceShellScreen.maybeOf(context);
+    if (widget.embedded && shell != null) {
+      shell.openSettingsCenter(focusConnection: true);
+      return;
+    }
+    context.pushRoute(SettingsRoute(focusConnection: true));
+  }
+
+  void _openUsageSettings() {
+    final shell = WorkspaceShellScreen.maybeOf(context);
+    if (widget.embedded && shell != null) {
+      shell.openSettingsCenter(focusUsage: true);
+      return;
+    }
+    context.pushRoute(SettingsRoute(focusUsage: true));
+  }
+
+  Future<void> _openGallery() async {
+    final shell = WorkspaceShellScreen.maybeOf(context);
+    if (widget.embedded && shell != null) {
+      shell.openGlobalGalleryCenter();
+      return;
+    }
+    await context.router.push(GalleryRoute());
+  }
+
+  void _refresh() {
+    context.read<SessionListCubit>().refresh();
+    final bridge = context.read<BridgeService>();
+    if (bridge.isConnected) {
+      bridge.requestUsage();
+    }
+    final machineManagerCubit = context.read<MachineManagerCubit?>();
+    if (machineManagerCubit != null) {
+      unawaited(machineManagerCubit.refreshLatestBridgeVersionIfStale());
+    }
+  }
+
+  void _showNewSessionDialog() async {
+    final defaults = await _loadInitialNewSessionDefaults();
+    if (!mounted) return;
+    final result = await _openNewSessionSheet(initialParams: defaults);
+    if (result == null || !mounted) return;
+    await _sessionStartDefaultsStore.save(result);
+    _trackPendingClaudeDefaultsCorrection(result);
+    await _saveProjectCodexProfileFromParams(result);
+    if (!mounted) return;
+    _startNewSession(result);
+  }
+
+  Future<NewSessionParams?> _openNewSessionSheet({
+    NewSessionParams? initialParams,
+    bool lockProvider = false,
+  }) async {
+    final sessions =
+        widget.debugRecentSessions ??
+        context.read<SessionListCubit>().state.sessions;
+    final history = context.read<ProjectHistoryCubit>().state;
+    final bridge = context.read<BridgeService>();
+    final settings = context.read<SettingsCubit>().state;
+    return showNewSessionSheet(
+      context: context,
+      recentProjects: recentProjects(sessions),
+      projectHistory: history,
+      bridge: bridge,
+      initialParams: initialParams,
+      lockProvider: lockProvider,
+      visibleTabs: settings.newSessionTabs,
+      showExtendedCodexEfforts: settings.showExtendedCodexEfforts,
+      showHiddenDirectories: settings.showHiddenDirectories,
+    );
+  }
+
+  void _startNewSession(NewSessionParams result) {
+    final bridge = context.read<BridgeService>();
+    final settings = context.read<SettingsCubit>().state;
+    final workspace = _workspaceForNewSession(result);
+    final isOffline = !bridge.isConnected;
+    final useCodexProfile =
+        result.provider == Provider.codex &&
+        (result.codexProfile?.isNotEmpty ?? false);
+    final useCodexCustomPermissions =
+        result.provider == Provider.codex &&
+        (useCodexProfile ||
+            result.codexPermissionsMode == CodexPermissionsMode.custom);
+    final pendingId = 'pending_${DateTime.now().millisecondsSinceEpoch}';
+    _clearFailedResumeCorrelation();
+    _pendingResumeProjectPath = result.projectPath;
+    _pendingResumeGitBranch = result.worktreeBranch;
+    _pendingResumeWorkspace = workspace;
+    _pendingResumeSessionId = null;
+    _pendingResumeRequestId = null;
+    bridge.send(
+      ClientMessage.start(
+        result.projectPath,
+        projectId: result.projectId,
+        projectName: workspace?.projectName,
+        workspaceKind: result.workspaceKind,
+        permissionMode: result.provider == Provider.codex && useCodexProfile
+            ? null
+            : result.permissionMode.value,
+        executionMode: result.provider == Provider.codex && useCodexProfile
+            ? null
+            : result.executionMode.value,
+        approvalPolicy: result.provider == Provider.codex
+            ? (useCodexCustomPermissions
+                  ? null
+                  : result.codexApprovalPolicy.value)
+            : null,
+        approvalsReviewer: result.provider == Provider.codex
+            ? (useCodexCustomPermissions ? null : result.codexApprovalsReviewer)
+            : null,
+        codexPermissionsMode: result.provider == Provider.codex
+            ? (useCodexCustomPermissions
+                  ? CodexPermissionsMode.custom.value
+                  : result.codexPermissionsMode.value)
+            : null,
+        planMode: result.provider == Provider.codex && useCodexProfile
+            ? null
+            : result.planMode,
+        effort: result.provider == Provider.claude
+            ? result.claudeEffort?.value
+            : null,
+        maxTurns: result.provider == Provider.claude
+            ? result.claudeMaxTurns
+            : null,
+        maxBudgetUsd: result.provider == Provider.claude
+            ? result.claudeMaxBudgetUsd
+            : null,
+        fallbackModel: result.provider == Provider.claude
+            ? result.claudeFallbackModel
+            : null,
+        // --fork-session applies to resume/continue only.
+        forkSession: null,
+        persistSession: result.provider == Provider.claude
+            ? result.claudePersistSession
+            : null,
+        useWorktree: result.useWorktree ? true : null,
+        worktreeBranch: result.worktreeBranch,
+        existingWorktreePath: result.existingWorktreePath,
+        provider: result.provider.value,
+        profile: result.provider == Provider.codex ? result.codexProfile : null,
+        model: result.provider == Provider.claude
+            ? result.claudeModel
+            : (useCodexProfile ? null : result.model),
+        sandboxMode:
+            result.provider == Provider.codex && useCodexCustomPermissions
+            ? null
+            : result.sandboxMode?.value,
+        modelReasoningEffort:
+            result.provider == Provider.codex && useCodexProfile
+            ? null
+            : result.modelReasoningEffort?.value,
+        serviceTier: result.provider == Provider.codex
+            ? result.codexSpeed.value
+            : null,
+        networkAccessEnabled:
+            result.provider == Provider.codex && useCodexCustomPermissions
+            ? null
+            : result.networkAccessEnabled,
+        webSearchMode: result.provider == Provider.codex && useCodexProfile
+            ? null
+            : result.webSearchMode?.value,
+        additionalWritableRoots:
+            result.provider == Provider.claude ||
+                result.projectId != null ||
+                !useCodexCustomPermissions
+            ? result.additionalWritableRoots
+            : null,
+        autoRename: autoRenameForProvider(settings, result.provider),
+        requestId: pendingId,
+      ),
+    );
+    if (isOffline) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppLocalizations.of(context).sessionQueuedForReconnect),
+        ),
+      );
+      return;
+    }
+    if (_hasPendingStart(bridge, result)) {
+      return;
+    }
+    // Navigate immediately to chat with pending state
+    _pendingNavigation = true;
+    _navigateToChat(
+      pendingId,
+      projectPath: result.projectPath,
+      workspace: workspace,
+      gitBranch: result.worktreeBranch,
+      worktreePath: result.existingWorktreePath,
+      isPending: true,
+      provider: result.provider,
+      permissionMode: result.permissionMode.value,
+      sandboxMode: result.sandboxMode?.value,
+      approvalPolicy: result.provider == Provider.codex
+          ? result.codexApprovalPolicy.value
+          : null,
+      approvalsReviewer: result.provider == Provider.codex
+          ? result.codexApprovalsReviewer
+          : null,
+    );
+  }
+
+  SessionWorkspaceInfo? _workspaceForNewSession(NewSessionParams params) {
+    final projectId = params.projectId;
+    if (projectId == null || params.workspaceKind != 'project') return null;
+    final project = context
+        .read<BridgeService>()
+        .projectsState
+        .projects
+        .where((item) => item.id == projectId)
+        .firstOrNull;
+    return SessionWorkspaceInfo(
+      kind: 'project',
+      projectId: projectId,
+      projectName: project?.name,
+      rootPaths:
+          project?.rootPaths ??
+          [params.projectPath, ...params.additionalWritableRoots],
+    );
+  }
+
+  void _trackPendingClaudeDefaultsCorrection(NewSessionParams params) {
+    _pendingClaudeDefaultsCorrection = params.provider == Provider.claude
+        ? params
+        : null;
+  }
+
+  Future<void> _syncPendingClaudeDefaultsWithSessionCreated(
+    SystemMessage msg,
+  ) async {
+    final pending = _pendingClaudeDefaultsCorrection;
+    _pendingClaudeDefaultsCorrection = null;
+    if (pending == null || pending.provider != Provider.claude) return;
+    if (pending.permissionMode != PermissionMode.auto) return;
+
+    final actualMode =
+        permissionModeFromRaw(msg.permissionMode) ?? PermissionMode.defaultMode;
+    if (actualMode == pending.permissionMode) return;
+
+    await _sessionStartDefaultsStore.save(
+      pending.copyWith(claudePermissionMode: actualMode),
+    );
+  }
+
+  Future<NewSessionParams?> _loadInitialNewSessionDefaults() async {
+    final defaults = await _sessionStartDefaultsStore.loadInitial();
+    final codexDefaults = await _sessionStartDefaultsStore.loadFor(
+      Provider.codex,
+    );
+    final mergedDefaults = mergeCodexDefaultsIntoInitialSessionDefaults(
+      defaults,
+      codexDefaults,
+    );
+    if (mergedDefaults == null) return null;
+    if (mergedDefaults.provider != Provider.codex) {
+      return mergedDefaults;
+    }
+    final savedProfile = await _loadProjectCodexProfile(
+      mergedDefaults.projectPath,
+      projectId: mergedDefaults.projectId,
+    );
+    if (savedProfile == null || savedProfile.isEmpty) return mergedDefaults;
+    if (!mounted) return mergedDefaults;
+    final available = context.read<BridgeService>().codexProfiles;
+    if (available.isNotEmpty && !available.contains(savedProfile)) {
+      return mergedDefaults;
+    }
+    return mergedDefaults.copyWith(codexProfile: savedProfile);
+  }
+
+  Future<String?> _loadProjectCodexProfile(
+    String projectPath, {
+    String? projectId,
+  }) => _codexProjectProfileStore.load(projectPath, projectId: projectId);
+
+  Future<void> _saveProjectCodexProfileFromParams(NewSessionParams params) {
+    if (params.provider != Provider.codex) {
+      return Future.value();
+    }
+    final available = context.read<BridgeService>().codexProfiles;
+    final selected = params.codexProfile;
+    if (available.isNotEmpty &&
+        selected != null &&
+        selected.isNotEmpty &&
+        !available.contains(selected)) {
+      return _codexProjectProfileStore.save(
+        params.projectPath,
+        null,
+        projectId: params.projectId,
+      );
+    }
+    return _codexProjectProfileStore.save(
+      params.projectPath,
+      selected,
+      projectId: params.projectId,
+    );
+  }
+
+  List<RecentSession> _factualRecentSessions(List<RecentSession> sessions) {
+    return preserveFactualRecentSessions(sessions);
+  }
+
+  // ---- Per-session Claude settings persistence ----
+
+  static Future<void> saveClaudeSessionSettings(
+    String sessionId,
+    Map<String, dynamic> settings,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    // Merge with existing settings to preserve fields not being updated.
+    final existing = await loadClaudeSessionSettings(sessionId);
+    final merged = <String, dynamic>{...?existing, ...settings};
+    await prefs.setString(
+      '$_prefKeyClaudeSessionSettingsPrefix$sessionId',
+      jsonEncode(merged),
+    );
+  }
+
+  static Future<Map<String, dynamic>?> loadClaudeSessionSettings(
+    String sessionId,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(
+      '$_prefKeyClaudeSessionSettingsPrefix$sessionId',
+    );
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Build a settings map from NewSessionParams (Claude fields only).
+  static Map<String, dynamic> _claudeSettingsFromParams(
+    NewSessionParams params,
+  ) {
+    return <String, dynamic>{
+      'permissionMode': params.permissionMode.value,
+      'executionMode': params.executionMode.value,
+      'planMode': params.planMode,
+      if (params.sandboxMode != null) 'sandboxMode': params.sandboxMode!.value,
+      if (params.claudeModel != null) 'claudeModel': params.claudeModel,
+      if (params.claudeEffort != null)
+        'claudeEffort': params.claudeEffort!.value,
+      if (params.claudeFallbackModel != null)
+        'claudeFallbackModel': params.claudeFallbackModel,
+      if (params.claudeForkSession != null)
+        'claudeForkSession': params.claudeForkSession,
+      if (params.claudePersistSession != null)
+        'claudePersistSession': params.claudePersistSession,
+    };
+  }
+
+  Future<NewSessionParams> _newSessionFromRecentSession(
+    RecentSession session,
+  ) async {
+    final provider = session.provider == Provider.codex.value
+        ? Provider.codex
+        : Provider.claude;
+    final codexModels = context.read<BridgeService>().codexModels;
+    final existingWorktreePath = session.resumeCwd;
+    final hasExistingWorktree =
+        existingWorktreePath != null && existingWorktreePath.isNotEmpty;
+
+    // Load per-session Claude settings (saved from previous runs).
+    final sessionSettings = provider == Provider.claude
+        ? await loadClaudeSessionSettings(session.sessionId)
+        : null;
+    final codexApprovalPolicy =
+        codexApprovalPolicyFromRaw(session.codexApprovalPolicy) ??
+        codexApprovalPolicyFromLegacyExecutionMode(
+          sessionSettings?['executionMode'] as String?,
+        );
+    final codexAutoReviewEnabled = isCodexAutoReviewApprovalsReviewer(
+      session.codexApprovalsReviewer,
+    );
+    final codexPermissionsMode = codexPermissionsModeFromSettings(
+      codexPermissionsMode: session.codexPermissionsMode,
+      approvalPolicy: session.codexApprovalPolicy,
+      approvalsReviewer: session.codexApprovalsReviewer,
+      sandboxMode: session.codexSandboxMode,
+    );
+
+    return NewSessionParams(
+      projectPath: session.projectPath,
+      projectId: session.workspace?.projectId,
+      workspaceKind: session.workspaceKind == 'unassigned'
+          ? null
+          : session.workspaceKind,
+      provider: provider,
+      executionMode: deriveExecutionMode(
+        provider: provider.value,
+        executionMode: sessionSettings?['executionMode'] as String?,
+        permissionMode: sessionSettings?['permissionMode'] as String?,
+        approvalPolicy: session.codexApprovalPolicy,
+      ),
+      codexPermissionsMode: codexPermissionsMode,
+      codexApprovalPolicy: codexApprovalPolicy,
+      codexAutoReviewEnabled: codexAutoReviewEnabled,
+      codexProfile: provider == Provider.codex ? session.codexProfile : null,
+      codexApprovalPolicyOverridden: provider == Provider.codex,
+      codexAutoReviewOverridden: provider == Provider.codex,
+      codexModelOverridden: provider == Provider.codex,
+      codexSandboxModeOverridden: provider == Provider.codex,
+      codexReasoningEffortOverridden: provider == Provider.codex,
+      codexNetworkAccessOverridden: provider == Provider.codex,
+      codexWebSearchModeOverridden: provider == Provider.codex,
+      planMode: derivePlanMode(
+        planMode: sessionSettings?['planMode'] as bool?,
+        permissionMode: sessionSettings?['permissionMode'] as String?,
+      ),
+      useWorktree: hasExistingWorktree,
+      worktreeBranch: session.gitBranch.isNotEmpty ? session.gitBranch : null,
+      existingWorktreePath: hasExistingWorktree ? existingWorktreePath : null,
+      model:
+          normalizeCodexModelForAvailableList(
+            session.codexModel,
+            codexModels,
+          ) ??
+          session.codexModel,
+      sandboxMode: provider == Provider.codex
+          ? sandboxModeFromRaw(session.codexSandboxMode)
+          : sandboxModeFromRaw(sessionSettings?['sandboxMode'] as String?),
+      modelReasoningEffort: reasoningEffortFromRaw(
+        session.codexModelReasoningEffort,
+      ),
+      codexSpeed: codexSpeedFromRaw(session.codexServiceTier),
+      networkAccessEnabled: session.codexNetworkAccessEnabled,
+      webSearchMode: webSearchModeFromRaw(session.codexWebSearchMode),
+      additionalWritableRoots: session.workspaceRootPaths.skip(1).toList(),
+      claudeModel: sessionSettings?['claudeModel'] as String?,
+      claudeEffort: claudeEffortFromRaw(
+        sessionSettings?['claudeEffort'] as String?,
+      ),
+      claudeFallbackModel: sessionSettings?['claudeFallbackModel'] as String?,
+      claudeForkSession: sessionSettings?['claudeForkSession'] as bool?,
+      claudePersistSession: sessionSettings?['claudePersistSession'] as bool?,
+    );
+  }
+
+  void _showRunningSessionActions(
+    SessionInfo session, [
+    Offset? position,
+  ]) async {
+    final l = AppLocalizations.of(context);
+    final action = await showAdaptiveActionMenu<String>(
+      context: context,
+      position: position,
+      items: [
+        AdaptiveActionMenuItem(
+          value: 'rename',
+          icon: Icons.label_outline,
+          label: l.rename,
+        ),
+        AdaptiveActionMenuItem(
+          value: 'stop',
+          icon: Icons.stop_circle_outlined,
+          label: l.stopSession,
+          destructive: true,
+        ),
+      ],
+    );
+    if (action == null || !mounted) return;
+
+    if (action == 'rename') {
+      final newName = await showRenameSessionDialog(
+        context,
+        currentName: session.name,
+      );
+      if (newName == null || !mounted) return;
+      context.read<BridgeService>().renameSession(
+        sessionId: session.id,
+        name: newName.isEmpty ? null : newName,
+      );
+      // Running session list will auto-update via broadcastSessionList
+      return;
+    }
+
+    if (action == 'stop') {
+      context.read<BridgeService>().stopSession(session.id);
+    }
+  }
+
+  void _showRecentSessionActions(
+    RecentSession session, [
+    Offset? position,
+  ]) async {
+    final l = AppLocalizations.of(context);
+    final action = await showAdaptiveActionMenu<String>(
+      context: context,
+      position: position,
+      items: [
+        AdaptiveActionMenuItem(
+          value: 'rename',
+          icon: Icons.label_outline,
+          label: l.rename,
+        ),
+        AdaptiveActionMenuItem(
+          value: 'start_same',
+          icon: Icons.play_arrow,
+          label: l.startNewWithSameSettings,
+        ),
+        AdaptiveActionMenuItem(
+          value: 'copy_resume_command',
+          icon: Icons.terminal,
+          label: l.copyResumeCommand,
+          subtitle: l.copyResumeCommandSubtitle,
+        ),
+        AdaptiveActionMenuItem(
+          value: 'start_edit',
+          icon: Icons.tune,
+          label: l.editSettingsThenStart,
+        ),
+        AdaptiveActionMenuItem(
+          value: 'archive',
+          icon: Icons.archive_outlined,
+          label: l.archive,
+          destructive: true,
+        ),
+      ],
+    );
+    if (action == null || !mounted) return;
+
+    if (action == 'rename') {
+      final newName = await showRenameSessionDialog(
+        context,
+        currentName: session.name,
+      );
+      if (newName == null || !mounted) return;
+      final effectiveName = newName.isEmpty ? null : newName;
+      // Optimistically update the local state for instant UI feedback
+      context.read<SessionListCubit>().updateSessionName(
+        session.sessionId,
+        effectiveName,
+      );
+      context.read<BridgeService>().renameSession(
+        sessionId: session.sessionId,
+        name: effectiveName,
+        provider: session.provider,
+        providerSessionId: session.sessionId,
+        projectPath: session.projectPath,
+      );
+      // Also refresh from server to confirm persistence
+      context.read<BridgeService>().requestRecentSessions();
+      return;
+    }
+
+    if (action == 'start_same') {
+      final params = await _newSessionFromRecentSession(session);
+      if (!mounted) return;
+      // Don't save as defaults — these are session-specific settings from a
+      // recent session, not user-chosen defaults for future sessions.
+      _startNewSession(params);
+      return;
+    }
+
+    if (action == 'copy_resume_command') {
+      await Clipboard.setData(ClipboardData(text: buildResumeCommand(session)));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.resumeCommandCopied)));
+      return;
+    }
+
+    if (action == 'start_edit') {
+      final initialParams = await _newSessionFromRecentSession(session);
+      if (!mounted) return;
+      final edited = await _openNewSessionSheet(
+        initialParams: initialParams,
+        lockProvider: true,
+      );
+      if (edited == null || !mounted) return;
+      await _sessionStartDefaultsStore.save(edited);
+      _trackPendingClaudeDefaultsCorrection(edited);
+      await _saveProjectCodexProfileFromParams(edited);
+      if (!mounted) return;
+      _resumeSessionWithParams(session, edited);
+      return;
+    }
+
+    if (action == 'archive') {
+      _archiveSession(session);
+    }
+  }
+
+  void _archiveSession(RecentSession session) {
+    if (_archiveRequests.contains(session.sessionId)) return;
+    setState(() => _archiveRequests.start(session.sessionId));
+    context.read<BridgeService>().archiveSession(
+      sessionId: session.sessionId,
+      provider: session.provider ?? 'claude',
+      projectPath: session.projectPath,
+    );
+  }
+
+  void _handleArchiveTimeout(String _) {
+    if (!mounted) return;
+    setState(() {});
+    final bridge = context.read<BridgeService>();
+    bridge.requestRecentSessions(projectPath: bridge.currentProjectFilter);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(AppLocalizations.of(context).responseTimedOut)),
+    );
+  }
+
+  void _navigateToChat(
+    String sessionId, {
+    String? projectPath,
+    SessionWorkspaceInfo? workspace,
+    String? gitBranch,
+    String? worktreePath,
+    bool isPending = false,
+    Provider? provider,
+    String? permissionMode,
+    String? sandboxMode,
+    String? approvalPolicy,
+    String? approvalsReviewer,
+  }) {
+    // Mark session as seen when navigating into it.
+    _unseenCubit.markSeen(sessionId);
+    // Reset the notifier for this navigation.
+    if (isPending) {
+      _pendingSessionCreated.value = null;
+    }
+    final pendingNotifier = isPending ? _pendingSessionCreated : null;
+    if (widget.embedded) {
+      widget.onSelectWorkspaceSession?.call(
+        WorkspaceSessionSelection(
+          sessionId: sessionId,
+          projectPath: projectPath,
+          workspace: workspace,
+          gitBranch: gitBranch,
+          worktreePath: worktreePath,
+          isPending: isPending,
+          provider: provider,
+          permissionMode: permissionMode,
+          sandboxMode: sandboxMode,
+          approvalPolicy: approvalPolicy,
+          approvalsReviewer: approvalsReviewer,
+          pendingSessionCreated: pendingNotifier,
+        ),
+      );
+      return;
+    }
+
+    final navigation = context.router.push(switch (provider) {
+      Provider.codex => CodexSessionRoute(
+        sessionId: sessionId,
+        projectPath: projectPath,
+        workspace: workspace,
+        gitBranch: gitBranch,
+        worktreePath: worktreePath,
+        isPending: isPending,
+        initialSandboxMode: sandboxMode,
+        initialPermissionMode: permissionMode,
+        initialApprovalPolicy: approvalPolicy,
+        initialApprovalsReviewer: approvalsReviewer,
+        pendingSessionCreated: pendingNotifier,
+      ),
+      _ => ClaudeSessionRoute(
+        sessionId: sessionId,
+        projectPath: projectPath,
+        workspace: workspace,
+        gitBranch: gitBranch,
+        worktreePath: worktreePath,
+        isPending: isPending,
+        initialPermissionMode: permissionMode,
+        initialSandboxMode: sandboxMode,
+        pendingSessionCreated: pendingNotifier,
+      ),
+    });
+    navigation.then((_) {
+      if (!mounted) return;
+      final isConnected =
+          context.read<ConnectionCubit>().state ==
+          BridgeConnectionState.connected;
+      if (isConnected) {
+        _refresh();
+      }
+    });
+  }
+
+  void _resumeSession(RecentSession session) async {
+    final bridge = context.read<BridgeService>();
+    final projectPath = session.resumeCwd ?? session.projectPath;
+    final resumeRequestId = _beginPendingResume(
+      sessionId: session.sessionId,
+      projectPath: projectPath,
+      gitBranch: session.gitBranch,
+      workspace: session.workspace,
+    );
+    final result = await SessionResumeCoordinator(bridge: bridge)
+        .resume(session, resumeRequestId: resumeRequestId);
+    if (!mounted) return;
+    if (result.disposition == SessionResumeDisposition.alreadyQueued) {
+      if (_pendingResumeRequestId == resumeRequestId) {
+        _clearPendingResumeState();
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppLocalizations.of(context).resumeAlreadyQueued),
+        ),
+      );
+      return;
+    }
+    if (!bridge.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppLocalizations.of(context).resumeQueuedForReconnect),
+        ),
+      );
+    }
+  }
+
+  /// Resume session with user-edited settings (from "Edit settings then start")
+  void _resumeSessionWithParams(
+    RecentSession session,
+    NewSessionParams edited,
+  ) {
+    final bridge = context.read<BridgeService>();
+    if (_isResumePending(bridge, session)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppLocalizations.of(context).resumeAlreadyQueued),
+        ),
+      );
+      return;
+    }
+    final resumeProjectPath = session.resumeCwd ?? session.projectPath;
+    final workspace = _workspaceForNewSession(edited);
+    final resumeRequestId = _beginPendingResume(
+      sessionId: session.sessionId,
+      projectPath: resumeProjectPath,
+      gitBranch: session.gitBranch,
+      workspace: workspace,
+    );
+
+    final isCodex = edited.provider == Provider.codex;
+    final useCodexProfile =
+        isCodex && (edited.codexProfile?.isNotEmpty ?? false);
+    final useCodexCustomPermissions =
+        isCodex &&
+        (useCodexProfile ||
+            edited.codexPermissionsMode == CodexPermissionsMode.custom);
+    bridge.resumeSession(
+      session.sessionId,
+      resumeProjectPath,
+      permissionMode: isCodex && useCodexProfile
+          ? null
+          : edited.permissionMode.value,
+      executionMode: isCodex && useCodexProfile
+          ? null
+          : edited.executionMode.value,
+      approvalPolicy: isCodex
+          ? (useCodexCustomPermissions
+                ? null
+                : edited.codexApprovalPolicy.value)
+          : null,
+      approvalsReviewer: isCodex
+          ? (useCodexCustomPermissions ? null : edited.codexApprovalsReviewer)
+          : null,
+      codexPermissionsMode: isCodex
+          ? (useCodexCustomPermissions
+                ? CodexPermissionsMode.custom.value
+                : edited.codexPermissionsMode.value)
+          : null,
+      planMode: isCodex && useCodexProfile ? null : edited.planMode,
+      effort: !isCodex ? edited.claudeEffort?.value : null,
+      maxTurns: !isCodex ? edited.claudeMaxTurns : null,
+      maxBudgetUsd: !isCodex ? edited.claudeMaxBudgetUsd : null,
+      fallbackModel: !isCodex ? edited.claudeFallbackModel : null,
+      forkSession: !isCodex ? edited.claudeForkSession : null,
+      persistSession: !isCodex ? edited.claudePersistSession : null,
+      profile: isCodex ? edited.codexProfile : null,
+      provider: session.provider,
+      sandboxMode: isCodex && useCodexCustomPermissions
+          ? null
+          : edited.sandboxMode?.value,
+      model: isCodex
+          ? (useCodexProfile
+                ? null
+                : (normalizeCodexModelForAvailableList(
+                        edited.model,
+                        context.read<BridgeService>().codexModels,
+                      ) ??
+                      edited.model))
+          : edited.claudeModel,
+      modelReasoningEffort: isCodex && useCodexProfile
+          ? null
+          : (isCodex ? edited.modelReasoningEffort?.value : null),
+      serviceTier: isCodex ? edited.codexSpeed.value : null,
+      networkAccessEnabled: isCodex && useCodexCustomPermissions
+          ? null
+          : (isCodex ? edited.networkAccessEnabled : null),
+      webSearchMode: isCodex && useCodexProfile
+          ? null
+          : (isCodex ? edited.webSearchMode?.value : null),
+      additionalWritableRoots: !isCodex || !useCodexCustomPermissions
+          ? edited.additionalWritableRoots
+          : null,
+      projectId: edited.projectId,
+      projectName: workspace?.projectName,
+      workspaceKind: edited.workspaceKind,
+      resumeRequestId: resumeRequestId,
+    );
+    if (!bridge.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppLocalizations.of(context).resumeQueuedForReconnect),
+        ),
+      );
+    }
+
+    // Persist per-session Claude settings for future resumes.
+    if (!isCodex) {
+      unawaited(
+        saveClaudeSessionSettings(
+          session.sessionId,
+          _claudeSettingsFromParams(edited),
+        ),
+      );
+    } else {
+      unawaited(_saveProjectCodexProfileFromParams(edited));
+    }
+  }
+
+  bool _isResumePending(BridgeService bridge, RecentSession session) {
+    final provider = session.provider ?? Provider.claude.value;
+    return bridge.offlinePendingActions.any((action) {
+      return action.kind == OfflinePendingActionKind.resume &&
+          action.sessionId == session.sessionId &&
+          action.provider == provider;
+    });
+  }
+
+  String _beginPendingResume({
+    required String sessionId,
+    required String projectPath,
+    required String gitBranch,
+    SessionWorkspaceInfo? workspace,
+  }) {
+    final requestId =
+        'session-list:$sessionId:${DateTime.now().microsecondsSinceEpoch}';
+    _clearFailedResumeCorrelation();
+    _pendingResumeSessionId = sessionId;
+    _pendingResumeRequestId = requestId;
+    _pendingResumeProjectPath = projectPath;
+    _pendingResumeGitBranch = gitBranch;
+    _pendingResumeWorkspace = workspace;
+    return requestId;
+  }
+
+  bool _matchesPendingResumeFailure(SystemMessage message) {
+    if (_pendingResumeSessionId == null || _pendingResumeRequestId == null) {
+      return false;
+    }
+    if (message.sourceSessionId != _pendingResumeSessionId) return false;
+    return message.resumeRequestId == _pendingResumeRequestId;
+  }
+
+  bool _matchesPendingResumeSuccess(SystemMessage message) {
+    if (_pendingResumeRequestId == null) return false;
+    return message.resumeRequestId == _pendingResumeRequestId;
+  }
+
+  bool _matchesFailedResumeError(ErrorMessage message) {
+    if (_failedResumeSessionId == null || _failedResumeRequestId == null) {
+      return false;
+    }
+    if (message.sessionId != _failedResumeSessionId) return false;
+    return message.requestId == _failedResumeRequestId;
+  }
+
+  void _clearPendingResumeState() {
+    _pendingResumeProjectPath = null;
+    _pendingResumeGitBranch = null;
+    _pendingResumeWorkspace = null;
+    _pendingResumeSessionId = null;
+    _pendingResumeRequestId = null;
+  }
+
+  void _clearFailedResumeCorrelation() {
+    _failedResumeSessionId = null;
+    _failedResumeRequestId = null;
+  }
+
+  bool _hasPendingStart(BridgeService bridge, NewSessionParams params) {
+    return bridge.offlinePendingActions.any((action) {
+      return action.kind == OfflinePendingActionKind.start &&
+          action.projectPath == params.projectPath &&
+          action.provider == params.provider.value;
+    });
+  }
+
+  void _stopSession(String sessionId) {
+    context.read<BridgeService>().stopSession(sessionId);
+  }
+
+  String? _connectedBridgeLabel({
+    required SettingsState settingsState,
+    required MachineManagerState? machineState,
+  }) {
+    if (widget.debugRecentSessions != null) return null;
+    if (!settingsState.showBridgeNameInSessionList) return null;
+
+    final machines = machineState?.machines ?? const <MachineWithStatus>[];
+    if (machines.length < 2) return null;
+
+    final activeMachineId = settingsState.activeMachineId;
+    if (activeMachineId != null) {
+      for (final item in machines) {
+        if (item.machine.id == activeMachineId) {
+          return item.machine.displayName;
+        }
+      }
+    }
+
+    final url = context.read<BridgeService>().lastUrl;
+    final machine = _machineForBridgeUrl(machines, url);
+    if (machine != null) return machine.displayName;
+    return _bridgeLabelFromUrl(url);
+  }
+
+  Machine? _machineForBridgeUrl(List<MachineWithStatus> machines, String? url) {
+    final uri = _bridgeUri(url);
+    if (uri == null) return null;
+    final port = uri.hasPort ? uri.port : 8765;
+    for (final item in machines) {
+      final machine = item.machine;
+      if (endpointIdentityKey(machine.host, machine.port) ==
+          endpointIdentityKey(uri.host, port)) {
+        return machine;
+      }
+    }
+    return null;
+  }
+
+  String? _bridgeLabelFromUrl(String? url) {
+    final uri = _bridgeUri(url);
+    if (uri == null || uri.host.isEmpty) return null;
+    final port = uri.hasPort ? uri.port : 8765;
+    return formatHostPort(uri.host, port);
+  }
+
+  Uri? _bridgeUri(String? url) {
+    if (url == null || url.isEmpty) return null;
+    return Uri.tryParse(
+      url.replaceFirst('ws://', 'http://').replaceFirst('wss://', 'https://'),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Read state from cubits
+    final slState = context.watch<SessionListCubit>().state;
+    final connectionState = widget.debugRecentSessions != null
+        ? BridgeConnectionState.connected
+        : context.watch<ConnectionCubit>().state;
+    final sessions = context.watch<ActiveSessionsCubit>().state;
+    final recentSessionsList = _factualRecentSessions(
+      widget.debugRecentSessions ?? slState.sessions,
+    );
+    final workspaceProjects = context
+        .watch<WorkspaceProjectsCubit>()
+        .state
+        .projects;
+    final discoveredServers = context.watch<ServerDiscoveryCubit>().state;
+
+    final isConnected = connectionState == BridgeConnectionState.connected;
+    final showConnectedUI =
+        isConnected || connectionState == BridgeConnectionState.reconnecting;
+
+    final l = AppLocalizations.of(context);
+
+    // Try to get MachineManagerCubit if available
+    final machineManagerCubit = context.watch<MachineManagerCubit?>();
+    final machineState = machineManagerCubit?.state;
+    final settingsState = context.watch<SettingsCubit>().state;
+    final connectedBridgeLabel = _connectedBridgeLabel(
+      settingsState: settingsState,
+      machineState: machineState,
+    );
+
+    return BlocProvider<UnseenSessionsCubit>.value(
+      value: _unseenCubit,
+      child: BlocBuilder<UnseenSessionsCubit, Set<String>>(
+        builder: (context, unseenSessionIds) =>
+            BlocListener<ConnectionCubit, BridgeConnectionState>(
+              listener: (context, nextState) {
+                // Clear auto-connecting spinner once we get any connection state update
+                if (_isAutoConnecting) {
+                  setState(() => _isAutoConnecting = false);
+                }
+                if (nextState == BridgeConnectionState.connected) {
+                  _refresh();
+                }
+              },
+              child: CallbackShortcuts(
+                bindings: <ShortcutActivator, VoidCallback>{
+                  // Cmd+N: New Session
+                  const SingleActivator(
+                    LogicalKeyboardKey.keyN,
+                    meta: true,
+                  ): () {
+                    if (showConnectedUI) _showNewSessionDialog();
+                  },
+                  // Cmd+K: Focus search
+                  const SingleActivator(
+                    LogicalKeyboardKey.keyK,
+                    meta: true,
+                  ): () {
+                    _homeContentKey.currentState?.openSearch();
+                  },
+                },
+                child: Focus(
+                  autofocus: true,
+                  child: _buildScaffoldBody(
+                    context: context,
+                    l: l,
+                    showConnectedUI: showConnectedUI,
+                    connectionState: connectionState,
+                    sessions: sessions,
+                    recentSessionsList: recentSessionsList,
+                    workspaceProjects: workspaceProjects,
+                    slState: slState,
+                    unseenSessionIds: unseenSessionIds,
+                    discoveredServers: discoveredServers,
+                    machineState: machineState,
+                    machineManagerCubit: machineManagerCubit,
+                    connectedBridgeLabel: connectedBridgeLabel,
+                  ),
+                ),
+              ),
+            ),
+      ),
+    );
+  }
+
+  Widget _buildScaffoldBody({
+    required BuildContext context,
+    required AppLocalizations l,
+    required bool showConnectedUI,
+    required BridgeConnectionState connectionState,
+    required List<SessionInfo> sessions,
+    required List<RecentSession> recentSessionsList,
+    required List<WorkspaceProject> workspaceProjects,
+    required SessionListState slState,
+    required Set<String> unseenSessionIds,
+    required List<DiscoveredServer> discoveredServers,
+    required MachineManagerState? machineState,
+    required MachineManagerCubit? machineManagerCubit,
+    required String? connectedBridgeLabel,
+  }) {
+    final canDisconnect =
+        showConnectedUI ||
+        _isAutoConnecting ||
+        connectionState == BridgeConnectionState.connecting;
+    final chrome = resolveWorkspacePaneChrome(
+      platform: Theme.of(context).platform,
+      isAdaptiveWorkspace: false,
+      isLeftPaneVisible: true,
+      slot: WorkspacePaneSlot.center,
+    );
+    final body = _buildBodyContent(
+      context: context,
+      showConnectedUI: showConnectedUI,
+      connectionState: connectionState,
+      sessions: sessions,
+      recentSessionsList: recentSessionsList,
+      workspaceProjects: workspaceProjects,
+      slState: slState,
+      unseenSessionIds: unseenSessionIds,
+      discoveredServers: discoveredServers,
+      machineState: machineState,
+      machineManagerCubit: machineManagerCubit,
+      connectedBridgeLabel: connectedBridgeLabel,
+    );
+
+    if (widget.embedded) {
+      return Material(
+        color: Theme.of(context).colorScheme.surface,
+        child: SafeArea(
+          bottom: false,
+          child: Stack(
+            children: [
+              Column(
+                children: [
+                  SessionListPaneHeader(
+                    onTitleTap: _onTitleTap,
+                    onOpenSettings: _openSettings,
+                    onOpenGallery: showConnectedUI ? _openGallery : null,
+                    onDisconnect: canDisconnect ? _disconnect : null,
+                    onTogglePaneVisibility: widget.onTogglePaneVisibility,
+                    bridgeLabel: connectedBridgeLabel,
+                  ),
+                  Expanded(child: body),
+                ],
+              ),
+              if (showConnectedUI &&
+                  MediaQuery.of(context).viewInsets.bottom == 0)
+                Positioned(
+                  left: 16,
+                  bottom: 16,
+                  child: FloatingActionButton.extended(
+                    key: const ValueKey('new_session_fab'),
+                    heroTag: null,
+                    onPressed: _showNewSessionDialog,
+                    icon: const Icon(Icons.add),
+                    label: const Text('New'),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Scaffold(
+      appBar: showConnectedUI
+          ? null
+          : chrome.wrapAppBar(
+              AppBar(
+                toolbarHeight: chrome.toolbarHeight,
+                title: GestureDetector(
+                  onTap: _onTitleTap,
+                  child: Text(l.appTitle),
+                ),
+                actions: [
+                  IconButton(
+                    key: const ValueKey('settings_button'),
+                    icon: Badge(
+                      isLabelVisible:
+                          AppUpdateService.instance.cachedUpdate != null,
+                      smallSize: 8,
+                      child: const Icon(Icons.settings),
+                    ),
+                    onPressed: _openSettings,
+                    tooltip: l.settings,
+                  ),
+                  if (canDisconnect)
+                    IconButton(
+                      key: const ValueKey('disconnect_button'),
+                      icon: const Icon(Icons.link_off),
+                      onPressed: _disconnect,
+                      tooltip: l.disconnect,
+                    ),
+                ],
+              ),
+            ),
+      body: body,
+      floatingActionButton:
+          showConnectedUI && MediaQuery.of(context).viewInsets.bottom == 0
+          ? Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: FloatingActionButton.extended(
+                key: const ValueKey('new_session_fab'),
+                heroTag: null,
+                onPressed: _showNewSessionDialog,
+                icon: const Icon(Icons.add),
+                label: const Text('New'),
+              ),
+            )
+          : null,
+    );
+  }
+
+  Widget _buildBodyContent({
+    required BuildContext context,
+    required bool showConnectedUI,
+    required BridgeConnectionState connectionState,
+    required List<SessionInfo> sessions,
+    required List<RecentSession> recentSessionsList,
+    required List<WorkspaceProject> workspaceProjects,
+    required SessionListState slState,
+    required Set<String> unseenSessionIds,
+    required List<DiscoveredServer> discoveredServers,
+    required MachineManagerState? machineState,
+    required MachineManagerCubit? machineManagerCubit,
+    required String? connectedBridgeLabel,
+  }) {
+    if (showConnectedUI) {
+      final bridge = context.read<BridgeService>();
+      final settingsState = context.watch<SettingsCubit>().state;
+      final allowedProviderFilters = providerFiltersForEnabledTabs(
+        settingsState.newSessionTabs,
+      );
+      final effectiveProviderFilter = coerceProviderFilter(
+        slState.providerFilter,
+        allowedProviderFilters,
+      );
+      if (effectiveProviderFilter != slState.providerFilter) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          context.read<SessionListCubit>().applyEnabledAgents(
+            settingsState.newSessionTabs,
+          );
+        });
+      }
+      final content = StreamBuilder<List<OfflinePendingAction>>(
+        stream: bridge.offlinePendingActionsStream,
+        initialData: bridge.offlinePendingActions,
+        builder: (context, snapshot) {
+          final offlinePendingActions =
+              snapshot.data ?? const <OfflinePendingAction>[];
+          return RefreshIndicator(
+            onRefresh: () async => _refresh(),
+            child: HomeContent(
+              key: _homeContentKey,
+              connectionState: connectionState,
+              bridgeVersion: bridge.bridgeVersion,
+              latestBridgeVersion: machineState?.latestBridgeVersion,
+              sessions: sessions,
+              offlinePendingActions: offlinePendingActions,
+              recentSessions: recentSessionsList,
+              workspaceProjects: workspaceProjects,
+              accumulatedProjectPaths: slState.accumulatedProjectPaths,
+              collapsedProjectPaths: slState.collapsedProjectPaths,
+              loadingProjectPaths: slState.loadingProjectPaths,
+              exhaustedProjectPaths: slState.exhaustedProjectPaths,
+              projectSessionDisplayLimits: slState.projectSessionDisplayLimits,
+              pinnedSessionKeys: slState.pinnedSessionKeys,
+              pinnedProjectPaths: slState.pinnedProjectPaths,
+              searchQuery: slState.searchQuery,
+              isLoadingMore: slState.isLoadingMore,
+              isInitialLoading: slState.isInitialLoading,
+              hasMoreSessions: slState.hasMore,
+              archivingSessionIds: _archiveRequests.pendingSessionIds,
+              unseenSessionIds: unseenSessionIds,
+              currentProjectFilter: bridge.currentProjectFilter,
+              onNewSession: _showNewSessionDialog,
+              onTapRunning:
+                  (
+                    sessionId, {
+                    String? projectPath,
+                    SessionWorkspaceInfo? workspace,
+                    String? gitBranch,
+                    String? worktreePath,
+                    String? provider,
+                    String? permissionMode,
+                    String? sandboxMode,
+                    String? approvalPolicy,
+                    String? approvalsReviewer,
+                  }) => _navigateToChat(
+                    sessionId,
+                    projectPath: projectPath,
+                    workspace: workspace,
+                    gitBranch: gitBranch,
+                    worktreePath: worktreePath,
+                    provider: provider == 'codex' ? Provider.codex : null,
+                    permissionMode: permissionMode,
+                    sandboxMode: sandboxMode,
+                    approvalPolicy: approvalPolicy,
+                    approvalsReviewer: approvalsReviewer,
+                  ),
+              onStopSession: _stopSession,
+              onCancelOfflinePendingAction: (actionId) =>
+                  unawaited(bridge.cancelOfflinePendingAction(actionId)),
+              onApprovePermission:
+                  (sessionId, toolUseId, {bool clearContext = false}) {
+                    final bridge = context.read<BridgeService>();
+                    bridge.markToolUseResponded(sessionId, toolUseId);
+                    bridge.send(
+                      ClientMessage.approve(
+                        toolUseId,
+                        sessionId: sessionId,
+                        clearContext: clearContext,
+                      ),
+                    );
+                    bridge.clearSessionPermission(sessionId);
+                  },
+              onApproveAlways: (sessionId, toolUseId) {
+                final bridge = context.read<BridgeService>();
+                bridge.markToolUseResponded(sessionId, toolUseId);
+                bridge.send(
+                  ClientMessage.approveAlways(toolUseId, sessionId: sessionId),
+                );
+                bridge.clearSessionPermission(sessionId);
+              },
+              onRejectPermission: (sessionId, toolUseId, {message}) {
+                final bridge = context.read<BridgeService>();
+                bridge.markToolUseResponded(sessionId, toolUseId);
+                bridge.send(
+                  ClientMessage.reject(
+                    toolUseId,
+                    message: message,
+                    sessionId: sessionId,
+                  ),
+                );
+                bridge.clearSessionPermission(sessionId);
+              },
+              onAnswerQuestion: (sessionId, toolUseId, result) {
+                final bridge = context.read<BridgeService>();
+                bridge.markToolUseResponded(sessionId, toolUseId);
+                bridge.send(
+                  ClientMessage.answer(toolUseId, result, sessionId: sessionId),
+                );
+                bridge.clearSessionPermission(sessionId);
+              },
+              onResumeSession: _resumeSession,
+              onToggleRecentSessionPinned: (session) => context
+                  .read<SessionListCubit>()
+                  .toggleRecentSessionPinned(session),
+              onLongPressRecentSession: _showRecentSessionActions,
+              onArchiveSession: _archiveSession,
+              onLongPressRunningSession: _showRunningSessionActions,
+              onToggleRunningSessionPinned: (session) => context
+                  .read<SessionListCubit>()
+                  .toggleRunningSessionPinned(session),
+              onSelectProject: (path) =>
+                  context.read<SessionListCubit>().selectProject(path),
+              onLoadMore: () => context.read<SessionListCubit>().loadMore(),
+              onLoadMoreProject: (path) =>
+                  context.read<SessionListCubit>().loadMoreProject(path),
+              onToggleProjectCollapsed: (path) =>
+                  context.read<SessionListCubit>().toggleProjectCollapsed(path),
+              onToggleProjectPinned: (path) =>
+                  context.read<SessionListCubit>().toggleProjectPinned(path),
+              providerFilter: effectiveProviderFilter,
+              namedOnly: slState.namedOnly,
+              onToggleProvider: () => context
+                  .read<SessionListCubit>()
+                  .toggleProviderFilter(allowedFilters: allowedProviderFilters),
+              onToggleNamed: () =>
+                  context.read<SessionListCubit>().toggleNamedOnly(),
+              appUpdateInfo: _appUpdateInfo,
+              onDismissAppUpdate: _dismissAppUpdate,
+              showMacOSNativeAppBanner: _showMacOSNativeAppBanner,
+              onDismissMacOSNativeAppBanner: _dismissMacOSNativeAppBanner,
+              onOpenBridgeSettings: _openBridgeSettings,
+              onOpenSupportSettings: _openSupportSettings,
+              onOpenUsageSettings: _openUsageSettings,
+              connectedBridgeLabel: connectedBridgeLabel,
+              usageBridgeService: bridge,
+              usageDisplayMode: settingsState.usageDisplayMode,
+            ),
+          );
+        },
+      );
+
+      if (widget.embedded) {
+        return content;
+      }
+
+      final chrome = resolveWorkspacePaneChrome(
+        platform: Theme.of(context).platform,
+        isAdaptiveWorkspace: false,
+        isLeftPaneVisible: true,
+        slot: WorkspacePaneSlot.center,
+      );
+
+      return NestedScrollView(
+        headerSliverBuilder: (context, innerBoxIsScrolled) => [
+          if (chrome.topInset > 0)
+            SliverToBoxAdapter(child: SizedBox(height: chrome.topInset)),
+          SessionListSliverAppBar(
+            onTitleTap: _onTitleTap,
+            onDisconnect: _disconnect,
+            forceElevated: innerBoxIsScrolled,
+            toolbarHeight: chrome.toolbarHeight,
+            bridgeLabel: connectedBridgeLabel,
+          ),
+        ],
+        body: content,
+      );
+    }
+
+    if (_isAutoConnecting ||
+        connectionState == BridgeConnectionState.connecting) {
+      return const SessionListLoadingView();
+    }
+
+    return _ConnectFormWidget(
+      protocolCompatibility: context
+          .read<BridgeService>()
+          .protocolCompatibility,
+      discoveredServers: discoveredServers,
+      machines: machineState?.machines ?? [],
+      startingMachineId: machineState?.startingMachineId,
+      updatingMachineId: machineState?.updatingMachineId,
+      latestBridgeVersion: machineState?.latestBridgeVersion,
+      onScanQrCode: _scanQrCode,
+      onViewSetupGuide: () {
+        final shell = WorkspaceShellScreen.maybeOf(context);
+        if (widget.embedded && shell != null) {
+          shell.openSetupGuideCenter();
+          return;
+        }
+        context.router.push(SetupGuideRoute());
+      },
+      onConnectToDiscovered: _connectToDiscovered,
+      onConnectToMachine: _connectToMachine,
+      onStartMachine: _startMachine,
+      onEditMachine: _editMachine,
+      onDeleteMachine: _deleteMachine,
+      onToggleFavorite: _toggleFavorite,
+      onUpdateMachine: _updateMachine,
+      onStopMachine: _stopMachine,
+      onAddMachine: _addMachine,
+      onRefreshMachines: () => machineManagerCubit?.refreshAll(),
+    );
+  }
+
+  void _connectToDiscovered(DiscoveredServer server) {
+    if (server.authRequired) {
+      // Open MachineEditSheet pre-filled with discovered server info
+      _addMachineFromDiscovered(server);
+      return;
+    }
+    _connectWithParams(server.wsUrl, null);
+  }
+
+  void _addMachineFromDiscovered(DiscoveredServer server) {
+    final cubit = context.read<MachineManagerCubit>();
+    Machine? savedMachine;
+    final uri = Uri.tryParse(
+      server.wsUrl
+          .replaceFirst('ws://', 'http://')
+          .replaceFirst('wss://', 'https://'),
+    );
+    final host = uri?.host ?? server.name;
+    final port = uri?.port ?? 8765;
+    final useSsl = uri?.scheme == 'https';
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      constraints: macOSModalBottomSheetConstraints(context),
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => MachineEditSheet(
+        machine: Machine(
+          id: '',
+          host: host,
+          port: port,
+          name: server.name,
+          useSsl: useSsl,
+          connectionMode: useSsl
+              ? BridgeConnectionMode.secureOnly
+              : BridgeConnectionMode.standardOnly,
+        ),
+        onSave:
+            ({
+              required machine,
+              apiKey,
+              sshPassword,
+              sshPrivateKey,
+              sshJumpPassword,
+              sshJumpPrivateKey,
+            }) async {
+              final newMachine = cubit.createNewMachine(
+                name: machine.name,
+                host: machine.host,
+                port: machine.port,
+                useSsl: machine.useSsl,
+              );
+              await cubit.addMachine(
+                newMachine.copyWith(
+                  useSsl: machine.useSsl,
+                  connectionMode: machine.connectionMode,
+                  sshEnabled: machine.sshEnabled,
+                  sshUsername: machine.sshUsername,
+                  sshPort: machine.sshPort,
+                  sshAuthType: machine.sshAuthType,
+                  sshJumpHost: machine.sshJumpHost,
+                  sshJumpPort: machine.sshJumpPort,
+                  sshJumpUsername: machine.sshJumpUsername,
+                  sshJumpAuthType: machine.sshJumpAuthType,
+                  isFavorite: true,
+                ),
+                apiKey: apiKey,
+                sshPassword: sshPassword,
+                sshPrivateKey: sshPrivateKey,
+                sshJumpPassword: sshJumpPassword,
+                sshJumpPrivateKey: sshJumpPrivateKey,
+              );
+              savedMachine = cubit.findByHostPort(machine.host, machine.port);
+            },
+        onSaveAndConnect: (machine, apiKey) {
+          final saved = savedMachine;
+          if (saved?.sshJumpHost?.trim().isNotEmpty == true) {
+            unawaited(_connectToMachineConfig(saved!));
+          } else if (saved != null) {
+            _connectWithParams(
+              saved.wsUrl,
+              apiKey,
+              requestedConnectionMode: saved.connectionMode,
+            );
+          } else {
+            _connectWithParams(machine.wsUrl, apiKey);
+          }
+        },
+        onTestConnection: cubit.testConnectionWithCredentials,
+      ),
+    );
+  }
+
+  // ---- Machine Management ----
+
+  void _connectToMachine(MachineWithStatus m) async {
+    await _connectToMachineConfig(m.machine);
+  }
+
+  Future<bool> _connectToMachineConfig(
+    Machine machine, {
+    bool Function()? shouldConnect,
+  }) async {
+    final cubit = context.read<MachineManagerCubit>();
+    final bridge = context.read<BridgeService>();
+    final tunnelService = context.read<SshBridgeTunnelService?>();
+    unawaited(cubit.refreshLatestBridgeVersionIfStale());
+    late final String wsUrl;
+    try {
+      wsUrl = await cubit.buildWsUrl(
+        machine.id,
+        promptForPassword: () => _promptForPassword(machine.displayName),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.toString())));
+      }
+      return false;
+    }
+    if (!_canContinueConnection(shouldConnect)) {
+      await tunnelService?.closeAll();
+      return false;
+    }
+    final apiKey = await cubit.getApiKey(machine.id);
+    if (!_canContinueConnection(shouldConnect)) {
+      await tunnelService?.closeAll();
+      return false;
+    }
+
+    final resolvedMachine = cubit.getMachine(machine.id) ?? machine;
+    final usesEncryptedTunnel =
+        resolvedMachine.sshJumpHost?.trim().isNotEmpty == true;
+    final actualUseSsl = wsUrl.startsWith('wss://');
+    if (!usesEncryptedTunnel && actualUseSsl != resolvedMachine.useSsl) {
+      await tunnelService?.closeAll();
+      return await _connectToMachineConfig(
+        resolvedMachine,
+        shouldConnect: shouldConnect,
+      );
+    }
+    if (shouldConfirmAutomaticWsWithApiKey(
+      connectionMode: resolvedMachine.connectionMode,
+      useSsl: actualUseSsl,
+      usesEncryptedTunnel: usesEncryptedTunnel,
+      apiKey: apiKey,
+    )) {
+      final shouldContinue = await _confirmAutomaticWsWithApiKey();
+      if (shouldContinue != true || !_canContinueConnection(shouldConnect)) {
+        await tunnelService?.closeAll();
+        return false;
+      }
+    }
+
+    final machineBeforeRecord = cubit.getMachine(machine.id) ?? machine;
+    if (!_hasSameConnectionTarget(resolvedMachine, machineBeforeRecord)) {
+      await tunnelService?.closeAll();
+      return await _connectToMachineConfig(
+        machineBeforeRecord,
+        shouldConnect: shouldConnect,
+      );
+    }
+
+    // Record connection without overwriting a transport that may have been
+    // resolved while buildWsUrl was awaiting an SSH tunnel or health check.
+    await cubit.recordConnection(
+      host: machineBeforeRecord.host,
+      port: machineBeforeRecord.port,
+      apiKey: apiKey,
+    );
+
+    if (!_canContinueConnection(shouldConnect)) {
+      await tunnelService?.closeAll();
+      return false;
+    }
+    final machineBeforeConnect = cubit.getMachine(machine.id) ?? machine;
+    if (!_hasSameConnectionTarget(machineBeforeRecord, machineBeforeConnect)) {
+      await tunnelService?.closeAll();
+      return await _connectToMachineConfig(
+        machineBeforeConnect,
+        shouldConnect: shouldConnect,
+      );
+    }
+    bridge.connect(wsUrl);
+    bridge.savePreferences(machineBeforeConnect.wsUrl);
+    if (tunnelService != null) {
+      unawaited(tunnelService.closeAllExcept(machine.id));
+    }
+    return true;
+  }
+
+  bool _canContinueConnection(bool Function()? shouldConnect) =>
+      mounted && (shouldConnect?.call() ?? true);
+
+  bool _hasSameConnectionTarget(Machine before, Machine after) =>
+      before.host == after.host &&
+      before.port == after.port &&
+      before.useSsl == after.useSsl &&
+      before.connectionMode == after.connectionMode &&
+      before.sshEnabled == after.sshEnabled &&
+      before.sshUsername == after.sshUsername &&
+      before.sshPort == after.sshPort &&
+      before.sshAuthType == after.sshAuthType &&
+      before.sshJumpHost == after.sshJumpHost &&
+      before.sshJumpPort == after.sshJumpPort &&
+      before.sshJumpUsername == after.sshJumpUsername &&
+      before.sshJumpAuthType == after.sshJumpAuthType;
+
+  void _toggleFavorite(MachineWithStatus m) {
+    context.read<MachineManagerCubit>().toggleFavorite(m.machine.id);
+  }
+
+  void _updateMachine(MachineWithStatus m) async {
+    final cubit = context.read<MachineManagerCubit>();
+    final l = AppLocalizations.of(context);
+
+    String? password;
+    if (m.machine.sshAuthType == SshAuthType.password) {
+      final savedPassword = await cubit.getSshPassword(m.machine.id);
+      password = savedPassword;
+      if (password == null || password.isEmpty) {
+        password = await _promptForPassword(m.machine.displayName);
+        if (password == null) return; // User cancelled
+      }
+    }
+
+    final success = await cubit.updateBridge(m.machine.id, password: password);
+
+    if (success && mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.bridgeServerUpdated)));
+    } else if (mounted) {
+      final error = cubit.state.error;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error ?? l.failedToUpdateServer)));
+    }
+  }
+
+  void _startMachine(MachineWithStatus m) async {
+    final cubit = context.read<MachineManagerCubit>();
+    final l = AppLocalizations.of(context);
+
+    String? password;
+    if (m.machine.sshAuthType == SshAuthType.password) {
+      final savedPassword = await cubit.getSshPassword(m.machine.id);
+      password = savedPassword;
+      if (password == null || password.isEmpty) {
+        password = await _promptForPassword(m.machine.displayName);
+        if (password == null) return; // User cancelled
+      }
+    }
+
+    final success = await cubit.startBridge(m.machine.id, password: password);
+
+    if (success && mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.bridgeServerStarted)));
+    } else if (mounted) {
+      final error = cubit.state.error;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error ?? l.failedToStartServer)));
+    }
+  }
+
+  void _stopMachine(MachineWithStatus m) async {
+    final cubit = context.read<MachineManagerCubit>();
+    final l = AppLocalizations.of(context);
+
+    String? password;
+    if (m.machine.sshAuthType == SshAuthType.password) {
+      final savedPassword = await cubit.getSshPassword(m.machine.id);
+      password = savedPassword;
+      if (password == null || password.isEmpty) {
+        password = await _promptForPassword(m.machine.displayName);
+        if (password == null) return; // User cancelled
+      }
+    }
+
+    final success = await cubit.stopBridge(m.machine.id, password: password);
+
+    if (success && mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.bridgeServerStopped)));
+    } else if (mounted) {
+      final error = cubit.state.error;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error ?? l.failedToStopServer)));
+    }
+  }
+
+  Future<String?> _promptForPassword(String machineName) async {
+    final controller = TextEditingController();
+    final l = AppLocalizations.of(context);
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.sshPassword),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(l.sshPasswordPrompt(machineName)),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              obscureText: true,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: l.password,
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (v) => Navigator.pop(ctx, v),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(l.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: Text(l.connect),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _editMachine(MachineWithStatus m) async {
+    final cubit = context.read<MachineManagerCubit>();
+    final apiKey = await cubit.getApiKey(m.machine.id);
+    final sshPassword = await cubit.getSshPassword(m.machine.id);
+    final sshPrivateKey = await cubit.getSshPrivateKey(m.machine.id);
+    final sshJumpPassword = await cubit.getSshJumpPassword(m.machine.id);
+    final sshJumpPrivateKey = await cubit.getSshJumpPrivateKey(m.machine.id);
+
+    if (!mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      constraints: macOSModalBottomSheetConstraints(context),
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => MachineEditSheet(
+        machine: m.machine,
+        existingApiKey: apiKey,
+        existingSshPassword: sshPassword,
+        existingSshPrivateKey: sshPrivateKey,
+        existingSshJumpPassword: sshJumpPassword,
+        existingSshJumpPrivateKey: sshJumpPrivateKey,
+        onSave:
+            ({
+              required machine,
+              apiKey,
+              sshPassword,
+              sshPrivateKey,
+              sshJumpPassword,
+              sshJumpPrivateKey,
+            }) async {
+              await cubit.updateMachine(
+                machine,
+                apiKey: apiKey,
+                sshPassword: sshPassword,
+                sshPrivateKey: sshPrivateKey,
+                sshJumpPassword: sshJumpPassword,
+                sshJumpPrivateKey: sshJumpPrivateKey,
+                clearCredentials:
+                    !machine.sshEnabled ||
+                    machine.sshAuthType != m.machine.sshAuthType,
+                clearJumpCredentials:
+                    machine.sshJumpHost == null ||
+                    machine.sshJumpAuthType != m.machine.sshJumpAuthType,
+              );
+              await cubit.checkHealth(machine.id);
+            },
+        onTestConnection: cubit.testConnectionWithCredentials,
+      ),
+    );
+  }
+
+  void _deleteMachine(MachineWithStatus m) async {
+    final l = AppLocalizations.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.deleteMachine),
+        content: Text(l.deleteMachineConfirm(m.machine.displayName)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(l.cancel),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l.delete),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      context.read<MachineManagerCubit>().deleteMachine(m.machine.id);
+    }
+  }
+
+  void _addMachine() {
+    final cubit = context.read<MachineManagerCubit>();
+    Machine? savedMachine;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      constraints: macOSModalBottomSheetConstraints(context),
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => MachineEditSheet(
+        onSave:
+            ({
+              required machine,
+              apiKey,
+              sshPassword,
+              sshPrivateKey,
+              sshJumpPassword,
+              sshJumpPrivateKey,
+            }) async {
+              final newMachine = cubit.createNewMachine(
+                name: machine.name,
+                host: machine.host,
+                port: machine.port,
+                useSsl: machine.useSsl,
+              );
+              await cubit.addMachine(
+                newMachine.copyWith(
+                  useSsl: machine.useSsl,
+                  connectionMode: machine.connectionMode,
+                  sshEnabled: machine.sshEnabled,
+                  sshUsername: machine.sshUsername,
+                  sshPort: machine.sshPort,
+                  sshAuthType: machine.sshAuthType,
+                  sshJumpHost: machine.sshJumpHost,
+                  sshJumpPort: machine.sshJumpPort,
+                  sshJumpUsername: machine.sshJumpUsername,
+                  sshJumpAuthType: machine.sshJumpAuthType,
+                  isFavorite: true, // New manually added machines are favorites
+                ),
+                apiKey: apiKey,
+                sshPassword: sshPassword,
+                sshPrivateKey: sshPrivateKey,
+                sshJumpPassword: sshJumpPassword,
+                sshJumpPrivateKey: sshJumpPrivateKey,
+              );
+              savedMachine = cubit.findByHostPort(machine.host, machine.port);
+            },
+        onSaveAndConnect: (machine, apiKey) {
+          final saved = savedMachine;
+          if (saved?.sshJumpHost?.trim().isNotEmpty == true) {
+            unawaited(_connectToMachineConfig(saved!));
+          } else if (saved != null) {
+            _connectWithParams(
+              saved.wsUrl,
+              apiKey,
+              requestedConnectionMode: saved.connectionMode,
+            );
+          } else {
+            _connectWithParams(machine.wsUrl, apiKey);
+          }
+        },
+        onTestConnection: cubit.testConnectionWithCredentials,
+      ),
+    );
+  }
+}
+
+class _SetupStep extends StatelessWidget {
+  final String number;
+  final String title;
+  final String command;
+
+  const _SetupStep({
+    required this.number,
+    required this.title,
+    required this.command,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 10,
+            backgroundColor: cs.primaryContainer,
+            child: Text(
+              number,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: cs.onPrimaryContainer,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(fontSize: 13)),
+                const SizedBox(height: 2),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: cs.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    command,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 11,
+                      color: cs.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConnectFormWidget extends StatelessWidget {
+  final ProtocolCompatibility? protocolCompatibility;
+  final List<DiscoveredServer> discoveredServers;
+  final List<MachineWithStatus> machines;
+  final String? startingMachineId;
+  final String? updatingMachineId;
+  final String? latestBridgeVersion;
+  final VoidCallback onScanQrCode;
+  final VoidCallback onViewSetupGuide;
+  final ValueChanged<DiscoveredServer> onConnectToDiscovered;
+  final ValueChanged<MachineWithStatus> onConnectToMachine;
+  final ValueChanged<MachineWithStatus> onStartMachine;
+  final ValueChanged<MachineWithStatus> onEditMachine;
+  final ValueChanged<MachineWithStatus> onDeleteMachine;
+  final ValueChanged<MachineWithStatus> onToggleFavorite;
+  final ValueChanged<MachineWithStatus> onUpdateMachine;
+  final ValueChanged<MachineWithStatus> onStopMachine;
+  final VoidCallback onAddMachine;
+  final VoidCallback? onRefreshMachines;
+
+  const _ConnectFormWidget({
+    this.protocolCompatibility,
+    required this.discoveredServers,
+    required this.machines,
+    this.startingMachineId,
+    this.updatingMachineId,
+    this.latestBridgeVersion,
+    required this.onScanQrCode,
+    required this.onViewSetupGuide,
+    required this.onConnectToDiscovered,
+    required this.onConnectToMachine,
+    required this.onStartMachine,
+    required this.onEditMachine,
+    required this.onDeleteMachine,
+    required this.onToggleFavorite,
+    required this.onUpdateMachine,
+    required this.onStopMachine,
+    required this.onAddMachine,
+    this.onRefreshMachines,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ConnectForm(
+      protocolCompatibility: protocolCompatibility,
+      discoveredServers: discoveredServers,
+      onScanQrCode: onScanQrCode,
+      onViewSetupGuide: onViewSetupGuide,
+      onConnectToDiscovered: onConnectToDiscovered,
+      // Machine management
+      machines: machines,
+      startingMachineId: startingMachineId,
+      updatingMachineId: updatingMachineId,
+      latestBridgeVersion: latestBridgeVersion,
+      onConnectToMachine: onConnectToMachine,
+      onStartMachine: onStartMachine,
+      onEditMachine: onEditMachine,
+      onDeleteMachine: onDeleteMachine,
+      onToggleFavorite: onToggleFavorite,
+      onUpdateMachine: onUpdateMachine,
+      onStopMachine: onStopMachine,
+      onAddMachine: onAddMachine,
+      onRefreshMachines: onRefreshMachines,
+    );
+  }
+}
