@@ -1621,6 +1621,31 @@ actor ChatStore {
                 if !joined.isEmpty { return cap("memory_get: " + joined) }
             }
             if let kw = str("keywords") { return cap("memory_get: " + kw) }
+        // [Plan 2026-09-08] 远端 Claude Code 工具名映射（对齐本地预览格式）
+        case "Read", "NotebookRead":
+            if let p = str("file_path") ?? str("notebook_path") { return cap("Reading " + p) }
+        case "Write":
+            if let p = str("file_path") { return cap("Writing " + p) }
+        case "Edit", "MultiEdit":
+            if let p = str("file_path") { return cap("Editing " + p) }
+        case "NotebookEdit":
+            if let p = str("notebook_path") { return cap("Editing notebook " + p) }
+        case "Bash":
+            if let cmd = str("command") { return cap("$ " + cmd) }
+        case "Glob":
+            if let p = str("pattern") { return cap("Glob " + p) }
+        case "Grep":
+            if let p = str("pattern") { return cap("Searching " + p) }
+        case "WebSearch":
+            if let q = str("query") { return cap("Searching " + q) }
+        case "WebFetch":
+            if let u = str("url") { return cap("Fetch " + u) }
+        case "Task", "Agent":
+            if let d = str("description") { return cap(d) }
+            if let p = str("prompt") { return cap(p) }
+        case "TodoWrite":
+            let todos = input["todos"] as? [Any] ?? []
+            return todos.isEmpty ? cap("Updating todo list") : cap("Updating todo list \(todos.count) items")
         default:
             break
         }
