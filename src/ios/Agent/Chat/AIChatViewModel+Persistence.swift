@@ -128,7 +128,7 @@ extension AIChatViewModel {
             // reconcile) set a .paused badge while this cached VM's canResume
             // is still false, the detail page shows no "Interrupted" banner
             // even though the list shows ⏸. Re-run the lightweight check here.
-            recheckCanResumeFromHistory()
+            await recheckCanResumeFromHistory()
         }
     }
 
@@ -811,7 +811,7 @@ extension AIChatViewModel {
         // Case A: last history entry is user with all toolResult parts → tools completed, next model call never happened
         // Case B: last history entry is assistant with toolUse parts → model called tools, but they never executed
         // Case C: last history entry is user with synthetic "Continue" message → text streaming was cancelled
-        recheckCanResumeFromHistory()
+        await recheckCanResumeFromHistory()
 
         let totalElapsed = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
         let totalSinceAppear = (CFAbsoluteTimeGetCurrent() - Self.onAppearTimestamp) * 1000
@@ -1030,7 +1030,7 @@ extension AIChatViewModel {
     /// Called from both `loadSession()` (full reload) and the SKIP-LOAD branch
     /// (cached VM re-enter) so the detail page's canResume/banner always
     /// matches the list's .paused badge.
-    private func recheckCanResumeFromHistory() {
+    private func recheckCanResumeFromHistory() async {
         guard let sessionId, !isProcessing, let lastEntry = agentHistory.last else { return }
         // [Fix] Remote agent sessions (CC Pocket Bridge) legitimately end
         // with unpaired tool_use blocks — the Bridge executes tools and
@@ -1038,7 +1038,12 @@ extension AIChatViewModel {
         // the stream. The interrupted-tail heuristics below would otherwise
         // mark every completed remote turn as "interrupted", leaving the
         // Resume banner up forever after a normal reply.
-        if lastAgentProviderIsRemote {
+        // [Fix 2026-09-08 cold-start] lastAgentProviderIsRemote resets to
+        // false on relaunch (only set inside runAgentLoop), so cold-entering
+        // a remote session fell through to local heuristics → spurious
+        // Resume banner. Use isRemoteSession() (3-check, includes DB
+        // source == "remoteBridge" which survives relaunch) instead.
+        if await isRemoteSession() {
             if canResume {
                 canResume = false
                 logger.info("[SessionLoad] \(sessionId.prefix(8)) — remote agent session, clearing stale canResume")
