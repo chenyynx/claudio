@@ -3270,8 +3270,8 @@ struct AIChatView: View {
             .accessibilityLabel(Text("Add attachment", comment: "VoiceOver label for the attachment button"))
             .background(
                 LinearGradient(
-                    startPoint: .top, endPoint: .bottom,
-                    colors: [ChatColors.extPlusTop, ChatColors.extPlusBottom]
+                    colors: [ChatColors.extPlusTop, ChatColors.extPlusBottom],
+                    startPoint: .top, endPoint: .bottom
                 )
             )
             .clipShape(Circle())
@@ -4422,8 +4422,8 @@ struct AIChatView: View {
                 .frame(maxWidth: .infinity)
                 .background(
                     LinearGradient(
-                        startPoint: .top, endPoint: .bottom,
-                        colors: [ChatColors.extPanelTop, ChatColors.extPanelBottom]
+                        colors: [ChatColors.extPanelTop, ChatColors.extPanelBottom],
+                        startPoint: .top, endPoint: .bottom
                     )
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
