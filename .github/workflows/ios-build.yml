@@ -3,6 +3,13 @@ name: iOS Build
 on:
   push:
     branches: [main]
+    # [Fix 2026-09-09] 纯文档 / 规则类改动不触发构建 —— 不改变 app 二进制，
+    # 跑一次 13 分钟的 macOS 构建只会多出一个"代码没变"的包。paths-ignore
+    # 的语义是"改动的文件全部命中忽略列表才跳过"，代码 + 文档混合的提交
+    # 照常构建。
+    paths-ignore:
+      - '.claude/**'
+      - '**/*.md'
   workflow_dispatch:
 
 # [doris] GITHUB_TOKEN defaults to read-only — release upload needs

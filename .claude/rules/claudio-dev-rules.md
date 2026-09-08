@@ -95,6 +95,17 @@ Doris 与服务器 CC 并发开发 claudio 时的追加约定（Doris 全部遵�
 2. **验证结果回传**：pp 的真机验证结果（通过/不通过 + 现象）**谁听到谁写状态文件**，格式一行：`验证结果 + 时间 + 包号`。另一侧现读即知，不许只留在单侧对话里。
 3. **部署回写**：CI 出包后**谁部署谁回写**一行到状态文件：`当前最新可验证包 = 包号 + 链接`。发链接给 pp：CC 走微信，Doris 走聊天内链接（不走微信）。
 
+## 三-E、版本号与提交规范（2026-09-09 pp 定）
+
+**背景**：pp 侧载签名时，全能签用 app 的 `CFBundleShortVersionString` 命名文件（`Claudio_<版本>_<时间>.ipa`）。此前版本号恒为 **1.13**（继承自上游 OpenMinis），每个包看起来一模一样，pp 无法区分自己签的是哪一版。
+
+1. **版本线走 Claudio 自己的**：从 **1.14.0** 起（1.13 是上游 OpenMinis 的号，不再沿用）。
+2. **每次提交 `MARKETING_VERSION` +0.0.1**（1.14.1 → 1.14.2 → …）；攒一批功能再 +0.1（1.15.0）。**pp 想指定号（1.15.0 / 2.0 …）随时说，按 pp 给的写。**
+3. **改哪些行**：`src/ios/Minis.xcodeproj/project.pbxproj` 共 **8 处** —— 主 app（Debug/Release）+ `ShareExtension` / `FileProvider` / `AgentWidget` 各两处。**扩展的 `CFBundleShortVersionString` 必须与主 app 一致**，否则 App Store 提交校验会拒（2026-09-09 已统一到 1.14.0）。
+4. **例外**：纯文档 / CI 配置改动（不含 `src/ios/` 代码）**不 bump** —— app 二进制没变，pp 不需要重新签名。
+5. **构建号**：CI 自动设 `CFBundleVersion = github.run_number`（原 `git rev-list --count HEAD` 在 `actions/checkout` 默认浅克隆下恒为 1，2026-09-09 修复）。同版本重签也能区分。
+6. **commit message 带版本号**：`fix|feat|chore: <一句话>（v1.14.1）`，pp 用版本号对包。
+
 ## 四、里程碑清单（当前进度）
 
 | 里程碑 | 内容 | 状态 |
