@@ -83,28 +83,6 @@ enum ChatColors {
     static let accent = Color(UIColor.label)
     static let sendButton = Color(UIColor.label)
     static let sendButtonDisabled = Color(UIColor.quaternaryLabel)
-
-    // [Grok-inputbar 2026-09-08] Grok 风格扩展色（亮暗双模式）
-    static let extIcon = Color(UIColor { $0.userInterfaceStyle == .dark
-        ? UIColor.white.withAlphaComponent(0.92)
-        : UIColor.black.withAlphaComponent(0.85) })
-    static let extPlusTop = Color(UIColor { $0.userInterfaceStyle == .dark
-        ? UIColor.white.withAlphaComponent(0.10)
-        : UIColor(white: 1.0, alpha: 1) })
-    static let extPlusBottom = Color(UIColor { $0.userInterfaceStyle == .dark
-        ? UIColor.white.withAlphaComponent(0.055)
-        : UIColor(white: 0.92, alpha: 1) })
-    static let extPillBg = Color(UIColor { $0.userInterfaceStyle == .dark
-        ? UIColor.white.withAlphaComponent(0.12)
-        : UIColor(white: 0.94, alpha: 1) })
-    static let extFocusOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
-    static let extPanelTop = Color(red: 0.118, green: 0.118, blue: 0.149)
-    static let extPanelBottom = Color(red: 0.078, green: 0.078, blue: 0.098)
-    static let extPanelBorder = Color.white.opacity(0.09)
-    static let extRowSelected = Color.white.opacity(0.10)
-    static let extRowTitle = Color.white.opacity(0.95)
-    static let extRowSubtitle = Color.white.opacity(0.50)
-    static let extSecLabel = Color.white.opacity(0.35)
 }
 
 // MARK: - System Resource Monitor
@@ -3264,17 +3242,13 @@ struct AIChatView: View {
         // iOS 17 Menu branch and the iOS 16 confirmationDialog branch below
         // announce the same thing; otherwise VoiceOver reads "plus".
         let icon = Image(systemName: "plus")
-            .font(.system(size: 20, weight: .medium))
-            .foregroundStyle(ChatColors.extIcon)
-            .frame(width: 44, height: 44)
+            .font(.system(size: 18, weight: .medium))
+            .foregroundStyle(ChatColors.secondaryText)
+            .frame(width: 34, height: 34)
             .accessibilityLabel(Text("Add attachment", comment: "VoiceOver label for the attachment button"))
-            .background(
-                LinearGradient(
-                    colors: [ChatColors.extPlusTop, ChatColors.extPlusBottom],
-                    startPoint: .top, endPoint: .bottom
-                )
-            )
+            .background(ChatColors.inputIconBg)
             .clipShape(Circle())
+            .overlay(Circle().stroke(ChatColors.inputIconBorder, lineWidth: 0.5))
 
         if #available(iOS 17, *) {
             Menu {
@@ -3801,21 +3775,6 @@ struct AIChatView: View {
                 }
             }
             .modifier(ComposerSurface())
-            // [Grok-inputbar 2026-09-08] 聚焦发光：橙描边 + 光晕 + spring
-            .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(
-                        inputFocused
-                            ? ChatColors.extFocusOrange.opacity(0.55)
-                            : Color.clear,
-                        lineWidth: 1
-                    )
-            )
-            .shadow(
-                color: inputFocused ? ChatColors.extFocusOrange.opacity(0.18) : .clear,
-                radius: inputFocused ? 22 : 0
-            )
-            .animation(.spring(response: 0.3, dampingFraction: 0.65), value: inputFocused)
             .frame(maxWidth: maxContentWidth)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -4420,18 +4379,13 @@ struct AIChatView: View {
         var body: some View {
             content()
                 .frame(maxWidth: .infinity)
-                .background(
-                    LinearGradient(
-                        colors: [ChatColors.extPanelTop, ChatColors.extPanelBottom],
-                        startPoint: .top, endPoint: .bottom
-                    )
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .background(Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.15, alpha: 1) : UIColor.systemBackground }))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(ChatColors.extPanelBorder, lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color(UIColor.separator).opacity(0.3), lineWidth: 0.5)
                 )
-                .shadow(color: .black.opacity(0.55), radius: 18, x: 0, y: 4)
+                .shadow(color: Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.08, alpha: 0.75) : UIColor(white: 0, alpha: 0.12) }), radius: 8, x: 0, y: 4)
                 .frame(maxWidth: maxContentWidth)
                 .padding(.horizontal, 12)
         }
@@ -4541,11 +4495,11 @@ struct AIChatView: View {
                         }
                     }
                     .foregroundStyle(thinkingIconColor)
-                    .frame(width: 19, height: 19)
+                    .frame(width: 20)
                     VStack(alignment: .leading, spacing: 1) {
                         let isThinkingActive = cmd.id == "thinking" && thinkingLevel.isEnabled && thinkingSupported
                         let titleColor: Color = isThinkingActive
-                            ? ChatColors.extFocusOrange : (isSelected ? .white : ChatColors.primaryText)
+                            ? .blue : (isSelected ? .white : ChatColors.primaryText)
                         let subtitleText = (cmd.id == "thinking" && !thinkingSupported)
                             ? AppLocalized("Not supported by current model")
                             : cmd.subtitle
@@ -4572,30 +4526,7 @@ struct AIChatView: View {
                 }
                 .contentShape(Rectangle())
                 .allowsHitTesting(cmd.id == "thinking")
-                .background(
-                    Group {
-                        if cmd.id == "thinking" && thinkingSupported {
-                            let isOn = thinkingLevel.isEnabled
-                            Capsule()
-                                .fill(isOn
-                                    ? ChatColors.extFocusOrange.opacity(0.22)
-                                    : Color.white.opacity(0.06))
-                                .overlay(
-                                    Capsule().stroke(
-                                        isOn
-                                            ? ChatColors.extFocusOrange.opacity(0.55)
-                                            : Color.white.opacity(0.08),
-                                        lineWidth: 1)
-                                )
-                        }
-                    }
-                )
-                .onTapGesture {
-                    if cmd.id == "thinking" {
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    }
-                    onToggleThinking?()
-                }
+                .onTapGesture { onToggleThinking?() }
                 if cmd.id == "memory" {
                     // [T-ios-voiceover-labels] Status glyph, not a control:
                     // give it the on/off meaning in words instead of letting
@@ -4630,7 +4561,7 @@ struct AIChatView: View {
             let maxAvailable = availableLevels.last
             let isClamped = thinkingLevel.isEnabled && maxAvailable != nil && thinkingLevel > (maxAvailable ?? thinkingLevel)
 
-            return HStack(spacing: 6) {
+            return HStack(spacing: 0) {
                 ForEach(availableLevels, id: \.self) { level in
                     let isExactMatch = thinkingLevel == level
                     let isClampedHighlight = isClamped && level == maxAvailable
@@ -4645,30 +4576,22 @@ struct AIChatView: View {
                         }
                     }
                     .foregroundStyle(isHighlighted ? .white : .secondary)
-                    .padding(.horizontal, 9)
+                    .frame(maxWidth: .infinity)
                     .padding(.vertical, 4)
                     .background(
-                        Capsule().fill(
-                            isHighlighted
-                                ? ChatColors.extFocusOrange
-                                : Color.white.opacity(0.06)
-                        )
-                        .overlay(
-                            Capsule().stroke(
-                                isHighlighted ? Color.clear : Color.white.opacity(0.08),
-                                lineWidth: 1)
-                        )
+                        isHighlighted
+                            ? (isClampedHighlight
+                                ? Color.orange.opacity(0.75)
+                                : Color.blue)
+                            : Color.clear
                     )
-                    .contentShape(Capsule())
-                    .onTapGesture {
-                        if !isHighlighted {
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        }
-                        onSetThinkingLevel?(isHighlighted ? .off : level)
-                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture { onSetThinkingLevel?(isHighlighted ? .off : level) }
                     .id(level)
                 }
             }
+            .background(Color.secondary.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
     }
 
