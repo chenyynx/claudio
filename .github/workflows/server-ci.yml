@@ -1,0 +1,33 @@
+name: Server CI (bridge)
+
+# [M0-② 2026-09-09] bridge/ 的自动化把关——vitest + tsc，Linux runner。
+# 首次为 bridge 建立的 CI（此前无任何自动化）。成本 ~2min/run（Linux 1x）。
+on:
+  push:
+    branches: [main, 'feat/**']
+    paths:
+      - 'bridge/**'
+      - '.github/workflows/server-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: bridge/packages/bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+        working-directory: bridge
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Unit tests
+        run: npx vitest run
