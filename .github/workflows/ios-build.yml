@@ -116,9 +116,12 @@ jobs:
             -derivedDataPath build/DerivedData
           mkdir -p build/Payload
           cp -r build/DerivedData/Build/Products/Release-iphoneos/Minis.app build/Payload/
-          # Auto-increment build number: CFBundleVersion = git commit count, so
-          # every sideloaded ipa is distinguishable (monotonic, never repeats).
-          BUILD_NO=$(git rev-list --count HEAD)
+          # Auto-increment build number: CFBundleVersion = workflow run number,
+          # so every sideloaded ipa is distinguishable (monotonic, never repeats).
+          # [Fix 2026-09-09] 原来用 `git rev-list --count HEAD`，但 checkout 默认
+          # fetch-depth=1（浅克隆）→ 计数恒为 1，构建号从没变过（pp 报"每次签名
+          # 都是同一个版本"）。run_number 与克隆深度无关，且强推回滚也不会倒退。
+          BUILD_NO=${{ github.run_number }}
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NO" build/Payload/Minis.app/Info.plist
           echo "CFBundleVersion set to $BUILD_NO"
           cd build && zip -qr Minis-unsigned.ipa Payload
