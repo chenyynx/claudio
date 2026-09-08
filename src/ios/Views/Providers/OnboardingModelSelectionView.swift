@@ -8,10 +8,12 @@ struct OnboardingModelSelectionView: View {
     @State private var selectedModelEntryIds: [String] = []
     @State private var searchText: String = ""
 
-    /// All visible model entries across all enabled instances.
+    /// All visible model entries across all enabled LOCAL instances.
+    /// [Fix 2026-09-09] 远端 agent 不进本地选模型流程 —— 它有独立入口
+    /// （设置 → 远程 / 欢迎页卡片），模型由桥端目录在远端会话里选。
     private var allEntries: [ModelEntry] {
         store.instances
-            .filter(\.isEnabled)
+            .filter { $0.isEnabled && $0.providerType != .remoteAgent }
             .flatMap { store.visibleEntries(for: $0.id) }
     }
 
@@ -37,7 +39,9 @@ struct OnboardingModelSelectionView: View {
                 }
             } else {
                 // Group entries by provider instance
-                let instanceIds = store.instances.filter(\.isEnabled).map(\.id)
+                let instanceIds = store.instances
+                    .filter { $0.isEnabled && $0.providerType != .remoteAgent }
+                    .map(\.id)
                 ForEach(instanceIds, id: \.self) { instanceId in
                     let entries = store.visibleEntries(for: instanceId).filter { entry in
                         searchText.isEmpty || entry.model.displayName.localizedCaseInsensitiveContains(searchText)

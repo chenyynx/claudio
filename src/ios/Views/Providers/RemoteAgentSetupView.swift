@@ -67,22 +67,36 @@ struct RemoteAgentSetupView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    heroSection
-                    Divider().overlay(ClaudePalette.border)
-                    step1InstallSection
-                    Divider().overlay(ClaudePalette.border)
-                    step2ConnectSection
-                    Divider().overlay(ClaudePalette.border)
-                    step3PathSection
-                    // Bottom padding to keep content above the sticky CTA
-                    Color.clear.frame(height: 96)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        heroSection
+                        Divider().overlay(ClaudePalette.border)
+                        step1InstallSection
+                        Divider().overlay(ClaudePalette.border)
+                        step2ConnectSection
+                        Divider().overlay(ClaudePalette.border)
+                        step3PathSection
+                        // Bottom padding to keep content above the sticky CTA
+                        Color.clear.frame(height: 96)
+                    }
+                    .padding(.horizontal, 20)
                 }
-                .padding(.horizontal, 20)
+                .background(ClaudePalette.background.ignoresSafeArea())
+                .scrollDismissesKeyboard(.interactively)
+                // [Fix 2026-09-09] 聚焦输入框时把它滚到可见区居中 —— 键盘弹起后
+                // 底部常驻 CTA 按钮会盖住靠下的输入框（pp 报告）。等键盘动画
+                // 走完再滚，否则落点算的是旧的可视区域。
+                .onChange(of: focused) { _, newValue in
+                    guard let newValue else { return }
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(120))
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo(newValue, anchor: .center)
+                        }
+                    }
+                }
             }
-            .background(ClaudePalette.background.ignoresSafeArea())
-            .scrollDismissesKeyboard(.interactively)
 
             stickyConnectButton
         }
@@ -401,6 +415,8 @@ struct RemoteAgentSetupView: View {
                 .frame(height: focused == field ? 1.5 : 0.5)
                 .animation(.easeInOut(duration: 0.15), value: focused)
         }
+        // [Fix 2026-09-09] 供 ScrollViewReader 在聚焦时把本行滚进可见区。
+        .id(field)
     }
 
     /// Persist a `.remoteAgent` instance the same way AddProviderView's

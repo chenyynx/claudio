@@ -298,8 +298,19 @@ struct SessionModelDisplay {
     }
 
     private func defaultResolvedDetail() -> (providerLabel: String, modelName: String)? {
-        guard let groupId = store.defaultPrimaryGroupId else { return nil }
-        return resolvedDetail(forGroupId: groupId)
+        if let groupId = store.defaultPrimaryGroupId {
+            return resolvedDetail(forGroupId: groupId)
+        }
+        // [Fix 2026-09-09] 无本地默认组（纯远端用户）→ 副行回落到远端实例
+        // （projectPath 尾段 · 模型短名），与远端 binding 路径同一套解析。
+        guard let inst = store.instances.first(where: {
+            $0.providerType == .remoteAgent && $0.isEnabled
+        }) else { return nil }
+        let tail = RemoteSessionTopBar.projectTail(instanceID: inst.id)
+        let model = RemoteSessionTopBar.modelShortName(instanceID: inst.id, chatSessionID: nil)
+        let labelPart = tail ?? RemoteSessionTopBar.displayName(for: inst)
+        if let model { return (labelPart, model) }
+        return (labelPart, inst.label)
     }
 
     /// [T-codex-fast-mode] Resolve the ProviderInstance AND model id behind
@@ -373,6 +384,13 @@ struct SessionModelDisplay {
         if let groupId = store.defaultPrimaryGroupId,
            let group = store.group(for: groupId) {
             return group.name
+        }
+        // [Fix 2026-09-09] 纯远端用户没有本地默认组 —— 顶栏回落到远端显示名
+        // （label > host 反解），而不是误导性的"未选择模型"。
+        if let inst = store.instances.first(where: {
+            $0.providerType == .remoteAgent && $0.isEnabled
+        }) {
+            return RemoteSessionTopBar.displayName(for: inst)
         }
         return AppLocalized("No model selected")
     }

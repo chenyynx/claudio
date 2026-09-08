@@ -282,7 +282,11 @@ struct UnifiedModelPicker: View {
         let prefs = config.effectivePreferModality
         var pool = store.modelEntries.filter { entry in
             guard !entry.isHidden else { return false }
-            guard store.instance(for: entry.providerInstanceId)?.isEnabled == true else { return false }
+            guard let instance = store.instance(for: entry.providerInstanceId) else { return false }
+            guard instance.isEnabled else { return false }
+            // [Fix 2026-09-09] 远端 agent 的模型不进本地选择器（本地/远端两套
+            // 入口隔离；远端模型在远端会话里由桥端目录提供）。
+            guard instance.providerType != .remoteAgent else { return false }
             guard let prefs, !prefs.isEmpty else { return true }
             return matchesPreference(entry.model.capabilities.supportedModalities, prefs: prefs)
         }

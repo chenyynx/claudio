@@ -27,7 +27,10 @@ struct ProviderInstancesView: View {
             // shows its text models here AND a shadow voice row below ("dual
             // visibility"). Pure-voice vendors (ElevenLabs etc.) still appear here
             // too; they just have no usable text models, which is expected.
-            ForEach(ProviderType.allCases, id: \.self) { type in
+            // [Fix 2026-09-09] 远端 agent 不属本地服务商列表 —— 它有独立入口
+            // （设置 → 远程 / 欢迎页卡片），与 AddProviderView.visibleProviderTypes
+            // 同一口径（那边本来就排除了 .remoteAgent）。
+            ForEach(ProviderType.allCases.filter { $0 != .remoteAgent }, id: \.self) { type in
                 let instancesOfType = store.instances.filter { $0.providerType == type }
                 if !instancesOfType.isEmpty {
                     Section(type.displayName) {

@@ -11,6 +11,8 @@ enum ProviderMigration {
 
     private static let migrationKey = "com.claudio.app.provider-migration-v1-done"
     private static let oauthMigrationKey = "com.claudio.app.provider-migration-oauth-v2-done"
+    /// [Fix 2026-09-09] 远端 entry 从本地模型组摘除（一次性）。
+    private static let remoteGroupIsolationKey = "com.claudio.app.provider-migration-remote-group-isolation-v3-done"
 
     /// Run migration if it hasn't been performed yet.
     static func migrateIfNeeded(store: ProviderConfigStore) {
@@ -25,6 +27,40 @@ enum ProviderMigration {
             migrateOAuthTokens(store: store)
             UserDefaults.standard.set(true, forKey: oauthMigrationKey)
         }
+
+        if !UserDefaults.standard.bool(forKey: remoteGroupIsolationKey) {
+            migrateRemoteEntriesOutOfGroups(store: store)
+            UserDefaults.standard.set(true, forKey: remoteGroupIsolationKey)
+        }
+    }
+
+    // MARK: - V3: 远端 agent 的 entry 从本地模型组里摘掉
+
+    /// [Fix 2026-09-09] 远端 agent（My Computer）不是本地服务商：没有 API key、
+    /// 模型由桥端目录提供，且管理入口独立（设置 → 远程 / 欢迎页卡片）。但历史
+    /// 数据里模型组可能混进了远端 entry（本地选择器曾把它们列出来）。组解析有
+    /// hasAnyCredential 门槛（remoteAgent 恒 false）所以不会真被调用，但 UI 上
+    /// 是串台。这里一次性摘掉；组本身与其余成员、组顺序都不动（空组保留，用户
+    /// 可能还要往里加本地模型）。
+    private static func migrateRemoteEntriesOutOfGroups(store: ProviderConfigStore) {
+        let remoteEntryIds = Set(store.modelEntries.compactMap { entry -> String? in
+            let instance = store.instance(for: entry.providerInstanceId)
+            return instance?.providerType == .remoteAgent ? entry.id : nil
+        })
+        guard !remoteEntryIds.isEmpty else { return }
+
+        var touchedGroups = 0
+        var removedMembers = 0
+        for group in store.modelGroups {
+            let kept = group.memberEntryIds.filter { !remoteEntryIds.contains($0) }
+            guard kept.count != group.memberEntryIds.count else { continue }
+            var updated = group
+            updated.memberEntryIds = kept
+            store.updateGroup(updated)
+            touchedGroups += 1
+            removedMembers += group.memberEntryIds.count - kept.count
+        }
+        logger.info("Remote-entry group isolation: removed \(removedMembers) member(s) across \(touchedGroups) group(s)")
     }
 
     // MARK: - V2: Migrate singleton OAuth tokens → per-instance storage

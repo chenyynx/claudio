@@ -4092,7 +4092,22 @@ struct ContentView: View {
             }
             let newId = Self.makeNewSessionId()
             Task { @MainActor in
+                // [Fix 2026-09-09] 同时落 binding：顶栏的模型名/副行读的是
+                // sessionBindings；只写 sessions.model_id 会让顶栏回落到本地
+                // 默认组，纯远端用户没有默认组 → 顶栏显示"未选择模型"。
+                // 写法与 SessionModelPicker.bindToEntry 一致。
+                let binding = SessionModelBinding(
+                    sessionId: newId,
+                    primarySource: .directEntry(modelEntryId: entry.id),
+                    subModelSource: nil
+                )
+                providerStore.setBinding(binding, for: newId)
                 await ChatStore.shared.updateSessionModelId(newId, modelId: entry.model.id)
+                NotificationCenter.default.post(
+                    name: .sessionModelBindingChanged,
+                    object: nil,
+                    userInfo: ["sessionId": newId]
+                )
                 openSession(newId)
             }
         }
@@ -4475,6 +4490,9 @@ struct ContentView: View {
     @StateObject private var providerStore = ProviderConfigStore.shared
     @State private var showAddProvider = false
     @State private var showSelectModels = false
+    /// [Fix 2026-09-09] 已配置时点本地卡片 → 打开模型管理（与远端卡片的
+    /// "管理连接"对称），而不是再走一遍 onboarding 的"新建 Default Models 组"。
+    @State private var showModelGroups = false
     @State private var showConnectComputer = false
 
     /// [pp 2026-09-08] 欢迎页任一 sheet 活动时暂停深海背景动画：
@@ -4524,6 +4542,13 @@ struct ContentView: View {
             }
             return nil
         }()
+        // [Fix 2026-09-09] 本地是「① 加服务商 ② 选模型」两步，而 localSummary
+        // 的成立条件是 defaultPrimaryGroupId 已设置——它只在选模型页
+        // (OnboardingModelSelectionView.createGroupAndDismiss) 建组时写入。
+        // 双卡片改造只保留了 ① 的入口，② 的跳转丢了：加完服务商后
+        // localSummary 仍为 nil → "开始对话"永不出现，再点卡片又只重复 ①。
+        // 这里补回 ② 的判定与入口（语义对齐改造前的 hasProviders）。
+        let localHasProviders = !providerStore.instances.filter { $0.providerType != .remoteAgent }.isEmpty
 
         // [pp 2026-09-08 第三轮+四轮] 骨架沿用 dsh-mobile WorkspaceView 的
         // ScrollView + LazyVStack，但空状态页无 header/会话列表，纯内容组
@@ -4533,8 +4558,10 @@ struct ContentView: View {
         return GeometryReader { geo in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    // 上留白：最小 60（≈ dsh 的 header+108 的观感），富余时参与均分
-                    Spacer(minLength: 60)
+                    // 上留白：最小 36（原 60）。[Fix 2026-09-09 pp] 整组上移
+                    // ~24pt —— 两个 Spacer 均分余量，故上 -24 / 下 +24 等于
+                    // 整组上移 24pt（富余时按 min 差值定位）。
+                    Spacer(minLength: 36)
 
                     WelcomeHero()
 
@@ -4554,10 +4581,16 @@ struct ContentView: View {
                     let localReady = localSummary != nil
                     WelcomePathCard(
                         kind: .local, title: "本地",
-                        subtitle: localReady ? (localSummary ?? "") : "跑在手机内置 Linux 上的 AI agent",
+                        subtitle: localReady
+                            ? (localSummary ?? "")
+                            : (localHasProviders ? "选好模型就能开始对话" : "跑在手机内置 Linux 上的 AI agent"),
                         connected: localReady,
                         action: {
                             if localReady {
+                                // 已就绪 → 模型管理（看/改现有组），不再新建组
+                                showModelGroups = true
+                            } else if localHasProviders {
+                                // 服务商已加、模型未选 → 补第 ② 步
                                 showSelectModels = true
                             } else {
                                 showAddProvider = true
@@ -4573,8 +4606,9 @@ struct ContentView: View {
                         .foregroundStyle(.white.opacity(0.5))
                         .frame(maxWidth: .infinity, alignment: .center)
 
-                // 下留白：最小 30，富余时与上 Spacer 均分 → 整组视觉居中
-                Spacer(minLength: 30)
+                // 下留白：最小 54（原 30）。[Fix 2026-09-09 pp] 与上留白配对，
+                // 把内容组整体上移 ~24pt（见上方 Spacer 注释）。
+                Spacer(minLength: 54)
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
@@ -4585,7 +4619,16 @@ struct ContentView: View {
         }
         .foregroundStyle(.white)
         .background(OceanBackground(isPaused: welcomeSheetActive).ignoresSafeArea())
-        .sheet(isPresented: $showAddProvider) {
+        .sheet(isPresented: $showAddProvider, onDismiss: {
+            // [Fix 2026-09-09] 加完服务商自动接上第 ② 步（选模型）——双卡片
+            // 版没有可点的"选模型"入口，不自动接上用户就卡在未配置态。
+            // 闭包内直接读 store（不捕获呈现时的旧值）；defaultPrimaryGroupId
+            // 仍是 nil 即"还没选过模型"，此时才弹，避免打断已就绪用户。
+            let hasLocalProviders = !providerStore.instances.filter { $0.providerType != .remoteAgent }.isEmpty
+            if hasLocalProviders, providerStore.defaultPrimaryGroupId == nil {
+                showSelectModels = true
+            }
+        }) {
             NavigationStack {
                 AddProviderView()
             }
@@ -4593,6 +4636,14 @@ struct ContentView: View {
         .sheet(isPresented: $showSelectModels) {
             NavigationStack {
                 OnboardingModelSelectionView()
+            }
+        }
+        .sheet(isPresented: $showModelGroups) {
+            // [Fix 2026-09-09] 已配置的本地用户点卡片 → 模型管理（与设置里
+            // 「Model Groups」同一个页面：看/改/建组、设默认、加减模型），
+            // 不再走 onboarding 的"新建 Default Models 组"流程。
+            NavigationStack {
+                ModelGroupsView()
             }
         }
         .sheet(isPresented: $showConnectComputer) {
@@ -8008,17 +8059,21 @@ private struct SettingsSheet: View {
                 // [Claudio 2026-09-07 P1-C 重做] 「远程」标准行（与
                 // Storage/Memory 同族样式）→ 设备管理页（pp: 自定义卡
                 // 与其他区格格不入；配置页职责是管理设备）。
-                NavigationLink {
-                    RemoteDevicesView().settingsPaletteBackground()
-                } label: {
-                    Label {
-                        Text("远程")
-                    } icon: {
-                        Image(systemName: "desktopcomputer")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.white)
-                            .frame(width: 21, height: 21)
-                            .background(.orange, in: Circle())
+                // [Fix 2026-09-09] 补上分区标题 —— 之前这行裸挂在两个 Section
+                // 之间、头顶没有类别，跟下面的「AI 服务商」区看不出是两套入口。
+                Section("远程") {
+                    NavigationLink {
+                        RemoteDevicesView().settingsPaletteBackground()
+                    } label: {
+                        Label {
+                            Text("我的设备")
+                        } icon: {
+                            Image(systemName: "desktopcomputer")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white)
+                                .frame(width: 21, height: 21)
+                                .background(.orange, in: Circle())
+                        }
                     }
                 }
 
@@ -8779,7 +8834,7 @@ private struct RemoteDevicesView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .navigationTitle("远程")
+        .navigationTitle("我的设备")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: Binding(
             get: { editingInstance.map { SettingsInstanceBox(id: $0.id) } },
