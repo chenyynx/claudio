@@ -87,7 +87,9 @@ struct RemoteAgentSetupView: View {
                 // [Fix 2026-09-09] 聚焦输入框时把它滚到可见区居中 —— 键盘弹起后
                 // 底部常驻 CTA 按钮会盖住靠下的输入框（pp 报告）。等键盘动画
                 // 走完再滚，否则落点算的是旧的可视区域。
-                .onChange(of: focused) { _, newValue in
+                // 注意：用单参闭包形式 —— 双参版 onChange(of:initial:_:) 需 iOS 17+，
+                // 本工程最低目标 iOS 16.0（CI 34253905708 即挂在此）。
+                .onChange(of: focused) { newValue in
                     guard let newValue else { return }
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(120))
