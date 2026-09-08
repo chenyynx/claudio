@@ -1,0 +1,357 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/services/database_service.dart';
+import 'package:ccpocket/services/prompt_history_service.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+
+void main() {
+  test('does not send prompt history before rejecting protocol 2', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final received = <Map<String, dynamic>>[];
+    final capabilitiesReceived = Completer<void>();
+    server.transform(WebSocketTransformer()).listen((socket) {
+      socket.listen((raw) {
+        final message = jsonDecode(raw as String) as Map<String, dynamic>;
+        received.add(message);
+        if (message['type'] == 'client_capabilities' &&
+            !capabilitiesReceived.isCompleted) {
+          capabilitiesReceived.complete();
+          socket.add(
+            jsonEncode({
+              'type': 'session_list',
+              'sessions': <Object>[],
+              'protocolVersion': 2,
+              'minimumProtocolVersion': 2,
+            }),
+          );
+        }
+      });
+    });
+
+    final service = PromptHistoryService(DatabaseService());
+    final channel = WebSocketChannel.connect(
+      Uri.parse('ws://127.0.0.1:${server.port}'),
+    );
+    final result = await service
+        .performPromptHistorySyncHandshake(
+          channel: channel,
+          syncRequest: ClientMessage.syncPromptHistory(
+            clientId: 'test-client',
+            clientName: 'Test',
+            includeDeleted: true,
+          ),
+        )
+        .timeout(const Duration(seconds: 2));
+
+    expect(result, isA<ErrorMessage>());
+    expect((result as ErrorMessage).errorCode, 'incompatible_protocol');
+    await capabilitiesReceived.future;
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(
+      received.where((message) => message['type'] == 'sync_prompt_history'),
+      isEmpty,
+    );
+
+    await channel.sink.close();
+    await server.close(force: true);
+  });
+
+  test('bridgeIdForUrl canonicalizes IPv6 and default ports', () {
+    final service = PromptHistoryService(DatabaseService());
+
+    expect(service.bridgeIdForUrl('ws://[0:0:0:0:0:0:0:1]'), '[::1]:80');
+    expect(service.bridgeIdForUrl('ws://[::1]:80'), '[::1]:80');
+    expect(service.bridgeIdForUrl('wss://EXAMPLE.com'), 'example.com:443');
+    expect(service.bridgeIdForUrl('wss://example.com:443'), 'example.com:443');
+  });
+
+  group('PromptHistoryEntry', () {
+    test('merges entries from multiple bridges for display', () {
+      final first = PromptHistoryEntry(
+        id: 'ph_1',
+        text: '/test',
+        projectPath: '/repo',
+        useCount: 2,
+        isFavorite: false,
+        createdAt: DateTime.utc(2026, 1, 1),
+        lastUsedAt: DateTime.utc(2026, 1, 2),
+        updatedAt: DateTime.utc(2026, 1, 2),
+        commandKind: 'slash',
+        bridgeIds: const ['bridge-a'],
+        bridgeNames: const ['A'],
+        clientStats: const {
+          'phone': PromptHistoryClientStat(
+            useCount: 2,
+            lastUsedAt: '2026-01-02T00:00:00.000Z',
+          ),
+        },
+        sessionStats: const {},
+      );
+      final second = PromptHistoryEntry(
+        id: 'ph_1',
+        text: '/test',
+        projectPath: '/repo',
+        useCount: 3,
+        isFavorite: true,
+        createdAt: DateTime.utc(2026, 1, 3),
+        lastUsedAt: DateTime.utc(2026, 1, 4),
+        updatedAt: DateTime.utc(2026, 1, 4),
+        commandKind: 'slash',
+        bridgeIds: const ['bridge-b'],
+        bridgeNames: const ['B'],
+        clientStats: const {
+          'phone': PromptHistoryClientStat(
+            useCount: 1,
+            lastUsedAt: '2026-01-04T00:00:00.000Z',
+          ),
+        },
+        sessionStats: const {
+          'session': PromptHistorySessionStat(
+            useCount: 3,
+            lastUsedAt: '2026-01-04T00:00:00.000Z',
+          ),
+        },
+      );
+
+      final merged = first.merge(second);
+
+      expect(merged.useCount, 5);
+      expect(merged.isFavorite, isTrue);
+      expect(merged.lastUsedAt, DateTime.utc(2026, 1, 4));
+      expect(merged.bridgeIds, containsAll(['bridge-a', 'bridge-b']));
+      expect(merged.clientStats['phone']?.useCount, 3);
+      expect(merged.sessionStats['session']?.useCount, 3);
+    });
+
+    test('merges different raw entries by displayed prompt text', () {
+      final commandXml = PromptHistoryEntry(
+        id: 'ph_xml',
+        text: '<command-message><command-name>\$release-app</command-name></command-message>',
+        projectPath: '/repo/a',
+        useCount: 11,
+        isFavorite: false,
+        createdAt: DateTime.utc(2026, 1, 1),
+        lastUsedAt: DateTime.utc(2026, 1, 2),
+        updatedAt: DateTime.utc(2026, 1, 2),
+        commandKind: 'skill',
+        bridgeIds: const ['bridge-a'],
+        bridgeNames: const ['A'],
+        clientStats: const {},
+        sessionStats: const {},
+        sources: const [
+          PromptHistorySource(id: 'ph_xml', bridgeId: 'bridge-a'),
+        ],
+      );
+      final displayText = PromptHistoryEntry(
+        id: 'ph_plain',
+        text: r'$release-app',
+        projectPath: '/repo/b',
+        useCount: 41,
+        isFavorite: true,
+        createdAt: DateTime.utc(2026, 1, 3),
+        lastUsedAt: DateTime.utc(2026, 1, 4),
+        updatedAt: DateTime.utc(2026, 1, 4),
+        commandKind: 'skill',
+        bridgeIds: const ['bridge-b'],
+        bridgeNames: const ['B'],
+        clientStats: const {},
+        sessionStats: const {},
+        sources: const [
+          PromptHistorySource(id: 'ph_plain', bridgeId: 'bridge-b'),
+        ],
+      );
+
+      final prompts = PromptHistoryService.mergeEntriesForDisplay([
+        commandXml,
+        displayText,
+      ]);
+
+      expect(prompts, hasLength(1));
+      expect(prompts.single.id, 'ph_plain');
+      expect(prompts.single.text, r'$release-app');
+      expect(prompts.single.useCount, 52);
+      expect(prompts.single.isFavorite, isTrue);
+      expect(prompts.single.bridgeIds, containsAll(['bridge-a', 'bridge-b']));
+      expect(
+        prompts.single.sources.map((source) => source.id),
+        containsAll(['ph_xml', 'ph_plain']),
+      );
+    });
+
+    test('merges only entries that survived filters', () {
+      final sameProject = _entry(
+        id: 'same',
+        projectPath: '/workspace/current',
+        bridgeId: 'bridge-a',
+        text: 'LGTMコミットして',
+      );
+      final otherProject = _entry(
+        id: 'other',
+        projectPath: '/workspace/other',
+        bridgeId: 'bridge-b',
+        text: 'LGTMコミットして',
+      );
+
+      final filtered = [sameProject, otherProject]
+          .where(
+            (entry) => PromptHistoryService.matchesFilters(
+              entry,
+              filters: const PromptHistoryFilters(currentProjectOnly: true),
+              clientId: 'phone',
+              currentProjectPath: '/workspace/current',
+            ),
+          )
+          .toList();
+      final prompts = PromptHistoryService.mergeEntriesForDisplay(filtered);
+
+      expect(prompts, hasLength(1));
+      expect(prompts.single.useCount, 1);
+      expect(prompts.single.bridgeIds, ['bridge-a']);
+    });
+
+    test('reports active filters', () {
+      expect(const PromptHistoryFilters().hasActiveFilter, isFalse);
+      expect(
+        const PromptHistoryFilters(currentProjectOnly: true).hasActiveFilter,
+        isTrue,
+      );
+    });
+
+    test('matches open project only by project path', () {
+      final currentProjectEntry = _entry(
+        id: 'current',
+        projectPath: '/workspace/current',
+      );
+      final otherProjectEntry = _entry(
+        id: 'other',
+        projectPath: '/workspace/other',
+      );
+
+      expect(
+        PromptHistoryService.matchesFilters(
+          currentProjectEntry,
+          filters: const PromptHistoryFilters(currentProjectOnly: true),
+          clientId: 'phone',
+          currentProjectPath: '/workspace/current',
+        ),
+        isTrue,
+      );
+      expect(
+        PromptHistoryService.matchesFilters(
+          otherProjectEntry,
+          filters: const PromptHistoryFilters(currentProjectOnly: true),
+          clientId: 'phone',
+          currentProjectPath: '/workspace/current',
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'matches custom Projects by id even when primary paths are shared',
+      () {
+        final selected = _entry(
+          id: 'selected',
+          projectPath: '/shared/primary',
+          projectId: 'project-a',
+        );
+        final other = _entry(
+          id: 'other',
+          projectPath: '/shared/primary',
+          projectId: 'project-b',
+        );
+
+        expect(
+          PromptHistoryService.matchesFilters(
+            selected,
+            filters: const PromptHistoryFilters(currentProjectOnly: true),
+            clientId: 'phone',
+            currentProjectPath: '/shared/primary',
+            currentProjectId: 'project-a',
+          ),
+          isTrue,
+        );
+        expect(
+          PromptHistoryService.matchesFilters(
+            other,
+            filters: const PromptHistoryFilters(currentProjectOnly: true),
+            clientId: 'phone',
+            currentProjectPath: '/shared/primary',
+            currentProjectId: 'project-a',
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test('does not apply open project when the project filter is off', () {
+      final otherProjectEntry = _entry(
+        id: 'other',
+        projectPath: '/workspace/other',
+      );
+
+      expect(
+        PromptHistoryService.matchesFilters(
+          otherProjectEntry,
+          filters: const PromptHistoryFilters(),
+          clientId: 'phone',
+          currentProjectPath: '/workspace/current',
+        ),
+        isTrue,
+      );
+    });
+  });
+
+  test('open project filter does not match empty project paths', () {
+    final entry = _entry(id: 'empty', projectPath: '');
+
+    expect(
+      PromptHistoryService.matchesFilters(
+        entry,
+        filters: const PromptHistoryFilters(currentProjectOnly: true),
+        clientId: 'phone',
+        currentProjectPath: '',
+      ),
+      isFalse,
+    );
+    expect(
+      PromptHistoryService.matchesFilters(
+        entry,
+        filters: const PromptHistoryFilters(currentProjectOnly: true),
+        clientId: 'phone',
+        currentProjectPath: '/workspace/current',
+      ),
+      isFalse,
+    );
+  });
+}
+
+PromptHistoryEntry _entry({
+  required String id,
+  required String projectPath,
+  String text = '',
+  String bridgeId = 'bridge-a',
+  String? projectId,
+}) {
+  return PromptHistoryEntry(
+    id: id,
+    text: text.isEmpty ? 'prompt $id' : text,
+    projectPath: projectPath,
+    projectId: projectId,
+    useCount: 1,
+    isFavorite: false,
+    createdAt: DateTime.utc(2026),
+    lastUsedAt: DateTime.utc(2026),
+    updatedAt: DateTime.utc(2026),
+    commandKind: 'none',
+    bridgeIds: [bridgeId],
+    bridgeNames: const ['Bridge A'],
+    clientStats: const {},
+    sessionStats: const {},
+    sources: [PromptHistorySource(id: id, bridgeId: bridgeId)],
+  );
+}

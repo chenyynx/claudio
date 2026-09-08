@@ -1,0 +1,2880 @@
+// ignore: unused_import
+import 'package:intl/intl.dart' as intl;
+
+import 'app_localizations.dart';
+
+// ignore_for_file: type=lint
+
+/// The translations for Japanese (`ja`).
+class AppLocalizationsJa extends AppLocalizations {
+  AppLocalizationsJa([String locale = 'ja']) : super(locale);
+
+  @override
+  String get appTitle => 'CC Pocket';
+
+  @override
+  String get projects => 'プロジェクト';
+
+  @override
+  String get manageProjects => '管理';
+
+  @override
+  String get createProject => 'プロジェクトを作成';
+
+  @override
+  String get editProject => 'プロジェクトを編集';
+
+  @override
+  String get projectName => 'プロジェクト名';
+
+  @override
+  String get sourceFolders => 'ソースフォルダ';
+
+  @override
+  String get primary => 'プライマリ';
+
+  @override
+  String get makePrimary => 'プライマリにする';
+
+  @override
+  String get removeFolder => 'フォルダを削除';
+
+  @override
+  String get addFolder => 'フォルダを追加';
+
+  @override
+  String get removeWorkspaceProject => 'プロジェクトを削除';
+
+  @override
+  String get noProjectsYet => 'プロジェクトはまだありません';
+
+  @override
+  String get unavailable => '利用できません';
+
+  @override
+  String get cancel => 'キャンセル';
+
+  @override
+  String get save => '保存';
+
+  @override
+  String get delete => '削除';
+
+  @override
+  String get remove => '削除';
+
+  @override
+  String get removeProjectTitle => 'プロジェクトを削除';
+
+  @override
+  String removeProjectConfirm(Object name) {
+    return '「$name」を最近のプロジェクトから削除しますか？';
+  }
+
+  @override
+  String get rename => '名前を変更';
+
+  @override
+  String get renameSession => 'セッション名を変更';
+
+  @override
+  String get pin => 'セッションをピン留め';
+
+  @override
+  String get unpin => 'セッションのピン留めを解除';
+
+  @override
+  String get pinProject => 'プロジェクトをピン留め';
+
+  @override
+  String get unpinProject => 'プロジェクトのピン留めを解除';
+
+  @override
+  String get sessionNameHint => 'セッション名';
+
+  @override
+  String get clearName => '名前をクリア';
+
+  @override
+  String get connect => '接続';
+
+  @override
+  String get protocolIncompatibleTitle => 'App と Bridge のバージョンに互換性がありません';
+
+  @override
+  String get protocolUpdateAppBody =>
+      'CC Pocket をインストール元から更新してから、もう一度接続してください。';
+
+  @override
+  String get protocolUpdateBridgeBody =>
+      'Bridge を互換性のあるリリースへ更新してから、もう一度接続してください。';
+
+  @override
+  String get protocolUpdateBothBody =>
+      'プロトコル情報が不正または不足しています。CC Pocket と Bridge の両方を更新してから再接続してください。';
+
+  @override
+  String protocolRangeDetails(
+    int appMin,
+    int appMax,
+    int bridgeMin,
+    int bridgeMax,
+  ) {
+    return 'App プロトコル $appMin–$appMax、Bridge プロトコル $bridgeMin–$bridgeMax';
+  }
+
+  @override
+  String toolSuggestionTitle(Object toolName) {
+    return 'Codex に $toolName を追加しますか？';
+  }
+
+  @override
+  String toolSuggestionInstall(Object toolName) {
+    return '$toolName をインストール';
+  }
+
+  @override
+  String get toolSuggestionInstalling => 'インストール中…';
+
+  @override
+  String get toolSuggestionNotNow => '今回はしない';
+
+  @override
+  String get toolSuggestionAuthDescription => '必要なアプリを接続し、完了したら確認してください。';
+
+  @override
+  String toolSuggestionConnect(Object appName) {
+    return '$appName を接続';
+  }
+
+  @override
+  String get toolSuggestionComplete => '接続が完了しました';
+
+  @override
+  String get toolSuggestionFailed => 'インストールに失敗しました';
+
+  @override
+  String get toolSuggestionOpenFailed => '接続ページを開けませんでした。';
+
+  @override
+  String get copy => 'コピー';
+
+  @override
+  String get copyEntireMessage => 'メッセージ全体をコピー';
+
+  @override
+  String get markdownLinkOpenFailed => 'リンクを開けませんでした。';
+
+  @override
+  String get markdownLinkUnsupported => 'この種類のリンクには対応していません。';
+
+  @override
+  String get markdownFileUnavailable => 'このファイルはここではプレビューできません。';
+
+  @override
+  String get filePreviewShowSource => 'ソースを表示';
+
+  @override
+  String get filePreviewShowPreview => 'プレビューを表示';
+
+  @override
+  String get filePreviewRenderedHtml => 'HTMLレンダリングプレビュー';
+
+  @override
+  String get filePreviewMediaUnavailable => 'このメディアファイルはここでは再生できません。';
+
+  @override
+  String get filePreviewMediaLoadFailed => 'メディアファイルを読み込めませんでした。';
+
+  @override
+  String get filePreviewPlay => '再生';
+
+  @override
+  String get filePreviewPause => '一時停止';
+
+  @override
+  String get filePreviewRewind10 => '10秒戻る';
+
+  @override
+  String get filePreviewForward10 => '10秒進む';
+
+  @override
+  String get filePreviewPlaybackSpeed => '再生速度';
+
+  @override
+  String get filePreviewMute => 'ミュート';
+
+  @override
+  String get filePreviewUnmute => 'ミュート解除';
+
+  @override
+  String get filePreviewVolume => '音量';
+
+  @override
+  String get filePreviewFullscreen => '全画面表示';
+
+  @override
+  String get filePreviewExitFullscreen => '全画面表示を終了';
+
+  @override
+  String get fileTransferShareOrSave => '共有・保存';
+
+  @override
+  String get fileUploadTitle => 'ファイルをアップロード';
+
+  @override
+  String get fileUploadAction => 'アップロード';
+
+  @override
+  String get fileUploadDestination => '保存先';
+
+  @override
+  String get fileUploadConflictLabel => '同名ファイルがある場合';
+
+  @override
+  String get fileUploadKeepBoth => '両方残す';
+
+  @override
+  String get fileUploadReplace => '置き換える';
+
+  @override
+  String get fileUploadSkip => 'スキップ';
+
+  @override
+  String get fileUploadPreparing => '準備中…';
+
+  @override
+  String get fileUploadUploading => 'アップロード中…';
+
+  @override
+  String get fileUploadFinalizing => '検証中…';
+
+  @override
+  String get fileUploadComplete => 'アップロード完了';
+
+  @override
+  String get fileUploadSkipped => 'スキップ済み';
+
+  @override
+  String get fileUploadTooMany => '一度にアップロードできるのは20ファイルまでです。';
+
+  @override
+  String get fileUploadTotalTooLarge => '選択したファイルの合計が1 GBの上限を超えています。';
+
+  @override
+  String get fileUploadSelectionFailed => '選択したファイルを開けませんでした。';
+
+  @override
+  String get fileUploadFileTooLarge => '各ファイルは512 MB以下にしてください。';
+
+  @override
+  String get fileUploadErrorNotAllowed => '現在のフォルダまたはファイル名にはアップロードできません。';
+
+  @override
+  String get fileUploadErrorTooLarge => 'このファイルはBridgeのアップロード上限を超えています。';
+
+  @override
+  String get fileUploadErrorUnavailable =>
+      'ファイルをアップロードできません。Bridgeを更新または再起動してください。';
+
+  @override
+  String get fileUploadErrorBridgeUpdate => 'ファイルをアップロードするにはBridgeを更新してください。';
+
+  @override
+  String get fileUploadErrorFailed => 'ファイルをアップロードできませんでした。';
+
+  @override
+  String get fileTransferPreparing => 'ダウンロードを準備中…';
+
+  @override
+  String get fileTransferDownloading => 'ダウンロード中…';
+
+  @override
+  String get fileTransferOpeningShareSheet => '共有シートを開いています…';
+
+  @override
+  String get fileTransferErrorNotAllowed =>
+      'このファイルは現在のプロジェクト外にあるか、アクセスが許可されていません。';
+
+  @override
+  String get fileTransferErrorNotFound => 'ファイルが見つかりません。';
+
+  @override
+  String get fileTransferErrorNotFile => '通常のファイルのみダウンロードできます。';
+
+  @override
+  String get fileTransferErrorTooLarge => 'Bridge のダウンロード上限を超えています。';
+
+  @override
+  String get fileTransferErrorUnavailable =>
+      'ファイルをダウンロードできません。Bridgeを更新または再起動してください。';
+
+  @override
+  String get fileTransferErrorBridgeUpdate => 'ファイルをダウンロードするにはBridgeを更新してください。';
+
+  @override
+  String get fileTransferErrorFailed => 'ファイルをダウンロードできませんでした。';
+
+  @override
+  String get fileTransferErrorShareFailed => 'システムの共有シートを開けませんでした。';
+
+  @override
+  String get copied => 'コピーしました';
+
+  @override
+  String get copiedToClipboard => 'クリップボードにコピーしました';
+
+  @override
+  String get lineCopied => '行をコピーしました';
+
+  @override
+  String get start => '開始';
+
+  @override
+  String get stop => '停止';
+
+  @override
+  String get send => '送信';
+
+  @override
+  String get settings => '設定';
+
+  @override
+  String get gallery => 'ギャラリー';
+
+  @override
+  String get git => 'Git';
+
+  @override
+  String get explorer => 'Explorer';
+
+  @override
+  String get gitUnavailableTip => 'Git未検出 — Git機能は利用できません';
+
+  @override
+  String get gitUnavailableTitle => 'Gitを利用できません';
+
+  @override
+  String get gitUnavailableHint => 'このプロジェクトではGit機能を利用できません';
+
+  @override
+  String get autoModeFallbackDefaultTip =>
+      'Auto mode はこの環境で使えないため Default に切り替えました';
+
+  @override
+  String galleryWithCount(int count) {
+    return 'ギャラリー ($count)';
+  }
+
+  @override
+  String get disconnect => '切断';
+
+  @override
+  String get back => '戻る';
+
+  @override
+  String get next => '次へ';
+
+  @override
+  String get done => '完了';
+
+  @override
+  String get skip => 'スキップ';
+
+  @override
+  String get edit => '編集';
+
+  @override
+  String get share => '共有';
+
+  @override
+  String get all => 'すべて';
+
+  @override
+  String get none => 'なし';
+
+  @override
+  String get dismissKeyboard => 'キーボードを閉じる';
+
+  @override
+  String get serverUnreachable => 'サーバーに接続できません';
+
+  @override
+  String get serverUnreachableBody => 'Bridge サーバーに到達できません:';
+
+  @override
+  String get setupSteps => 'セットアップ手順:';
+
+  @override
+  String get setupStep1Title => 'Bridge Server を起動';
+
+  @override
+  String get setupStep1Command => 'npx --yes @ccpocket/bridge@latest';
+
+  @override
+  String get setupStep2Title => '常時起動したい場合はサービス登録';
+
+  @override
+  String get setupStep2Command => 'npx --yes @ccpocket/bridge@1 setup';
+
+  @override
+  String get setupNetworkHint =>
+      '両方のデバイスが同じネットワーク上にあることを確認してください（または Tailscale を使用）。';
+
+  @override
+  String get connectAnyway => '接続を続行';
+
+  @override
+  String get stopSession => 'セッションを停止';
+
+  @override
+  String get stopSessionConfirm => 'このセッションを停止しますか？ Claude プロセスが終了します。';
+
+  @override
+  String get startNewWithSameSettings => '同じ設定で新規開始';
+
+  @override
+  String get copyResumeCommand => '再開コマンドをコピー';
+
+  @override
+  String get copyResumeCommandSubtitle => 'mac / Linuxに引き継ぎ';
+
+  @override
+  String get resumeCommandCopied => '再開コマンドをコピーしました';
+
+  @override
+  String get editSettingsThenStart => '設定を変更して開始';
+
+  @override
+  String get serverRequiresApiKey => 'このサーバーには API キーが必要です';
+
+  @override
+  String get bridgeServerUpdated => 'Bridge Server を更新しました';
+
+  @override
+  String get bridgeUpdateStarted => 'Bridge を更新しています。接続を閉じてマシン一覧に戻ります。';
+
+  @override
+  String get bridgeUpdateReconnectHint =>
+      'Bridge Server を更新しました。マシン一覧から再接続してください。';
+
+  @override
+  String get failedToUpdateServer => 'サーバーの更新に失敗しました';
+
+  @override
+  String get bridgeServerStarted => 'Bridge Server を起動しました';
+
+  @override
+  String get failedToStartServer => 'サーバーの起動に失敗しました';
+
+  @override
+  String get bridgeServerStopped => 'Bridge Server を停止しました';
+
+  @override
+  String get failedToStopServer => 'サーバーの停止に失敗しました';
+
+  @override
+  String get sshPassword => 'SSH パスワード';
+
+  @override
+  String sshPasswordPrompt(String machineName) {
+    return '$machineName の SSH パスワードを入力';
+  }
+
+  @override
+  String get password => 'パスワード';
+
+  @override
+  String get machineEditAddTitle => 'マシンを追加';
+
+  @override
+  String get machineEditEditTitle => 'マシンを編集';
+
+  @override
+  String get machineEditDismissKeyboardTooltip => 'キーボードを閉じる';
+
+  @override
+  String get machineEditBasicInfo => '基本情報';
+
+  @override
+  String get machineEditName => '名前';
+
+  @override
+  String get machineEditNameHint => 'Home Mac';
+
+  @override
+  String get machineEditHostLabel => 'Host（IP またはホスト名）';
+
+  @override
+  String get machineEditHostHint => '100.64.1.2';
+
+  @override
+  String get machineEditPort => 'Port';
+
+  @override
+  String get machineEditBridgePortHint => '8765';
+
+  @override
+  String get machineEditApiKey => 'API Key';
+
+  @override
+  String get machineEditOptional => '任意';
+
+  @override
+  String get machineEditUseSecureConnection => 'セキュア接続を使う';
+
+  @override
+  String get machineEditUseSecureConnectionSubtitle =>
+      'WSS で接続し、ヘルスチェックに HTTPS を使います';
+
+  @override
+  String get machineEditConnectionMode => '接続方式';
+
+  @override
+  String get machineEditConnectionModeAutomatic => '自動（推奨）';
+
+  @override
+  String get machineEditConnectionModeAutomaticSubtitle =>
+      '認証情報を送らずに確認し、HTTPSを優先して自動接続します';
+
+  @override
+  String get machineEditConnectionModeAutomaticSshSubtitle =>
+      'SSHトンネル内ではWSを使用し、通信はSSH接続で暗号化されます';
+
+  @override
+  String get machineEditConnectionModeSecureOnly => 'セキュアのみ（WSS）';
+
+  @override
+  String get machineEditConnectionModeSecureOnlySubtitle =>
+      'TLS接続を必須にし、WSへ自動的に切り替えません';
+
+  @override
+  String get machineEditConnectionModeStandardOnly => '標準（WS）';
+
+  @override
+  String get machineEditConnectionModeStandardOnlySubtitle =>
+      'ローカルネットワークまたはTailscaleなどのVPN内で使用してください';
+
+  @override
+  String get machineErrorBridgeNotFound =>
+      'Bridgeが見つかりません。起動状態と同じネットワークまたはVPNへの接続を確認してください';
+
+  @override
+  String get machineErrorSecureConnectionUnavailable =>
+      'セキュア接続を確立できません。TLSの設定を確認するか、意図する場合のみ「標準（WS）」を選択してください';
+
+  @override
+  String get machineAutomaticWsApiKeyWarningTitle => '標準接続（WS）が見つかりました';
+
+  @override
+  String get machineAutomaticWsApiKeyWarningBody =>
+      'このBridgeは暗号化されていないWSで見つかりました。APIキーは通信の暗号化なしで送信されます。信頼できるローカルネットワークまたはVPN内の場合のみ続けてください。';
+
+  @override
+  String get machineAutomaticWsApiKeyWarningConnect => 'WSで接続';
+
+  @override
+  String get machineEditSshConfiguration => 'SSH 設定';
+
+  @override
+  String get machineEditEnableSshRemoteStartup => 'SSH リモート起動を有効にする';
+
+  @override
+  String get machineEditEnableSshRemoteStartupSubtitle =>
+      'オフライン時に Bridge Server をリモート起動します';
+
+  @override
+  String get machineEditSshUsername => 'SSH Username';
+
+  @override
+  String get machineEditSshUsernameHint => 'myuser';
+
+  @override
+  String get machineEditSshPort => 'SSH Port';
+
+  @override
+  String get machineEditSshPortHint => '22';
+
+  @override
+  String get machineEditTargetAuthentication => '接続先の認証';
+
+  @override
+  String get machineEditPrivateKey => 'Private Key';
+
+  @override
+  String get machineEditSshPrivateKeyPem => 'SSH Private Key (PEM)';
+
+  @override
+  String get machineEditOpenSshPrivateKeyHint =>
+      '-----BEGIN OPENSSH PRIVATE KEY-----';
+
+  @override
+  String get machineEditSavedPrivateKeyIndicator =>
+      'Private Key は保存済みです。新しく入力すると置き換えます。';
+
+  @override
+  String get machineEditUseSshJumpHost => 'SSH Jump Host を使う';
+
+  @override
+  String get machineEditUseSshJumpHostSubtitle => '踏み台または中継 SSH ホスト経由で接続します';
+
+  @override
+  String get machineEditSshJumpHost => 'SSH Jump Host';
+
+  @override
+  String get machineEditJumpHost => 'Jump Host';
+
+  @override
+  String get machineEditJumpHostHint => 'bastion.example.com';
+
+  @override
+  String get machineEditJumpPort => 'Jump Port';
+
+  @override
+  String get machineEditJumpUsername => 'Jump Username';
+
+  @override
+  String get machineEditJumpUsernameHint => '未入力なら SSH Username を使います';
+
+  @override
+  String get machineEditJumpHostAuthentication => 'Jump Host の認証';
+
+  @override
+  String get machineEditJumpHostAuthenticationSubtitle =>
+      '未入力なら接続先の SSH 認証情報を再利用します';
+
+  @override
+  String get machineEditJumpPassword => 'Jump Password';
+
+  @override
+  String get machineEditSavedJumpHostPasswordIndicator =>
+      'Jump Host パスワードは保存済みです。新しく入力すると置き換えます。';
+
+  @override
+  String get machineEditJumpPrivateKeyPem => 'Jump Private Key (PEM)';
+
+  @override
+  String get machineEditSavedJumpHostPrivateKeyIndicator =>
+      'Jump Host Private Key は保存済みです。新しく入力すると置き換えます。';
+
+  @override
+  String get machineEditTesting => 'テスト中...';
+
+  @override
+  String get machineEditTestConnection => '接続をテスト';
+
+  @override
+  String get machineEditConnectionSuccessful => '接続に成功しました';
+
+  @override
+  String get machineEditFillSshCredentials => 'SSH 認証情報を入力してください';
+
+  @override
+  String get machineEditAddAndConnect => '追加して接続';
+
+  @override
+  String get deleteMachine => 'マシンを削除';
+
+  @override
+  String deleteMachineConfirm(String displayName) {
+    return '\"$displayName\" を削除しますか？保存された認証情報もすべて削除されます。';
+  }
+
+  @override
+  String get connectToBridgeServer => 'Bridge Server に接続';
+
+  @override
+  String get orConnectManually => 'または手動で接続';
+
+  @override
+  String get serverUrl => 'サーバー URL';
+
+  @override
+  String get serverUrlHint => 'ws://<host-ip>:8765';
+
+  @override
+  String get apiKeyOptional => 'API キー（任意）';
+
+  @override
+  String get apiKeyHint => '認証なしの場合は空欄';
+
+  @override
+  String get scanQrCode => 'QR コードをスキャン';
+
+  @override
+  String get setupGuide => 'セットアップガイド';
+
+  @override
+  String get showSessions => '左ペインを表示';
+
+  @override
+  String get hideSessions => '左ペインを隠す';
+
+  @override
+  String get workspaceLandingSelectSessionMessage => '左ペインでセッションを選択してください。';
+
+  @override
+  String get workspaceLandingCreateSessionMessage =>
+      '左ペインの New からセッションを作成してください。';
+
+  @override
+  String get workspaceLandingDisconnectedMessage =>
+      'Bridge に接続されていません。左ペインから接続するか、セットアップガイドを開いてマシンを設定してください。';
+
+  @override
+  String get running => '実行中';
+
+  @override
+  String get recentSessions => '最近のセッション';
+
+  @override
+  String get search => '検索';
+
+  @override
+  String get searchSessions => 'セッションを検索...';
+
+  @override
+  String get sessionDisplayModeFirst => '先頭';
+
+  @override
+  String get sessionDisplayModeLast => '末尾';
+
+  @override
+  String get sessionDisplayModeSummary => '要約';
+
+  @override
+  String get allAiTools => 'すべての AI ツール';
+
+  @override
+  String get allProjects => 'すべてのプロジェクト';
+
+  @override
+  String get named => '名前付き';
+
+  @override
+  String get machines => 'マシン';
+
+  @override
+  String get refreshStatus => '状態を更新';
+
+  @override
+  String get add => '追加';
+
+  @override
+  String get noSavedMachinesDescription =>
+      '保存済みのマシンはありません。\n追加すると、すばやく接続したり Bridge Server をリモート起動したりできます。';
+
+  @override
+  String get readyToStart => '準備完了';
+
+  @override
+  String get readyToStartDescription =>
+      '+ ボタンを押してセッションを作成し、Claude でコーディングを始めましょう。';
+
+  @override
+  String get newSession => '新規セッション';
+
+  @override
+  String get neverConnected => '未接続';
+
+  @override
+  String get justNow => 'たった今';
+
+  @override
+  String minutesAgo(int minutes) {
+    return '$minutes分前';
+  }
+
+  @override
+  String hoursAgo(int hours) {
+    return '$hours時間前';
+  }
+
+  @override
+  String daysAgo(int days) {
+    return '$days日前';
+  }
+
+  @override
+  String get unfavorite => 'お気に入り解除';
+
+  @override
+  String get favorite => 'お気に入り';
+
+  @override
+  String get updateBridge => 'Bridge を更新';
+
+  @override
+  String get bridgeIsUpToDate => 'Bridge は最新です';
+
+  @override
+  String get bridgeUpdateAvailable => '更新があります';
+
+  @override
+  String get bridgeUpdateRequiresSetup => 'SSH と Bridge の自動起動セットアップが必要です';
+
+  @override
+  String get bridgeVersionUnknown => 'Bridge のバージョンを確認できません';
+
+  @override
+  String bridgeVersionCurrentExpected(String current, String expected) {
+    return '現在 v$current、推奨 v$expected以上';
+  }
+
+  @override
+  String bridgeVersionCurrentLatest(String current, String latest) {
+    return '現在 v$current、最新版 v$latest';
+  }
+
+  @override
+  String get bridgeLatestVersionChecking => 'Bridge の最新版を確認中...';
+
+  @override
+  String get bridgeLatestVersionUnavailable => 'Bridge の最新版を確認できません';
+
+  @override
+  String get bridgeLatestVersionRetry => '最新版の確認を再試行';
+
+  @override
+  String get bridgeUpdateSetupTitle => 'Bridge 更新の準備';
+
+  @override
+  String get bridgeUpdateSetupDescription =>
+      'このマシンで Bridge の更新機能を使うには、SSH 接続と Bridge の自動起動セットアップが必要です。';
+
+  @override
+  String get bridgeUpdateSetupEnableSsh => 'Bridge 接続設定で SSH を有効にします。';
+
+  @override
+  String get bridgeUpdateSetupRunCommand => '接続先マシンでセットアップコマンドを実行しておきます。';
+
+  @override
+  String get bridgeUpdateSetupCommand => 'npx @ccpocket/bridge@1 setup';
+
+  @override
+  String get stopServer => 'サーバーを停止';
+
+  @override
+  String get update => '更新';
+
+  @override
+  String get download => 'ダウンロード';
+
+  @override
+  String appUpdateAvailable(String version) {
+    return 'v$version が利用可能です';
+  }
+
+  @override
+  String get macosNativeAppBannerTitle => 'macOS ネイティブ版をおすすめします';
+
+  @override
+  String get macosNativeAppBannerSubtitle =>
+      'Mac では、macOS に最適化された CC Pocket ネイティブ版を GitHub Releases からインストールできます。';
+
+  @override
+  String get openGitHubReleases => 'GitHub Releases を開く';
+
+  @override
+  String get macosNativeAppSettingsTitle => 'macOS ネイティブ版';
+
+  @override
+  String get macosNativeAppSettingsSubtitle =>
+      'macOS に最適化されているため、Mac ではネイティブ版がおすすめです。';
+
+  @override
+  String get supportBannerTitle => 'CC Pocketが役に立っていたら';
+
+  @override
+  String get supportBannerSubtitle => 'サポートで継続開発を後押しできます';
+
+  @override
+  String get supportBannerAction => 'サポートを見る';
+
+  @override
+  String get offline => 'オフライン';
+
+  @override
+  String get unreachable => '接続不可';
+
+  @override
+  String get checking => '確認中...';
+
+  @override
+  String get recentProjects => '最近のプロジェクト';
+
+  @override
+  String get orEnterPath => 'またはパスを入力';
+
+  @override
+  String get projectPath => 'プロジェクトパス';
+
+  @override
+  String get projectPathHint => '/path/to/your/project';
+
+  @override
+  String get permission => 'パーミッション';
+
+  @override
+  String get approval => '承認';
+
+  @override
+  String get restart => '再起動';
+
+  @override
+  String get worktree => 'Worktree';
+
+  @override
+  String get advanced => '詳細設定';
+
+  @override
+  String get modelOptional => 'モデル（任意）';
+
+  @override
+  String get effort => 'Effort';
+
+  @override
+  String get defaultLabel => 'デフォルト';
+
+  @override
+  String get codexProfilePrecedenceNote =>
+      'Profile で同じ設定を指定している場合は、以下の項目より Profile の設定が優先されます。';
+
+  @override
+  String get maxTurns => 'Max Turns';
+
+  @override
+  String get maxTurnsHint => '例: 8';
+
+  @override
+  String get maxTurnsError => '1以上の整数を入力してください';
+
+  @override
+  String get maxBudgetUsd => '最大予算 (USD)';
+
+  @override
+  String get maxBudgetHint => '例: 1.00';
+
+  @override
+  String get maxBudgetError => '0以上の数値を入力してください';
+
+  @override
+  String get fallbackModel => 'フォールバックモデル';
+
+  @override
+  String get forkSessionOnResume => '再開時にセッションを分岐';
+
+  @override
+  String get persistSessionHistory => 'セッション履歴を保持';
+
+  @override
+  String get model => 'モデル';
+
+  @override
+  String get sandbox => 'Sandbox';
+
+  @override
+  String get reasoning => 'Reasoning';
+
+  @override
+  String get webSearch => 'Web Search';
+
+  @override
+  String get networkAccess => 'ネットワークアクセス';
+
+  @override
+  String get additionalWritableRootsTitle => '追加で利用できるディレクトリ';
+
+  @override
+  String get additionalWritableRootsDescription =>
+      'このセッションでは、Codex の config.toml の writable_roots に加えて有効になります。';
+
+  @override
+  String get additionalWritableRootsTooltip =>
+      '選択中のプロジェクトに加えて、別プロジェクトのファイルも読み書きしたいときに使います。';
+
+  @override
+  String get additionalWritableRootsSuggestions => '最近のプロジェクト';
+
+  @override
+  String get addDirectory => 'ディレクトリを追加';
+
+  @override
+  String get directoryPath => 'ディレクトリパス';
+
+  @override
+  String get directoryPathOutsideAllowedRoots => 'ディレクトリパスが許可されたルートの外側です';
+
+  @override
+  String get browseDirectory => 'ディレクトリを参照';
+
+  @override
+  String get selectDirectory => 'ディレクトリを選択';
+
+  @override
+  String get noSubdirectories => 'サブディレクトリはありません';
+
+  @override
+  String get directoryBrowserRoots => '許可されたディレクトリ';
+
+  @override
+  String get directoryBrowserBridgeUpdateRequired =>
+      'この機能には新しい Bridge Server が必要です。Bridge を更新して、もう一度お試しください。';
+
+  @override
+  String get worktreeNew => '新規';
+
+  @override
+  String worktreeExisting(int count) {
+    return '既存 ($count)';
+  }
+
+  @override
+  String get branchOptional => 'ブランチ（任意）';
+
+  @override
+  String get branchHint => 'feature/...';
+
+  @override
+  String get noExistingWorktrees => '既存の worktree はありません';
+
+  @override
+  String get planApprovalSummary => '上のプランを確認して、承認するか計画を続けてください';
+
+  @override
+  String get planApprovalSummaryCard => 'プランを確認して、承認するか計画を続けてください';
+
+  @override
+  String get toolApprovalSummary => 'ツール実行には承認が必要です';
+
+  @override
+  String get planApproval => 'プラン承認';
+
+  @override
+  String get approvalRequired => '承認が必要';
+
+  @override
+  String get approvalStatusPending => '承認待ち';
+
+  @override
+  String get approvalStatusApproved => '承認済み';
+
+  @override
+  String get approvalStatusApprovedForSession => 'セッション中承認済み';
+
+  @override
+  String get approvalStatusRejected => '拒否済み';
+
+  @override
+  String get approvalStatusResolved => '解決済み';
+
+  @override
+  String get viewEditPlan => 'プランを表示';
+
+  @override
+  String get keepPlanning => '計画を続ける';
+
+  @override
+  String get keepPlanningHint => '変更点を入力...';
+
+  @override
+  String get sendFeedbackKeepPlanning => 'フィードバックを送信して計画を続ける';
+
+  @override
+  String get acceptAndClear => '承認 & クリア';
+
+  @override
+  String get acceptPlan => 'プラン承認';
+
+  @override
+  String get continuePlanning => '計画を続ける';
+
+  @override
+  String get reject => '拒否';
+
+  @override
+  String get approve => '承認';
+
+  @override
+  String get always => '常に許可';
+
+  @override
+  String get approveOnce => '今回だけ許可';
+
+  @override
+  String get approveForSession => 'このセッション中は許可';
+
+  @override
+  String get approveAlways => '常に許可';
+
+  @override
+  String get approveAlwaysSub => '';
+
+  @override
+  String get approveSessionMain => 'セッション中許可';
+
+  @override
+  String get approveSessionSub => '';
+
+  @override
+  String get permissionDefaultDescription => '標準の承認フローです';
+
+  @override
+  String get permissionAutoDescription => 'Claude が安全チェック付きで承認を自動処理します';
+
+  @override
+  String get permissionAcceptEditsDescription => 'ファイル編集を自動で承認します';
+
+  @override
+  String get permissionPlanDescription => '変更を実行する前に分析と計画を行います';
+
+  @override
+  String get permissionBypassDescription => 'ほとんどの承認確認なしで実行します';
+
+  @override
+  String get executionDefaultDescription => '標準の承認フローです';
+
+  @override
+  String get executionAcceptEditsDescription => 'ファイル編集を自動で承認します';
+
+  @override
+  String get executionFullAccessDescription => 'ほとんどの承認確認なしで実行します';
+
+  @override
+  String get codexPlanModeDescription => '先にプランを作成し、承認後に実行を開始します';
+
+  @override
+  String get sandboxRestrictedDescription => '制限された環境でコマンドを実行します';
+
+  @override
+  String get sandboxNativeDescription => 'ネイティブ環境でコマンドを実行します';
+
+  @override
+  String get sandboxNativeCautionDescription => 'ネイティブ環境でコマンドを実行します（注意）';
+
+  @override
+  String get sheetSubtitleApproval => 'どの操作に承認が必要かを制御します';
+
+  @override
+  String get sheetSubtitleSandboxCodex =>
+      'Codex は安全のためデフォルトで Sandbox が有効です。無効にするとシステムへのフルアクセスが可能になります。';
+
+  @override
+  String get sheetSubtitleSandboxClaude =>
+      'Claude はデフォルトでネイティブ実行です。Sandbox を有効にするとアクセスが制限されます。';
+
+  @override
+  String get sheetSubtitleModel => 'モデルによって速度・能力・コストが異なります。';
+
+  @override
+  String get sheetSubtitleEffort => '高い Effort はより丁寧な分析を行いますが、時間とコストが増えます。';
+
+  @override
+  String get claudeEffortLowDesc => '高速な応答、分析は少なめ';
+
+  @override
+  String get claudeEffortMediumDesc => '速度と品質のバランス';
+
+  @override
+  String get claudeEffortHighDesc => 'より丁寧な分析';
+
+  @override
+  String get claudeEffortXHighDesc => '複雑な作業向けの拡張推論';
+
+  @override
+  String get claudeEffortMaxDesc => '最も丁寧、最も遅い';
+
+  @override
+  String get reasoningEffortNoneDesc => '推論なし';
+
+  @override
+  String get reasoningEffortMinimalDesc => '最速、分析は最小限';
+
+  @override
+  String get reasoningEffortLowDesc => '高速な応答、分析は少なめ';
+
+  @override
+  String get reasoningEffortMediumDesc => '速度と品質のバランス';
+
+  @override
+  String get reasoningEffortHighDesc => 'より丁寧な分析';
+
+  @override
+  String get reasoningEffortXhighDesc => '最も丁寧、最も遅い';
+
+  @override
+  String get reasoningEffortMaxDesc => '最も難しい問題向けの最大推論';
+
+  @override
+  String get reasoningEffortUltraDesc => '最大推論と自動タスク委譲';
+
+  @override
+  String get reasoningEffortModelSpecificDesc => 'モデル固有の推論レベル';
+
+  @override
+  String get changePermissionModeTitle => 'Permission Mode を変更';
+
+  @override
+  String changePermissionModeBody(String mode) {
+    return '$mode に切り替えるとセッションが再起動します。会話は保持されます。';
+  }
+
+  @override
+  String get changeExecutionModeTitle => 'Execution Mode を変更';
+
+  @override
+  String changeExecutionModeBody(String mode) {
+    return '$mode に切り替えるとセッションが再起動します。会話は保持されます。';
+  }
+
+  @override
+  String get changeApprovalPolicyTitle => 'Approval Policy を変更';
+
+  @override
+  String changeApprovalPolicyBody(String mode) {
+    return '$mode に切り替えるとセッションが再起動します。会話は保持されます。';
+  }
+
+  @override
+  String get codexApprovalUntrustedDescription =>
+      'trusted コマンドだけ自動実行し、それ以外は確認します';
+
+  @override
+  String get codexApprovalOnRequestDescription => '必要だと判断した操作だけ確認します';
+
+  @override
+  String get codexApprovalOnFailureDescription =>
+      '通常は確認せず実行し、失敗時だけ追加権限を確認します（非推奨）';
+
+  @override
+  String get codexApprovalNeverDescription => '確認せず実行し、失敗時も承認を求めません';
+
+  @override
+  String get codexAutoReview => '自動レビュー';
+
+  @override
+  String get codexAutoReviewDescription => '承認リクエストを Codex が自動レビューします';
+
+  @override
+  String get codexAutoReviewDisabledByPolicy => '組織の Browser Use ポリシーにより無効です';
+
+  @override
+  String get codexAutoReviewUnavailableDescription =>
+      'Never Ask では承認リクエストが発生しないため利用できません';
+
+  @override
+  String get guardianApprovalTitle => '自動レビューで承認';
+
+  @override
+  String get guardianApprovalMediumRisk => '中リスク';
+
+  @override
+  String get guardianApprovalHighRisk => '高リスク';
+
+  @override
+  String get guardianApprovalDetails => '詳細';
+
+  @override
+  String get guardianApprovalHideDetails => '詳細を閉じる';
+
+  @override
+  String guardianApprovalAuthorization(String authorization) {
+    return '承認レベル: $authorization';
+  }
+
+  @override
+  String get enablePlanModeTitle => 'Plan Mode を有効化';
+
+  @override
+  String get disablePlanModeTitle => 'Plan Mode を無効化';
+
+  @override
+  String get enablePlanModeBody => 'Plan Mode を有効化するとセッションが再起動します。会話は保持されます。';
+
+  @override
+  String get disablePlanModeBody => 'Plan Mode を無効化するとセッションが再起動します。会話は保持されます。';
+
+  @override
+  String get changeSandboxModeTitle => 'Sandbox Mode を変更';
+
+  @override
+  String changeSandboxModeBody(String mode) {
+    return '$mode に切り替えるとセッションが再起動します。会話は保持されます。';
+  }
+
+  @override
+  String get messagePlaceholder => 'Claude にメッセージ...';
+
+  @override
+  String get codexMessagePlaceholder => 'Codex にメッセージ...';
+
+  @override
+  String get queuedInputForReconnect => '再接続待ちキュー';
+
+  @override
+  String get queuedInputPendingDelivery => '送信確認中';
+
+  @override
+  String get queuedInputForNextTurn => '次のターンに送信予定';
+
+  @override
+  String get sessionCardQueuedInput => 'キュー中';
+
+  @override
+  String queuedInputImageCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '画像$count枚',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get tooltipSteerQueuedMessage => 'キュー中のメッセージを指示として送信';
+
+  @override
+  String get tooltipMoveQueuedMessageToInput => 'キュー中のメッセージを入力欄へ移動';
+
+  @override
+  String get tooltipCancelQueuedMessage => 'キュー中のメッセージをキャンセル';
+
+  @override
+  String get reconnecting => 'Bridge との接続が一時的に切れました。自動で再接続しています...';
+
+  @override
+  String get reconnectingQueuedMessages =>
+      'Bridge との接続が一時的に切れました。自動で再接続しています。待機中のメッセージは保持されています。';
+
+  @override
+  String get disconnectedMessagesQueued =>
+      'Bridge に接続できません。操作は端末に保存され、再接続後に送信されます。';
+
+  @override
+  String get sessionQueuedForReconnect => 'セッションを再接続待ちキューに追加しました';
+
+  @override
+  String get resumeAlreadyQueued => '再開はすでにキューに入っています';
+
+  @override
+  String get resumeQueuedForReconnect => '再開を再接続待ちキューに追加しました';
+
+  @override
+  String get pendingActionWillCreateOnReconnect => 'Bridge 再接続後に作成します';
+
+  @override
+  String get pendingActionWillResumeOnReconnect => 'Bridge 再接続後に再開します';
+
+  @override
+  String get pendingActionStatus => '待機中';
+
+  @override
+  String get pendingActionProcessingStatus => '復元中';
+
+  @override
+  String get pendingActionProcessingStartStatus => '準備中';
+
+  @override
+  String get pendingActionProcessingStartDescription => 'Bridge でセッションを準備しています';
+
+  @override
+  String get pendingActionProcessingResumeDescription =>
+      '画像が多いセッションは時間がかかることがあります';
+
+  @override
+  String get pendingActionProcessingStartTitle => '新規セッションを作成中';
+
+  @override
+  String get pendingActionProcessingResumeTitle => 'セッション履歴を読み込んでいます';
+
+  @override
+  String get tooltipCancelPendingAction => '待機中の操作をキャンセル';
+
+  @override
+  String get queuedLocally => 'ローカルでキュー中';
+
+  @override
+  String get processingOnBridge => 'Bridge で処理中';
+
+  @override
+  String get offlinePendingNewSessionTitle => '新規セッション待機中';
+
+  @override
+  String get offlinePendingResumeTitle => '再開待機中';
+
+  @override
+  String diffLines(int count) {
+    return '$count 行の diff';
+  }
+
+  @override
+  String changedLines(int count) {
+    return '変更$count行';
+  }
+
+  @override
+  String hunkCount(int count) {
+    return '$countハンク';
+  }
+
+  @override
+  String fileCount(int count) {
+    return '$countファイル';
+  }
+
+  @override
+  String get tapInterruptHoldStop => 'タップ: 中断, 長押し: 停止';
+
+  @override
+  String get rewind => '巻き戻す';
+
+  @override
+  String get rewindToHere => 'ここまで巻き戻す';
+
+  @override
+  String get rewindModeConversationAndCode => '会話とコードを復元';
+
+  @override
+  String get rewindModeConversationOnly => '会話のみ復元';
+
+  @override
+  String get rewindModeCodeOnly => 'コードのみ復元';
+
+  @override
+  String get rewindConfirmTitle => '巻き戻しの確認';
+
+  @override
+  String rewindConfirmBody(Object mode) {
+    return 'モード: $mode\n\nこの操作は元に戻せません。実行しますか？';
+  }
+
+  @override
+  String get rewindCannotRewindFiles => 'ファイルを巻き戻せません';
+
+  @override
+  String get codexRewindConfirmTitle => '会話を巻き戻しますか？';
+
+  @override
+  String get codexRewindConfirmBody =>
+      'このメッセージの直前までチャットを戻し、メッセージを入力欄に戻します。ファイル変更はそのまま残ります。';
+
+  @override
+  String get fork => '分岐';
+
+  @override
+  String get forkConversation => '会話を分岐';
+
+  @override
+  String get forkConversationTitle => '会話を分岐しますか？';
+
+  @override
+  String get forkConversationBody =>
+      'この応答時点から新しいCodexセッションを作成します。現在のセッションは変更されません。';
+
+  @override
+  String get forkTargetNotFound => '分岐元のユーザー発言が見つかりません';
+
+  @override
+  String get tapToRetry => 'タップしてリトライ';
+
+  @override
+  String diffSummaryAddedRemoved(int added, int removed) {
+    return '+$added/-$removed 行';
+  }
+
+  @override
+  String lineCountSummary(int count) {
+    return '$count 行';
+  }
+
+  @override
+  String get toolResult => 'ツール結果';
+
+  @override
+  String get answered => '回答済み';
+
+  @override
+  String agentIsAsking(Object agent) {
+    return '$agent が質問しています';
+  }
+
+  @override
+  String get submitAllAnswers => 'すべての回答を送信';
+
+  @override
+  String submitWithCount(int count) {
+    return '送信 ($count 件選択)';
+  }
+
+  @override
+  String get selectOptionsToSubmit => 'オプションを選択してください';
+
+  @override
+  String get typeYourAnswer => '回答を入力...';
+
+  @override
+  String get orTypeCustomAnswer => 'またはカスタム回答を入力...';
+
+  @override
+  String get otherAnswer => 'その他の回答...';
+
+  @override
+  String get selectAllThatApply => '該当するものをすべて選択';
+
+  @override
+  String get noScreenshotsYet => 'スクリーンショットはまだありません';
+
+  @override
+  String get screenshotButtonHint => 'チャットツールバーのスクリーンショットボタンで画面をキャプチャできます。';
+
+  @override
+  String get screenshotsWillAppearHere => 'Claude セッションのスクリーンショットがここに表示されます。';
+
+  @override
+  String allWithCount(int count) {
+    return 'すべて ($count)';
+  }
+
+  @override
+  String get noImages => '画像がありません';
+
+  @override
+  String get failedToDeleteImage => '画像の削除に失敗しました';
+
+  @override
+  String get failedToDownloadImage => '画像のダウンロードに失敗しました';
+
+  @override
+  String get failedToShareImage => '画像の共有に失敗しました';
+
+  @override
+  String get deleteScreenshot => 'スクリーンショットを削除しますか？';
+
+  @override
+  String get cannotBeUndone => 'この操作は取り消せません。';
+
+  @override
+  String get changes => '変更';
+
+  @override
+  String get refresh => '更新';
+
+  @override
+  String get diffCompareSideBySide => '並べて比較';
+
+  @override
+  String get diffCompareSlider => 'スライダー';
+
+  @override
+  String get diffCompareOverlay => 'オーバーレイ';
+
+  @override
+  String get diffCompareToggle => 'トグル';
+
+  @override
+  String get diffBefore => '変更前';
+
+  @override
+  String get diffAfter => '変更後';
+
+  @override
+  String get diffNewFile => '新規ファイル';
+
+  @override
+  String get diffDeleted => '削除済み';
+
+  @override
+  String get diffNoImage => '画像なし';
+
+  @override
+  String get noChanges => '変更なし';
+
+  @override
+  String get showAll => 'すべて表示';
+
+  @override
+  String get setupGuideTitle => 'セットアップガイド';
+
+  @override
+  String get guideAboutTitle => 'CC Pocket とは';
+
+  @override
+  String get guideAboutDescription =>
+      'Bridge Server 経由で Codex や Claude をスマートフォンから使えるモバイルクライアントです。';
+
+  @override
+  String get guideAboutSdkNoteTitle => 'Claude Agent SDK について';
+
+  @override
+  String get guideAboutSdkNoteBody =>
+      'Claude Code のライブラリ版です。履歴や .claude、CLAUDE.md などの設定ファイルを共有でき、承認フローもおおよそ同じ感覚で使えます。';
+
+  @override
+  String get guideAboutDiagramTitle => 'しくみ';
+
+  @override
+  String get guideAboutDiagramPhone => 'iPhone';
+
+  @override
+  String get guideAboutDiagramBridge => 'Bridge Server';
+
+  @override
+  String get guideAboutDiagramClaude => 'Codex CLI\n/ Claude Agent SDK';
+
+  @override
+  String get guideAboutDiagramCaption =>
+      'PC の Bridge Server が Codex CLI や Claude Agent SDK に接続し、\nスマホからその Bridge に接続して使います。';
+
+  @override
+  String get guideBridgeTitle => 'Bridge Server の\nセットアップ';
+
+  @override
+  String get guideBridgeDescription =>
+      'PC で Bridge Server を起動します。Claude にはAPIキー、またはサブスクリプション認証の明示的な有効化が必要です。';
+
+  @override
+  String get guideBridgePrerequisites => '必要なもの';
+
+  @override
+  String get guideBridgePrereq1 => 'Node.js がインストールされた Mac / PC';
+
+  @override
+  String get guideBridgePrereq2 =>
+      'Claudeには ANTHROPIC_API_KEY または BRIDGE_ALLOW_CLAUDE_OAUTH=1 を設定';
+
+  @override
+  String get guideBridgePrereq3 => 'Codex を使う場合は Codex の認証を完了';
+
+  @override
+  String get guideBridgeStep1 => 'npx で実行（推奨）';
+
+  @override
+  String get guideBridgeStep1Command => 'npx --yes @ccpocket/bridge@latest';
+
+  @override
+  String get guideBridgeStep2 => 'またはグローバルインストール';
+
+  @override
+  String get guideBridgeStep2Command =>
+      'npm install -g @ccpocket/bridge\nccpocket-bridge';
+
+  @override
+  String get guideBridgeQrNote => '起動するとターミナルに QR コードが表示されます';
+
+  @override
+  String get guideConnectionTitle => '接続方法';
+
+  @override
+  String get guideConnectionDescription => '同じ Wi-Fi ネットワーク内なら、すぐに接続できます。';
+
+  @override
+  String get guideConnectionQr => 'QR コードスキャン';
+
+  @override
+  String get guideConnectionQrDescription =>
+      'ターミナルに表示された QR コードを読み取るだけ。一番簡単です。';
+
+  @override
+  String get guideConnectionMdns => '自動検出 (mDNS)';
+
+  @override
+  String get guideConnectionMdnsDescription =>
+      '同一 LAN 内の Bridge Server を自動で見つけて表示します。';
+
+  @override
+  String get guideConnectionManual => '手動入力';
+
+  @override
+  String get guideConnectionManualDescription =>
+      'ws://<IP アドレス>:8765 の形式で直接入力します。';
+
+  @override
+  String get guideConnectionRecommended => 'おすすめ';
+
+  @override
+  String get guideTailscaleTitle => '外出先からの接続';
+
+  @override
+  String get guideTailscaleDescription =>
+      '自宅の外からも使いたい場合は、Tailscale（VPN の一種）を使えば安全にリモート接続できます。';
+
+  @override
+  String get guideTailscaleStep1 => 'Mac と iPhone の両方に Tailscale をインストール';
+
+  @override
+  String get guideTailscaleStep2 => '同じアカウントでログイン';
+
+  @override
+  String get guideTailscaleStep3 =>
+      'Bridge URL に Tailscale IP を使用\n(例: ws://100.x.x.x:8765)';
+
+  @override
+  String get guideTailscaleWebsite => 'Tailscale 公式サイト';
+
+  @override
+  String get guideTailscaleWebsiteHint => '詳しいセットアップ方法は公式サイトをご覧ください。';
+
+  @override
+  String get guideLaunchdTitle => '常時起動の設定';
+
+  @override
+  String get guideLaunchdDescription =>
+      '毎回手動で Bridge Server を起動するのが面倒な場合、マシンの起動時に自動で立ち上がるよう設定できます。';
+
+  @override
+  String get guideLaunchdCommand => 'セットアップコマンド';
+
+  @override
+  String get guideLaunchdCommandValue => 'npx --yes @ccpocket/bridge@1 setup';
+
+  @override
+  String get guideLaunchdRecommendation =>
+      'まずは手動起動で動作確認してから、安定したらサービス登録がおすすめです。';
+
+  @override
+  String get guideAutostartMacDescription =>
+      'launchd に登録。シェル環境（nvm、Homebrew 等）が自動で引き継がれます。';
+
+  @override
+  String get guideAutostartLinuxDescription =>
+      'systemd ユーザーサービスを作成。Raspberry Pi 等の Linux ホストに対応。';
+
+  @override
+  String get guideReadyTitle => '準備完了!';
+
+  @override
+  String get guideReadyDescription =>
+      'Bridge Server を起動して、\nQR コードをスキャンするところから\n始めましょう。';
+
+  @override
+  String get guideReadyStart => 'さっそく始める';
+
+  @override
+  String get guideReadyHint => 'このガイドは設定画面からいつでも確認できます';
+
+  @override
+  String get creatingSession => 'セッション作成中...';
+
+  @override
+  String get resolvingLinkedSession => 'リンク先のセッションを検索しています...';
+
+  @override
+  String get resumingLinkedSession => 'セッションを再開しています...';
+
+  @override
+  String get sessionUnavailableTitle => 'セッションを利用できません';
+
+  @override
+  String get sessionUnavailableDescription =>
+      'このセッションは現在の Bridge では利用できません。最近のセッションから開いてください。';
+
+  @override
+  String get openRecentSessions => '最近のセッションを開く';
+
+  @override
+  String get copyForAgent => 'エージェント用にコピー';
+
+  @override
+  String get messageHistory => 'メッセージ履歴';
+
+  @override
+  String get viewChanges => '変更を確認';
+
+  @override
+  String get screenshot => 'スクリーンショット';
+
+  @override
+  String get debug => 'デバッグ';
+
+  @override
+  String get logs => 'ログ';
+
+  @override
+  String get viewApplicationLogs => 'アプリケーションログを表示';
+
+  @override
+  String get mockPreview => 'モックプレビュー';
+
+  @override
+  String get viewMockChatScenarios => 'モックチャットシナリオを表示';
+
+  @override
+  String get updateTrack => 'アップデートトラック';
+
+  @override
+  String get updateTrackDescription => '変更後にアプリを再起動すると反映されます';
+
+  @override
+  String get updateTrackStable => 'Stable（安定版）';
+
+  @override
+  String get updateTrackStaging => 'Staging（テスト）';
+
+  @override
+  String get updateDownloaded => 'アップデートをダウンロードしました。アプリを再起動すると反映されます。';
+
+  @override
+  String get promptHistory => 'プロンプト履歴';
+
+  @override
+  String get frequent => '頻度順';
+
+  @override
+  String get recent => '新しい順';
+
+  @override
+  String get searchHint => '検索...';
+
+  @override
+  String get noMatchingPrompts => '一致するプロンプトがありません';
+
+  @override
+  String get noPromptHistoryYet => 'プロンプト履歴はまだありません';
+
+  @override
+  String get promptHistoryFilters => 'フィルター';
+
+  @override
+  String get promptHistoryFilterThisDevice => 'この端末で使った履歴';
+
+  @override
+  String get promptHistoryFilterThisProject => '開いているプロジェクト';
+
+  @override
+  String get promptHistoryFilterThisBridge => '接続中のBridge';
+
+  @override
+  String get promptHistoryFilterFavorites => 'お気に入り';
+
+  @override
+  String get promptHistoryFilterCommands => 'コマンドとスキル';
+
+  @override
+  String get promptHistoryOpenProjectEmptyHint =>
+      '開いているプロジェクトのフィルターは、新しいアプリで記録した履歴にのみ有効です。';
+
+  @override
+  String get promptHistorySectionTitle => 'プロンプト履歴';
+
+  @override
+  String get promptHistorySyncTitle => 'プロンプト履歴を同期';
+
+  @override
+  String get promptHistoryReplaceTitle => '旧方式履歴でBridgeを上書き';
+
+  @override
+  String get promptHistoryReplaceSubtitle =>
+      '旧方式履歴はアプリ側で管理されていました。新方式ではBridge側で履歴を管理します。メイン端末で移行済みの場合は通常不要です。サブ端末でBridgeの履歴を初期化してしまった場合に、接続中のBridge履歴をこの端末の旧方式履歴で上書きします。';
+
+  @override
+  String get promptHistoryReplaceConfirmAction => '上書き';
+
+  @override
+  String get promptHistoryReplaceDismissAction => '移行済みとして非表示';
+
+  @override
+  String get promptHistoryNotSyncedYet => 'まだ同期していません';
+
+  @override
+  String promptHistoryLatestSync(String time) {
+    return '最終同期: $time';
+  }
+
+  @override
+  String promptHistorySyncedBridges(int count) {
+    return '$count件のBridgeを同期済み';
+  }
+
+  @override
+  String promptHistorySyncSummaryWithFailures(int synced, int failed) {
+    return '$synced件同期、$failed件失敗';
+  }
+
+  @override
+  String promptHistoryBridgeId(String id) {
+    return 'Bridge ID: $id';
+  }
+
+  @override
+  String promptHistoryOtherBridgeRegistrations(String registrations) {
+    return '他の登録: $registrations';
+  }
+
+  @override
+  String get promptHistoryNoSyncTime => '同期時刻なし';
+
+  @override
+  String get approvalQueue => '承認キュー';
+
+  @override
+  String get resetQueue => 'キューをリセット';
+
+  @override
+  String get swipeSkip => 'スキップ';
+
+  @override
+  String get swipeSend => '送信';
+
+  @override
+  String get swipeDismiss => '却下';
+
+  @override
+  String get swipeApprove => '承認';
+
+  @override
+  String get swipeReject => '拒否';
+
+  @override
+  String get allClear => 'すべて完了!';
+
+  @override
+  String itemsProcessed(int count) {
+    return '$count 件処理しました';
+  }
+
+  @override
+  String bestStreak(int count) {
+    return '最高連続: $count';
+  }
+
+  @override
+  String get tryAgain => 'もう一度';
+
+  @override
+  String get waitingForTasks => 'タスク待ち';
+
+  @override
+  String get agentReadyForPrompt => 'エージェントは次のプロンプトを待っています。';
+
+  @override
+  String get backToSessions => 'セッション一覧に戻る';
+
+  @override
+  String get working => '処理中...';
+
+  @override
+  String get waitingForApprovalRequests => 'エージェントからの承認リクエストを待っています。';
+
+  @override
+  String get noActiveSessions => '実行中のセッションはありません';
+
+  @override
+  String get startSessionToBegin => 'セッションを開始して承認リクエストの受信を始めましょう。';
+
+  @override
+  String get settingsTitle => '設定';
+
+  @override
+  String get sectionGeneral => '一般';
+
+  @override
+  String get sectionConnectionAccounts => '接続とアカウント';
+
+  @override
+  String get sectionNotifications => '通知';
+
+  @override
+  String get sectionSupport => '応援';
+
+  @override
+  String get sectionEditor => 'エディタ';
+
+  @override
+  String get textDensity => '表示密度';
+
+  @override
+  String get textDensityDescription =>
+      'OSの文字サイズ設定に、このアプリ倍率をさらに掛けます。100%はOS設定のままです。';
+
+  @override
+  String get codeFontSize => 'コード文字サイズ';
+
+  @override
+  String get codeFontFamily => 'コードフォント';
+
+  @override
+  String get codeFontPreview => 'プレビュー';
+
+  @override
+  String get indentSize => 'インデント幅';
+
+  @override
+  String get indentSizeSubtitle => '箇条書きのインデントに使用するスペース数';
+
+  @override
+  String get gitDiffInteractionMode => 'Git diff 操作';
+
+  @override
+  String get gitDiffQuickActions => 'クイック操作';
+
+  @override
+  String get gitDiffQuickActionsDescription =>
+      '1本指の横スワイプで hunk の Stage / Unstage / Revert を実行します。長い行は折り返します。';
+
+  @override
+  String get gitDiffScrollFirst => '横スクロール優先';
+
+  @override
+  String get gitDiffScrollFirstDescription =>
+      '長い行を折り返さず、hunk 単位で横スクロールできます。Git 操作はロングタップのメニューまたは下部ボタンから実行します。';
+
+  @override
+  String get imagePasteShortcut => '画像ペーストのショートカット';
+
+  @override
+  String get imagePasteShortcutCtrlV => 'Ctrl+V';
+
+  @override
+  String get imagePasteShortcutCtrlVDescription =>
+      'macOS で推奨。Cmd+V を通常のペーストや音声入力ツール用に残します。';
+
+  @override
+  String get imagePasteShortcutCommandV => 'Cmd+V';
+
+  @override
+  String get imagePasteShortcutCommandVDescription =>
+      '音声入力アプリ、クリップボード管理アプリ、テキスト展開ツールと競合する可能性があります。';
+
+  @override
+  String get gitDiffFocusAutoLandscape => 'diff集中モードで横画面にする';
+
+  @override
+  String get gitDiffFocusAutoLandscapeDescription =>
+      'モバイルレイアウトでは、diff集中モードに入ると横画面に固定します。解除すると通常の回転に戻ります。';
+
+  @override
+  String get remoteGitStatusBadge => '未同期のGitコミットを薄いバッジで表示';
+
+  @override
+  String get remoteGitStatusBadgeDescription =>
+      'fetch後に現在ブランチがpushまたはpull可能な場合、セッション画面のGitボタンに薄いバッジを表示します。';
+
+  @override
+  String get sectionAbout => '概要';
+
+  @override
+  String get theme => 'テーマ';
+
+  @override
+  String get themeSystem => 'システム';
+
+  @override
+  String get themeLight => 'ライト';
+
+  @override
+  String get themeDark => 'ダーク';
+
+  @override
+  String get appIconTitle => 'アプリアイコン';
+
+  @override
+  String get appIconMonthlySupporterPerk => '月額サポーター特典です。';
+
+  @override
+  String appIconSettingsSubtitle(String device) {
+    return '$deviceのホーム画面に表示されるアイコンを変更できます。';
+  }
+
+  @override
+  String get appIconSupporterDialogTitle => '月額サポーター特典';
+
+  @override
+  String get appIconSupporterSectionLabel => '月額サポーター特典';
+
+  @override
+  String get appIconPickerTitle => 'アプリアイコンを選ぶ';
+
+  @override
+  String get appIconPickerSubtitle => 'ホーム画面に表示するアイコンを選べます。';
+
+  @override
+  String get appIconOptionDefaultTitle => 'ダーク';
+
+  @override
+  String get appIconOptionDefaultSubtitle => '通常の CC Pocket アイコンです。';
+
+  @override
+  String get appIconOptionLightOutlineTitle => 'ライト';
+
+  @override
+  String get appIconOptionLightOutlineSubtitle => '軽やかなラインが映える明るめのバリエーション。';
+
+  @override
+  String get appIconOptionCopperEmeraldTitle => 'メタリック';
+
+  @override
+  String get appIconOptionCopperEmeraldSubtitle => '光沢感のある特別版。';
+
+  @override
+  String get language => '言語';
+
+  @override
+  String get languageSystem => '端末の設定に従う';
+
+  @override
+  String get voiceInput => '音声入力';
+
+  @override
+  String get pushNotifications => 'プッシュ通知';
+
+  @override
+  String get pushNotificationsSubtitle => 'Bridge 経由でセッション通知を受け取ります';
+
+  @override
+  String get pushNotificationsUnavailable => 'Firebase 設定後に利用できます';
+
+  @override
+  String get version => 'バージョン';
+
+  @override
+  String get loading => '読み込み中...';
+
+  @override
+  String get loadingSessions => 'セッション一覧を読み込み中...';
+
+  @override
+  String get setupGuideSubtitle => '初めての方はこちら';
+
+  @override
+  String get openSourceLicenses => 'オープンソースライセンス';
+
+  @override
+  String get githubRepository => 'GitHub リポジトリ';
+
+  @override
+  String get changelog => '変更履歴';
+
+  @override
+  String get changelogTitle => '変更履歴';
+
+  @override
+  String get showAllMain => 'すべて表示 (main)';
+
+  @override
+  String get changelogFetchError => '変更履歴の取得に失敗しました';
+
+  @override
+  String get fcmBridgeNotInitialized => 'Bridge が未初期化です';
+
+  @override
+  String get fcmTokenFailed => 'FCM token を取得できませんでした';
+
+  @override
+  String get fcmRegistrationFailed => 'Bridge への通知登録に失敗しました';
+
+  @override
+  String get fcmEnabled => '通知を有効化しました';
+
+  @override
+  String get fcmEnabledPending => 'Bridge 再接続後に通知登録します';
+
+  @override
+  String get fcmDisabled => '通知を無効化しました';
+
+  @override
+  String get fcmDisabledPending => 'Bridge 再接続後に通知解除します';
+
+  @override
+  String get pushPrivacyMode => 'プライバシーモード';
+
+  @override
+  String get pushPrivacyModeSubtitle => '通知にプロジェクト名や内容を含めない';
+
+  @override
+  String get updateNotificationLanguage => '通知言語を更新';
+
+  @override
+  String get notificationLanguageUpdated => '通知言語を更新しました';
+
+  @override
+  String get defaultNotRecommended => 'Default（非推奨）';
+
+  @override
+  String get imageAttached => '画像添付';
+
+  @override
+  String get usageConnectToView => 'Bridge に接続すると利用量を表示できます';
+
+  @override
+  String get usageFetchFailed => '取得に失敗しました';
+
+  @override
+  String get usageFiveHour => '5時間';
+
+  @override
+  String get usageSevenDay => '7日間';
+
+  @override
+  String get settingsUsageSectionTitle => '利用量';
+
+  @override
+  String get settingsUsageNoCodexData => 'Codex の利用量データが見つかりませんでした。';
+
+  @override
+  String get usageDisplayModeRemaining => '残量';
+
+  @override
+  String get usageDisplayModeUsed => '使用量';
+
+  @override
+  String get usageOpenSettingsHint => '利用量の詳細を開く';
+
+  @override
+  String get usagePaceOnTrack => '順調';
+
+  @override
+  String get usagePaceSlightlyAhead => 'やや速い';
+
+  @override
+  String get usagePaceAhead => '速い';
+
+  @override
+  String get usagePaceFarAhead => 'かなり速い';
+
+  @override
+  String get usagePaceSlightlyBehind => 'やや余裕';
+
+  @override
+  String get usagePaceBehind => '余裕あり';
+
+  @override
+  String get usagePaceFarBehind => 'かなり余裕';
+
+  @override
+  String usagePaceExpected(int percent) {
+    return '目安 $percent% 使用';
+  }
+
+  @override
+  String get usagePaceWillLast => 'このペースならリセットまで持つ見込み';
+
+  @override
+  String usagePaceRunsOutIn(String duration) {
+    return 'このペースだと約 $duration で上限の見込み';
+  }
+
+  @override
+  String get usagePaceAtLimit => '上限に到達しています';
+
+  @override
+  String get settingsClaudeUsageDescription => 'Claude の公式課金ページをブラウザで開きます。';
+
+  @override
+  String get settingsClaudeApiBilling => 'API キーの課金';
+
+  @override
+  String get settingsClaudeSubscriptionUsage => 'サブスクリプション利用状況';
+
+  @override
+  String get settingsNewSessionTabs => '新規セッションタブ';
+
+  @override
+  String get settingsNewSessionTabsDescription =>
+      '新規セッションで表示する AI ツールの選択肢と並び順を変更できます。';
+
+  @override
+  String get showHiddenDirectories => '隠しディレクトリを表示';
+
+  @override
+  String get showHiddenDirectoriesSubtitle =>
+      '新規セッションのディレクトリブラウザに「.」で始まるフォルダを表示します。';
+
+  @override
+  String get showBridgeNameInSessionList => 'Bridge名を表示';
+
+  @override
+  String get showBridgeNameInSessionListSubtitle =>
+      '複数のBridgeが登録されているとき、接続中のBridge名をセッション一覧に表示します。';
+
+  @override
+  String get autoRenameCodexSessions => '自動Rename (Codex)';
+
+  @override
+  String get autoRenameCodexSessionsSubtitle =>
+      '最初のエージェント応答後に Codex セッションへ自動で名前を付ける';
+
+  @override
+  String get showExtendedCodexEfforts => 'Effortスライダーに Max / Ultra を表示';
+
+  @override
+  String get showExtendedCodexEffortsSubtitle =>
+      '選択した Codex モデルが対応している場合、スライダーに Max と Ultra を追加します';
+
+  @override
+  String get autoRenameClaudeSessions => '自動Rename (Claude)';
+
+  @override
+  String get autoRenameClaudeSessionsSubtitle =>
+      '最初のエージェント応答後に Claude セッションへ自動で名前を付ける。API Key 利用時は追加の従量課金が発生します。';
+
+  @override
+  String get newSessionTabCodex => 'Codex';
+
+  @override
+  String get newSessionTabClaudeCode => 'Claude';
+
+  @override
+  String usageResetAt(String time) {
+    return 'リセット: $time';
+  }
+
+  @override
+  String get usageAlreadyReset => 'リセット済み';
+
+  @override
+  String attachedImages(int count) {
+    return '添付画像 ($count)';
+  }
+
+  @override
+  String get attachedImagesNoCount => '添付画像';
+
+  @override
+  String get failedToFetchImages => '画像を取得できませんでした';
+
+  @override
+  String get responseTimedOut => '応答がタイムアウトしました';
+
+  @override
+  String failedToFetchImagesWithError(String error) {
+    return '画像の取得に失敗しました: $error';
+  }
+
+  @override
+  String get retry => 'リトライ';
+
+  @override
+  String get codexWriterConflictGuidance =>
+      'Codex Desktop または Codex App を閉じてから、もう一度お試しください。';
+
+  @override
+  String get clipboardNotAvailable => 'クリップボードにアクセスできません';
+
+  @override
+  String get failedToLoadImage => '画像の読み込みに失敗しました';
+
+  @override
+  String get generatedImagePromptLabel => 'プロンプト';
+
+  @override
+  String get generatedImageDetailsLabel => '詳細';
+
+  @override
+  String get generatedImageHideDetailsLabel => '詳細を閉じる';
+
+  @override
+  String get generatedImageStatusLabel => 'ステータス';
+
+  @override
+  String get generatedImageSavedPathLabel => '保存先';
+
+  @override
+  String get previousImage => '前の画像';
+
+  @override
+  String get nextImage => '次の画像';
+
+  @override
+  String generatedImagePositionLabel(int current, int total) {
+    return '生成画像 $current / $total';
+  }
+
+  @override
+  String get noImageInClipboard => 'クリップボードに画像がありません';
+
+  @override
+  String get failedToReadClipboard => 'クリップボードの読み取りに失敗しました';
+
+  @override
+  String imageLimitReached(int max) {
+    return '画像は最大$max枚までです';
+  }
+
+  @override
+  String imageLimitTruncated(int max, int dropped) {
+    return '最初の$max枚のみ添付しました（$dropped枚を除外）';
+  }
+
+  @override
+  String get selectFromGallery => 'ギャラリーから選択';
+
+  @override
+  String get pasteFromClipboard => 'クリップボードから貼付';
+
+  @override
+  String get pasteImage => '画像をペースト';
+
+  @override
+  String get voiceInputLanguage => '音声入力の言語';
+
+  @override
+  String get hideVoiceInput => '音声入力ボタンを非表示';
+
+  @override
+  String get hideVoiceInputSubtitle => 'サードパーティの音声入力キーボードを利用する場合に便利';
+
+  @override
+  String get openGalleryDirectly => '画像ボタンでギャラリーを直接開く';
+
+  @override
+  String get openGalleryDirectlySubtitle => '添付メニューを表示せず、すぐに画像選択を開始します';
+
+  @override
+  String get archive => 'アーカイブ';
+
+  @override
+  String get archiveConfirm => 'このセッションをアーカイブしますか？';
+
+  @override
+  String get archiveConfirmMessage =>
+      'セッションは一覧から非表示になります。Claude Codeからは引き続きアクセスできます。';
+
+  @override
+  String get sessionArchived => 'セッションをアーカイブしました';
+
+  @override
+  String get archiveFailed => 'セッションのアーカイブに失敗しました';
+
+  @override
+  String archiveFailedWithError(String error) {
+    return 'セッションのアーカイブに失敗しました: $error';
+  }
+
+  @override
+  String get noRecentSessions => '最近のセッションはありません';
+
+  @override
+  String get noSessionsMatchFilters => '現在のフィルター条件に一致するセッションがありません';
+
+  @override
+  String get adjustFiltersAndSearch => 'フィルター条件や検索語を変更してください';
+
+  @override
+  String get tooltipDisplayMode => 'カードに表示するメッセージを切替';
+
+  @override
+  String get tooltipProviderFilter => 'AIツールで絞り込み';
+
+  @override
+  String get tooltipProjectFilter => 'プロジェクトで絞り込み';
+
+  @override
+  String get tooltipNamedOnly => '名前を付けたセッションのみ';
+
+  @override
+  String get tooltipIndent => 'インデントを増やす';
+
+  @override
+  String get tooltipDedent => 'インデントを減らす';
+
+  @override
+  String get tooltipSlashCommand => 'コマンド・スキルを入力';
+
+  @override
+  String get tooltipMention => 'ファイル・プラグインをメンション';
+
+  @override
+  String get tooltipDollarMention => 'スキル・アプリを入力';
+
+  @override
+  String get tooltipPermissionMode => 'パーミッションモード';
+
+  @override
+  String get tooltipAttachImage => '画像を添付';
+
+  @override
+  String get tooltipPromptHistory => 'プロンプト履歴を開く';
+
+  @override
+  String get tooltipVoiceInput => '音声入力を開始';
+
+  @override
+  String get tooltipStopRecording => '録音を停止';
+
+  @override
+  String get tooltipSendMessage => 'メッセージを送信';
+
+  @override
+  String get tooltipRemoveImage => '画像を削除';
+
+  @override
+  String get tooltipClearDiff => 'Diff選択を解除';
+
+  @override
+  String get showMore => 'もっと見る';
+
+  @override
+  String get showLess => '閉じる';
+
+  @override
+  String get authErrorTitle => 'Claudeの再ログインが必要です';
+
+  @override
+  String get authErrorBody => 'BridgeマシンでClaudeに再ログインしてください。';
+
+  @override
+  String get authErrorPrimaryCommandLabel => '手順1';
+
+  @override
+  String get authErrorSecondaryCommandLabel => '手順2';
+
+  @override
+  String get authErrorAlternativeLabel => 'シェルから実行する場合';
+
+  @override
+  String get claudeOAuthOptInTitle => 'サブスクリプション認証には明示的な有効化が必要です';
+
+  @override
+  String get claudeOAuthOptInBody =>
+      'Anthropicはホストされた未改変のClaude Codeへのユーザー自身のログインを認める一方、Agent SDKガイドでは第三者製品にAPIキーを案内しています。そのためCC Pocketではサブスクリプション認証をデフォルトで無効にしています。';
+
+  @override
+  String get claudeOAuthOptInHint =>
+      '詳細を確認し、Bridgeマシンで設定して再起動してください。不確実性を避ける場合はAPIキーを利用できます:';
+
+  @override
+  String get authHelpTitle => '認証トラブルシューティング';
+
+  @override
+  String get authHelpFetchError => 'トラブルシューティングガイドを読み込めませんでした';
+
+  @override
+  String get authHelpButton => '手順を見る';
+
+  @override
+  String get authHelpLanguageJa => '日本語';
+
+  @override
+  String get authHelpLanguageEn => 'English';
+
+  @override
+  String get authHelpLanguageZhHans => '简体中文';
+
+  @override
+  String get authHelpLanguageKo => '한국어';
+
+  @override
+  String get terminalApp => 'ターミナルアプリ';
+
+  @override
+  String get terminalAppSubtitle => '外部ターミナルアプリでプロジェクトを開く';
+
+  @override
+  String get terminalAppNone => '未設定';
+
+  @override
+  String get terminalAppCustom => 'カスタム';
+
+  @override
+  String get terminalAppName => 'アプリ名';
+
+  @override
+  String get terminalUrlTemplate => 'URL テンプレート';
+
+  @override
+  String get terminalUrlTemplateHint => '変数: host, user, port, project_path';
+
+  @override
+  String get terminalSshUser => 'SSH ユーザー';
+
+  @override
+  String get terminalSshUserHint => '未入力時はマシンの SSH ユーザーを使用';
+
+  @override
+  String get openInTerminal => 'ターミナルで開く';
+
+  @override
+  String get terminalAppNotInstalled => 'ターミナルアプリを開けませんでした';
+
+  @override
+  String get terminalAppExperimental => 'プレビュー';
+
+  @override
+  String get terminalAppExperimentalNote =>
+      'この機能はプレビュー版です。プリセットはアプリや環境によって動作しない場合があります。新しいプリセットの追加は GitHub で歓迎しています！';
+
+  @override
+  String get sectionSpread => 'CC Pocket を広める';
+
+  @override
+  String get spreadAppealMessage =>
+      'CC Pocket はまだ利用者が少なく、このままだと開発を続けるのが難しい状況です。気に入っていたら、ストア評価（星だけでOK）や知り合いへの紹介で応援してください。';
+
+  @override
+  String get shareApp => 'SNSでシェア';
+
+  @override
+  String get shareAppSubtitle => '同僚や友人に紹介する';
+
+  @override
+  String shareText(String url) {
+    return 'CC Pocket: Claude & Codex\nスマホからコーディングエージェントを操作できるアプリ 📱\n#ccpocket\n$url';
+  }
+
+  @override
+  String get starOnGithub => 'GitHub にスターする';
+
+  @override
+  String get rateOnStore => 'App Store で評価する';
+
+  @override
+  String get rateOnStoreAndroid => 'Google Play で評価する';
+
+  @override
+  String get supporterTitle => 'Supporter';
+
+  @override
+  String get supporterMonthlyTitle => '月額サポーター';
+
+  @override
+  String get supporterMonthlyPlusTitle => '月額サポーター Plus';
+
+  @override
+  String get supporterSnackTitle => 'おやつで応援';
+
+  @override
+  String get supporterCoffeeTitle => 'ドリンクで応援';
+
+  @override
+  String get supporterLunchTitle => 'ランチで応援';
+
+  @override
+  String get supporterStatusActive => 'CC Pocket を応援してくれてありがとうございます。';
+
+  @override
+  String get supporterStatusInactive => 'アプリは無料のまま。継続開発を応援できます。';
+
+  @override
+  String get supporterStatusLoading => '応援状態を確認しています...';
+
+  @override
+  String get supportEntryInactiveTitle => '応援する';
+
+  @override
+  String get supportEntryInactiveSubtitle =>
+      'CC Pocket が気に入ったら、継続開発を応援してもらえるとうれしいです。';
+
+  @override
+  String get supportEntryOneTimeTitle => '応援ありがとう';
+
+  @override
+  String get supportEntryOneTimeSubtitle => 'これまでの応援、ありがとうございます。';
+
+  @override
+  String get supportEntryActiveTitle => '応援中';
+
+  @override
+  String supportEntryActiveSubtitle(String date) {
+    return 'いつもありがとうございます。$dateから応援中です。';
+  }
+
+  @override
+  String get supporterMonthlyDescription => '継続的な開発を後押し';
+
+  @override
+  String get supporterMonthlyPerkLabel => 'アプリアイコン変更特典付き';
+
+  @override
+  String get supporterSnackDescription => 'おやつを1つおごる';
+
+  @override
+  String get supporterCoffeeDescription => 'ドリンクを1杯おごる';
+
+  @override
+  String get supporterLunchDescription => 'ランチを1食おごる';
+
+  @override
+  String get supporterBuyButton => '応援する';
+
+  @override
+  String get supporterActiveButton => '応援中';
+
+  @override
+  String get supporterSubscribedButton => '購読中';
+
+  @override
+  String get supporterRestoreButton => '購入を復元';
+
+  @override
+  String get supporterRetryButton => '再試行';
+
+  @override
+  String get supporterProductsUnavailable => '現在利用できる応援プランがありません。';
+
+  @override
+  String get supporterRestoreNoticeTitle => '購入の復元について';
+
+  @override
+  String get supporterRestoreNoticeBody =>
+      '購入の復元は同じ Apple ID または Google アカウントで利用できます。iOS と Android の間で応援状態は共有されません。';
+
+  @override
+  String get supporterSummaryTitle => '応援サマリー';
+
+  @override
+  String supporterSummarySinceChip(String date) {
+    return '$dateから応援中';
+  }
+
+  @override
+  String supporterSummaryStreakChip(String duration) {
+    return '継続 $duration';
+  }
+
+  @override
+  String supporterSummaryOneTimeCount(int count) {
+    return '単発 ×$count';
+  }
+
+  @override
+  String supporterSummarySnackCount(int count) {
+    return 'おやつ ×$count';
+  }
+
+  @override
+  String supporterSummaryCoffeeCount(int count) {
+    return 'ドリンク ×$count';
+  }
+
+  @override
+  String supporterSummaryLunchCount(int count) {
+    return 'ランチ ×$count';
+  }
+
+  @override
+  String get supporterSummaryLessThanMonth => '1か月未満';
+
+  @override
+  String supporterSummaryDurationMonths(int count) {
+    return '$countか月';
+  }
+
+  @override
+  String get supporterSummarySinceLabel => '応援開始';
+
+  @override
+  String get supporterSummaryStreakLabel => '継続';
+
+  @override
+  String get supporterSummaryOngoingLabel => '継続中';
+
+  @override
+  String get supporterSummarySupportPeriodLabel => '応援期間';
+
+  @override
+  String get supporterImpactTitle => '応援でできること';
+
+  @override
+  String get supporterImpactBody =>
+      'CC Pocket が気に入ったら、継続開発を応援してもらえるとうれしいです。アプリはこれからも無料の OSS として続けていきます。';
+
+  @override
+  String get supporterImpactAiTitle => '開発と運用のコスト';
+
+  @override
+  String get supporterImpactAiBody => 'AI 利用料、実機確認、テスト、配布まわりなどの継続コストを支えます。';
+
+  @override
+  String get supporterImpactDevicesTitle => '端末とテスト';
+
+  @override
+  String get supporterImpactDevicesBody =>
+      '実機確認や OS アップデート追従など、安定運用に必要なコストを支えます。';
+
+  @override
+  String get supporterImpactMotivationTitle => '継続するモチベーション';
+
+  @override
+  String get supporterImpactMotivationBody =>
+      '使ってくれている実感が、新機能や改善を続けるいちばんの後押しになります。';
+
+  @override
+  String get supporterPackagesTitle => '応援の方法';
+
+  @override
+  String get supporterSubscriptionGroupTitle => '毎月応援';
+
+  @override
+  String get supporterSubscriptionGroupBody => '継続的に応援してもらえるとうれしいです。';
+
+  @override
+  String get supporterOneTimeGroupTitle => '単発で応援';
+
+  @override
+  String get supporterOneTimeGroupBody =>
+      'ランチやドリンクをおごる気持ちになったら、応援してもらえるとうれしいです。';
+
+  @override
+  String get supporterPurchaseInfoTitle => '購入について';
+
+  @override
+  String get supporterPurchaseInfoBody =>
+      '購入の復元は同じ Apple ID または Google アカウントで利用できます。iOS と Android の間で応援状態は共有されません。';
+
+  @override
+  String get supporterPurchaseInfoLink => '詳しくはこちら';
+
+  @override
+  String get supporterPrivacyPolicyLink => 'プライバシーポリシー';
+
+  @override
+  String get supporterTermsOfUseLink => '利用規約（Apple標準EULA）';
+
+  @override
+  String get supporterLearnMoreTitle => '購入と応援について';
+
+  @override
+  String get supporterLearnMoreBody => '無料で提供し続ける考え方や、購入の復元の仕組みを確認できます。';
+
+  @override
+  String get supporterOpenLinkFailed => '案内ページを開けませんでした。';
+
+  @override
+  String get supporterPurchaseSuccess => 'CC Pocket を応援してくれてありがとうございます。';
+
+  @override
+  String get supporterPurchaseCancelled => '購入をキャンセルしました。';
+
+  @override
+  String supporterPurchaseFailed(String message) {
+    return '購入に失敗しました: $message';
+  }
+
+  @override
+  String get supporterRestoreSuccess => '購入情報を復元しました。';
+
+  @override
+  String supporterRestoreFailed(String message) {
+    return '復元に失敗しました: $message';
+  }
+
+  @override
+  String get gitDiscardAllChangesTitle => 'すべての変更を破棄しますか';
+
+  @override
+  String get gitDiscardVisibleUnstagedChangesMessage => '表示中の未ステージ変更をすべて破棄します。';
+
+  @override
+  String get gitDiscardChangeTitle => 'この変更を破棄しますか';
+
+  @override
+  String get gitDiscardFileUnstagedChangesMessage => 'このファイルの未ステージ変更をすべて破棄します。';
+
+  @override
+  String get gitDiscardHunkUnstagedChangesMessage => 'このハンクの未ステージ変更を破棄します。';
+
+  @override
+  String get googleSearchSelectionAction => 'Google で検索';
+
+  @override
+  String get approvalQuestionNotificationTitle => '質問があります - ccpocket';
+
+  @override
+  String get approvalRequiredNotificationTitle => '承認待ち - ccpocket';
+
+  @override
+  String get exitPlanModeNotificationBody => '作成したプランの確認が必要です';
+
+  @override
+  String get renderErrorFallback => 'このコンテンツを表示できませんでした';
+}

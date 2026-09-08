@@ -1,0 +1,1224 @@
+{
+  "@@locale": "ja",
+
+  "appTitle": "CC Pocket",
+
+  "projects": "プロジェクト",
+  "manageProjects": "管理",
+  "createProject": "プロジェクトを作成",
+  "editProject": "プロジェクトを編集",
+  "projectName": "プロジェクト名",
+  "sourceFolders": "ソースフォルダ",
+  "primary": "プライマリ",
+  "makePrimary": "プライマリにする",
+  "removeFolder": "フォルダを削除",
+  "addFolder": "フォルダを追加",
+  "removeWorkspaceProject": "プロジェクトを削除",
+  "noProjectsYet": "プロジェクトはまだありません",
+  "unavailable": "利用できません",
+
+  "cancel": "キャンセル",
+  "save": "保存",
+  "delete": "削除",
+  "remove": "削除",
+  "removeProjectTitle": "プロジェクトを削除",
+  "removeProjectConfirm": "「{name}」を最近のプロジェクトから削除しますか？",
+  "rename": "名前を変更",
+  "renameSession": "セッション名を変更",
+  "pin": "セッションをピン留め",
+  "unpin": "セッションのピン留めを解除",
+  "pinProject": "プロジェクトをピン留め",
+  "unpinProject": "プロジェクトのピン留めを解除",
+  "sessionNameHint": "セッション名",
+  "clearName": "名前をクリア",
+  "connect": "接続",
+  "protocolIncompatibleTitle": "App と Bridge のバージョンに互換性がありません",
+  "protocolUpdateAppBody": "CC Pocket をインストール元から更新してから、もう一度接続してください。",
+  "protocolUpdateBridgeBody": "Bridge を互換性のあるリリースへ更新してから、もう一度接続してください。",
+  "protocolUpdateBothBody": "プロトコル情報が不正または不足しています。CC Pocket と Bridge の両方を更新してから再接続してください。",
+  "protocolRangeDetails": "App プロトコル {appMin}–{appMax}、Bridge プロトコル {bridgeMin}–{bridgeMax}",
+  "@protocolRangeDetails": {
+    "placeholders": {
+      "appMin": { "type": "int" },
+      "appMax": { "type": "int" },
+      "bridgeMin": { "type": "int" },
+      "bridgeMax": { "type": "int" }
+    }
+  },
+  "toolSuggestionTitle": "Codex に {toolName} を追加しますか？",
+  "toolSuggestionInstall": "{toolName} をインストール",
+  "toolSuggestionInstalling": "インストール中…",
+  "toolSuggestionNotNow": "今回はしない",
+  "toolSuggestionAuthDescription": "必要なアプリを接続し、完了したら確認してください。",
+  "toolSuggestionConnect": "{appName} を接続",
+  "toolSuggestionComplete": "接続が完了しました",
+  "toolSuggestionFailed": "インストールに失敗しました",
+  "toolSuggestionOpenFailed": "接続ページを開けませんでした。",
+  "copy": "コピー",
+  "copyEntireMessage": "メッセージ全体をコピー",
+  "markdownLinkOpenFailed": "リンクを開けませんでした。",
+  "markdownLinkUnsupported": "この種類のリンクには対応していません。",
+  "markdownFileUnavailable": "このファイルはここではプレビューできません。",
+  "filePreviewShowSource": "ソースを表示",
+  "filePreviewShowPreview": "プレビューを表示",
+  "filePreviewRenderedHtml": "HTMLレンダリングプレビュー",
+  "filePreviewMediaUnavailable": "このメディアファイルはここでは再生できません。",
+  "filePreviewMediaLoadFailed": "メディアファイルを読み込めませんでした。",
+  "filePreviewPlay": "再生",
+  "filePreviewPause": "一時停止",
+  "filePreviewRewind10": "10秒戻る",
+  "filePreviewForward10": "10秒進む",
+  "filePreviewPlaybackSpeed": "再生速度",
+  "filePreviewMute": "ミュート",
+  "filePreviewUnmute": "ミュート解除",
+  "filePreviewVolume": "音量",
+  "filePreviewFullscreen": "全画面表示",
+  "filePreviewExitFullscreen": "全画面表示を終了",
+  "fileTransferShareOrSave": "共有・保存",
+  "fileUploadTitle": "ファイルをアップロード",
+  "fileUploadAction": "アップロード",
+  "fileUploadDestination": "保存先",
+  "fileUploadConflictLabel": "同名ファイルがある場合",
+  "fileUploadKeepBoth": "両方残す",
+  "fileUploadReplace": "置き換える",
+  "fileUploadSkip": "スキップ",
+  "fileUploadPreparing": "準備中…",
+  "fileUploadUploading": "アップロード中…",
+  "fileUploadFinalizing": "検証中…",
+  "fileUploadComplete": "アップロード完了",
+  "fileUploadSkipped": "スキップ済み",
+  "fileUploadTooMany": "一度にアップロードできるのは20ファイルまでです。",
+  "fileUploadTotalTooLarge": "選択したファイルの合計が1 GBの上限を超えています。",
+  "fileUploadSelectionFailed": "選択したファイルを開けませんでした。",
+  "fileUploadFileTooLarge": "各ファイルは512 MB以下にしてください。",
+  "fileUploadErrorNotAllowed": "現在のフォルダまたはファイル名にはアップロードできません。",
+  "fileUploadErrorTooLarge": "このファイルはBridgeのアップロード上限を超えています。",
+  "fileUploadErrorUnavailable": "ファイルをアップロードできません。Bridgeを更新または再起動してください。",
+  "fileUploadErrorBridgeUpdate": "ファイルをアップロードするにはBridgeを更新してください。",
+  "fileUploadErrorFailed": "ファイルをアップロードできませんでした。",
+  "fileTransferPreparing": "ダウンロードを準備中…",
+  "fileTransferDownloading": "ダウンロード中…",
+  "fileTransferOpeningShareSheet": "共有シートを開いています…",
+  "fileTransferErrorNotAllowed": "このファイルは現在のプロジェクト外にあるか、アクセスが許可されていません。",
+  "fileTransferErrorNotFound": "ファイルが見つかりません。",
+  "fileTransferErrorNotFile": "通常のファイルのみダウンロードできます。",
+  "fileTransferErrorTooLarge": "Bridge のダウンロード上限を超えています。",
+  "fileTransferErrorUnavailable": "ファイルをダウンロードできません。Bridgeを更新または再起動してください。",
+  "fileTransferErrorBridgeUpdate": "ファイルをダウンロードするにはBridgeを更新してください。",
+  "fileTransferErrorFailed": "ファイルをダウンロードできませんでした。",
+  "fileTransferErrorShareFailed": "システムの共有シートを開けませんでした。",
+  "copied": "コピーしました",
+  "copiedToClipboard": "クリップボードにコピーしました",
+  "lineCopied": "行をコピーしました",
+  "start": "開始",
+  "stop": "停止",
+  "send": "送信",
+  "settings": "設定",
+  "gallery": "ギャラリー",
+  "git": "Git",
+  "explorer": "Explorer",
+  "gitUnavailableTip": "Git未検出 — Git機能は利用できません",
+  "gitUnavailableTitle": "Gitを利用できません",
+  "gitUnavailableHint": "このプロジェクトではGit機能を利用できません",
+  "autoModeFallbackDefaultTip": "Auto mode はこの環境で使えないため Default に切り替えました",
+  "galleryWithCount": "ギャラリー ({count})",
+  "@galleryWithCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "disconnect": "切断",
+  "back": "戻る",
+  "next": "次へ",
+  "done": "完了",
+  "skip": "スキップ",
+  "edit": "編集",
+  "share": "共有",
+  "all": "すべて",
+  "none": "なし",
+  "dismissKeyboard": "キーボードを閉じる",
+
+  "serverUnreachable": "サーバーに接続できません",
+  "serverUnreachableBody": "Bridge サーバーに到達できません:",
+  "setupSteps": "セットアップ手順:",
+  "setupStep1Title": "Bridge Server を起動",
+  "setupStep1Command": "npx --yes @ccpocket/bridge@latest",
+  "setupStep2Title": "常時起動したい場合はサービス登録",
+  "setupStep2Command": "npx --yes @ccpocket/bridge@1 setup",
+  "setupNetworkHint": "両方のデバイスが同じネットワーク上にあることを確認してください（または Tailscale を使用）。",
+  "connectAnyway": "接続を続行",
+
+  "stopSession": "セッションを停止",
+  "stopSessionConfirm": "このセッションを停止しますか？ Claude プロセスが終了します。",
+
+  "startNewWithSameSettings": "同じ設定で新規開始",
+  "copyResumeCommand": "再開コマンドをコピー",
+  "copyResumeCommandSubtitle": "mac / Linuxに引き継ぎ",
+  "resumeCommandCopied": "再開コマンドをコピーしました",
+  "editSettingsThenStart": "設定を変更して開始",
+
+  "serverRequiresApiKey": "このサーバーには API キーが必要です",
+  "bridgeServerUpdated": "Bridge Server を更新しました",
+  "bridgeUpdateStarted": "Bridge を更新しています。接続を閉じてマシン一覧に戻ります。",
+  "bridgeUpdateReconnectHint": "Bridge Server を更新しました。マシン一覧から再接続してください。",
+  "failedToUpdateServer": "サーバーの更新に失敗しました",
+  "bridgeServerStarted": "Bridge Server を起動しました",
+  "failedToStartServer": "サーバーの起動に失敗しました",
+  "bridgeServerStopped": "Bridge Server を停止しました",
+  "failedToStopServer": "サーバーの停止に失敗しました",
+
+  "sshPassword": "SSH パスワード",
+  "sshPasswordPrompt": "{machineName} の SSH パスワードを入力",
+  "@sshPasswordPrompt": {
+    "placeholders": {
+      "machineName": { "type": "String" }
+    }
+  },
+  "password": "パスワード",
+  "machineEditAddTitle": "マシンを追加",
+  "machineEditEditTitle": "マシンを編集",
+  "machineEditDismissKeyboardTooltip": "キーボードを閉じる",
+  "machineEditBasicInfo": "基本情報",
+  "machineEditName": "名前",
+  "machineEditNameHint": "Home Mac",
+  "machineEditHostLabel": "Host（IP またはホスト名）",
+  "machineEditHostHint": "100.64.1.2",
+  "machineEditPort": "Port",
+  "machineEditBridgePortHint": "8765",
+  "machineEditApiKey": "API Key",
+  "machineEditOptional": "任意",
+  "machineEditUseSecureConnection": "セキュア接続を使う",
+  "machineEditUseSecureConnectionSubtitle": "WSS で接続し、ヘルスチェックに HTTPS を使います",
+  "machineEditConnectionMode": "接続方式",
+  "machineEditConnectionModeAutomatic": "自動（推奨）",
+  "machineEditConnectionModeAutomaticSubtitle": "認証情報を送らずに確認し、HTTPSを優先して自動接続します",
+  "machineEditConnectionModeAutomaticSshSubtitle": "SSHトンネル内ではWSを使用し、通信はSSH接続で暗号化されます",
+  "machineEditConnectionModeSecureOnly": "セキュアのみ（WSS）",
+  "machineEditConnectionModeSecureOnlySubtitle": "TLS接続を必須にし、WSへ自動的に切り替えません",
+  "machineEditConnectionModeStandardOnly": "標準（WS）",
+  "machineEditConnectionModeStandardOnlySubtitle": "ローカルネットワークまたはTailscaleなどのVPN内で使用してください",
+  "machineErrorBridgeNotFound": "Bridgeが見つかりません。起動状態と同じネットワークまたはVPNへの接続を確認してください",
+  "machineErrorSecureConnectionUnavailable": "セキュア接続を確立できません。TLSの設定を確認するか、意図する場合のみ「標準（WS）」を選択してください",
+  "machineAutomaticWsApiKeyWarningTitle": "標準接続（WS）が見つかりました",
+  "machineAutomaticWsApiKeyWarningBody": "このBridgeは暗号化されていないWSで見つかりました。APIキーは通信の暗号化なしで送信されます。信頼できるローカルネットワークまたはVPN内の場合のみ続けてください。",
+  "machineAutomaticWsApiKeyWarningConnect": "WSで接続",
+  "machineEditSshConfiguration": "SSH 設定",
+  "machineEditEnableSshRemoteStartup": "SSH リモート起動を有効にする",
+  "machineEditEnableSshRemoteStartupSubtitle": "オフライン時に Bridge Server をリモート起動します",
+  "machineEditSshUsername": "SSH Username",
+  "machineEditSshUsernameHint": "myuser",
+  "machineEditSshPort": "SSH Port",
+  "machineEditSshPortHint": "22",
+  "machineEditTargetAuthentication": "接続先の認証",
+  "machineEditPrivateKey": "Private Key",
+  "machineEditSshPrivateKeyPem": "SSH Private Key (PEM)",
+  "machineEditOpenSshPrivateKeyHint": "-----BEGIN OPENSSH PRIVATE KEY-----",
+  "machineEditSavedPrivateKeyIndicator": "Private Key は保存済みです。新しく入力すると置き換えます。",
+  "machineEditUseSshJumpHost": "SSH Jump Host を使う",
+  "machineEditUseSshJumpHostSubtitle": "踏み台または中継 SSH ホスト経由で接続します",
+  "machineEditSshJumpHost": "SSH Jump Host",
+  "machineEditJumpHost": "Jump Host",
+  "machineEditJumpHostHint": "bastion.example.com",
+  "machineEditJumpPort": "Jump Port",
+  "machineEditJumpUsername": "Jump Username",
+  "machineEditJumpUsernameHint": "未入力なら SSH Username を使います",
+  "machineEditJumpHostAuthentication": "Jump Host の認証",
+  "machineEditJumpHostAuthenticationSubtitle": "未入力なら接続先の SSH 認証情報を再利用します",
+  "machineEditJumpPassword": "Jump Password",
+  "machineEditSavedJumpHostPasswordIndicator": "Jump Host パスワードは保存済みです。新しく入力すると置き換えます。",
+  "machineEditJumpPrivateKeyPem": "Jump Private Key (PEM)",
+  "machineEditSavedJumpHostPrivateKeyIndicator": "Jump Host Private Key は保存済みです。新しく入力すると置き換えます。",
+  "machineEditTesting": "テスト中...",
+  "machineEditTestConnection": "接続をテスト",
+  "machineEditConnectionSuccessful": "接続に成功しました",
+  "machineEditFillSshCredentials": "SSH 認証情報を入力してください",
+  "machineEditAddAndConnect": "追加して接続",
+
+  "deleteMachine": "マシンを削除",
+  "deleteMachineConfirm": "\"{displayName}\" を削除しますか？保存された認証情報もすべて削除されます。",
+  "@deleteMachineConfirm": {
+    "placeholders": {
+      "displayName": { "type": "String" }
+    }
+  },
+
+  "connectToBridgeServer": "Bridge Server に接続",
+  "orConnectManually": "または手動で接続",
+  "serverUrl": "サーバー URL",
+  "serverUrlHint": "ws://<host-ip>:8765",
+  "apiKeyOptional": "API キー（任意）",
+  "apiKeyHint": "認証なしの場合は空欄",
+  "scanQrCode": "QR コードをスキャン",
+  "setupGuide": "セットアップガイド",
+  "showSessions": "左ペインを表示",
+  "hideSessions": "左ペインを隠す",
+  "workspaceLandingSelectSessionMessage": "左ペインでセッションを選択してください。",
+  "workspaceLandingCreateSessionMessage": "左ペインの New からセッションを作成してください。",
+  "workspaceLandingDisconnectedMessage": "Bridge に接続されていません。左ペインから接続するか、セットアップガイドを開いてマシンを設定してください。",
+  "running": "実行中",
+  "recentSessions": "最近のセッション",
+  "search": "検索",
+  "searchSessions": "セッションを検索...",
+  "sessionDisplayModeFirst": "先頭",
+  "sessionDisplayModeLast": "末尾",
+  "sessionDisplayModeSummary": "要約",
+  "allAiTools": "すべての AI ツール",
+  "allProjects": "すべてのプロジェクト",
+  "named": "名前付き",
+  "machines": "マシン",
+  "refreshStatus": "状態を更新",
+  "add": "追加",
+  "noSavedMachinesDescription": "保存済みのマシンはありません。\n追加すると、すばやく接続したり Bridge Server をリモート起動したりできます。",
+
+  "readyToStart": "準備完了",
+  "readyToStartDescription": "+ ボタンを押してセッションを作成し、Claude でコーディングを始めましょう。",
+  "newSession": "新規セッション",
+
+  "neverConnected": "未接続",
+  "justNow": "たった今",
+  "minutesAgo": "{minutes}分前",
+  "@minutesAgo": {
+    "placeholders": {
+      "minutes": { "type": "int" }
+    }
+  },
+  "hoursAgo": "{hours}時間前",
+  "@hoursAgo": {
+    "placeholders": {
+      "hours": { "type": "int" }
+    }
+  },
+  "daysAgo": "{days}日前",
+  "@daysAgo": {
+    "placeholders": {
+      "days": { "type": "int" }
+    }
+  },
+  "unfavorite": "お気に入り解除",
+  "favorite": "お気に入り",
+  "updateBridge": "Bridge を更新",
+  "bridgeIsUpToDate": "Bridge は最新です",
+  "bridgeUpdateAvailable": "更新があります",
+  "bridgeUpdateRequiresSetup": "SSH と Bridge の自動起動セットアップが必要です",
+  "bridgeVersionUnknown": "Bridge のバージョンを確認できません",
+  "bridgeVersionCurrentExpected": "現在 v{current}、推奨 v{expected}以上",
+  "@bridgeVersionCurrentExpected": {
+    "placeholders": {
+      "current": { "type": "String" },
+      "expected": { "type": "String" }
+    }
+  },
+  "bridgeVersionCurrentLatest": "現在 v{current}、最新版 v{latest}",
+  "@bridgeVersionCurrentLatest": {
+    "placeholders": {
+      "current": { "type": "String" },
+      "latest": { "type": "String" }
+    }
+  },
+  "bridgeLatestVersionChecking": "Bridge の最新版を確認中...",
+  "bridgeLatestVersionUnavailable": "Bridge の最新版を確認できません",
+  "bridgeLatestVersionRetry": "最新版の確認を再試行",
+  "bridgeUpdateSetupTitle": "Bridge 更新の準備",
+  "bridgeUpdateSetupDescription": "このマシンで Bridge の更新機能を使うには、SSH 接続と Bridge の自動起動セットアップが必要です。",
+  "bridgeUpdateSetupEnableSsh": "Bridge 接続設定で SSH を有効にします。",
+  "bridgeUpdateSetupRunCommand": "接続先マシンでセットアップコマンドを実行しておきます。",
+  "bridgeUpdateSetupCommand": "npx @ccpocket/bridge@1 setup",
+  "stopServer": "サーバーを停止",
+  "update": "更新",
+  "download": "ダウンロード",
+  "appUpdateAvailable": "v{version} が利用可能です",
+  "@appUpdateAvailable": {
+    "placeholders": {
+      "version": { "type": "String" }
+    }
+  },
+  "macosNativeAppBannerTitle": "macOS ネイティブ版をおすすめします",
+  "macosNativeAppBannerSubtitle": "Mac では、macOS に最適化された CC Pocket ネイティブ版を GitHub Releases からインストールできます。",
+  "openGitHubReleases": "GitHub Releases を開く",
+  "macosNativeAppSettingsTitle": "macOS ネイティブ版",
+  "macosNativeAppSettingsSubtitle": "macOS に最適化されているため、Mac ではネイティブ版がおすすめです。",
+  "supportBannerTitle": "CC Pocketが役に立っていたら",
+  "supportBannerSubtitle": "サポートで継続開発を後押しできます",
+  "supportBannerAction": "サポートを見る",
+  "offline": "オフライン",
+  "unreachable": "接続不可",
+  "checking": "確認中...",
+
+  "recentProjects": "最近のプロジェクト",
+  "orEnterPath": "またはパスを入力",
+  "projectPath": "プロジェクトパス",
+  "projectPathHint": "/path/to/your/project",
+  "permission": "パーミッション",
+  "approval": "承認",
+  "restart": "再起動",
+  "worktree": "Worktree",
+  "advanced": "詳細設定",
+  "modelOptional": "モデル（任意）",
+  "effort": "Effort",
+  "defaultLabel": "デフォルト",
+  "codexProfilePrecedenceNote": "Profile で同じ設定を指定している場合は、以下の項目より Profile の設定が優先されます。",
+  "maxTurns": "Max Turns",
+  "maxTurnsHint": "例: 8",
+  "maxTurnsError": "1以上の整数を入力してください",
+  "maxBudgetUsd": "最大予算 (USD)",
+  "maxBudgetHint": "例: 1.00",
+  "maxBudgetError": "0以上の数値を入力してください",
+  "fallbackModel": "フォールバックモデル",
+  "forkSessionOnResume": "再開時にセッションを分岐",
+  "persistSessionHistory": "セッション履歴を保持",
+  "model": "モデル",
+  "sandbox": "Sandbox",
+  "reasoning": "Reasoning",
+  "webSearch": "Web Search",
+  "networkAccess": "ネットワークアクセス",
+  "additionalWritableRootsTitle": "追加で利用できるディレクトリ",
+  "additionalWritableRootsDescription": "このセッションでは、Codex の config.toml の writable_roots に加えて有効になります。",
+  "additionalWritableRootsTooltip": "選択中のプロジェクトに加えて、別プロジェクトのファイルも読み書きしたいときに使います。",
+  "additionalWritableRootsSuggestions": "最近のプロジェクト",
+  "addDirectory": "ディレクトリを追加",
+  "directoryPath": "ディレクトリパス",
+  "directoryPathOutsideAllowedRoots": "ディレクトリパスが許可されたルートの外側です",
+  "browseDirectory": "ディレクトリを参照",
+  "selectDirectory": "ディレクトリを選択",
+  "noSubdirectories": "サブディレクトリはありません",
+  "directoryBrowserRoots": "許可されたディレクトリ",
+  "directoryBrowserBridgeUpdateRequired": "この機能には新しい Bridge Server が必要です。Bridge を更新して、もう一度お試しください。",
+  "worktreeNew": "新規",
+  "worktreeExisting": "既存 ({count})",
+  "@worktreeExisting": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "branchOptional": "ブランチ（任意）",
+  "branchHint": "feature/...",
+  "noExistingWorktrees": "既存の worktree はありません",
+
+  "planApprovalSummary": "上のプランを確認して、承認するか計画を続けてください",
+  "planApprovalSummaryCard": "プランを確認して、承認するか計画を続けてください",
+  "toolApprovalSummary": "ツール実行には承認が必要です",
+  "planApproval": "プラン承認",
+  "approvalRequired": "承認が必要",
+  "approvalStatusPending": "承認待ち",
+  "approvalStatusApproved": "承認済み",
+  "approvalStatusApprovedForSession": "セッション中承認済み",
+  "approvalStatusRejected": "拒否済み",
+  "approvalStatusResolved": "解決済み",
+  "viewEditPlan": "プランを表示",
+  "keepPlanning": "計画を続ける",
+  "keepPlanningHint": "変更点を入力...",
+  "sendFeedbackKeepPlanning": "フィードバックを送信して計画を続ける",
+  "acceptAndClear": "承認 & クリア",
+  "acceptPlan": "プラン承認",
+  "continuePlanning": "計画を続ける",
+  "reject": "拒否",
+  "approve": "承認",
+  "always": "常に許可",
+  "approveOnce": "今回だけ許可",
+  "approveForSession": "このセッション中は許可",
+  "approveAlways": "常に許可",
+  "approveAlwaysSub": "",
+  "approveSessionMain": "セッション中許可",
+  "approveSessionSub": "",
+  "permissionDefaultDescription": "標準の承認フローです",
+  "permissionAutoDescription": "Claude が安全チェック付きで承認を自動処理します",
+  "permissionAcceptEditsDescription": "ファイル編集を自動で承認します",
+  "permissionPlanDescription": "変更を実行する前に分析と計画を行います",
+  "permissionBypassDescription": "ほとんどの承認確認なしで実行します",
+  "executionDefaultDescription": "標準の承認フローです",
+  "executionAcceptEditsDescription": "ファイル編集を自動で承認します",
+  "executionFullAccessDescription": "ほとんどの承認確認なしで実行します",
+  "codexPlanModeDescription": "先にプランを作成し、承認後に実行を開始します",
+  "sandboxRestrictedDescription": "制限された環境でコマンドを実行します",
+  "sandboxNativeDescription": "ネイティブ環境でコマンドを実行します",
+  "sandboxNativeCautionDescription": "ネイティブ環境でコマンドを実行します（注意）",
+
+  "sheetSubtitleApproval": "どの操作に承認が必要かを制御します",
+  "sheetSubtitleSandboxCodex": "Codex は安全のためデフォルトで Sandbox が有効です。無効にするとシステムへのフルアクセスが可能になります。",
+  "sheetSubtitleSandboxClaude": "Claude はデフォルトでネイティブ実行です。Sandbox を有効にするとアクセスが制限されます。",
+  "sheetSubtitleModel": "モデルによって速度・能力・コストが異なります。",
+  "sheetSubtitleEffort": "高い Effort はより丁寧な分析を行いますが、時間とコストが増えます。",
+
+  "claudeEffortLowDesc": "高速な応答、分析は少なめ",
+  "claudeEffortMediumDesc": "速度と品質のバランス",
+  "claudeEffortHighDesc": "より丁寧な分析",
+  "claudeEffortXHighDesc": "複雑な作業向けの拡張推論",
+  "claudeEffortMaxDesc": "最も丁寧、最も遅い",
+
+  "reasoningEffortNoneDesc": "推論なし",
+  "reasoningEffortMinimalDesc": "最速、分析は最小限",
+  "reasoningEffortLowDesc": "高速な応答、分析は少なめ",
+  "reasoningEffortMediumDesc": "速度と品質のバランス",
+  "reasoningEffortHighDesc": "より丁寧な分析",
+  "reasoningEffortXhighDesc": "最も丁寧、最も遅い",
+  "reasoningEffortMaxDesc": "最も難しい問題向けの最大推論",
+  "reasoningEffortUltraDesc": "最大推論と自動タスク委譲",
+  "reasoningEffortModelSpecificDesc": "モデル固有の推論レベル",
+
+  "changePermissionModeTitle": "Permission Mode を変更",
+  "changePermissionModeBody": "{mode} に切り替えるとセッションが再起動します。会話は保持されます。",
+  "@changePermissionModeBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "changeExecutionModeTitle": "Execution Mode を変更",
+  "changeExecutionModeBody": "{mode} に切り替えるとセッションが再起動します。会話は保持されます。",
+  "@changeExecutionModeBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "changeApprovalPolicyTitle": "Approval Policy を変更",
+  "changeApprovalPolicyBody": "{mode} に切り替えるとセッションが再起動します。会話は保持されます。",
+  "@changeApprovalPolicyBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "codexApprovalUntrustedDescription": "trusted コマンドだけ自動実行し、それ以外は確認します",
+  "codexApprovalOnRequestDescription": "必要だと判断した操作だけ確認します",
+  "codexApprovalOnFailureDescription": "通常は確認せず実行し、失敗時だけ追加権限を確認します（非推奨）",
+  "codexApprovalNeverDescription": "確認せず実行し、失敗時も承認を求めません",
+  "codexAutoReview": "自動レビュー",
+  "codexAutoReviewDescription": "承認リクエストを Codex が自動レビューします",
+  "codexAutoReviewDisabledByPolicy": "組織の Browser Use ポリシーにより無効です",
+  "codexAutoReviewUnavailableDescription": "Never Ask では承認リクエストが発生しないため利用できません",
+  "guardianApprovalTitle": "自動レビューで承認",
+  "guardianApprovalMediumRisk": "中リスク",
+  "guardianApprovalHighRisk": "高リスク",
+  "guardianApprovalDetails": "詳細",
+  "guardianApprovalHideDetails": "詳細を閉じる",
+  "guardianApprovalAuthorization": "承認レベル: {authorization}",
+  "@guardianApprovalAuthorization": {
+    "placeholders": {
+      "authorization": {"type": "String"}
+    }
+  },
+  "enablePlanModeTitle": "Plan Mode を有効化",
+  "disablePlanModeTitle": "Plan Mode を無効化",
+  "enablePlanModeBody": "Plan Mode を有効化するとセッションが再起動します。会話は保持されます。",
+  "disablePlanModeBody": "Plan Mode を無効化するとセッションが再起動します。会話は保持されます。",
+  "changeSandboxModeTitle": "Sandbox Mode を変更",
+  "changeSandboxModeBody": "{mode} に切り替えるとセッションが再起動します。会話は保持されます。",
+  "@changeSandboxModeBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+
+  "messagePlaceholder": "Claude にメッセージ...",
+  "codexMessagePlaceholder": "Codex にメッセージ...",
+  "queuedInputForReconnect": "再接続待ちキュー",
+  "queuedInputPendingDelivery": "送信確認中",
+  "queuedInputForNextTurn": "次のターンに送信予定",
+  "sessionCardQueuedInput": "キュー中",
+  "queuedInputImageCount": "{count, plural, other{画像{count}枚}}",
+  "@queuedInputImageCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "tooltipSteerQueuedMessage": "キュー中のメッセージを指示として送信",
+  "tooltipMoveQueuedMessageToInput": "キュー中のメッセージを入力欄へ移動",
+  "tooltipCancelQueuedMessage": "キュー中のメッセージをキャンセル",
+  "reconnecting": "Bridge との接続が一時的に切れました。自動で再接続しています...",
+  "reconnectingQueuedMessages": "Bridge との接続が一時的に切れました。自動で再接続しています。待機中のメッセージは保持されています。",
+  "disconnectedMessagesQueued": "Bridge に接続できません。操作は端末に保存され、再接続後に送信されます。",
+  "sessionQueuedForReconnect": "セッションを再接続待ちキューに追加しました",
+  "resumeAlreadyQueued": "再開はすでにキューに入っています",
+  "resumeQueuedForReconnect": "再開を再接続待ちキューに追加しました",
+  "pendingActionWillCreateOnReconnect": "Bridge 再接続後に作成します",
+  "pendingActionWillResumeOnReconnect": "Bridge 再接続後に再開します",
+  "pendingActionStatus": "待機中",
+  "pendingActionProcessingStatus": "復元中",
+  "pendingActionProcessingStartStatus": "準備中",
+  "pendingActionProcessingStartDescription": "Bridge でセッションを準備しています",
+  "pendingActionProcessingResumeDescription": "画像が多いセッションは時間がかかることがあります",
+  "pendingActionProcessingStartTitle": "新規セッションを作成中",
+  "pendingActionProcessingResumeTitle": "セッション履歴を読み込んでいます",
+  "tooltipCancelPendingAction": "待機中の操作をキャンセル",
+  "queuedLocally": "ローカルでキュー中",
+  "processingOnBridge": "Bridge で処理中",
+  "offlinePendingNewSessionTitle": "新規セッション待機中",
+  "offlinePendingResumeTitle": "再開待機中",
+  "diffLines": "{count} 行の diff",
+  "@diffLines": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "changedLines": "変更{count}行",
+  "@changedLines": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "hunkCount": "{count}ハンク",
+  "@hunkCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "fileCount": "{count}ファイル",
+  "@fileCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "tapInterruptHoldStop": "タップ: 中断, 長押し: 停止",
+
+  "rewind": "巻き戻す",
+  "rewindToHere": "ここまで巻き戻す",
+  "rewindModeConversationAndCode": "会話とコードを復元",
+  "rewindModeConversationOnly": "会話のみ復元",
+  "rewindModeCodeOnly": "コードのみ復元",
+  "rewindConfirmTitle": "巻き戻しの確認",
+  "rewindConfirmBody": "モード: {mode}\n\nこの操作は元に戻せません。実行しますか？",
+  "rewindCannotRewindFiles": "ファイルを巻き戻せません",
+  "codexRewindConfirmTitle": "会話を巻き戻しますか？",
+  "codexRewindConfirmBody": "このメッセージの直前までチャットを戻し、メッセージを入力欄に戻します。ファイル変更はそのまま残ります。",
+  "fork": "分岐",
+  "forkConversation": "会話を分岐",
+  "forkConversationTitle": "会話を分岐しますか？",
+  "forkConversationBody": "この応答時点から新しいCodexセッションを作成します。現在のセッションは変更されません。",
+  "forkTargetNotFound": "分岐元のユーザー発言が見つかりません",
+  "tapToRetry": "タップしてリトライ",
+
+  "diffSummaryAddedRemoved": "+{added}/-{removed} 行",
+  "@diffSummaryAddedRemoved": {
+    "placeholders": {
+      "added": { "type": "int" },
+      "removed": { "type": "int" }
+    }
+  },
+  "lineCountSummary": "{count} 行",
+  "@lineCountSummary": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "toolResult": "ツール結果",
+
+  "answered": "回答済み",
+  "agentIsAsking": "{agent} が質問しています",
+  "@agentIsAsking": {
+    "placeholders": {
+      "agent": {}
+    }
+  },
+  "submitAllAnswers": "すべての回答を送信",
+  "submitWithCount": "送信 ({count} 件選択)",
+  "@submitWithCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "selectOptionsToSubmit": "オプションを選択してください",
+  "typeYourAnswer": "回答を入力...",
+  "orTypeCustomAnswer": "またはカスタム回答を入力...",
+  "otherAnswer": "その他の回答...",
+  "selectAllThatApply": "該当するものをすべて選択",
+
+  "noScreenshotsYet": "スクリーンショットはまだありません",
+  "screenshotButtonHint": "チャットツールバーのスクリーンショットボタンで画面をキャプチャできます。",
+  "screenshotsWillAppearHere": "Claude セッションのスクリーンショットがここに表示されます。",
+  "allWithCount": "すべて ({count})",
+  "@allWithCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "noImages": "画像がありません",
+  "failedToDeleteImage": "画像の削除に失敗しました",
+  "failedToDownloadImage": "画像のダウンロードに失敗しました",
+  "failedToShareImage": "画像の共有に失敗しました",
+  "deleteScreenshot": "スクリーンショットを削除しますか？",
+  "cannotBeUndone": "この操作は取り消せません。",
+
+  "changes": "変更",
+  "refresh": "更新",
+  "diffCompareSideBySide": "並べて比較",
+  "diffCompareSlider": "スライダー",
+  "diffCompareOverlay": "オーバーレイ",
+  "diffCompareToggle": "トグル",
+  "diffBefore": "変更前",
+  "diffAfter": "変更後",
+  "diffNewFile": "新規ファイル",
+  "diffDeleted": "削除済み",
+  "diffNoImage": "画像なし",
+  "noChanges": "変更なし",
+  "showAll": "すべて表示",
+
+  "setupGuideTitle": "セットアップガイド",
+
+  "guideAboutTitle": "CC Pocket とは",
+  "guideAboutDescription": "Bridge Server 経由で Codex や Claude をスマートフォンから使えるモバイルクライアントです。",
+  "guideAboutSdkNoteTitle": "Claude Agent SDK について",
+  "guideAboutSdkNoteBody": "Claude Code のライブラリ版です。履歴や .claude、CLAUDE.md などの設定ファイルを共有でき、承認フローもおおよそ同じ感覚で使えます。",
+  "guideAboutDiagramTitle": "しくみ",
+  "guideAboutDiagramPhone": "iPhone",
+  "guideAboutDiagramBridge": "Bridge Server",
+  "guideAboutDiagramClaude": "Codex CLI\n/ Claude Agent SDK",
+  "guideAboutDiagramCaption": "PC の Bridge Server が Codex CLI や Claude Agent SDK に接続し、\nスマホからその Bridge に接続して使います。",
+
+  "guideBridgeTitle": "Bridge Server の\nセットアップ",
+  "guideBridgeDescription": "PC で Bridge Server を起動します。Claude にはAPIキー、またはサブスクリプション認証の明示的な有効化が必要です。",
+  "guideBridgePrerequisites": "必要なもの",
+  "guideBridgePrereq1": "Node.js がインストールされた Mac / PC",
+  "guideBridgePrereq2": "Claudeには ANTHROPIC_API_KEY または BRIDGE_ALLOW_CLAUDE_OAUTH=1 を設定",
+  "guideBridgePrereq3": "Codex を使う場合は Codex の認証を完了",
+  "guideBridgeStep1": "npx で実行（推奨）",
+  "guideBridgeStep1Command": "npx --yes @ccpocket/bridge@latest",
+  "guideBridgeStep2": "またはグローバルインストール",
+  "guideBridgeStep2Command": "npm install -g @ccpocket/bridge\nccpocket-bridge",
+  "guideBridgeQrNote": "起動するとターミナルに QR コードが表示されます",
+
+  "guideConnectionTitle": "接続方法",
+  "guideConnectionDescription": "同じ Wi-Fi ネットワーク内なら、すぐに接続できます。",
+  "guideConnectionQr": "QR コードスキャン",
+  "guideConnectionQrDescription": "ターミナルに表示された QR コードを読み取るだけ。一番簡単です。",
+  "guideConnectionMdns": "自動検出 (mDNS)",
+  "guideConnectionMdnsDescription": "同一 LAN 内の Bridge Server を自動で見つけて表示します。",
+  "guideConnectionManual": "手動入力",
+  "guideConnectionManualDescription": "ws://<IP アドレス>:8765 の形式で直接入力します。",
+  "guideConnectionRecommended": "おすすめ",
+
+  "guideTailscaleTitle": "外出先からの接続",
+  "guideTailscaleDescription": "自宅の外からも使いたい場合は、Tailscale（VPN の一種）を使えば安全にリモート接続できます。",
+  "guideTailscaleStep1": "Mac と iPhone の両方に Tailscale をインストール",
+  "guideTailscaleStep2": "同じアカウントでログイン",
+  "guideTailscaleStep3": "Bridge URL に Tailscale IP を使用\n(例: ws://100.x.x.x:8765)",
+  "guideTailscaleWebsite": "Tailscale 公式サイト",
+  "guideTailscaleWebsiteHint": "詳しいセットアップ方法は公式サイトをご覧ください。",
+
+  "guideLaunchdTitle": "常時起動の設定",
+  "guideLaunchdDescription": "毎回手動で Bridge Server を起動するのが面倒な場合、マシンの起動時に自動で立ち上がるよう設定できます。",
+  "guideLaunchdCommand": "セットアップコマンド",
+  "guideLaunchdCommandValue": "npx --yes @ccpocket/bridge@1 setup",
+  "guideLaunchdRecommendation": "まずは手動起動で動作確認してから、安定したらサービス登録がおすすめです。",
+  "guideAutostartMacDescription": "launchd に登録。シェル環境（nvm、Homebrew 等）が自動で引き継がれます。",
+  "guideAutostartLinuxDescription": "systemd ユーザーサービスを作成。Raspberry Pi 等の Linux ホストに対応。",
+
+  "guideReadyTitle": "準備完了!",
+  "guideReadyDescription": "Bridge Server を起動して、\nQR コードをスキャンするところから\n始めましょう。",
+  "guideReadyStart": "さっそく始める",
+  "guideReadyHint": "このガイドは設定画面からいつでも確認できます",
+
+  "creatingSession": "セッション作成中...",
+  "resolvingLinkedSession": "リンク先のセッションを検索しています...",
+  "resumingLinkedSession": "セッションを再開しています...",
+  "sessionUnavailableTitle": "セッションを利用できません",
+  "sessionUnavailableDescription": "このセッションは現在の Bridge では利用できません。最近のセッションから開いてください。",
+  "openRecentSessions": "最近のセッションを開く",
+  "copyForAgent": "エージェント用にコピー",
+  "messageHistory": "メッセージ履歴",
+  "viewChanges": "変更を確認",
+  "screenshot": "スクリーンショット",
+
+  "debug": "デバッグ",
+  "logs": "ログ",
+  "viewApplicationLogs": "アプリケーションログを表示",
+  "mockPreview": "モックプレビュー",
+  "viewMockChatScenarios": "モックチャットシナリオを表示",
+  "updateTrack": "アップデートトラック",
+  "updateTrackDescription": "変更後にアプリを再起動すると反映されます",
+  "updateTrackStable": "Stable（安定版）",
+  "updateTrackStaging": "Staging（テスト）",
+  "updateDownloaded": "アップデートをダウンロードしました。アプリを再起動すると反映されます。",
+
+  "promptHistory": "プロンプト履歴",
+  "frequent": "頻度順",
+  "recent": "新しい順",
+  "searchHint": "検索...",
+  "noMatchingPrompts": "一致するプロンプトがありません",
+  "noPromptHistoryYet": "プロンプト履歴はまだありません",
+  "promptHistoryFilters": "フィルター",
+  "promptHistoryFilterThisDevice": "この端末で使った履歴",
+  "promptHistoryFilterThisProject": "開いているプロジェクト",
+  "promptHistoryFilterThisBridge": "接続中のBridge",
+  "promptHistoryFilterFavorites": "お気に入り",
+  "promptHistoryFilterCommands": "コマンドとスキル",
+  "promptHistoryOpenProjectEmptyHint": "開いているプロジェクトのフィルターは、新しいアプリで記録した履歴にのみ有効です。",
+  "promptHistorySectionTitle": "プロンプト履歴",
+  "promptHistorySyncTitle": "プロンプト履歴を同期",
+  "promptHistoryReplaceTitle": "旧方式履歴でBridgeを上書き",
+  "promptHistoryReplaceSubtitle": "旧方式履歴はアプリ側で管理されていました。新方式ではBridge側で履歴を管理します。メイン端末で移行済みの場合は通常不要です。サブ端末でBridgeの履歴を初期化してしまった場合に、接続中のBridge履歴をこの端末の旧方式履歴で上書きします。",
+  "promptHistoryReplaceConfirmAction": "上書き",
+  "promptHistoryReplaceDismissAction": "移行済みとして非表示",
+  "promptHistoryNotSyncedYet": "まだ同期していません",
+  "promptHistoryLatestSync": "最終同期: {time}",
+  "@promptHistoryLatestSync": {
+    "placeholders": {
+      "time": { "type": "String" }
+    }
+  },
+  "promptHistorySyncedBridges": "{count}件のBridgeを同期済み",
+  "@promptHistorySyncedBridges": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "promptHistorySyncSummaryWithFailures": "{synced}件同期、{failed}件失敗",
+  "@promptHistorySyncSummaryWithFailures": {
+    "placeholders": {
+      "synced": { "type": "int" },
+      "failed": { "type": "int" }
+    }
+  },
+  "promptHistoryBridgeId": "Bridge ID: {id}",
+  "@promptHistoryBridgeId": {
+    "placeholders": {
+      "id": { "type": "String" }
+    }
+  },
+  "promptHistoryOtherBridgeRegistrations": "他の登録: {registrations}",
+  "@promptHistoryOtherBridgeRegistrations": {
+    "placeholders": {
+      "registrations": { "type": "String" }
+    }
+  },
+  "promptHistoryNoSyncTime": "同期時刻なし",
+
+  "approvalQueue": "承認キュー",
+  "resetQueue": "キューをリセット",
+  "swipeSkip": "スキップ",
+  "swipeSend": "送信",
+  "swipeDismiss": "却下",
+  "swipeApprove": "承認",
+  "swipeReject": "拒否",
+  "allClear": "すべて完了!",
+  "itemsProcessed": "{count} 件処理しました",
+  "@itemsProcessed": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "bestStreak": "最高連続: {count}",
+  "@bestStreak": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "tryAgain": "もう一度",
+  "waitingForTasks": "タスク待ち",
+  "agentReadyForPrompt": "エージェントは次のプロンプトを待っています。",
+  "backToSessions": "セッション一覧に戻る",
+  "working": "処理中...",
+  "waitingForApprovalRequests": "エージェントからの承認リクエストを待っています。",
+  "noActiveSessions": "実行中のセッションはありません",
+  "startSessionToBegin": "セッションを開始して承認リクエストの受信を始めましょう。",
+
+  "settingsTitle": "設定",
+  "sectionGeneral": "一般",
+  "sectionConnectionAccounts": "接続とアカウント",
+  "sectionNotifications": "通知",
+  "sectionSupport": "応援",
+  "sectionEditor": "エディタ",
+  "textDensity": "表示密度",
+  "textDensityDescription": "OSの文字サイズ設定に、このアプリ倍率をさらに掛けます。100%はOS設定のままです。",
+  "codeFontSize": "コード文字サイズ",
+  "codeFontFamily": "コードフォント",
+  "codeFontPreview": "プレビュー",
+  "indentSize": "インデント幅",
+  "indentSizeSubtitle": "箇条書きのインデントに使用するスペース数",
+  "gitDiffInteractionMode": "Git diff 操作",
+  "gitDiffQuickActions": "クイック操作",
+  "gitDiffQuickActionsDescription": "1本指の横スワイプで hunk の Stage / Unstage / Revert を実行します。長い行は折り返します。",
+  "gitDiffScrollFirst": "横スクロール優先",
+  "gitDiffScrollFirstDescription": "長い行を折り返さず、hunk 単位で横スクロールできます。Git 操作はロングタップのメニューまたは下部ボタンから実行します。",
+  "imagePasteShortcut": "画像ペーストのショートカット",
+  "imagePasteShortcutCtrlV": "Ctrl+V",
+  "imagePasteShortcutCtrlVDescription": "macOS で推奨。Cmd+V を通常のペーストや音声入力ツール用に残します。",
+  "imagePasteShortcutCommandV": "Cmd+V",
+  "imagePasteShortcutCommandVDescription": "音声入力アプリ、クリップボード管理アプリ、テキスト展開ツールと競合する可能性があります。",
+  "gitDiffFocusAutoLandscape": "diff集中モードで横画面にする",
+  "gitDiffFocusAutoLandscapeDescription": "モバイルレイアウトでは、diff集中モードに入ると横画面に固定します。解除すると通常の回転に戻ります。",
+  "remoteGitStatusBadge": "未同期のGitコミットを薄いバッジで表示",
+  "remoteGitStatusBadgeDescription": "fetch後に現在ブランチがpushまたはpull可能な場合、セッション画面のGitボタンに薄いバッジを表示します。",
+  "sectionAbout": "概要",
+  "theme": "テーマ",
+  "themeSystem": "システム",
+  "themeLight": "ライト",
+  "themeDark": "ダーク",
+  "appIconTitle": "アプリアイコン",
+  "appIconMonthlySupporterPerk": "月額サポーター特典です。",
+  "appIconSettingsSubtitle": "{device}のホーム画面に表示されるアイコンを変更できます。",
+  "@appIconSettingsSubtitle": {
+    "placeholders": {
+      "device": {"type": "String"}
+    }
+  },
+  "appIconSupporterDialogTitle": "月額サポーター特典",
+  "appIconSupporterSectionLabel": "月額サポーター特典",
+  "appIconPickerTitle": "アプリアイコンを選ぶ",
+  "appIconPickerSubtitle": "ホーム画面に表示するアイコンを選べます。",
+  "appIconOptionDefaultTitle": "ダーク",
+  "appIconOptionDefaultSubtitle": "通常の CC Pocket アイコンです。",
+  "appIconOptionLightOutlineTitle": "ライト",
+  "appIconOptionLightOutlineSubtitle": "軽やかなラインが映える明るめのバリエーション。",
+  "appIconOptionCopperEmeraldTitle": "メタリック",
+  "appIconOptionCopperEmeraldSubtitle": "光沢感のある特別版。",
+  "language": "言語",
+  "languageSystem": "端末の設定に従う",
+  "voiceInput": "音声入力",
+  "pushNotifications": "プッシュ通知",
+  "pushNotificationsSubtitle": "Bridge 経由でセッション通知を受け取ります",
+  "pushNotificationsUnavailable": "Firebase 設定後に利用できます",
+  "version": "バージョン",
+  "loading": "読み込み中...",
+  "loadingSessions": "セッション一覧を読み込み中...",
+  "setupGuideSubtitle": "初めての方はこちら",
+  "openSourceLicenses": "オープンソースライセンス",
+  "githubRepository": "GitHub リポジトリ",
+  "changelog": "変更履歴",
+  "changelogTitle": "変更履歴",
+  "showAllMain": "すべて表示 (main)",
+  "changelogFetchError": "変更履歴の取得に失敗しました",
+
+  "fcmBridgeNotInitialized": "Bridge が未初期化です",
+  "fcmTokenFailed": "FCM token を取得できませんでした",
+  "fcmRegistrationFailed": "Bridge への通知登録に失敗しました",
+  "fcmEnabled": "通知を有効化しました",
+  "fcmEnabledPending": "Bridge 再接続後に通知登録します",
+  "fcmDisabled": "通知を無効化しました",
+  "fcmDisabledPending": "Bridge 再接続後に通知解除します",
+  "pushPrivacyMode": "プライバシーモード",
+  "pushPrivacyModeSubtitle": "通知にプロジェクト名や内容を含めない",
+  "updateNotificationLanguage": "通知言語を更新",
+  "notificationLanguageUpdated": "通知言語を更新しました",
+
+  "defaultNotRecommended": "Default（非推奨）",
+
+  "imageAttached": "画像添付",
+
+  "usageConnectToView": "Bridge に接続すると利用量を表示できます",
+  "usageFetchFailed": "取得に失敗しました",
+  "usageFiveHour": "5時間",
+  "usageSevenDay": "7日間",
+  "settingsUsageSectionTitle": "利用量",
+  "settingsUsageNoCodexData": "Codex の利用量データが見つかりませんでした。",
+  "usageDisplayModeRemaining": "残量",
+  "usageDisplayModeUsed": "使用量",
+  "usageOpenSettingsHint": "利用量の詳細を開く",
+  "usagePaceOnTrack": "順調",
+  "usagePaceSlightlyAhead": "やや速い",
+  "usagePaceAhead": "速い",
+  "usagePaceFarAhead": "かなり速い",
+  "usagePaceSlightlyBehind": "やや余裕",
+  "usagePaceBehind": "余裕あり",
+  "usagePaceFarBehind": "かなり余裕",
+  "usagePaceExpected": "目安 {percent}% 使用",
+  "@usagePaceExpected": {
+    "placeholders": {
+      "percent": {"type": "int"}
+    }
+  },
+  "usagePaceWillLast": "このペースならリセットまで持つ見込み",
+  "usagePaceRunsOutIn": "このペースだと約 {duration} で上限の見込み",
+  "@usagePaceRunsOutIn": {
+    "placeholders": {
+      "duration": {"type": "String"}
+    }
+  },
+  "usagePaceAtLimit": "上限に到達しています",
+  "settingsClaudeUsageDescription": "Claude の公式課金ページをブラウザで開きます。",
+  "settingsClaudeApiBilling": "API キーの課金",
+  "settingsClaudeSubscriptionUsage": "サブスクリプション利用状況",
+  "settingsNewSessionTabs": "新規セッションタブ",
+  "settingsNewSessionTabsDescription": "新規セッションで表示する AI ツールの選択肢と並び順を変更できます。",
+  "showHiddenDirectories": "隠しディレクトリを表示",
+  "showHiddenDirectoriesSubtitle": "新規セッションのディレクトリブラウザに「.」で始まるフォルダを表示します。",
+  "showBridgeNameInSessionList": "Bridge名を表示",
+  "showBridgeNameInSessionListSubtitle": "複数のBridgeが登録されているとき、接続中のBridge名をセッション一覧に表示します。",
+  "autoRenameCodexSessions": "自動Rename (Codex)",
+  "autoRenameCodexSessionsSubtitle": "最初のエージェント応答後に Codex セッションへ自動で名前を付ける",
+  "showExtendedCodexEfforts": "Effortスライダーに Max / Ultra を表示",
+  "showExtendedCodexEffortsSubtitle": "選択した Codex モデルが対応している場合、スライダーに Max と Ultra を追加します",
+  "autoRenameClaudeSessions": "自動Rename (Claude)",
+  "autoRenameClaudeSessionsSubtitle": "最初のエージェント応答後に Claude セッションへ自動で名前を付ける。API Key 利用時は追加の従量課金が発生します。",
+  "newSessionTabCodex": "Codex",
+  "newSessionTabClaudeCode": "Claude",
+  "usageResetAt": "リセット: {time}",
+  "@usageResetAt": {
+    "placeholders": {
+      "time": {"type": "String"}
+    }
+  },
+  "usageAlreadyReset": "リセット済み",
+
+  "attachedImages": "添付画像 ({count})",
+  "@attachedImages": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "attachedImagesNoCount": "添付画像",
+  "failedToFetchImages": "画像を取得できませんでした",
+  "responseTimedOut": "応答がタイムアウトしました",
+  "failedToFetchImagesWithError": "画像の取得に失敗しました: {error}",
+  "@failedToFetchImagesWithError": {
+    "placeholders": {
+      "error": {"type": "String"}
+    }
+  },
+  "retry": "リトライ",
+  "codexWriterConflictGuidance": "Codex Desktop または Codex App を閉じてから、もう一度お試しください。",
+
+  "clipboardNotAvailable": "クリップボードにアクセスできません",
+  "failedToLoadImage": "画像の読み込みに失敗しました",
+  "generatedImagePromptLabel": "プロンプト",
+  "generatedImageDetailsLabel": "詳細",
+  "generatedImageHideDetailsLabel": "詳細を閉じる",
+  "generatedImageStatusLabel": "ステータス",
+  "generatedImageSavedPathLabel": "保存先",
+  "previousImage": "前の画像",
+  "nextImage": "次の画像",
+  "generatedImagePositionLabel": "生成画像 {current} / {total}",
+  "@generatedImagePositionLabel": {
+    "placeholders": {
+      "current": {"type": "int"},
+      "total": {"type": "int"}
+    }
+  },
+  "noImageInClipboard": "クリップボードに画像がありません",
+  "failedToReadClipboard": "クリップボードの読み取りに失敗しました",
+  "imageLimitReached": "画像は最大{max}枚までです",
+  "@imageLimitReached": {
+    "placeholders": {
+      "max": {"type": "int"}
+    }
+  },
+  "imageLimitTruncated": "最初の{max}枚のみ添付しました（{dropped}枚を除外）",
+  "@imageLimitTruncated": {
+    "placeholders": {
+      "max": {"type": "int"},
+      "dropped": {"type": "int"}
+    }
+  },
+  "selectFromGallery": "ギャラリーから選択",
+  "pasteFromClipboard": "クリップボードから貼付",
+  "pasteImage": "画像をペースト",
+
+  "voiceInputLanguage": "音声入力の言語",
+  "hideVoiceInput": "音声入力ボタンを非表示",
+  "hideVoiceInputSubtitle": "サードパーティの音声入力キーボードを利用する場合に便利",
+  "openGalleryDirectly": "画像ボタンでギャラリーを直接開く",
+  "openGalleryDirectlySubtitle": "添付メニューを表示せず、すぐに画像選択を開始します",
+
+  "archive": "アーカイブ",
+  "archiveConfirm": "このセッションをアーカイブしますか？",
+  "archiveConfirmMessage": "セッションは一覧から非表示になります。Claude Codeからは引き続きアクセスできます。",
+  "sessionArchived": "セッションをアーカイブしました",
+  "archiveFailed": "セッションのアーカイブに失敗しました",
+  "archiveFailedWithError": "セッションのアーカイブに失敗しました: {error}",
+  "@archiveFailedWithError": {
+    "placeholders": {
+      "error": {"type": "String"}
+    }
+  },
+  "noRecentSessions": "最近のセッションはありません",
+  "noSessionsMatchFilters": "現在のフィルター条件に一致するセッションがありません",
+  "adjustFiltersAndSearch": "フィルター条件や検索語を変更してください",
+
+  "tooltipDisplayMode": "カードに表示するメッセージを切替",
+  "tooltipProviderFilter": "AIツールで絞り込み",
+  "tooltipProjectFilter": "プロジェクトで絞り込み",
+  "tooltipNamedOnly": "名前を付けたセッションのみ",
+  "tooltipIndent": "インデントを増やす",
+  "tooltipDedent": "インデントを減らす",
+  "tooltipSlashCommand": "コマンド・スキルを入力",
+  "tooltipMention": "ファイル・プラグインをメンション",
+  "tooltipDollarMention": "スキル・アプリを入力",
+  "tooltipPermissionMode": "パーミッションモード",
+  "tooltipAttachImage": "画像を添付",
+  "tooltipPromptHistory": "プロンプト履歴を開く",
+  "tooltipVoiceInput": "音声入力を開始",
+  "tooltipStopRecording": "録音を停止",
+  "tooltipSendMessage": "メッセージを送信",
+  "tooltipRemoveImage": "画像を削除",
+  "tooltipClearDiff": "Diff選択を解除",
+
+  "showMore": "もっと見る",
+  "showLess": "閉じる",
+
+  "authErrorTitle": "Claudeの再ログインが必要です",
+  "authErrorBody": "BridgeマシンでClaudeに再ログインしてください。",
+  "authErrorPrimaryCommandLabel": "手順1",
+  "authErrorSecondaryCommandLabel": "手順2",
+  "authErrorAlternativeLabel": "シェルから実行する場合",
+  "claudeOAuthOptInTitle": "サブスクリプション認証には明示的な有効化が必要です",
+  "claudeOAuthOptInBody": "Anthropicはホストされた未改変のClaude Codeへのユーザー自身のログインを認める一方、Agent SDKガイドでは第三者製品にAPIキーを案内しています。そのためCC Pocketではサブスクリプション認証をデフォルトで無効にしています。",
+  "claudeOAuthOptInHint": "詳細を確認し、Bridgeマシンで設定して再起動してください。不確実性を避ける場合はAPIキーを利用できます:",
+
+  "authHelpTitle": "認証トラブルシューティング",
+  "authHelpFetchError": "トラブルシューティングガイドを読み込めませんでした",
+  "authHelpButton": "手順を見る",
+  "authHelpLanguageJa": "日本語",
+  "authHelpLanguageEn": "English",
+  "authHelpLanguageZhHans": "简体中文",
+  "authHelpLanguageKo": "한국어",
+
+  "terminalApp": "ターミナルアプリ",
+  "terminalAppSubtitle": "外部ターミナルアプリでプロジェクトを開く",
+  "terminalAppNone": "未設定",
+  "terminalAppCustom": "カスタム",
+  "terminalAppName": "アプリ名",
+  "terminalUrlTemplate": "URL テンプレート",
+  "terminalUrlTemplateHint": "変数: host, user, port, project_path",
+  "terminalSshUser": "SSH ユーザー",
+  "terminalSshUserHint": "未入力時はマシンの SSH ユーザーを使用",
+  "openInTerminal": "ターミナルで開く",
+  "terminalAppNotInstalled": "ターミナルアプリを開けませんでした",
+  "terminalAppExperimental": "プレビュー",
+  "terminalAppExperimentalNote": "この機能はプレビュー版です。プリセットはアプリや環境によって動作しない場合があります。新しいプリセットの追加は GitHub で歓迎しています！",
+
+  "sectionSpread": "CC Pocket を広める",
+  "spreadAppealMessage": "CC Pocket はまだ利用者が少なく、このままだと開発を続けるのが難しい状況です。気に入っていたら、ストア評価（星だけでOK）や知り合いへの紹介で応援してください。",
+  "shareApp": "SNSでシェア",
+  "shareAppSubtitle": "同僚や友人に紹介する",
+  "shareText": "CC Pocket: Claude & Codex\nスマホからコーディングエージェントを操作できるアプリ \ud83d\udcf1\n#ccpocket\n{url}",
+  "@shareText": {
+    "placeholders": {
+      "url": { "type": "String" }
+    }
+  },
+  "starOnGithub": "GitHub にスターする",
+  "rateOnStore": "App Store で評価する",
+  "rateOnStoreAndroid": "Google Play で評価する",
+  "supporterTitle": "Supporter",
+  "supporterMonthlyTitle": "月額サポーター",
+  "supporterMonthlyPlusTitle": "月額サポーター Plus",
+  "supporterSnackTitle": "おやつで応援",
+  "supporterCoffeeTitle": "ドリンクで応援",
+  "supporterLunchTitle": "ランチで応援",
+  "supporterStatusActive": "CC Pocket を応援してくれてありがとうございます。",
+  "supporterStatusInactive": "アプリは無料のまま。継続開発を応援できます。",
+  "supporterStatusLoading": "応援状態を確認しています...",
+  "supportEntryInactiveTitle": "応援する",
+  "supportEntryInactiveSubtitle": "CC Pocket が気に入ったら、継続開発を応援してもらえるとうれしいです。",
+  "supportEntryOneTimeTitle": "応援ありがとう",
+  "supportEntryOneTimeSubtitle": "これまでの応援、ありがとうございます。",
+  "supportEntryActiveTitle": "応援中",
+  "supportEntryActiveSubtitle": "いつもありがとうございます。{date}から応援中です。",
+  "@supportEntryActiveSubtitle": {
+    "placeholders": {
+      "date": { "type": "String" }
+    }
+  },
+  "supporterMonthlyDescription": "継続的な開発を後押し",
+  "supporterMonthlyPerkLabel": "アプリアイコン変更特典付き",
+  "supporterSnackDescription": "おやつを1つおごる",
+  "supporterCoffeeDescription": "ドリンクを1杯おごる",
+  "supporterLunchDescription": "ランチを1食おごる",
+  "supporterBuyButton": "応援する",
+  "supporterActiveButton": "応援中",
+  "supporterSubscribedButton": "購読中",
+  "supporterRestoreButton": "購入を復元",
+  "supporterRetryButton": "再試行",
+  "supporterProductsUnavailable": "現在利用できる応援プランがありません。",
+  "supporterRestoreNoticeTitle": "購入の復元について",
+  "supporterRestoreNoticeBody": "購入の復元は同じ Apple ID または Google アカウントで利用できます。iOS と Android の間で応援状態は共有されません。",
+  "supporterSummaryTitle": "応援サマリー",
+  "supporterSummarySinceChip": "{date}から応援中",
+  "@supporterSummarySinceChip": {
+    "placeholders": {
+      "date": { "type": "String" }
+    }
+  },
+  "supporterSummaryStreakChip": "継続 {duration}",
+  "@supporterSummaryStreakChip": {
+    "placeholders": {
+      "duration": { "type": "String" }
+    }
+  },
+  "supporterSummaryOneTimeCount": "単発 ×{count}",
+  "@supporterSummaryOneTimeCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "supporterSummarySnackCount": "おやつ ×{count}",
+  "@supporterSummarySnackCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "supporterSummaryCoffeeCount": "ドリンク ×{count}",
+  "@supporterSummaryCoffeeCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "supporterSummaryLunchCount": "ランチ ×{count}",
+  "@supporterSummaryLunchCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "supporterSummaryLessThanMonth": "1か月未満",
+  "supporterSummaryDurationMonths": "{count}か月",
+  "@supporterSummaryDurationMonths": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "supporterSummarySinceLabel": "応援開始",
+  "supporterSummaryStreakLabel": "継続",
+  "supporterSummaryOngoingLabel": "継続中",
+  "supporterSummarySupportPeriodLabel": "応援期間",
+  "supporterImpactTitle": "応援でできること",
+  "supporterImpactBody": "CC Pocket が気に入ったら、継続開発を応援してもらえるとうれしいです。アプリはこれからも無料の OSS として続けていきます。",
+  "supporterImpactAiTitle": "開発と運用のコスト",
+  "supporterImpactAiBody": "AI 利用料、実機確認、テスト、配布まわりなどの継続コストを支えます。",
+  "supporterImpactDevicesTitle": "端末とテスト",
+  "supporterImpactDevicesBody": "実機確認や OS アップデート追従など、安定運用に必要なコストを支えます。",
+  "supporterImpactMotivationTitle": "継続するモチベーション",
+  "supporterImpactMotivationBody": "使ってくれている実感が、新機能や改善を続けるいちばんの後押しになります。",
+  "supporterPackagesTitle": "応援の方法",
+  "supporterSubscriptionGroupTitle": "毎月応援",
+  "supporterSubscriptionGroupBody": "継続的に応援してもらえるとうれしいです。",
+  "supporterOneTimeGroupTitle": "単発で応援",
+  "supporterOneTimeGroupBody": "ランチやドリンクをおごる気持ちになったら、応援してもらえるとうれしいです。",
+  "supporterPurchaseInfoTitle": "購入について",
+  "supporterPurchaseInfoBody": "購入の復元は同じ Apple ID または Google アカウントで利用できます。iOS と Android の間で応援状態は共有されません。",
+  "supporterPurchaseInfoLink": "詳しくはこちら",
+  "supporterPrivacyPolicyLink": "プライバシーポリシー",
+  "supporterTermsOfUseLink": "利用規約（Apple標準EULA）",
+  "supporterLearnMoreTitle": "購入と応援について",
+  "supporterLearnMoreBody": "無料で提供し続ける考え方や、購入の復元の仕組みを確認できます。",
+  "supporterOpenLinkFailed": "案内ページを開けませんでした。",
+  "supporterPurchaseSuccess": "CC Pocket を応援してくれてありがとうございます。",
+  "supporterPurchaseCancelled": "購入をキャンセルしました。",
+  "supporterPurchaseFailed": "購入に失敗しました: {message}",
+  "@supporterPurchaseFailed": {
+    "placeholders": {
+      "message": { "type": "String" }
+    }
+  },
+  "supporterRestoreSuccess": "購入情報を復元しました。",
+  "supporterRestoreFailed": "復元に失敗しました: {message}",
+  "@supporterRestoreFailed": {
+    "placeholders": {
+      "message": { "type": "String" }
+    }
+  },
+  "gitDiscardAllChangesTitle": "すべての変更を破棄しますか",
+  "gitDiscardVisibleUnstagedChangesMessage": "表示中の未ステージ変更をすべて破棄します。",
+  "gitDiscardChangeTitle": "この変更を破棄しますか",
+  "gitDiscardFileUnstagedChangesMessage": "このファイルの未ステージ変更をすべて破棄します。",
+  "gitDiscardHunkUnstagedChangesMessage": "このハンクの未ステージ変更を破棄します。",
+  "googleSearchSelectionAction": "Google で検索",
+  "approvalQuestionNotificationTitle": "質問があります - ccpocket",
+  "approvalRequiredNotificationTitle": "承認待ち - ccpocket",
+  "exitPlanModeNotificationBody": "作成したプランの確認が必要です",
+  "renderErrorFallback": "このコンテンツを表示できませんでした"
+}

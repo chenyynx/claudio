@@ -1,0 +1,5525 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import '../utils/request_user_input.dart';
+import 'protocol_version.dart';
+
+bool isCodexAutoReviewApprovalsReviewer(String? value) {
+  return value == 'auto_review' || value == 'guardian_subagent';
+}
+
+// ---- Assistant content types ----
+
+sealed class AssistantContent {
+  factory AssistantContent.fromJson(Map<String, dynamic> json) {
+    return switch (json['type'] as String) {
+      'text' => TextContent(text: json['text'] as String),
+      'tool_use' => ToolUseContent(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        input: Map<String, dynamic>.from(json['input'] as Map),
+      ),
+      'thinking' => ThinkingContent(
+        thinking: json['thinking'] as String? ?? '',
+      ),
+      _ => TextContent(text: '[Unknown content type: ${json['type']}]'),
+    };
+  }
+}
+
+class TextContent implements AssistantContent {
+  final String text;
+  const TextContent({required this.text});
+}
+
+class ToolUseContent implements AssistantContent {
+  final String id;
+  final String name;
+  final Map<String, dynamic> input;
+  const ToolUseContent({
+    required this.id,
+    required this.name,
+    required this.input,
+  });
+}
+
+class ThinkingContent implements AssistantContent {
+  final String thinking;
+  const ThinkingContent({required this.thinking});
+}
+
+// ---- Assistant message ----
+
+class AssistantMessage {
+  final String id;
+  final String role;
+  final List<AssistantContent> content;
+  final String model;
+
+  const AssistantMessage({
+    required this.id,
+    required this.role,
+    required this.content,
+    required this.model,
+  });
+
+  factory AssistantMessage.fromJson(Map<String, dynamic> json) {
+    final contentList = (json['content'] as List)
+        .map((c) => AssistantContent.fromJson(c as Map<String, dynamic>))
+        .toList();
+    return AssistantMessage(
+      id: json['id'] as String? ?? '',
+      role: json['role'] as String? ?? 'assistant',
+      content: contentList,
+      model: sanitizeCodexModelName(json['model'] as String?) ?? '',
+    );
+  }
+}
+
+// ---- Bridge connection state ----
+
+enum BridgeConnectionState { disconnected, connecting, connected, reconnecting }
+
+// ---- Message status (for user messages) ----
+
+enum MessageStatus { sending, sent, queued, failed }
+
+enum PermissionOutcome {
+  approved,
+  approvedForSession,
+  rejected,
+  answered;
+
+  static PermissionOutcome? fromString(String? value) => switch (value) {
+    'approved' => PermissionOutcome.approved,
+    'approved_for_session' => PermissionOutcome.approvedForSession,
+    'rejected' => PermissionOutcome.rejected,
+    'answered' => PermissionOutcome.answered,
+    _ => null,
+  };
+}
+
+// ---- Process status ----
+
+enum ProcessStatus {
+  starting,
+  idle,
+  running,
+  waitingApproval,
+  compacting;
+
+  static ProcessStatus fromString(String value) {
+    return switch (value) {
+      'starting' => ProcessStatus.starting,
+      'idle' => ProcessStatus.idle,
+      'running' => ProcessStatus.running,
+      'waiting_approval' => ProcessStatus.waitingApproval,
+      'compacting' => ProcessStatus.compacting,
+      _ => ProcessStatus.idle,
+    };
+  }
+}
+
+enum CodexThreadGoalStatus {
+  active('active'),
+  paused('paused'),
+  blocked('blocked'),
+  usageLimited('usageLimited'),
+  budgetLimited('budgetLimited'),
+  complete('complete');
+
+  final String value;
+  const CodexThreadGoalStatus(this.value);
+
+  static CodexThreadGoalStatus fromString(String value) => switch (value) {
+    'paused' => CodexThreadGoalStatus.paused,
+    'blocked' => CodexThreadGoalStatus.blocked,
+    'usageLimited' => CodexThreadGoalStatus.usageLimited,
+    'budgetLimited' => CodexThreadGoalStatus.budgetLimited,
+    'complete' => CodexThreadGoalStatus.complete,
+    _ => CodexThreadGoalStatus.active,
+  };
+}
+
+class CodexGoal {
+  final String threadId;
+  final String objective;
+  final CodexThreadGoalStatus status;
+  final int? tokenBudget;
+  final int tokensUsed;
+  final int timeUsedSeconds;
+  final int createdAt;
+  final int updatedAt;
+
+  const CodexGoal({
+    required this.threadId,
+    required this.objective,
+    required this.status,
+    required this.tokenBudget,
+    required this.tokensUsed,
+    required this.timeUsedSeconds,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  factory CodexGoal.fromJson(Map<String, dynamic> json) => CodexGoal(
+    threadId: json['threadId'] as String,
+    objective: json['objective'] as String,
+    status: CodexThreadGoalStatus.fromString(json['status'] as String),
+    tokenBudget: json['tokenBudget'] as int?,
+    tokensUsed: json['tokensUsed'] as int? ?? 0,
+    timeUsedSeconds: json['timeUsedSeconds'] as int? ?? 0,
+    createdAt: json['createdAt'] as int? ?? 0,
+    updatedAt: json['updatedAt'] as int? ?? 0,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CodexGoal &&
+          threadId == other.threadId &&
+          objective == other.objective &&
+          status == other.status &&
+          tokenBudget == other.tokenBudget &&
+          tokensUsed == other.tokensUsed &&
+          timeUsedSeconds == other.timeUsedSeconds &&
+          createdAt == other.createdAt &&
+          updatedAt == other.updatedAt;
+
+  @override
+  int get hashCode => Object.hash(
+    threadId,
+    objective,
+    status,
+    tokenBudget,
+    tokensUsed,
+    timeUsedSeconds,
+    createdAt,
+    updatedAt,
+  );
+}
+
+// ---- Provider ----
+
+enum Provider {
+  claude('claude', 'Claude'),
+  codex('codex', 'Codex');
+
+  final String value;
+  final String label;
+  const Provider(this.value, this.label);
+}
+
+String? sanitizeCodexModelName(String? model) {
+  final normalized = model?.trim();
+  if (normalized == null || normalized.isEmpty || normalized == 'codex') {
+    return null;
+  }
+  return normalized;
+}
+
+bool codexSupportsReasoningEffort(String? model, ReasoningEffort effort) =>
+    sanitizeCodexModelName(model) != 'gpt-6-astra' ||
+    (effort != ReasoningEffort.none && effort != ReasoningEffort.minimal);
+
+bool codexSupportsNoneReasoningEffort(String? model) =>
+    codexSupportsReasoningEffort(model, ReasoningEffort.none);
+
+const defaultCodexModels = <String>[
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.3-codex',
+  'gpt-5.3-codex-spark',
+];
+
+const _deprecatedCodexModels = <String>{'gpt-5.2-codex'};
+
+bool isDeprecatedCodexModel(String? model) {
+  final normalized = sanitizeCodexModelName(model);
+  return normalized != null && _deprecatedCodexModels.contains(normalized);
+}
+
+String? normalizeCodexModelForAvailableList(
+  String? model,
+  Iterable<String> availableModels,
+) {
+  final normalized = sanitizeCodexModelName(model);
+  if (normalized == null) return null;
+  if (!isDeprecatedCodexModel(normalized)) return normalized;
+
+  final candidates = availableModels.toList();
+  final effectiveModels = candidates.isNotEmpty
+      ? candidates
+      : defaultCodexModels;
+  for (final candidate in effectiveModels) {
+    final sanitizedCandidate = sanitizeCodexModelName(candidate);
+    if (sanitizedCandidate == null ||
+        isDeprecatedCodexModel(sanitizedCandidate)) {
+      continue;
+    }
+    return sanitizedCandidate;
+  }
+  return null;
+}
+
+// ---- Permission mode ----
+
+enum PermissionMode {
+  defaultMode('default', 'Default'),
+  acceptEdits('acceptEdits', 'Accept Edits'),
+  plan('plan', 'Plan'),
+  auto('auto', 'Auto'),
+  bypassPermissions('bypassPermissions', 'Bypass All');
+
+  final String value;
+  final String label;
+  const PermissionMode(this.value, this.label);
+}
+
+enum ExecutionMode {
+  defaultMode('default', 'Default'),
+  acceptEdits('acceptEdits', 'Accept Edits'),
+  fullAccess('fullAccess', 'Full Access');
+
+  final String value;
+  final String label;
+  const ExecutionMode(this.value, this.label);
+}
+
+ExecutionMode? executionModeFromRaw(String? raw) {
+  if (raw == null || raw.isEmpty) return null;
+  for (final value in ExecutionMode.values) {
+    if (value.value == raw) return value;
+  }
+  return null;
+}
+
+enum CodexApprovalPolicy {
+  untrusted('untrusted'),
+  onRequest('on-request'),
+  onFailure('on-failure'),
+  never('never');
+
+  final String value;
+  const CodexApprovalPolicy(this.value);
+}
+
+enum CodexPermissionsMode {
+  defaultPermissions('default', 'Default permissions'),
+  autoReview('autoReview', 'Auto-review'),
+  fullAccess('fullAccess', 'Full access'),
+  custom('custom', 'Custom (config.toml)');
+
+  final String value;
+  final String label;
+  const CodexPermissionsMode(this.value, this.label);
+}
+
+CodexPermissionsMode? codexPermissionsModeFromRaw(String? raw) {
+  if (raw == null || raw.isEmpty) return null;
+  for (final value in CodexPermissionsMode.values) {
+    if (value.value == raw) return value;
+  }
+  return null;
+}
+
+CodexPermissionsMode codexPermissionsModeFromSettings({
+  String? codexPermissionsMode,
+  String? approvalPolicy,
+  String? approvalsReviewer,
+  String? sandboxMode,
+}) {
+  final explicit = codexPermissionsModeFromRaw(codexPermissionsMode);
+  if (explicit != null) return explicit;
+  if (codexPermissionsMode != null && codexPermissionsMode.isNotEmpty) {
+    return CodexPermissionsMode.custom;
+  }
+  final normalizedSandbox = switch (sandboxMode) {
+    'danger-full-access' || 'off' => 'danger-full-access',
+    'workspace-write' || 'on' => 'workspace-write',
+    'read-only' => 'read-only',
+    _ => null,
+  };
+  if (approvalPolicy == CodexApprovalPolicy.never.value &&
+      normalizedSandbox == 'danger-full-access') {
+    return CodexPermissionsMode.fullAccess;
+  }
+  if (approvalPolicy == CodexApprovalPolicy.onRequest.value &&
+      normalizedSandbox == 'workspace-write') {
+    if (isCodexAutoReviewApprovalsReviewer(approvalsReviewer)) {
+      return CodexPermissionsMode.autoReview;
+    }
+    if (approvalsReviewer == null || approvalsReviewer == 'user') {
+      return CodexPermissionsMode.defaultPermissions;
+    }
+  }
+  return CodexPermissionsMode.custom;
+}
+
+String? _resolveCodexPermissionsMode(Map<String, dynamic>? codexSettings) {
+  if (codexSettings == null) return null;
+  final explicit = codexPermissionsModeFromRaw(
+    codexSettings['codexPermissionsMode'] as String?,
+  );
+  if (explicit != null) return explicit.value;
+  if (codexSettings['codexPermissionsMode'] != null) {
+    return CodexPermissionsMode.custom.value;
+  }
+  if (codexSettings['approvalPolicy'] == null ||
+      codexSettings['sandboxMode'] == null) {
+    return null;
+  }
+  return codexPermissionsModeFromSettings(
+    approvalPolicy: codexSettings['approvalPolicy'] as String?,
+    approvalsReviewer: codexSettings['approvalsReviewer'] as String?,
+    sandboxMode: codexSettings['sandboxMode'] as String?,
+  ).value;
+}
+
+CodexApprovalPolicy? approvalPolicyForCodexPermissionsMode(
+  CodexPermissionsMode mode,
+) => switch (mode) {
+  CodexPermissionsMode.defaultPermissions ||
+  CodexPermissionsMode.autoReview => CodexApprovalPolicy.onRequest,
+  CodexPermissionsMode.fullAccess => CodexApprovalPolicy.never,
+  CodexPermissionsMode.custom => null,
+};
+
+String? approvalsReviewerForCodexPermissionsMode(CodexPermissionsMode mode) =>
+    switch (mode) {
+      CodexPermissionsMode.autoReview => 'auto_review',
+      CodexPermissionsMode.defaultPermissions ||
+      CodexPermissionsMode.fullAccess => 'user',
+      CodexPermissionsMode.custom => null,
+    };
+
+SandboxMode? sandboxModeForCodexPermissionsMode(CodexPermissionsMode mode) =>
+    switch (mode) {
+      CodexPermissionsMode.defaultPermissions ||
+      CodexPermissionsMode.autoReview => SandboxMode.on,
+      CodexPermissionsMode.fullAccess => SandboxMode.off,
+      CodexPermissionsMode.custom => null,
+    };
+
+CodexApprovalPolicy? codexApprovalPolicyFromRaw(String? raw) {
+  if (raw == null || raw.isEmpty) return null;
+  if (raw == CodexApprovalPolicy.onFailure.value) {
+    return CodexApprovalPolicy.onRequest;
+  }
+  for (final value in CodexApprovalPolicy.values) {
+    if (value.value == raw) return value;
+  }
+  return null;
+}
+
+CodexApprovalPolicy codexApprovalPolicyFromLegacyExecutionMode(String? raw) {
+  return executionModeFromRaw(raw) == ExecutionMode.fullAccess
+      ? CodexApprovalPolicy.never
+      : CodexApprovalPolicy.onRequest;
+}
+
+String codexApprovalPolicyFromLegacyExecutionModeValue(String? raw) =>
+    codexApprovalPolicyFromLegacyExecutionMode(raw).value;
+
+bool derivePlanMode({bool? planMode, String? permissionMode}) {
+  return planMode ?? (permissionMode == PermissionMode.plan.value);
+}
+
+ExecutionMode deriveExecutionMode({
+  String? provider,
+  String? executionMode,
+  String? permissionMode,
+  String? approvalPolicy,
+}) {
+  final explicit = executionModeFromRaw(executionMode);
+  if (explicit != null) return explicit;
+
+  if (permissionMode == PermissionMode.bypassPermissions.value) {
+    return ExecutionMode.fullAccess;
+  }
+  if (permissionMode == PermissionMode.acceptEdits.value) {
+    return provider == Provider.codex.value
+        ? ExecutionMode.defaultMode
+        : ExecutionMode.acceptEdits;
+  }
+  if (approvalPolicy == 'never') return ExecutionMode.fullAccess;
+  return ExecutionMode.defaultMode;
+}
+
+String? resolveCodexApprovalPolicy({
+  String? approvalPolicy,
+  String? executionMode,
+}) {
+  return approvalPolicy?.isNotEmpty == true
+      ? approvalPolicy
+      : (executionMode?.isNotEmpty == true
+            ? codexApprovalPolicyFromLegacyExecutionModeValue(executionMode)
+            : null);
+}
+
+PermissionMode legacyPermissionModeFromModes(
+  Provider provider, {
+  required ExecutionMode executionMode,
+  required bool planMode,
+}) {
+  if (planMode) return PermissionMode.plan;
+  switch (executionMode) {
+    case ExecutionMode.defaultMode:
+      return provider == Provider.codex
+          ? PermissionMode.acceptEdits
+          : PermissionMode.defaultMode;
+    case ExecutionMode.acceptEdits:
+      return PermissionMode.acceptEdits;
+    case ExecutionMode.fullAccess:
+      return PermissionMode.bypassPermissions;
+  }
+}
+
+enum ClaudeEffort {
+  low('low', 'Low'),
+  medium('medium', 'Medium'),
+  high('high', 'High'),
+  xhigh('xhigh', 'X High'),
+  max('max', 'Max');
+
+  final String value;
+  final String label;
+  const ClaudeEffort(this.value, this.label);
+}
+
+// ---- Sandbox mode (Claude & Codex) ----
+
+enum SandboxMode {
+  on('on', 'Sandbox On'),
+  off('off', 'Sandbox Off');
+
+  final String value;
+  final String label;
+  const SandboxMode(this.value, this.label);
+}
+
+final class ReasoningEffort {
+  static const none = ReasoningEffort._('none', 'None');
+  static const minimal = ReasoningEffort._('minimal', 'Minimal');
+  static const low = ReasoningEffort._('low', 'Light');
+  static const medium = ReasoningEffort._('medium', 'Medium');
+  static const high = ReasoningEffort._('high', 'High');
+  static const xhigh = ReasoningEffort._('xhigh', 'Extra High');
+  static const max = ReasoningEffort._('max', 'Max');
+  static const ultra = ReasoningEffort._('ultra', 'Ultra');
+
+  static const values = [none, minimal, low, medium, high, xhigh, max, ultra];
+
+  final String value;
+  final String label;
+  const ReasoningEffort._(this.value, this.label);
+
+  factory ReasoningEffort.fromValue(String value) {
+    for (final effort in values) {
+      if (effort.value == value) return effort;
+    }
+    final words = value.split(RegExp(r'[-_\s]+'));
+    final label = words
+        .where((word) => word.isNotEmpty)
+        .map((word) => '${word[0].toUpperCase()}${word.substring(1)}')
+        .join(' ');
+    return ReasoningEffort._(value, label.isEmpty ? value : label);
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ReasoningEffort && other.value == value;
+
+  @override
+  int get hashCode => value.hashCode;
+}
+
+ReasoningEffort? reasoningEffortByValue(String? raw) {
+  final value = raw?.trim();
+  if (value == null || value.isEmpty) return null;
+  return ReasoningEffort.fromValue(value);
+}
+
+enum CodexSpeed {
+  standard('standard', 'Standard'),
+  fast('fast', 'Fast');
+
+  final String value;
+  final String label;
+  const CodexSpeed(this.value, this.label);
+}
+
+CodexSpeed codexSpeedFromRaw(String? raw) => switch (raw?.trim()) {
+  'fast' || 'priority' => CodexSpeed.fast,
+  _ => CodexSpeed.standard,
+};
+
+enum WebSearchMode {
+  disabled('disabled', 'Disabled'),
+  cached('cached', 'Cached'),
+  live('live', 'Live');
+
+  final String value;
+  final String label;
+  const WebSearchMode(this.value, this.label);
+}
+
+// ---- Image reference ----
+
+class ImageRef {
+  final String id;
+  final String url;
+  final String mimeType;
+  final String? thumbnailUrl;
+
+  const ImageRef({
+    required this.id,
+    required this.url,
+    required this.mimeType,
+    this.thumbnailUrl,
+  });
+
+  factory ImageRef.fromJson(Map<String, dynamic> json) {
+    return ImageRef(
+      id: json['id'] as String,
+      url: json['url'] as String,
+      mimeType: json['mimeType'] as String,
+      thumbnailUrl: json['thumbnailUrl'] as String?,
+    );
+  }
+}
+
+// ---- Worktree info ----
+
+class WorktreeInfo {
+  final String worktreePath;
+  final String branch;
+  final String projectPath;
+  final String? head;
+
+  const WorktreeInfo({
+    required this.worktreePath,
+    required this.branch,
+    required this.projectPath,
+    this.head,
+  });
+
+  factory WorktreeInfo.fromJson(Map<String, dynamic> json) {
+    return WorktreeInfo(
+      worktreePath: json['worktreePath'] as String,
+      branch: json['branch'] as String,
+      projectPath: json['projectPath'] as String,
+      head: json['head'] as String?,
+    );
+  }
+}
+
+// ---- Gallery image ----
+
+class GalleryImage {
+  final String id;
+  final String url;
+  final String mimeType;
+  final String projectPath;
+  final String projectName;
+  final String? sessionId;
+  final String addedAt;
+  final int sizeBytes;
+
+  const GalleryImage({
+    required this.id,
+    required this.url,
+    required this.mimeType,
+    required this.projectPath,
+    required this.projectName,
+    this.sessionId,
+    required this.addedAt,
+    required this.sizeBytes,
+  });
+
+  factory GalleryImage.fromJson(Map<String, dynamic> json) {
+    return GalleryImage(
+      id: json['id'] as String,
+      url: json['url'] as String,
+      mimeType: json['mimeType'] as String,
+      projectPath: json['projectPath'] as String,
+      projectName: json['projectName'] as String,
+      sessionId: json['sessionId'] as String?,
+      addedAt: json['addedAt'] as String,
+      sizeBytes: json['sizeBytes'] as int? ?? 0,
+    );
+  }
+}
+
+class QueuedInputItem {
+  final String itemId;
+  final String text;
+  final String createdAt;
+  final String? updatedAt;
+  final int imageCount;
+  final List<Map<String, String>> skills;
+  final List<Map<String, String>> mentions;
+
+  const QueuedInputItem({
+    required this.itemId,
+    required this.text,
+    required this.createdAt,
+    this.updatedAt,
+    this.imageCount = 0,
+    this.skills = const [],
+    this.mentions = const [],
+  });
+
+  factory QueuedInputItem.fromJson(Map<String, dynamic> json) {
+    return QueuedInputItem(
+      itemId: json['itemId'] as String? ?? '',
+      text: json['text'] as String? ?? '',
+      createdAt: json['createdAt'] as String? ?? '',
+      updatedAt: json['updatedAt'] as String?,
+      imageCount: json['imageCount'] as int? ?? 0,
+      skills: _stringMapList(json['skills']),
+      mentions: _stringMapList(json['mentions']),
+    );
+  }
+}
+
+// ---- Usage info ----
+
+class UsageWindow {
+  final double utilization;
+  final String resetsAt;
+
+  const UsageWindow({required this.utilization, required this.resetsAt});
+
+  factory UsageWindow.fromJson(Map<String, dynamic> json) {
+    return UsageWindow(
+      utilization: (json['utilization'] as num).toDouble(),
+      resetsAt: json['resetsAt'] as String,
+    );
+  }
+
+  /// Parse resetsAt as DateTime (ISO 8601).
+  DateTime? get resetsAtDateTime => DateTime.tryParse(resetsAt);
+}
+
+class UsageInfo {
+  final String provider;
+  final UsageWindow? fiveHour;
+  final UsageWindow? sevenDay;
+  final String? error;
+
+  const UsageInfo({
+    required this.provider,
+    this.fiveHour,
+    this.sevenDay,
+    this.error,
+  });
+
+  factory UsageInfo.fromJson(Map<String, dynamic> json) {
+    return UsageInfo(
+      provider: json['provider'] as String,
+      fiveHour: json['fiveHour'] != null
+          ? UsageWindow.fromJson(json['fiveHour'] as Map<String, dynamic>)
+          : null,
+      sevenDay: json['sevenDay'] != null
+          ? UsageWindow.fromJson(json['sevenDay'] as Map<String, dynamic>)
+          : null,
+      error: json['error'] as String?,
+    );
+  }
+
+  bool get hasData => fiveHour != null || sevenDay != null;
+  bool get hasError => error != null && !hasData;
+}
+
+// ---- Helpers ----
+
+/// Normalize tool_result content: Claude CLI may send String or List of content blocks.
+String _normalizeToolResultContent(dynamic content) {
+  if (content is String) return content;
+  if (content is List) {
+    return content
+        .whereType<Map<String, dynamic>>()
+        .where((c) => c['type'] == 'text')
+        .map((c) => c['text']?.toString() ?? '')
+        .join('\n');
+  }
+  return content?.toString() ?? '';
+}
+
+// ---- Server messages ----
+
+sealed class ServerMessage {
+  factory ServerMessage.fromJson(Map<String, dynamic> json) {
+    return switch (json['type'] as String) {
+      'system' => SystemMessage(
+        subtype: json['subtype'] as String? ?? '',
+        sessionId: json['sessionId'] as String?,
+        claudeSessionId: json['claudeSessionId'] as String?,
+        model: json['model'] as String?,
+        approvalPolicy: json['approvalPolicy'] as String?,
+        approvalsReviewer: json['approvalsReviewer'] as String?,
+        codexPermissionsMode: json['codexPermissionsMode'] as String?,
+        provider: json['provider'] as String?,
+        projectPath: json['projectPath'] as String?,
+        workspace: switch (json['workspace']) {
+          final Map workspace => SessionWorkspaceInfo.fromJson(
+            Map<String, dynamic>.from(workspace),
+          ),
+          _ => null,
+        },
+        permissionMode: json['permissionMode'] as String?,
+        executionMode: json['executionMode'] as String?,
+        planMode: json['planMode'] as bool?,
+        sandboxMode: json['sandboxMode'] as String?,
+        modelReasoningEffort: json['modelReasoningEffort'] as String?,
+        serviceTier: json['serviceTier'] as String?,
+        networkAccessEnabled: json['networkAccessEnabled'] as bool?,
+        webSearchMode: json['webSearchMode'] as String?,
+        slashCommands:
+            (json['slashCommands'] as List?)
+                ?.map((e) => e as String)
+                .toList() ??
+            const [],
+        skills:
+            (json['skills'] as List?)?.map((e) => e as String).toList() ??
+            const [],
+        skillMetadata:
+            (json['skillMetadata'] as List?)
+                ?.map(
+                  (e) => CodexSkillMetadata.fromJson(e as Map<String, dynamic>),
+                )
+                .toList() ??
+            const [],
+        apps:
+            (json['apps'] as List?)?.map((e) => e as String).toList() ??
+            const [],
+        appMetadata:
+            (json['appMetadata'] as List?)
+                ?.map(
+                  (e) => CodexAppMetadata.fromJson(e as Map<String, dynamic>),
+                )
+                .toList() ??
+            const [],
+        plugins:
+            (json['plugins'] as List?)?.whereType<String>().toList() ??
+            const [],
+        pluginMetadata:
+            (json['pluginMetadata'] as List?)
+                ?.map(
+                  (e) =>
+                      CodexPluginMetadata.fromJson(e as Map<String, dynamic>),
+                )
+                .toList() ??
+            const [],
+        worktreePath: json['worktreePath'] as String?,
+        worktreeBranch: json['worktreeBranch'] as String?,
+        clearContext: json['clearContext'] as bool? ?? false,
+        sourceSessionId: json['sourceSessionId'] as String?,
+        resumeRequestId: json['resumeRequestId'] as String?,
+        requestId: json['requestId'] as String?,
+        tipCode: json['tipCode'] as String?,
+        codexCliJoin: json['codexCliJoin'] is Map<String, dynamic>
+            ? CodexCliJoinTarget.fromJson(
+                json['codexCliJoin'] as Map<String, dynamic>,
+              )
+            : null,
+      ),
+      'assistant' => AssistantServerMessage(
+        message: AssistantMessage.fromJson(
+          json['message'] as Map<String, dynamic>,
+        ),
+        messageUuid: json['messageUuid'] as String?,
+      ),
+      'tool_result' => ToolResultMessage(
+        toolUseId: json['toolUseId'] as String,
+        content: _normalizeToolResultContent(json['content']),
+        toolName: json['toolName'] as String?,
+        permissionOutcome: PermissionOutcome.fromString(
+          json['permissionOutcome'] as String?,
+        ),
+        images:
+            (json['images'] as List?)
+                ?.map((i) => ImageRef.fromJson(i as Map<String, dynamic>))
+                .toList() ??
+            const [],
+        userMessageUuid: json['userMessageUuid'] as String?,
+      ),
+      'result' => ResultMessage(
+        subtype: json['subtype'] as String? ?? '',
+        result: json['result'] as String?,
+        error: json['error'] as String?,
+        cost: (json['cost'] as num?)?.toDouble(),
+        duration: (json['duration'] as num?)?.toDouble(),
+        sessionId: json['sessionId'] as String?,
+        stopReason: json['stopReason'] as String?,
+        inputTokens: json['inputTokens'] as int?,
+        cachedInputTokens: json['cachedInputTokens'] as int?,
+        outputTokens: json['outputTokens'] as int?,
+        toolCalls: json['toolCalls'] as int?,
+        fileEdits: json['fileEdits'] as int?,
+      ),
+      'guardian_approval' => GuardianApprovalMessage(
+        risk: GuardianApprovalRisk.fromString(json['risk'] as String?),
+        reason: json['reason'] as String? ?? '',
+        authorization: json['authorization'] as String?,
+      ),
+      'error' => ErrorMessage(
+        message: json['message'] as String,
+        errorCode: json['errorCode'] as String?,
+        protocolVersion: json['protocolVersion'] is int
+            ? json['protocolVersion'] as int
+            : null,
+        minimumProtocolVersion: json['minimumProtocolVersion'] is int
+            ? json['minimumProtocolVersion'] as int
+            : null,
+        sessionId: json['sessionId'] as String?,
+        toolUseId: json['toolUseId'] as String?,
+        path: json['path'] as String?,
+        projectId: json['projectId'] as String?,
+        workspaceKind: json['workspaceKind'] as String?,
+        requestId: json['requestId'] as String?,
+        requestScope: json['requestScope'] as String?,
+        offset: json['offset'] as int?,
+      ),
+      'push_registration_result' => PushRegistrationResultMessage(
+        token: json['token'] as String,
+        requestId: json['requestId'] as String,
+        success: json['success'] as bool,
+        error: json['error'] as String?,
+      ),
+      'session_link_resolution' => SessionLinkResolutionMessage(
+        requestId: json['requestId'] as String,
+        sourceSessionId: json['sourceSessionId'] as String,
+        status: SessionLinkResolutionStatus.fromString(
+          json['status'] as String?,
+        ),
+        bridgeSessionId: json['bridgeSessionId'] as String?,
+        provider: json['provider'] as String?,
+        recentSession: switch (json['recentSession']) {
+          final Map<String, dynamic> value => RecentSession.fromJson(value),
+          _ => null,
+        },
+      ),
+      'session_context' => SessionContextMessage(
+        sessionId: json['sessionId'] as String,
+        context: SessionInfo.fromJson(json['context'] as Map<String, dynamic>),
+      ),
+      'status' => StatusMessage(
+        status: ProcessStatus.fromString(json['status'] as String),
+      ),
+      'history' => HistoryMessage(
+        messages: (json['messages'] as List)
+            .map((m) => ServerMessage.fromJson(m as Map<String, dynamic>))
+            .toList(),
+      ),
+      'history_delta' => HistoryDeltaMessage(
+        sessionId: json['sessionId'] as String?,
+        fromSeq: json['fromSeq'] as int? ?? 0,
+        toSeq: json['toSeq'] as int? ?? 0,
+        entries: (json['messages'] as List)
+            .map((m) => HistoryEntry.fromJson(m as Map<String, dynamic>))
+            .toList(),
+        status: json['status'] != null
+            ? ProcessStatus.fromString(json['status'] as String)
+            : null,
+      ),
+      'history_snapshot' => HistorySnapshotMessage(
+        sessionId: json['sessionId'] as String?,
+        fromSeq: json['fromSeq'] as int? ?? 0,
+        toSeq: json['toSeq'] as int? ?? 0,
+        entries: (json['messages'] as List)
+            .map((m) => HistoryEntry.fromJson(m as Map<String, dynamic>))
+            .toList(),
+        status: json['status'] != null
+            ? ProcessStatus.fromString(json['status'] as String)
+            : null,
+        reason: json['reason'] as String? ?? 'compacted',
+      ),
+      'conversation_queue' => ConversationQueueMessage(
+        sessionId: json['sessionId'] as String?,
+        limit: json['limit'] as int? ?? 1,
+        items:
+            (json['items'] as List?)
+                ?.map(
+                  (item) =>
+                      QueuedInputItem.fromJson(item as Map<String, dynamic>),
+                )
+                .toList() ??
+            const [],
+      ),
+      'goal_state' => GoalStateMessage(
+        sessionId: json['sessionId'] as String?,
+        goal: json['goal'] is Map<String, dynamic>
+            ? CodexGoal.fromJson(json['goal'] as Map<String, dynamic>)
+            : null,
+      ),
+      'permission_request' => PermissionRequestMessage(
+        toolUseId: json['toolUseId'] as String,
+        toolName: json['toolName'] as String,
+        input: Map<String, dynamic>.from(json['input'] as Map),
+      ),
+      'permission_resolved' => PermissionResolvedMessage(
+        toolUseId: json['toolUseId'] as String,
+      ),
+      'stream_delta' => StreamDeltaMessage(text: json['text'] as String),
+      'thinking_delta' => ThinkingDeltaMessage(text: json['text'] as String),
+      'session_list' => SessionListMessage(
+        sessions: (json['sessions'] as List)
+            .map((s) => SessionInfo.fromJson(s as Map<String, dynamic>))
+            .toList(),
+        allowedDirs:
+            (json['allowedDirs'] as List?)?.map((e) => e as String).toList() ??
+            const [],
+        claudeModels:
+            (json['claudeModels'] as List?)?.map((e) => e as String).toList() ??
+            const [],
+        claudeModelEfforts:
+            (json['claudeModelEfforts'] as Map?)?.map(
+              (key, value) => MapEntry(
+                key as String,
+                (value as List?)?.whereType<String>().toList() ?? const [],
+              ),
+            ) ??
+            const {},
+        codexModels:
+            (json['codexModels'] as List?)?.map((e) => e as String).toList() ??
+            const [],
+        codexModelReasoningEfforts:
+            (json['codexModelReasoningEfforts'] as Map?)?.map(
+              (key, value) => MapEntry(
+                key as String,
+                (value as List?)?.whereType<String>().toList() ?? const [],
+              ),
+            ) ??
+            const {},
+        codexModelServiceTiers:
+            (json['codexModelServiceTiers'] as Map?)?.map(
+              (key, value) => MapEntry(
+                key as String,
+                (value as List?)?.whereType<String>().toList() ?? const [],
+              ),
+            ) ??
+            const {},
+        codexProfiles:
+            (json['codexProfiles'] as List?)
+                ?.map((e) => e as String)
+                .toList() ??
+            const [],
+        defaultCodexProfile: json['defaultCodexProfile'] as String?,
+        codexAutoReviewDisabled:
+            json['codexAutoReviewDisabled'] as bool? ?? false,
+        bridgeVersion: json['bridgeVersion'] as String?,
+        protocolVersion: json['protocolVersion'] as int?,
+        minimumProtocolVersion: json['minimumProtocolVersion'] as int?,
+        protocolCapabilities:
+            (json['protocolCapabilities'] as List?)
+                ?.whereType<String>()
+                .toSet() ??
+            const {},
+      ),
+      'recent_sessions' => RecentSessionsMessage(
+        sessions: (json['sessions'] as List)
+            .map((s) => RecentSession.fromJson(s as Map<String, dynamic>))
+            .toList(),
+        hasMore: json['hasMore'] as bool? ?? false,
+        limit: json['limit'] as int?,
+        offset: json['offset'] as int?,
+        projectPath: json['projectPath'] as String?,
+        projectId: json['projectId'] as String?,
+        workspaceKind: json['workspaceKind'] as String?,
+        requestScope: json['requestScope'] as String?,
+        requestId: json['requestId'] as String?,
+      ),
+      'past_history' => PastHistoryMessage(
+        claudeSessionId: json['claudeSessionId'] as String? ?? '',
+        messages: (json['messages'] as List)
+            .map((m) => PastMessage.fromJson(m as Map<String, dynamic>))
+            .toList(),
+      ),
+      'gallery_list' => GalleryListMessage(
+        images: (json['images'] as List)
+            .map((i) => GalleryImage.fromJson(i as Map<String, dynamic>))
+            .toList(),
+        projectPath: (json['projectPath'] ?? json['project']) as String?,
+        sessionId: json['sessionId'] as String?,
+        requestId: json['requestId'] as String?,
+      ),
+      'gallery_new_image' => GalleryNewImageMessage(
+        image: GalleryImage.fromJson(json['image'] as Map<String, dynamic>),
+      ),
+      'window_list' => WindowListMessage(
+        windows: (json['windows'] as List)
+            .map((w) => WindowInfo.fromJson(w as Map<String, dynamic>))
+            .toList(),
+      ),
+      'screenshot_result' => ScreenshotResultMessage(
+        projectPath: json['projectPath'] as String?,
+        sessionId: json['sessionId'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        image: json['image'] != null
+            ? GalleryImage.fromJson(json['image'] as Map<String, dynamic>)
+            : null,
+        error: json['error'] as String?,
+      ),
+      'debug_bundle' => DebugBundleMessage(
+        sessionId: json['sessionId'] as String? ?? '',
+        generatedAt: json['generatedAt'] as String? ?? '',
+        session: DebugBundleSession.fromJson(
+          json['session'] as Map<String, dynamic>? ?? const {},
+        ),
+        pastMessageCount: json['pastMessageCount'] as int? ?? 0,
+        historySummary:
+            (json['historySummary'] as List?)?.cast<String>() ?? const [],
+        debugTrace:
+            (json['debugTrace'] as List?)
+                ?.map(
+                  (e) => DebugTraceEvent.fromJson(e as Map<String, dynamic>),
+                )
+                .toList() ??
+            const [],
+        traceFilePath: json['traceFilePath'] as String?,
+        savedBundlePath: json['savedBundlePath'] as String?,
+        reproRecipe: DebugReproRecipe.fromJson(
+          json['reproRecipe'] as Map<String, dynamic>? ??
+              const <String, dynamic>{},
+        ),
+        agentPrompt: json['agentPrompt'] as String? ?? '',
+        diff: json['diff'] as String? ?? '',
+        diffError: json['diffError'] as String?,
+      ),
+      'file_content' => FileContentMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        filePath: json['filePath'] as String,
+        kind: json['kind'] as String? ?? 'text',
+        content: json['content'] as String? ?? '',
+        language: json['language'] as String?,
+        error: json['error'] as String?,
+        totalLines: json['totalLines'] as int?,
+        truncated: json['truncated'] as bool? ?? false,
+        base64: json['base64'] as String?,
+        mimeType: json['mimeType'] as String?,
+        sizeBytes: json['sizeBytes'] as int?,
+        mediaUrl: json['mediaUrl'] as String?,
+      ),
+      'file_download_ready' => FileDownloadReadyMessage(
+        requestId: json['requestId'] as String,
+        filePath: json['filePath'] as String,
+        fileName: json['fileName'] as String,
+        mimeType: json['mimeType'] as String? ?? 'application/octet-stream',
+        sizeBytes: json['sizeBytes'] as int? ?? 0,
+        downloadUrl: json['downloadUrl'] as String,
+      ),
+      'file_upload_ready' => FileUploadReadyMessage(
+        requestId: json['requestId'] as String,
+        fileName: json['fileName'] as String,
+        sizeBytes: json['sizeBytes'] as int? ?? 0,
+        uploadUrl: json['uploadUrl'] as String,
+        uploadToken: json['uploadToken'] as String,
+      ),
+      'file_upload_complete' => FileUploadCompleteMessage(
+        requestId: json['requestId'] as String,
+        filePath: json['filePath'] as String,
+        fileName: json['fileName'] as String,
+        sizeBytes: json['sizeBytes'] as int? ?? 0,
+        sha256: json['sha256'] as String,
+        skipped: json['skipped'] as bool? ?? false,
+      ),
+      'file_list' => FileListMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        files: (json['files'] as List).cast<String>(),
+        ignoredFiles: _parseIgnoredFiles(json),
+        modifiedAt: _parseFileModificationTimes(json),
+        totalFiles: json['totalFiles'] as int?,
+        truncated: json['truncated'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'project_history' => ProjectHistoryMessage(
+        projects: (json['projects'] as List).cast<String>(),
+      ),
+      'projects' => ProjectsMessage.fromJson(json),
+      'directory_listing' => DirectoryListingMessage(
+        path: json['path'] as String? ?? '',
+        directories: _parseDirectoryListingEntries(json['directories']),
+        requestId: json['requestId'] as String?,
+      ),
+      'diff_result' => DiffResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        staged: json['staged'] as bool?,
+        diff: json['diff'] as String? ?? '',
+        error: json['error'] as String?,
+        errorCode: json['errorCode'] as String?,
+        imageChanges:
+            (json['imageChanges'] as List?)
+                ?.map(
+                  (e) => DiffImageChange.fromJson(e as Map<String, dynamic>),
+                )
+                .toList() ??
+            const [],
+      ),
+      'diff_image_result' => DiffImageResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        filePath: json['filePath'] as String,
+        version: json['version'] as String,
+        base64: json['base64'] as String?,
+        mimeType: json['mimeType'] as String?,
+        error: json['error'] as String?,
+        oldBase64: json['oldBase64'] as String?,
+        newBase64: json['newBase64'] as String?,
+      ),
+      'worktree_list' => WorktreeListMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        worktrees: (json['worktrees'] as List)
+            .map((w) => WorktreeInfo.fromJson(w as Map<String, dynamic>))
+            .toList(),
+        mainBranch: json['mainBranch'] as String?,
+        error: json['error'] as String?,
+      ),
+      'worktree_removed' => WorktreeRemovedMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        worktreePath: json['worktreePath'] as String,
+        error: json['error'] as String?,
+      ),
+      'tool_use_summary' => ToolUseSummaryMessage(
+        summary: json['summary'] as String,
+        precedingToolUseIds:
+            (json['precedingToolUseIds'] as List?)?.cast<String>() ?? const [],
+      ),
+      'user_input' => UserInputMessage(
+        text: json['text'] as String? ?? '',
+        clientMessageId: json['clientMessageId'] as String?,
+        userMessageUuid: json['userMessageUuid'] as String?,
+        isSynthetic: json['isSynthetic'] as bool? ?? false,
+        isMeta: json['isMeta'] as bool? ?? false,
+        imageCount: json['imageCount'] as int? ?? 0,
+        timestamp: json['timestamp'] as String?,
+        imageUrls:
+            (json['images'] as List?)
+                ?.map((e) => (e as Map<String, dynamic>)['url'] as String?)
+                .whereType<String>()
+                .toList() ??
+            const [],
+      ),
+      'rewind_preview' => RewindPreviewMessage(
+        canRewind: json['canRewind'] as bool? ?? false,
+        filesChanged: (json['filesChanged'] as List?)?.cast<String>(),
+        insertions: json['insertions'] as int?,
+        deletions: json['deletions'] as int?,
+        error: json['error'] as String?,
+      ),
+      'rewind_result' => RewindResultMessage(
+        success: json['success'] as bool? ?? false,
+        mode: json['mode'] as String? ?? 'both',
+        error: json['error'] as String?,
+      ),
+      'input_ack' => InputAckMessage(
+        sessionId: json['sessionId'] as String?,
+        clientMessageId: json['clientMessageId'] as String?,
+        acceptedSeq: json['acceptedSeq'] as int?,
+        queued: json['queued'] as bool? ?? false,
+      ),
+      'input_rejected' => InputRejectedMessage(
+        sessionId: json['sessionId'] as String?,
+        clientMessageId: json['clientMessageId'] as String?,
+        reason: json['reason'] as String?,
+      ),
+      'usage_result' => UsageResultMessage(
+        providers: (json['providers'] as List)
+            .map((p) => UsageInfo.fromJson(p as Map<String, dynamic>))
+            .toList(),
+      ),
+      'recording_list' => RecordingListMessage(
+        recordings: (json['recordings'] as List)
+            .map((r) => RecordingInfo.fromJson(r as Map<String, dynamic>))
+            .toList(),
+      ),
+      'recording_content' => RecordingContentMessage(
+        sessionId: json['sessionId'] as String? ?? '',
+        content: json['content'] as String? ?? '',
+      ),
+      'message_images_result' => MessageImagesResultMessage(
+        messageUuid: json['messageUuid'] as String? ?? '',
+        images:
+            (json['images'] as List?)
+                ?.map((i) => ImageRef.fromJson(i as Map<String, dynamic>))
+                .toList() ??
+            const [],
+      ),
+      'prompt_history_backup_result' => PromptHistoryBackupResultMessage(
+        success: json['success'] as bool? ?? false,
+        backedUpAt: json['backedUpAt'] as String?,
+        error: json['error'] as String?,
+      ),
+      'prompt_history_restore_result' => PromptHistoryRestoreResultMessage(
+        success: json['success'] as bool? ?? false,
+        data: json['data'] as String?,
+        appVersion: json['appVersion'] as String?,
+        dbVersion: json['dbVersion'] as int?,
+        backedUpAt: json['backedUpAt'] as String?,
+        error: json['error'] as String?,
+      ),
+      'prompt_history_backup_info' => PromptHistoryBackupInfoMessage(
+        exists: json['exists'] as bool? ?? false,
+        appVersion: json['appVersion'] as String?,
+        dbVersion: json['dbVersion'] as int?,
+        backedUpAt: json['backedUpAt'] as String?,
+        sizeBytes: json['sizeBytes'] as int?,
+      ),
+      'prompt_history_sync_result' => PromptHistorySyncResultMessage(
+        success: json['success'] as bool? ?? false,
+        bridgeInstanceId: json['bridgeInstanceId'] as String?,
+        revision: json['revision'] as int?,
+        syncedAt: json['syncedAt'] as String?,
+        fullSnapshot: json['fullSnapshot'] as bool? ?? false,
+        entries:
+            (json['entries'] as List?)
+                ?.map(
+                  (e) => PromptHistoryServerEntry.fromJson(
+                    e as Map<String, dynamic>,
+                  ),
+                )
+                .toList() ??
+            const [],
+        error: json['error'] as String?,
+      ),
+      'prompt_history_mutation_result' => PromptHistoryMutationResultMessage(
+        success: json['success'] as bool? ?? false,
+        bridgeInstanceId: json['bridgeInstanceId'] as String?,
+        revision: json['revision'] as int?,
+        entry: json['entry'] is Map<String, dynamic>
+            ? PromptHistoryServerEntry.fromJson(
+                json['entry'] as Map<String, dynamic>,
+              )
+            : null,
+        error: json['error'] as String?,
+      ),
+      'prompt_history_status' => PromptHistoryStatusMessage(
+        bridgeInstanceId: json['bridgeInstanceId'] as String? ?? '',
+        revision: json['revision'] as int? ?? 0,
+        entryCount: json['entryCount'] as int? ?? 0,
+        updatedAt: json['updatedAt'] as String?,
+      ),
+      'rename_result' => RenameResultMessage(
+        sessionId: json['sessionId'] as String? ?? '',
+        name: json['name'] as String?,
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'archive_result' => ArchiveResultMessage(
+        sessionId: json['sessionId'] as String? ?? '',
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'branch_update' => BranchUpdateMessage(
+        sessionId: json['sessionId'] as String? ?? '',
+        branch: json['branch'] as String? ?? '',
+      ),
+      // ---- Git Operations (Phase 1-3) ----
+      'git_stage_result' => GitStageResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'git_unstage_result' => GitUnstageResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'git_unstage_hunks_result' => GitUnstageHunksResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'git_commit_result' => GitCommitResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        commitHash: json['commitHash'] as String?,
+        message: json['message'] as String?,
+        error: json['error'] as String?,
+      ),
+      'git_push_result' => GitPushResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'git_branches_result' => GitBranchesResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        current: json['current'] as String? ?? '',
+        branches: (json['branches'] as List?)?.cast<String>() ?? const [],
+        checkedOutBranches:
+            (json['checkedOutBranches'] as List?)?.cast<String>() ?? const [],
+        remoteStatusByBranch:
+            (json['remoteStatusByBranch'] as Map?)?.map(
+              (key, value) => MapEntry(
+                key as String,
+                GitBranchRemoteStatus.fromJson(
+                  Map<String, dynamic>.from(value as Map),
+                ),
+              ),
+            ) ??
+            const {},
+        error: json['error'] as String?,
+      ),
+      'git_create_branch_result' => GitCreateBranchResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'git_checkout_branch_result' => GitCheckoutBranchResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'git_revert_file_result' => GitRevertFileResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'git_revert_hunks_result' => GitRevertHunksResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'git_fetch_result' => GitFetchResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      'git_pull_result' => GitPullResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        success: json['success'] as bool? ?? false,
+        message: json['message'] as String?,
+        error: json['error'] as String?,
+      ),
+      'git_status_result' => GitStatusResultMessage(
+        requestId: json['requestId'] as String?,
+        sessionId: json['sessionId'] as String?,
+        projectPath: json['projectPath'] as String? ?? '',
+        hasUncommittedChanges: json['hasUncommittedChanges'] as bool? ?? false,
+        stagedCount: json['stagedCount'] as int? ?? 0,
+        unstagedCount: json['unstagedCount'] as int? ?? 0,
+        untrackedCount: json['untrackedCount'] as int? ?? 0,
+        remoteStatusIncluded: json['remoteStatusIncluded'] as bool? ?? false,
+        hasRemoteChanges: json['hasRemoteChanges'] as bool? ?? false,
+        commitsAhead: json['commitsAhead'] as int? ?? 0,
+        commitsBehind: json['commitsBehind'] as int? ?? 0,
+        hasUpstream: json['hasUpstream'] as bool? ?? false,
+        branch: json['branch'] as String?,
+        remoteError: json['remoteError'] as String?,
+        error: json['error'] as String?,
+      ),
+      'git_remote_status_result' => GitRemoteStatusResultMessage(
+        projectPath: json['projectPath'] as String?,
+        requestId: json['requestId'] as String?,
+        ahead: json['ahead'] as int? ?? 0,
+        behind: json['behind'] as int? ?? 0,
+        branch: json['branch'] as String? ?? '',
+        hasUpstream: json['hasUpstream'] as bool? ?? false,
+        error: json['error'] as String?,
+      ),
+      _ => ErrorMessage(message: 'Unknown message type: ${json['type']}'),
+    };
+  }
+}
+
+abstract interface class ProjectCorrelatedMessage {
+  String? get projectPath;
+  String? get requestId;
+}
+
+/// Metadata for a Codex skill, returned by the `skills/list` RPC.
+class CodexSkillMetadata {
+  final String name;
+  final String path;
+  final String description;
+  final String? shortDescription;
+  final bool enabled;
+  final String scope;
+  final String? displayName;
+  final String? defaultPrompt;
+  final String? brandColor;
+
+  const CodexSkillMetadata({
+    required this.name,
+    required this.path,
+    required this.description,
+    this.shortDescription,
+    this.enabled = true,
+    this.scope = 'user',
+    this.displayName,
+    this.defaultPrompt,
+    this.brandColor,
+  });
+
+  factory CodexSkillMetadata.fromJson(Map<String, dynamic> json) {
+    return CodexSkillMetadata(
+      name: json['name'] as String? ?? '',
+      path: json['path'] as String? ?? '',
+      description: json['description'] as String? ?? '',
+      shortDescription: json['shortDescription'] as String?,
+      enabled: json['enabled'] as bool? ?? true,
+      scope: json['scope'] as String? ?? 'user',
+      displayName: json['displayName'] as String?,
+      defaultPrompt: json['defaultPrompt'] as String?,
+      brandColor: json['brandColor'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {'name': name, 'path': path};
+
+  /// Best human-readable label for UI display.
+  String get label => displayName ?? name;
+
+  /// Best short description for UI display.
+  String get summary => shortDescription ?? description;
+}
+
+/// Metadata for a Codex app / connector, returned by the `app/list` RPC.
+class CodexAppMetadata {
+  final String id;
+  final String name;
+  final String description;
+  final String? installUrl;
+  final bool isAccessible;
+  final bool isEnabled;
+
+  const CodexAppMetadata({
+    required this.id,
+    required this.name,
+    required this.description,
+    this.installUrl,
+    this.isAccessible = true,
+    this.isEnabled = true,
+  });
+
+  factory CodexAppMetadata.fromJson(Map<String, dynamic> json) {
+    return CodexAppMetadata(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      description: json['description'] as String? ?? '',
+      installUrl: json['installUrl'] as String?,
+      isAccessible: json['isAccessible'] as bool? ?? true,
+      isEnabled: json['isEnabled'] as bool? ?? true,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'path': 'app://$id',
+  };
+
+  String get label => name.isNotEmpty ? name : id;
+}
+
+/// Metadata for a Codex plugin, returned by the `plugin/list` RPC.
+class CodexPluginMetadata {
+  final String id;
+  final String name;
+  final String path;
+  final String marketplaceName;
+  final String? marketplacePath;
+  final bool installed;
+  final bool enabled;
+  final String? displayName;
+  final String? shortDescription;
+  final String? longDescription;
+  final String? defaultPrompt;
+  final String? brandColor;
+  final String? composerIcon;
+  final String? composerIconUrl;
+
+  const CodexPluginMetadata({
+    required this.id,
+    required this.name,
+    required this.path,
+    required this.marketplaceName,
+    this.marketplacePath,
+    this.installed = true,
+    this.enabled = true,
+    this.displayName,
+    this.shortDescription,
+    this.longDescription,
+    this.defaultPrompt,
+    this.brandColor,
+    this.composerIcon,
+    this.composerIconUrl,
+  });
+
+  factory CodexPluginMetadata.fromJson(Map<String, dynamic> json) {
+    final id = _nonEmptyString(json['id']) ?? '';
+    return CodexPluginMetadata(
+      id: id,
+      name: _nonEmptyString(json['name']) ?? '',
+      path: _nonEmptyString(json['path']) ?? 'plugin://$id',
+      marketplaceName: _nonEmptyString(json['marketplaceName']) ?? '',
+      marketplacePath: _nonEmptyString(json['marketplacePath']),
+      installed: json['installed'] as bool? ?? true,
+      enabled: json['enabled'] as bool? ?? true,
+      displayName: _nonEmptyString(json['displayName']),
+      shortDescription: _nonEmptyString(json['shortDescription']),
+      longDescription: _nonEmptyString(json['longDescription']),
+      defaultPrompt: _firstString(json['defaultPrompt']),
+      brandColor: _nonEmptyString(json['brandColor']),
+      composerIcon: _nonEmptyString(json['composerIcon']),
+      composerIconUrl: _nonEmptyString(json['composerIconUrl']),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {'name': label, 'path': path};
+
+  String get label => displayName ?? name;
+
+  String get summary =>
+      shortDescription ?? longDescription ?? (name.isNotEmpty ? name : id);
+}
+
+String? _firstString(dynamic value) {
+  final text = _nonEmptyString(value);
+  if (text != null) return text;
+  if (value is! List) return null;
+  for (final entry in value) {
+    final text = _nonEmptyString(entry);
+    if (text != null) return text;
+  }
+  return null;
+}
+
+class SystemMessage implements ServerMessage {
+  final String subtype;
+  final String? sessionId;
+
+  /// The full Claude CLI session UUID (for JSONL lookups).
+  /// Falls back to [sessionId] when not provided.
+  final String? claudeSessionId;
+  final String? model;
+  final String? approvalPolicy;
+  final String? approvalsReviewer;
+  final String? codexPermissionsMode;
+  final String? provider;
+  final String? projectPath;
+  final SessionWorkspaceInfo? workspace;
+  final String? permissionMode;
+  final String? executionMode;
+  final bool? planMode;
+  final String? sandboxMode;
+  final String? modelReasoningEffort;
+  final String? serviceTier;
+  final bool? networkAccessEnabled;
+  final String? webSearchMode;
+  final List<String> slashCommands;
+  final List<String> skills;
+  final List<CodexSkillMetadata> skillMetadata;
+  final List<String> apps;
+  final List<CodexAppMetadata> appMetadata;
+  final List<String> plugins;
+  final List<CodexPluginMetadata> pluginMetadata;
+  final String? worktreePath;
+  final String? worktreeBranch;
+  final bool clearContext;
+  final String? sourceSessionId;
+  final String? resumeRequestId;
+  final String? requestId;
+  final String? tipCode;
+  final CodexCliJoinTarget? codexCliJoin;
+  const SystemMessage({
+    required this.subtype,
+    this.sessionId,
+    this.claudeSessionId,
+    this.model,
+    this.approvalPolicy,
+    this.approvalsReviewer,
+    this.codexPermissionsMode,
+    this.provider,
+    this.projectPath,
+    this.workspace,
+    this.permissionMode,
+    this.executionMode,
+    this.planMode,
+    this.sandboxMode,
+    this.modelReasoningEffort,
+    this.serviceTier,
+    this.networkAccessEnabled,
+    this.webSearchMode,
+    this.slashCommands = const [],
+    this.skills = const [],
+    this.skillMetadata = const [],
+    this.apps = const [],
+    this.appMetadata = const [],
+    this.plugins = const [],
+    this.pluginMetadata = const [],
+    this.worktreePath,
+    this.worktreeBranch,
+    this.clearContext = false,
+    this.sourceSessionId,
+    this.resumeRequestId,
+    this.requestId,
+    this.tipCode,
+    this.codexCliJoin,
+  });
+}
+
+class CodexCliJoinTarget {
+  final String url;
+  final String command;
+
+  const CodexCliJoinTarget({required this.url, required this.command});
+
+  factory CodexCliJoinTarget.fromJson(Map<String, dynamic> json) {
+    return CodexCliJoinTarget(
+      url: json['url'] as String? ?? '',
+      command: json['command'] as String? ?? '',
+    );
+  }
+
+  bool get isValid => url.trim().isNotEmpty && command.trim().isNotEmpty;
+}
+
+class AssistantServerMessage implements ServerMessage {
+  final AssistantMessage message;
+  final String? messageUuid;
+  const AssistantServerMessage({required this.message, this.messageUuid});
+}
+
+class ToolResultMessage implements ServerMessage {
+  final String toolUseId;
+  final String content;
+  final String? toolName;
+  final PermissionOutcome? permissionOutcome;
+  final List<ImageRef> images;
+  final String? userMessageUuid;
+  const ToolResultMessage({
+    required this.toolUseId,
+    required this.content,
+    this.toolName,
+    this.permissionOutcome,
+    this.images = const [],
+    this.userMessageUuid,
+  });
+}
+
+class ResultMessage implements ServerMessage {
+  final String subtype;
+  final String? result;
+  final String? error;
+  final double? cost;
+  final double? duration;
+  final String? sessionId;
+  final String? stopReason;
+  final int? inputTokens;
+  final int? cachedInputTokens;
+  final int? outputTokens;
+  final int? toolCalls;
+  final int? fileEdits;
+  const ResultMessage({
+    required this.subtype,
+    this.result,
+    this.error,
+    this.cost,
+    this.duration,
+    this.sessionId,
+    this.stopReason,
+    this.inputTokens,
+    this.cachedInputTokens,
+    this.outputTokens,
+    this.toolCalls,
+    this.fileEdits,
+  });
+}
+
+class ErrorMessage implements ServerMessage {
+  final String message;
+  final String? errorCode;
+  final int? protocolVersion;
+  final int? minimumProtocolVersion;
+  final String? sessionId;
+  final String? toolUseId;
+  final String? path;
+  final String? projectId;
+  final String? workspaceKind;
+  final String? requestId;
+  final String? requestScope;
+  final int? offset;
+
+  const ErrorMessage({
+    required this.message,
+    this.errorCode,
+    this.protocolVersion,
+    this.minimumProtocolVersion,
+    this.sessionId,
+    this.toolUseId,
+    this.path,
+    this.projectId,
+    this.workspaceKind,
+    this.requestId,
+    this.requestScope,
+    this.offset,
+  });
+}
+
+class PushRegistrationResultMessage implements ServerMessage {
+  final String token;
+  final String requestId;
+  final bool success;
+  final String? error;
+
+  const PushRegistrationResultMessage({
+    required this.token,
+    required this.requestId,
+    required this.success,
+    this.error,
+  });
+}
+
+enum SessionLinkResolutionStatus {
+  live,
+  recent,
+  unavailable;
+
+  static SessionLinkResolutionStatus fromString(String? value) {
+    return switch (value) {
+      'live' => live,
+      'recent' => recent,
+      _ => unavailable,
+    };
+  }
+}
+
+class SessionLinkResolutionMessage implements ServerMessage {
+  final String requestId;
+  final String sourceSessionId;
+  final SessionLinkResolutionStatus status;
+  final String? bridgeSessionId;
+  final String? provider;
+  final RecentSession? recentSession;
+
+  const SessionLinkResolutionMessage({
+    required this.requestId,
+    required this.sourceSessionId,
+    required this.status,
+    this.bridgeSessionId,
+    this.provider,
+    this.recentSession,
+  });
+}
+
+class SessionContextMessage implements ServerMessage {
+  final String sessionId;
+  final SessionInfo context;
+
+  const SessionContextMessage({required this.sessionId, required this.context});
+}
+
+enum GuardianApprovalRisk {
+  medium,
+  high;
+
+  static GuardianApprovalRisk fromString(String? value) => switch (value) {
+    'high' => GuardianApprovalRisk.high,
+    _ => GuardianApprovalRisk.medium,
+  };
+}
+
+class GuardianApprovalMessage implements ServerMessage {
+  final GuardianApprovalRisk risk;
+  final String reason;
+  final String? authorization;
+  const GuardianApprovalMessage({
+    required this.risk,
+    required this.reason,
+    this.authorization,
+  });
+}
+
+class StatusMessage implements ServerMessage {
+  final ProcessStatus status;
+  const StatusMessage({required this.status});
+}
+
+class HistoryMessage implements ServerMessage {
+  final List<ServerMessage> messages;
+  const HistoryMessage({required this.messages});
+}
+
+class HistoryEntry {
+  final int seq;
+  final ServerMessage message;
+  const HistoryEntry({required this.seq, required this.message});
+
+  factory HistoryEntry.fromJson(Map<String, dynamic> json) {
+    return HistoryEntry(
+      seq: json['seq'] as int? ?? 0,
+      message: ServerMessage.fromJson(json['message'] as Map<String, dynamic>),
+    );
+  }
+}
+
+class HistoryDeltaMessage implements ServerMessage {
+  final String? sessionId;
+  final int fromSeq;
+  final int toSeq;
+  final List<HistoryEntry> entries;
+  final ProcessStatus? status;
+
+  const HistoryDeltaMessage({
+    this.sessionId,
+    required this.fromSeq,
+    required this.toSeq,
+    required this.entries,
+    this.status,
+  });
+}
+
+class HistorySnapshotMessage implements ServerMessage {
+  final String? sessionId;
+  final int fromSeq;
+  final int toSeq;
+  final List<HistoryEntry> entries;
+  final ProcessStatus? status;
+  final String reason;
+
+  const HistorySnapshotMessage({
+    this.sessionId,
+    required this.fromSeq,
+    required this.toSeq,
+    required this.entries,
+    this.status,
+    required this.reason,
+  });
+}
+
+class ToolSuggestionApp {
+  final String id;
+  final String name;
+  final String? description;
+  final String? installUrl;
+  final String? category;
+
+  const ToolSuggestionApp({
+    required this.id,
+    required this.name,
+    this.description,
+    this.installUrl,
+    this.category,
+  });
+
+  factory ToolSuggestionApp.fromJson(Map<String, dynamic> json) {
+    return ToolSuggestionApp(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      description: json['description'] as String?,
+      installUrl: json['installUrl'] as String?,
+      category: json['category'] as String?,
+    );
+  }
+}
+
+class PermissionRequestMessage implements ServerMessage {
+  final String toolUseId;
+  final String toolName;
+  final Map<String, dynamic> input;
+  const PermissionRequestMessage({
+    required this.toolUseId,
+    required this.toolName,
+    required this.input,
+  });
+
+  bool get isRequestUserInputApproval =>
+      toolName == 'AskUserQuestion' && isMcpApprovalRequestUserInput(input);
+
+  bool get isMcpElicitation => toolName == 'McpElicitation';
+
+  bool get isToolSuggestion => toolName == 'ToolSuggestion';
+
+  String get suggestedToolName =>
+      input['toolName'] as String? ?? displayToolName;
+
+  String get toolSuggestionReason =>
+      input['suggestReason'] as String? ??
+      input['message'] as String? ??
+      suggestedToolName;
+
+  String get toolSuggestionInstallState =>
+      input['installState'] as String? ?? 'idle';
+
+  String? get toolSuggestionInstallError => input['installError'] as String?;
+
+  String? get toolSuggestionInstallUrl => input['installUrl'] as String?;
+
+  String? get toolSuggestionType => input['toolType'] as String?;
+
+  List<ToolSuggestionApp> get appsNeedingAuthentication {
+    final raw = input['appsNeedingAuth'];
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((app) => ToolSuggestionApp.fromJson(app.cast<String, dynamic>()))
+        .where((app) => app.id.isNotEmpty && app.name.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  bool get hasQuestions => hasRequestUserInputQuestions(input);
+
+  bool get isQuestionPrompt =>
+      (toolName == 'AskUserQuestion' || isMcpElicitation) && hasQuestions;
+
+  bool get isQuestionApproval =>
+      isQuestionPrompt && isMcpApprovalRequestUserInput(input);
+
+  bool get usesAskUserUi =>
+      isQuestionPrompt && !(isMcpElicitation && isQuestionApproval);
+
+  bool get isPermissionGrantRequest => toolName == 'Permissions';
+
+  bool get isMalformedAskUserQuestion =>
+      toolName == 'AskUserQuestion' && !hasQuestions;
+
+  List<String> get availableDecisions =>
+      _stringList(input['availableDecisions']);
+
+  bool get canApprove =>
+      !isMalformedAskUserQuestion &&
+      (availableDecisions.isEmpty || availableDecisions.contains('accept'));
+
+  bool get canApproveForSession =>
+      !isMalformedAskUserQuestion &&
+      (availableDecisions.isEmpty ||
+          availableDecisions.contains('acceptForSession'));
+
+  bool get canDecline =>
+      isMalformedAskUserQuestion ||
+      availableDecisions.isEmpty ||
+      availableDecisions.contains('decline') ||
+      availableDecisions.contains('cancel');
+
+  bool get showsCancelAction =>
+      availableDecisions.contains('cancel') &&
+      !availableDecisions.contains('decline');
+
+  PermissionPresentation get presentation => PermissionPresentation.from(this);
+
+  String get displayToolName {
+    if (isToolSuggestion) {
+      return input['toolName'] as String? ?? 'Plugin suggestion';
+    }
+    if (isQuestionApproval) {
+      return requestUserInputHeader(input) ?? 'App Tool Approval';
+    }
+    if (isMcpElicitation) {
+      final serverName = input['serverName'] as String?;
+      return serverName == null || serverName.isEmpty
+          ? 'MCP Elicitation'
+          : 'MCP: $serverName';
+    }
+    if (isPermissionGrantRequest) {
+      return 'Additional Permissions';
+    }
+    return toolName;
+  }
+
+  /// Human-readable summary of the permission request input.
+  String get summary => presentation.summary;
+
+  List<String> get detailLines => presentation.secondaryDetails;
+}
+
+class PermissionPresentation {
+  final String title;
+  final String summary;
+  final String? riskBadge;
+  final String? scopeLabel;
+  final String? primaryTargetLabel;
+  final String? primaryTarget;
+  final List<String> secondaryDetails;
+  final String rawDetails;
+
+  const PermissionPresentation({
+    required this.title,
+    required this.summary,
+    required this.rawDetails,
+    this.riskBadge,
+    this.scopeLabel,
+    this.primaryTargetLabel,
+    this.primaryTarget,
+    this.secondaryDetails = const [],
+  });
+
+  factory PermissionPresentation.from(PermissionRequestMessage message) {
+    final input = message.input;
+    final rawDetails = const JsonEncoder.withIndent('  ').convert(input);
+
+    if (message.isToolSuggestion) {
+      return PermissionPresentation(
+        title: message.suggestedToolName,
+        summary: message.toolSuggestionReason,
+        rawDetails: rawDetails,
+        riskBadge: message.toolSuggestionType == 'plugin'
+            ? 'Plugin'
+            : 'Connector',
+      );
+    }
+
+    if (message.isQuestionApproval && !message.isMcpElicitation) {
+      return PermissionPresentation(
+        title: message.displayToolName,
+        summary: requestUserInputQuestionText(input) ?? message.displayToolName,
+        rawDetails: rawDetails,
+        riskBadge: 'App Tool',
+        secondaryDetails: _buildCommonSecondaryDetails(
+          input,
+          includePermissions: false,
+        ),
+      );
+    }
+
+    if (message.isQuestionPrompt && !message.isMcpElicitation) {
+      return PermissionPresentation(
+        title: requestUserInputHeader(input) ?? message.displayToolName,
+        summary:
+            requestUserInputQuestionText(input) ??
+            _mcpSummary(input) ??
+            message.displayToolName,
+        rawDetails: rawDetails,
+        riskBadge: message.isMcpElicitation ? 'MCP' : 'Question',
+        secondaryDetails: _buildCommonSecondaryDetails(
+          input,
+          includePermissions: false,
+        ),
+      );
+    }
+
+    if (message.isMcpElicitation) {
+      final toolDescription = _mcpToolDescription(input);
+      final summary =
+          toolDescription ??
+          _mcpSummary(input) ??
+          requestUserInputQuestionText(input) ??
+          message.displayToolName;
+      return PermissionPresentation(
+        title: message.displayToolName,
+        summary: summary,
+        rawDetails: rawDetails,
+        riskBadge: 'MCP',
+        primaryTargetLabel: input['url'] is String ? 'URL' : null,
+        primaryTarget: input['url'] as String?,
+        secondaryDetails: _dedupeDetailLines(
+          summary: summary,
+          primaryTarget: input['url'] as String?,
+          lines: [
+            if (_nonEmptyString(input['serverName']) case final serverName?)
+              'Server: $serverName',
+            ..._mcpToolParamLines(input),
+            if (_nonEmptyString(input['message']) case final reason?)
+              'Reason: $reason',
+            ..._buildCommonSecondaryDetails(input, includePermissions: false),
+          ],
+        ),
+      );
+    }
+
+    if (message.isPermissionGrantRequest) {
+      final permissions = _flattenPermissionValues(input['permissions']);
+      return PermissionPresentation(
+        title: 'Additional Permissions',
+        summary:
+            _nonEmptyString(input['reason']) ??
+            (permissions.isNotEmpty
+                ? 'Grant additional access for this task'
+                : message.displayToolName),
+        rawDetails: rawDetails,
+        riskBadge: 'Permissions',
+        primaryTargetLabel: permissions.isNotEmpty ? 'Requested' : null,
+        primaryTarget: permissions.isNotEmpty ? permissions.join(', ') : null,
+        secondaryDetails: _buildCommonSecondaryDetails(
+          input,
+          includePermissions: true,
+        ),
+      );
+    }
+
+    switch (message.toolName) {
+      case 'Bash':
+        final command = input['command'] as String?;
+        final visibleReason = _visibleReason(
+          input['reason'],
+          primaryTarget: command,
+        );
+        return PermissionPresentation(
+          title: 'Command Approval',
+          summary: visibleReason ?? 'Allow command execution',
+          rawDetails: rawDetails,
+          riskBadge: 'Command',
+          primaryTargetLabel: command != null ? 'Command' : null,
+          primaryTarget: command,
+          secondaryDetails: _dedupeDetailLines(
+            summary: visibleReason ?? 'Allow command execution',
+            primaryTarget: command,
+            lines: _buildCommonSecondaryDetails(
+              input,
+              includePermissions: false,
+              primaryTarget: command,
+            ),
+          ),
+        );
+      case 'FileChange':
+        final changes = _changePaths(input['changes']);
+        return PermissionPresentation(
+          title: 'File Change Approval',
+          summary:
+              _nonEmptyString(input['reason']) ??
+              _fileChangeSummary(changes) ??
+              'Allow file changes',
+          rawDetails: rawDetails,
+          riskBadge: 'File Changes',
+          primaryTargetLabel: changes.isNotEmpty ? 'Files' : null,
+          primaryTarget: changes.isNotEmpty
+              ? _compactFileTargets(changes)
+              : null,
+          secondaryDetails: [
+            if (_nonEmptyString(input['grantRoot']) case final grantRoot?)
+              'Grant root: $grantRoot',
+            ..._buildCommonSecondaryDetails(
+              input,
+              includePermissions: false,
+              includeReason: false,
+            ),
+          ],
+        );
+      default:
+        final fallbackPrimary = _firstInputValue(input, const [
+          'command',
+          'file_path',
+          'path',
+          'pattern',
+          'url',
+        ]);
+        return PermissionPresentation(
+          title: message.displayToolName,
+          summary:
+              _visibleReason(input['reason'], primaryTarget: fallbackPrimary) ??
+              fallbackPrimary ??
+              message.displayToolName,
+          rawDetails: rawDetails,
+          riskBadge: message.displayToolName,
+          primaryTargetLabel: fallbackPrimary != null ? 'Target' : null,
+          primaryTarget: fallbackPrimary,
+          secondaryDetails: _dedupeDetailLines(
+            summary:
+                _visibleReason(
+                  input['reason'],
+                  primaryTarget: fallbackPrimary,
+                ) ??
+                fallbackPrimary ??
+                message.displayToolName,
+            primaryTarget: fallbackPrimary,
+            lines: _buildCommonSecondaryDetails(
+              input,
+              includePermissions: false,
+              primaryTarget: fallbackPrimary,
+            ),
+          ),
+        );
+    }
+  }
+}
+
+List<String> _flattenPermissionValues(dynamic value, [String prefix = '']) {
+  if (value is Map) {
+    final out = <String>[];
+    for (final entry in value.entries) {
+      final key = entry.key.toString();
+      final nextPrefix = prefix.isEmpty ? key : '$prefix.$key';
+      out.addAll(_flattenPermissionValues(entry.value, nextPrefix));
+    }
+    return out;
+  }
+  if (value is List) {
+    return value
+        .map((entry) => entry.toString())
+        .where((entry) => entry.isNotEmpty)
+        .map((entry) => prefix.isEmpty ? entry : '$prefix=$entry')
+        .toList();
+  }
+  if (value is bool || value is num || value is String) {
+    final text = value.toString();
+    if (text.isEmpty) return const [];
+    return [prefix.isEmpty ? text : '$prefix=$text'];
+  }
+  return const [];
+}
+
+String? _stringMapSummary(dynamic value) {
+  if (value is! Map) return null;
+  final parts = value.entries
+      .map((entry) => '${entry.key}=${entry.value}')
+      .where((entry) => entry.isNotEmpty)
+      .toList();
+  if (parts.isEmpty) return null;
+  return parts.join(', ');
+}
+
+String? _networkPolicySummary(dynamic value) {
+  if (value is! List) return null;
+  final parts = value
+      .map((entry) => _stringMapSummary(entry))
+      .whereType<String>()
+      .toList();
+  if (parts.isEmpty) return null;
+  return parts.join(' | ');
+}
+
+String? _mcpSummary(Map<String, dynamic> input) {
+  final message = input['message'] as String?;
+  final url = input['url'] as String?;
+  if (message != null && message.isNotEmpty && url != null && url.isNotEmpty) {
+    return '$message | $url';
+  }
+  return _nonEmptyString(message) ?? _nonEmptyString(url);
+}
+
+String? _nonEmptyString(dynamic value) {
+  if (value is! String) return null;
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+String? _visibleReason(dynamic value, {String? primaryTarget}) {
+  final reason = _nonEmptyString(value);
+  final target = _nonEmptyString(primaryTarget);
+  if (reason == null || target == null) return reason;
+
+  final normalizedReason = reason.replaceAll('`', '');
+  final normalizedTarget = target.replaceAll('`', '');
+  final approvalBoilerplates = <String>[
+    '$normalizedTarget requires approval:',
+    '$normalizedTarget requires permission:',
+  ];
+  if (normalizedReason == normalizedTarget ||
+      approvalBoilerplates.any(normalizedReason.startsWith)) {
+    return null;
+  }
+  return reason;
+}
+
+String? _firstInputValue(Map<String, dynamic> input, List<String> keys) {
+  for (final key in keys) {
+    final value = _nonEmptyString(input[key]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+List<String> _changePaths(dynamic value) {
+  if (value is! List) return const [];
+  return value
+      .map((entry) {
+        if (entry is! Map) return null;
+        return _nonEmptyString(entry['file']) ??
+            _nonEmptyString(entry['path']) ??
+            _nonEmptyString(entry['target']);
+      })
+      .whereType<String>()
+      .toList();
+}
+
+String? _fileChangeSummary(List<String> changes) {
+  if (changes.isEmpty) return null;
+  if (changes.length == 1) return 'Allow changes to ${changes.first}';
+  return 'Allow changes to ${changes.length} files';
+}
+
+String _compactFileTargets(List<String> changes) {
+  if (changes.isEmpty) return '';
+  if (changes.length == 1) return changes.first;
+  return '${changes.first} +${changes.length - 1} more';
+}
+
+List<String> _buildCommonSecondaryDetails(
+  Map<String, dynamic> input, {
+  required bool includePermissions,
+  bool includeReason = true,
+  String reasonLabel = 'Why',
+  String? primaryTarget,
+}) {
+  final lines = <String>[];
+
+  if (includeReason) {
+    final reason = _visibleReason(
+      input['reason'],
+      primaryTarget: primaryTarget,
+    );
+    if (reason != null) {
+      lines.add('$reasonLabel: $reason');
+    }
+  }
+
+  if (includePermissions) {
+    final permissions = _flattenPermissionValues(input['permissions']);
+    if (permissions.isNotEmpty) {
+      lines.add('Permissions: ${permissions.join(', ')}');
+    }
+  }
+
+  final additionalPermissions = _flattenPermissionValues(
+    input['additionalPermissions'],
+  );
+  if (additionalPermissions.isNotEmpty) {
+    lines.add('Additional permissions: ${additionalPermissions.join(', ')}');
+  }
+
+  final execAmendment = _stringMapSummary(input['proposedExecpolicyAmendment']);
+  if (execAmendment != null) {
+    lines.add('Exec policy: $execAmendment');
+  }
+
+  final networkAmendments = _networkPolicySummary(
+    input['proposedNetworkPolicyAmendments'],
+  );
+  if (networkAmendments != null) {
+    lines.add('Network policy: $networkAmendments');
+  }
+
+  return lines;
+}
+
+String? _mcpToolDescription(Map<String, dynamic> input) {
+  final meta = _stringKeyedMap(input['_meta']);
+  return _nonEmptyString(meta?['tool_description']);
+}
+
+List<String> _mcpToolParamLines(Map<String, dynamic> input) {
+  final meta = _stringKeyedMap(input['_meta']);
+  final paramsDisplay = meta?['tool_params_display'];
+  if (paramsDisplay is List) {
+    final lines = paramsDisplay
+        .map((entry) {
+          final item = _stringKeyedMap(entry);
+          if (item == null) return null;
+          final label =
+              _nonEmptyString(item['display_name']) ??
+              _nonEmptyString(item['name']);
+          final value = _nonEmptyString(item['value']);
+          if (label == null || value == null) return null;
+          return '${_titleCaseLabel(label)}: $value';
+        })
+        .whereType<String>()
+        .toList();
+    if (lines.isNotEmpty) return lines;
+  }
+
+  final params = _stringKeyedMap(meta?['tool_params']);
+  if (params == null || params.isEmpty) return const [];
+  return params.entries
+      .map((entry) {
+        final value = _stringifyDetailValue(entry.value);
+        if (value == null) return null;
+        return '${_titleCaseLabel(entry.key)}: $value';
+      })
+      .whereType<String>()
+      .toList();
+}
+
+List<String> _dedupeDetailLines({
+  required String summary,
+  String? primaryTarget,
+  required List<String> lines,
+}) {
+  final normalizedSummary = _normalizeDetailValue(summary);
+  final normalizedPrimary = _normalizeDetailValue(primaryTarget);
+  final seen = <String>{};
+  final deduped = <String>[];
+
+  for (final line in lines) {
+    final normalizedLine = _normalizeDetailValue(_detailLineValue(line));
+    if (normalizedLine == null || normalizedLine.isEmpty) {
+      if (seen.add(line)) deduped.add(line);
+      continue;
+    }
+    if (normalizedLine == normalizedSummary ||
+        normalizedLine == normalizedPrimary) {
+      continue;
+    }
+    if (!seen.add(normalizedLine)) continue;
+    deduped.add(line);
+  }
+
+  return deduped;
+}
+
+Map<String, dynamic>? _stringKeyedMap(dynamic value) {
+  if (value is! Map) return null;
+  return value.map((key, value) => MapEntry(key.toString(), value));
+}
+
+String? _stringifyDetailValue(dynamic value) {
+  if (value == null) return null;
+  if (value is String) return _nonEmptyString(value);
+  if (value is num || value is bool) return value.toString();
+  if (value is List) {
+    final parts = value.map(_stringifyDetailValue).whereType<String>().toList();
+    return parts.isEmpty ? null : parts.join(', ');
+  }
+  if (value is Map) {
+    final parts = value.entries
+        .map((entry) {
+          final rendered = _stringifyDetailValue(entry.value);
+          if (rendered == null) return null;
+          return '${entry.key}=$rendered';
+        })
+        .whereType<String>()
+        .toList();
+    return parts.isEmpty ? null : parts.join(', ');
+  }
+  return value.toString();
+}
+
+String _titleCaseLabel(String label) {
+  final normalized = label.replaceAll('_', ' ').trim();
+  if (normalized.isEmpty) return label;
+  return normalized
+      .split(RegExp(r'\s+'))
+      .map((part) {
+        if (part.isEmpty) return part;
+        return '${part[0].toUpperCase()}${part.substring(1)}';
+      })
+      .join(' ');
+}
+
+String? _detailLineValue(String line) {
+  final idx = line.indexOf(':');
+  if (idx == -1) return line;
+  return line.substring(idx + 1).trim();
+}
+
+String? _normalizeDetailValue(String? value) {
+  final text = _nonEmptyString(value);
+  if (text == null) return null;
+  return text.replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
+}
+
+List<String> _stringList(dynamic value) {
+  if (value is! List) return const [];
+  return value
+      .map((entry) => entry.toString())
+      .where((entry) => entry.isNotEmpty)
+      .toList();
+}
+
+List<Map<String, String>> _stringMapList(dynamic value) {
+  if (value is! List) return const [];
+  return value
+      .whereType<Map>()
+      .map(
+        (entry) => {
+          'name': entry['name']?.toString() ?? '',
+          'path': entry['path']?.toString() ?? '',
+        },
+      )
+      .where((entry) => entry['name']!.isNotEmpty && entry['path']!.isNotEmpty)
+      .toList();
+}
+
+class PermissionResolvedMessage implements ServerMessage {
+  final String toolUseId;
+  const PermissionResolvedMessage({required this.toolUseId});
+}
+
+class StreamDeltaMessage implements ServerMessage {
+  final String text;
+  const StreamDeltaMessage({required this.text});
+}
+
+class ThinkingDeltaMessage implements ServerMessage {
+  final String text;
+  const ThinkingDeltaMessage({required this.text});
+}
+
+class SessionListMessage implements ServerMessage {
+  final List<SessionInfo> sessions;
+  final List<String> allowedDirs;
+  final List<String> claudeModels;
+  final Map<String, List<String>> claudeModelEfforts;
+  final List<String> codexModels;
+  final Map<String, List<String>> codexModelReasoningEfforts;
+  final Map<String, List<String>> codexModelServiceTiers;
+  final List<String> codexProfiles;
+  final String? defaultCodexProfile;
+  final bool codexAutoReviewDisabled;
+  final String? bridgeVersion;
+  final int? protocolVersion;
+  final int? minimumProtocolVersion;
+  final Set<String> protocolCapabilities;
+  const SessionListMessage({
+    required this.sessions,
+    this.allowedDirs = const [],
+    this.claudeModels = const [],
+    this.claudeModelEfforts = const {},
+    this.codexModels = const [],
+    this.codexModelReasoningEfforts = const {},
+    this.codexModelServiceTiers = const {},
+    this.codexProfiles = const [],
+    this.defaultCodexProfile,
+    this.codexAutoReviewDisabled = false,
+    this.bridgeVersion,
+    this.protocolVersion,
+    this.minimumProtocolVersion,
+    this.protocolCapabilities = const {},
+  });
+}
+
+class RecentSessionsMessage implements ServerMessage {
+  final List<RecentSession> sessions;
+  final bool hasMore;
+  final int? limit;
+  final int? offset;
+  final String? projectPath;
+  final String? projectId;
+  final String? workspaceKind;
+  final String? requestScope;
+  final String? requestId;
+  const RecentSessionsMessage({
+    required this.sessions,
+    this.hasMore = false,
+    this.limit,
+    this.offset,
+    this.projectPath,
+    this.projectId,
+    this.workspaceKind,
+    this.requestScope,
+    this.requestId,
+  });
+
+  String? get projectFilterKey {
+    if (projectId != null && projectId!.isNotEmpty) {
+      return 'project:$projectId';
+    }
+    return projectPath;
+  }
+}
+
+class PastHistoryMessage implements ServerMessage {
+  final String claudeSessionId;
+  final List<PastMessage> messages;
+  const PastHistoryMessage({
+    required this.claudeSessionId,
+    required this.messages,
+  });
+}
+
+class GalleryListMessage implements ServerMessage {
+  final List<GalleryImage> images;
+  final String? projectPath;
+  final String? sessionId;
+  final String? requestId;
+
+  const GalleryListMessage({
+    required this.images,
+    this.projectPath,
+    this.sessionId,
+    this.requestId,
+  });
+}
+
+class GalleryNewImageMessage implements ServerMessage {
+  final GalleryImage image;
+  const GalleryNewImageMessage({required this.image});
+}
+
+// ---- Screenshot / Window ----
+
+class WindowInfo {
+  final int windowId;
+  final String ownerName;
+  final String windowTitle;
+
+  const WindowInfo({
+    required this.windowId,
+    required this.ownerName,
+    required this.windowTitle,
+  });
+
+  factory WindowInfo.fromJson(Map<String, dynamic> json) {
+    return WindowInfo(
+      windowId: json['windowId'] as int,
+      ownerName: json['ownerName'] as String? ?? '',
+      windowTitle: json['windowTitle'] as String? ?? '',
+    );
+  }
+}
+
+class WindowListMessage implements ServerMessage {
+  final List<WindowInfo> windows;
+  const WindowListMessage({required this.windows});
+}
+
+class ScreenshotResultMessage
+    implements ServerMessage, ProjectCorrelatedMessage {
+  @override
+  final String? projectPath;
+  final String? sessionId;
+  @override
+  final String? requestId;
+  final bool success;
+  final GalleryImage? image;
+  final String? error;
+  const ScreenshotResultMessage({
+    this.projectPath,
+    this.sessionId,
+    this.requestId,
+    required this.success,
+    this.image,
+    this.error,
+  });
+}
+
+class DebugTraceEvent {
+  final String ts;
+  final String sessionId;
+  final String direction;
+  final String channel;
+  final String type;
+  final String? detail;
+
+  const DebugTraceEvent({
+    required this.ts,
+    required this.sessionId,
+    required this.direction,
+    required this.channel,
+    required this.type,
+    this.detail,
+  });
+
+  factory DebugTraceEvent.fromJson(Map<String, dynamic> json) {
+    return DebugTraceEvent(
+      ts: json['ts'] as String? ?? '',
+      sessionId: json['sessionId'] as String? ?? '',
+      direction: json['direction'] as String? ?? '',
+      channel: json['channel'] as String? ?? '',
+      type: json['type'] as String? ?? '',
+      detail: json['detail'] as String?,
+    );
+  }
+}
+
+class DebugBundleSession {
+  final String id;
+  final String provider;
+  final String status;
+  final String projectPath;
+  final String? worktreePath;
+  final String? worktreeBranch;
+  final String? claudeSessionId;
+  final String createdAt;
+  final String lastActivityAt;
+
+  const DebugBundleSession({
+    required this.id,
+    required this.provider,
+    required this.status,
+    required this.projectPath,
+    this.worktreePath,
+    this.worktreeBranch,
+    this.claudeSessionId,
+    required this.createdAt,
+    required this.lastActivityAt,
+  });
+
+  factory DebugBundleSession.fromJson(Map<String, dynamic> json) {
+    return DebugBundleSession(
+      id: json['id'] as String? ?? '',
+      provider: json['provider'] as String? ?? '',
+      status: json['status'] as String? ?? '',
+      projectPath: json['projectPath'] as String? ?? '',
+      worktreePath: json['worktreePath'] as String?,
+      worktreeBranch: json['worktreeBranch'] as String?,
+      claudeSessionId: json['claudeSessionId'] as String?,
+      createdAt: json['createdAt'] as String? ?? '',
+      lastActivityAt: json['lastActivityAt'] as String? ?? '',
+    );
+  }
+}
+
+class DebugReproRecipe {
+  final String wsUrlHint;
+  final String startBridgeCommand;
+  final Map<String, dynamic> resumeSessionMessage;
+  final Map<String, dynamic> getHistoryMessage;
+  final Map<String, dynamic> getDebugBundleMessage;
+  final List<String> notes;
+
+  const DebugReproRecipe({
+    this.wsUrlHint = '',
+    this.startBridgeCommand = '',
+    this.resumeSessionMessage = const <String, dynamic>{},
+    this.getHistoryMessage = const <String, dynamic>{},
+    this.getDebugBundleMessage = const <String, dynamic>{},
+    this.notes = const [],
+  });
+
+  factory DebugReproRecipe.fromJson(Map<String, dynamic> json) {
+    return DebugReproRecipe(
+      wsUrlHint: json['wsUrlHint'] as String? ?? '',
+      startBridgeCommand: json['startBridgeCommand'] as String? ?? '',
+      resumeSessionMessage:
+          (json['resumeSessionMessage'] as Map<String, dynamic>?) ??
+          const <String, dynamic>{},
+      getHistoryMessage:
+          (json['getHistoryMessage'] as Map<String, dynamic>?) ??
+          const <String, dynamic>{},
+      getDebugBundleMessage:
+          (json['getDebugBundleMessage'] as Map<String, dynamic>?) ??
+          const <String, dynamic>{},
+      notes: (json['notes'] as List?)?.cast<String>() ?? const [],
+    );
+  }
+}
+
+class DebugBundleMessage implements ServerMessage {
+  final String sessionId;
+  final String generatedAt;
+  final DebugBundleSession session;
+  final int pastMessageCount;
+  final List<String> historySummary;
+  final List<DebugTraceEvent> debugTrace;
+  final String? traceFilePath;
+  final String? savedBundlePath;
+  final DebugReproRecipe reproRecipe;
+  final String agentPrompt;
+  final String diff;
+  final String? diffError;
+
+  const DebugBundleMessage({
+    required this.sessionId,
+    required this.generatedAt,
+    required this.session,
+    required this.pastMessageCount,
+    this.historySummary = const [],
+    this.debugTrace = const [],
+    this.traceFilePath,
+    this.savedBundlePath,
+    this.reproRecipe = const DebugReproRecipe(),
+    this.agentPrompt = '',
+    required this.diff,
+    this.diffError,
+  });
+}
+
+class FileListMessage implements ServerMessage, ProjectCorrelatedMessage {
+  @override
+  final String? projectPath;
+  @override
+  final String? requestId;
+  final List<String> files;
+  final Set<String> ignoredFiles;
+  final Map<String, int> modifiedAt;
+  final int? totalFiles;
+  final bool truncated;
+  final String? error;
+
+  const FileListMessage({
+    this.projectPath,
+    this.requestId,
+    required this.files,
+    this.ignoredFiles = const {},
+    this.modifiedAt = const {},
+    this.totalFiles,
+    this.truncated = false,
+    this.error,
+  });
+}
+
+Map<String, int> _parseFileModificationTimes(Map<String, dynamic> json) {
+  final raw = json['modifiedAt'];
+  if (raw is Map) {
+    return {
+      for (final entry in raw.entries)
+        if (entry.key is String && entry.value is num)
+          entry.key as String: (entry.value as num).round(),
+    };
+  }
+
+  // Accept the earlier aligned-array format for protocol compatibility.
+  final files = (json['files'] as List?)?.cast<String>() ?? const [];
+  final times = raw as List?;
+  if (times == null) return const {};
+  final result = <String, int>{};
+  final count = files.length < times.length ? files.length : times.length;
+  for (var index = 0; index < count; index++) {
+    final time = times[index];
+    if (time is num) result[files[index]] = time.round();
+  }
+  return result;
+}
+
+Set<String> _parseIgnoredFiles(Map<String, dynamic> json) {
+  final files = (json['files'] as List?)?.cast<String>() ?? const [];
+  final flags = json['ignored'] as List?;
+  if (flags != null) {
+    return {
+      for (var index = 0; index < files.length && index < flags.length; index++)
+        if (flags[index] == true) files[index],
+    };
+  }
+
+  // Accept the path-list format for protocol compatibility.
+  return (json['ignoredFiles'] as List?)?.cast<String>().toSet() ?? const {};
+}
+
+class FileContentMessage implements ServerMessage, ProjectCorrelatedMessage {
+  @override
+  final String? projectPath;
+  @override
+  final String? requestId;
+  final String filePath;
+  final String kind;
+  final String content;
+  final String? language;
+  final String? error;
+  final int? totalLines;
+  final bool truncated;
+  final String? base64;
+  final String? mimeType;
+  final int? sizeBytes;
+  final String? mediaUrl;
+  const FileContentMessage({
+    this.projectPath,
+    this.requestId,
+    required this.filePath,
+    this.kind = 'text',
+    required this.content,
+    this.language,
+    this.error,
+    this.totalLines,
+    this.truncated = false,
+    this.base64,
+    this.mimeType,
+    this.sizeBytes,
+    this.mediaUrl,
+  });
+}
+
+class FileDownloadReadyMessage implements ServerMessage {
+  final String requestId;
+  final String filePath;
+  final String fileName;
+  final String mimeType;
+  final int sizeBytes;
+  final String downloadUrl;
+
+  const FileDownloadReadyMessage({
+    required this.requestId,
+    required this.filePath,
+    required this.fileName,
+    required this.mimeType,
+    required this.sizeBytes,
+    required this.downloadUrl,
+  });
+}
+
+class FileUploadReadyMessage implements ServerMessage {
+  final String requestId;
+  final String fileName;
+  final int sizeBytes;
+  final String uploadUrl;
+  final String uploadToken;
+
+  const FileUploadReadyMessage({
+    required this.requestId,
+    required this.fileName,
+    required this.sizeBytes,
+    required this.uploadUrl,
+    required this.uploadToken,
+  });
+}
+
+class FileUploadCompleteMessage implements ServerMessage {
+  final String requestId;
+  final String filePath;
+  final String fileName;
+  final int sizeBytes;
+  final String sha256;
+  final bool skipped;
+
+  const FileUploadCompleteMessage({
+    required this.requestId,
+    required this.filePath,
+    required this.fileName,
+    required this.sizeBytes,
+    required this.sha256,
+    required this.skipped,
+  });
+}
+
+class ProjectHistoryMessage implements ServerMessage {
+  final List<String> projects;
+  const ProjectHistoryMessage({required this.projects});
+}
+
+class WorkspaceProject {
+  final String id;
+  final String name;
+  final List<String> rootPaths;
+  final String createdAt;
+  final String updatedAt;
+
+  const WorkspaceProject({
+    required this.id,
+    required this.name,
+    required this.rootPaths,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  String get primaryPath => rootPaths.first;
+  List<String> get secondaryPaths => rootPaths.skip(1).toList();
+
+  factory WorkspaceProject.fromJson(Map<String, dynamic> json) =>
+      WorkspaceProject(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        rootPaths: _stringList(json['rootPaths']),
+        createdAt: json['createdAt'] as String? ?? '',
+        updatedAt: json['updatedAt'] as String? ?? '',
+      );
+}
+
+class ProjectsMessage implements ServerMessage {
+  final List<WorkspaceProject> projects;
+  final String? requestId;
+
+  const ProjectsMessage({required this.projects, this.requestId});
+
+  factory ProjectsMessage.fromJson(Map<String, dynamic> json) =>
+      ProjectsMessage(
+        projects: (json['projects'] as List? ?? const [])
+            .whereType<Map>()
+            .map(
+              (project) =>
+                  WorkspaceProject.fromJson(Map<String, dynamic>.from(project)),
+            )
+            .where((project) => project.rootPaths.isNotEmpty)
+            .toList(),
+        requestId: json['requestId'] as String?,
+      );
+}
+
+class DirectoryListingEntry {
+  final String name;
+  final String path;
+
+  const DirectoryListingEntry({required this.name, required this.path});
+}
+
+List<DirectoryListingEntry> _parseDirectoryListingEntries(dynamic value) {
+  if (value is! List) return const [];
+  return value
+      .whereType<Map>()
+      .map((entry) {
+        final name = entry['name'];
+        final path = entry['path'];
+        if (name is! String ||
+            path is! String ||
+            name.isEmpty ||
+            path.isEmpty) {
+          return null;
+        }
+        return DirectoryListingEntry(name: name, path: path);
+      })
+      .whereType<DirectoryListingEntry>()
+      .toList();
+}
+
+class DirectoryListingMessage implements ServerMessage {
+  final String path;
+  final List<DirectoryListingEntry> directories;
+  final String? requestId;
+
+  const DirectoryListingMessage({
+    required this.path,
+    required this.directories,
+    this.requestId,
+  });
+}
+
+/// Image change detected in a git diff.
+class DiffImageChange {
+  final String filePath;
+  final bool isNew;
+  final bool isDeleted;
+  final bool isSvg;
+  final int? oldSize;
+  final int? newSize;
+  final String? oldBase64;
+  final String? newBase64;
+  final String mimeType;
+  final bool loadable;
+  final bool autoDisplay;
+
+  const DiffImageChange({
+    required this.filePath,
+    this.isNew = false,
+    this.isDeleted = false,
+    this.isSvg = false,
+    this.oldSize,
+    this.newSize,
+    this.oldBase64,
+    this.newBase64,
+    required this.mimeType,
+    this.loadable = false,
+    this.autoDisplay = false,
+  });
+
+  factory DiffImageChange.fromJson(Map<String, dynamic> json) =>
+      DiffImageChange(
+        filePath: json['filePath'] as String,
+        isNew: json['isNew'] as bool? ?? false,
+        isDeleted: json['isDeleted'] as bool? ?? false,
+        isSvg: json['isSvg'] as bool? ?? false,
+        oldSize: json['oldSize'] as int?,
+        newSize: json['newSize'] as int?,
+        oldBase64: json['oldBase64'] as String?,
+        newBase64: json['newBase64'] as String?,
+        mimeType: json['mimeType'] as String? ?? 'application/octet-stream',
+        loadable: json['loadable'] as bool? ?? false,
+        autoDisplay: json['autoDisplay'] as bool? ?? false,
+      );
+}
+
+class DiffResultMessage implements ServerMessage, ProjectCorrelatedMessage {
+  @override
+  final String? projectPath;
+  @override
+  final String? requestId;
+  final bool? staged;
+  final String diff;
+  final String? error;
+  final String? errorCode;
+  final List<DiffImageChange> imageChanges;
+  const DiffResultMessage({
+    this.projectPath,
+    this.requestId,
+    this.staged,
+    required this.diff,
+    this.error,
+    this.errorCode,
+    this.imageChanges = const [],
+  });
+}
+
+class DiffImageResultMessage
+    implements ServerMessage, ProjectCorrelatedMessage {
+  @override
+  final String? projectPath;
+  @override
+  final String? requestId;
+  final String filePath;
+  final String version;
+  final String? base64;
+  final String? mimeType;
+  final String? error;
+
+  /// For version="both": old/new base64 in a single response.
+  final String? oldBase64;
+  final String? newBase64;
+
+  const DiffImageResultMessage({
+    this.projectPath,
+    this.requestId,
+    required this.filePath,
+    required this.version,
+    this.base64,
+    this.mimeType,
+    this.error,
+    this.oldBase64,
+    this.newBase64,
+  });
+}
+
+class WorktreeListMessage implements ServerMessage, ProjectCorrelatedMessage {
+  @override
+  final String? projectPath;
+  @override
+  final String? requestId;
+  final List<WorktreeInfo> worktrees;
+  final String? mainBranch;
+  final String? error;
+  const WorktreeListMessage({
+    this.projectPath,
+    this.requestId,
+    required this.worktrees,
+    this.mainBranch,
+    this.error,
+  });
+}
+
+class WorktreeRemovedMessage
+    implements ServerMessage, ProjectCorrelatedMessage {
+  @override
+  final String? projectPath;
+  @override
+  final String? requestId;
+  final String worktreePath;
+  final String? error;
+  const WorktreeRemovedMessage({
+    this.projectPath,
+    this.requestId,
+    required this.worktreePath,
+    this.error,
+  });
+}
+
+/// Summary of tool uses within a subagent (Task tool).
+/// This message replaces multiple tool_result messages with a compressed summary.
+class ToolUseSummaryMessage implements ServerMessage {
+  /// Human-readable summary of the tools used (e.g., "Read 3 files and analyzed code")
+  final String summary;
+
+  /// IDs of the tool_use calls that this summary replaces
+  final List<String> precedingToolUseIds;
+
+  const ToolUseSummaryMessage({
+    required this.summary,
+    this.precedingToolUseIds = const [],
+  });
+}
+
+/// User text input message (emitted from history replay).
+///
+/// Bridge sends this when restoring in-memory history so that Flutter can
+/// reconstruct [UserChatEntry] with the original text and UUID.
+class UserInputMessage implements ServerMessage {
+  final String text;
+  final String? clientMessageId;
+  final String? userMessageUuid;
+
+  /// Whether this message was synthetically generated by Claude CLI
+  /// (e.g. plan approval, Task agent prompts) rather than typed by the user.
+  final bool isSynthetic;
+
+  /// Whether this is a meta message (e.g. skill loading prompt).
+  final bool isMeta;
+
+  /// Number of images attached to this user message.
+  final int imageCount;
+
+  /// ISO 8601 timestamp from the bridge server (may be null for older history).
+  final String? timestamp;
+
+  /// Image URLs (relative, e.g. "/images/{id}") from the bridge image store.
+  final List<String> imageUrls;
+  const UserInputMessage({
+    required this.text,
+    this.clientMessageId,
+    this.userMessageUuid,
+    this.isSynthetic = false,
+    this.isMeta = false,
+    this.imageCount = 0,
+    this.timestamp,
+    this.imageUrls = const [],
+  });
+}
+
+class RewindPreviewMessage implements ServerMessage {
+  final bool canRewind;
+  final List<String>? filesChanged;
+  final int? insertions;
+  final int? deletions;
+  final String? error;
+  const RewindPreviewMessage({
+    required this.canRewind,
+    this.filesChanged,
+    this.insertions,
+    this.deletions,
+    this.error,
+  });
+}
+
+class RewindResultMessage implements ServerMessage {
+  final bool success;
+  final String mode;
+  final String? error;
+  const RewindResultMessage({
+    required this.success,
+    required this.mode,
+    this.error,
+  });
+}
+
+class InputAckMessage implements ServerMessage {
+  final String? sessionId;
+  final String? clientMessageId;
+  final int? acceptedSeq;
+
+  /// When true the agent was busy and the message was queued for the next turn.
+  /// An automatic interrupt is triggered server-side so the agent picks it up
+  /// promptly, but the client can show a brief "queued" indicator.
+  final bool queued;
+  const InputAckMessage({
+    this.sessionId,
+    this.clientMessageId,
+    this.acceptedSeq,
+    this.queued = false,
+  });
+}
+
+class ConversationQueueMessage implements ServerMessage {
+  final String? sessionId;
+  final int limit;
+  final List<QueuedInputItem> items;
+  const ConversationQueueMessage({
+    this.sessionId,
+    required this.limit,
+    required this.items,
+  });
+}
+
+class GoalStateMessage implements ServerMessage {
+  final String? sessionId;
+  final CodexGoal? goal;
+  const GoalStateMessage({this.sessionId, required this.goal});
+}
+
+class InputRejectedMessage implements ServerMessage {
+  final String? sessionId;
+  final String? clientMessageId;
+  final String? reason;
+  const InputRejectedMessage({
+    this.sessionId,
+    this.clientMessageId,
+    this.reason,
+  });
+}
+
+class UsageResultMessage implements ServerMessage {
+  final List<UsageInfo> providers;
+  const UsageResultMessage({required this.providers});
+}
+
+class RecordingListMessage implements ServerMessage {
+  final List<RecordingInfo> recordings;
+  const RecordingListMessage({required this.recordings});
+}
+
+class RecordingContentMessage implements ServerMessage {
+  final String sessionId;
+  final String content;
+  const RecordingContentMessage({
+    required this.sessionId,
+    required this.content,
+  });
+}
+
+class RenameResultMessage implements ServerMessage {
+  final String sessionId;
+  final String? name;
+  final bool success;
+  final String? error;
+  const RenameResultMessage({
+    required this.sessionId,
+    this.name,
+    required this.success,
+    this.error,
+  });
+}
+
+class ArchiveResultMessage implements ServerMessage {
+  final String sessionId;
+  final bool success;
+  final String? error;
+  const ArchiveResultMessage({
+    required this.sessionId,
+    required this.success,
+    this.error,
+  });
+}
+
+/// Response to a `refresh_branch` request with the current git branch.
+class BranchUpdateMessage implements ServerMessage {
+  final String sessionId;
+  final String branch;
+  const BranchUpdateMessage({required this.sessionId, required this.branch});
+}
+
+class PromptHistoryBackupResultMessage implements ServerMessage {
+  final bool success;
+  final String? backedUpAt;
+  final String? error;
+  const PromptHistoryBackupResultMessage({
+    required this.success,
+    this.backedUpAt,
+    this.error,
+  });
+}
+
+class PromptHistoryRestoreResultMessage implements ServerMessage {
+  final bool success;
+  final String? data;
+  final String? appVersion;
+  final int? dbVersion;
+  final String? backedUpAt;
+  final String? error;
+  const PromptHistoryRestoreResultMessage({
+    required this.success,
+    this.data,
+    this.appVersion,
+    this.dbVersion,
+    this.backedUpAt,
+    this.error,
+  });
+}
+
+class PromptHistoryBackupInfoMessage implements ServerMessage {
+  final bool exists;
+  final String? appVersion;
+  final int? dbVersion;
+  final String? backedUpAt;
+  final int? sizeBytes;
+  const PromptHistoryBackupInfoMessage({
+    required this.exists,
+    this.appVersion,
+    this.dbVersion,
+    this.backedUpAt,
+    this.sizeBytes,
+  });
+}
+
+class PromptHistoryServerEntry {
+  final String id;
+  final String text;
+  final String projectPath;
+  final String? projectId;
+  final String? projectName;
+  final int totalUseCount;
+  final bool isFavorite;
+  final String createdAt;
+  final String lastUsedAt;
+  final String updatedAt;
+  final String? favoriteUpdatedAt;
+  final String? deletedAt;
+  final String commandKind;
+  final Map<String, PromptHistoryClientStat> clientStats;
+  final Map<String, PromptHistorySessionStat> sessionStats;
+
+  const PromptHistoryServerEntry({
+    required this.id,
+    required this.text,
+    required this.projectPath,
+    this.projectId,
+    this.projectName,
+    required this.totalUseCount,
+    required this.isFavorite,
+    required this.createdAt,
+    required this.lastUsedAt,
+    required this.updatedAt,
+    this.favoriteUpdatedAt,
+    this.deletedAt,
+    required this.commandKind,
+    required this.clientStats,
+    required this.sessionStats,
+  });
+
+  factory PromptHistoryServerEntry.fromJson(Map<String, dynamic> json) {
+    return PromptHistoryServerEntry(
+      id: json['id'] as String? ?? '',
+      text: json['text'] as String? ?? '',
+      projectPath: json['projectPath'] as String? ?? '',
+      projectId: json['projectId'] as String?,
+      projectName: json['projectName'] as String?,
+      totalUseCount: json['totalUseCount'] as int? ?? 0,
+      isFavorite: json['isFavorite'] as bool? ?? false,
+      createdAt: json['createdAt'] as String? ?? '',
+      lastUsedAt: json['lastUsedAt'] as String? ?? '',
+      updatedAt: json['updatedAt'] as String? ?? '',
+      favoriteUpdatedAt: json['favoriteUpdatedAt'] as String?,
+      deletedAt: json['deletedAt'] as String?,
+      commandKind: json['commandKind'] as String? ?? 'none',
+      clientStats:
+          (json['clientStats'] as Map<String, dynamic>?)?.map(
+            (key, value) => MapEntry(
+              key,
+              PromptHistoryClientStat.fromJson(value as Map<String, dynamic>),
+            ),
+          ) ??
+          const {},
+      sessionStats:
+          (json['sessionStats'] as Map<String, dynamic>?)?.map(
+            (key, value) => MapEntry(
+              key,
+              PromptHistorySessionStat.fromJson(value as Map<String, dynamic>),
+            ),
+          ) ??
+          const {},
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'text': text,
+    'projectPath': projectPath,
+    'projectId': ?projectId,
+    'projectName': ?projectName,
+    'totalUseCount': totalUseCount,
+    'isFavorite': isFavorite,
+    'createdAt': createdAt,
+    'lastUsedAt': lastUsedAt,
+    'updatedAt': updatedAt,
+    'favoriteUpdatedAt': ?favoriteUpdatedAt,
+    'deletedAt': ?deletedAt,
+    'commandKind': commandKind,
+    'clientStats': clientStats.map(
+      (key, value) => MapEntry(key, value.toJson()),
+    ),
+    'sessionStats': sessionStats.map(
+      (key, value) => MapEntry(key, value.toJson()),
+    ),
+  };
+}
+
+class PromptHistoryClientStat {
+  final int useCount;
+  final String lastUsedAt;
+  final String? clientName;
+
+  const PromptHistoryClientStat({
+    required this.useCount,
+    required this.lastUsedAt,
+    this.clientName,
+  });
+
+  factory PromptHistoryClientStat.fromJson(Map<String, dynamic> json) {
+    return PromptHistoryClientStat(
+      useCount: json['useCount'] as int? ?? 0,
+      lastUsedAt: json['lastUsedAt'] as String? ?? '',
+      clientName: json['clientName'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'useCount': useCount,
+    'lastUsedAt': lastUsedAt,
+    'clientName': ?clientName,
+  };
+}
+
+class PromptHistorySessionStat {
+  final int useCount;
+  final String lastUsedAt;
+
+  const PromptHistorySessionStat({
+    required this.useCount,
+    required this.lastUsedAt,
+  });
+
+  factory PromptHistorySessionStat.fromJson(Map<String, dynamic> json) {
+    return PromptHistorySessionStat(
+      useCount: json['useCount'] as int? ?? 0,
+      lastUsedAt: json['lastUsedAt'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'useCount': useCount,
+    'lastUsedAt': lastUsedAt,
+  };
+}
+
+class PromptHistorySyncResultMessage implements ServerMessage {
+  final bool success;
+  final String? bridgeInstanceId;
+  final int? revision;
+  final String? syncedAt;
+  final bool fullSnapshot;
+  final List<PromptHistoryServerEntry> entries;
+  final String? error;
+
+  const PromptHistorySyncResultMessage({
+    required this.success,
+    this.bridgeInstanceId,
+    this.revision,
+    this.syncedAt,
+    this.fullSnapshot = false,
+    this.entries = const [],
+    this.error,
+  });
+}
+
+class PromptHistoryMutationResultMessage implements ServerMessage {
+  final bool success;
+  final String? bridgeInstanceId;
+  final int? revision;
+  final PromptHistoryServerEntry? entry;
+  final String? error;
+
+  const PromptHistoryMutationResultMessage({
+    required this.success,
+    this.bridgeInstanceId,
+    this.revision,
+    this.entry,
+    this.error,
+  });
+}
+
+class PromptHistoryStatusMessage implements ServerMessage {
+  final String bridgeInstanceId;
+  final int revision;
+  final int entryCount;
+  final String? updatedAt;
+
+  const PromptHistoryStatusMessage({
+    required this.bridgeInstanceId,
+    required this.revision,
+    required this.entryCount,
+    this.updatedAt,
+  });
+}
+
+class MessageImagesResultMessage implements ServerMessage {
+  final String messageUuid;
+  final List<ImageRef> images;
+  const MessageImagesResultMessage({
+    required this.messageUuid,
+    required this.images,
+  });
+}
+
+// ---- Git Operations (Phase 1-3) ----
+
+abstract class GitProjectResultMessage implements ProjectCorrelatedMessage {
+  @override
+  final String? projectPath;
+  @override
+  final String? requestId;
+
+  const GitProjectResultMessage({this.projectPath, this.requestId});
+}
+
+class GitStageResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final bool success;
+  final String? error;
+  const GitStageResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.success,
+    this.error,
+  });
+}
+
+class GitUnstageResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final bool success;
+  final String? error;
+  const GitUnstageResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.success,
+    this.error,
+  });
+}
+
+class GitUnstageHunksResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final bool success;
+  final String? error;
+  const GitUnstageHunksResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.success,
+    this.error,
+  });
+}
+
+class GitCommitResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final bool success;
+  final String? commitHash;
+  final String? message;
+  final String? error;
+  const GitCommitResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.success,
+    this.commitHash,
+    this.message,
+    this.error,
+  });
+}
+
+class GitPushResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final bool success;
+  final String? error;
+  const GitPushResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.success,
+    this.error,
+  });
+}
+
+class GitBranchRemoteStatus {
+  final int ahead;
+  final int behind;
+  final bool hasUpstream;
+
+  const GitBranchRemoteStatus({
+    required this.ahead,
+    required this.behind,
+    required this.hasUpstream,
+  });
+
+  factory GitBranchRemoteStatus.fromJson(Map<String, dynamic> json) {
+    return GitBranchRemoteStatus(
+      ahead: json['ahead'] as int? ?? 0,
+      behind: json['behind'] as int? ?? 0,
+      hasUpstream: json['hasUpstream'] as bool? ?? false,
+    );
+  }
+}
+
+class GitBranchesResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final String current;
+  final List<String> branches;
+  final List<String> checkedOutBranches;
+  final Map<String, GitBranchRemoteStatus> remoteStatusByBranch;
+  final String? error;
+  const GitBranchesResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.current,
+    required this.branches,
+    this.checkedOutBranches = const [],
+    this.remoteStatusByBranch = const {},
+    this.error,
+  });
+}
+
+class GitCreateBranchResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final bool success;
+  final String? error;
+  const GitCreateBranchResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.success,
+    this.error,
+  });
+}
+
+class GitCheckoutBranchResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final bool success;
+  final String? error;
+  const GitCheckoutBranchResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.success,
+    this.error,
+  });
+}
+
+class GitRevertFileResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final bool success;
+  final String? error;
+  const GitRevertFileResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.success,
+    this.error,
+  });
+}
+
+class GitRevertHunksResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final bool success;
+  final String? error;
+  const GitRevertHunksResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.success,
+    this.error,
+  });
+}
+
+class GitFetchResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final bool success;
+  final String? error;
+  const GitFetchResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.success,
+    this.error,
+  });
+}
+
+class GitPullResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final bool success;
+  final String? message;
+  final String? error;
+  const GitPullResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.success,
+    this.message,
+    this.error,
+  });
+}
+
+class GitStatusResultMessage implements ServerMessage {
+  final String? requestId;
+  final String? sessionId;
+  final String projectPath;
+  final bool hasUncommittedChanges;
+  final int stagedCount;
+  final int unstagedCount;
+  final int untrackedCount;
+  final bool remoteStatusIncluded;
+  final bool hasRemoteChanges;
+  final int commitsAhead;
+  final int commitsBehind;
+  final bool hasUpstream;
+  final String? branch;
+  final String? remoteError;
+  final String? error;
+  const GitStatusResultMessage({
+    this.requestId,
+    this.sessionId,
+    required this.projectPath,
+    required this.hasUncommittedChanges,
+    required this.stagedCount,
+    required this.unstagedCount,
+    required this.untrackedCount,
+    this.remoteStatusIncluded = false,
+    this.hasRemoteChanges = false,
+    this.commitsAhead = 0,
+    this.commitsBehind = 0,
+    this.hasUpstream = false,
+    this.branch,
+    this.remoteError,
+    this.error,
+  });
+}
+
+class GitRemoteStatusResultMessage extends GitProjectResultMessage
+    implements ServerMessage {
+  final int ahead;
+  final int behind;
+  final String branch;
+  final bool hasUpstream;
+  final String? error;
+  const GitRemoteStatusResultMessage({
+    super.projectPath,
+    super.requestId,
+    required this.ahead,
+    required this.behind,
+    required this.branch,
+    required this.hasUpstream,
+    this.error,
+  });
+}
+
+class RecordingInfo {
+  final String name;
+  final String modified;
+  final int sizeBytes;
+  final String? projectPath;
+  final String? projectId;
+  final String? workspaceProjectName;
+  final String? summary;
+  final String? firstPrompt;
+  final String? lastPrompt;
+
+  const RecordingInfo({
+    required this.name,
+    required this.modified,
+    required this.sizeBytes,
+    this.projectPath,
+    this.projectId,
+    this.workspaceProjectName,
+    this.summary,
+    this.firstPrompt,
+    this.lastPrompt,
+  });
+
+  factory RecordingInfo.fromJson(Map<String, dynamic> json) {
+    final meta = json['meta'] as Map<String, dynamic>?;
+    return RecordingInfo(
+      name: json['name'] as String? ?? '',
+      modified: json['modified'] as String? ?? '',
+      sizeBytes: json['sizeBytes'] as int? ?? 0,
+      projectPath: meta?['projectPath'] as String?,
+      projectId: meta?['projectId'] as String?,
+      workspaceProjectName: meta?['projectName'] as String?,
+      summary: json['summary'] as String?,
+      firstPrompt: json['firstPrompt'] as String?,
+      lastPrompt: json['lastPrompt'] as String?,
+    );
+  }
+
+  /// Display text prioritizing summary > firstPrompt > name fallback.
+  String get displayText {
+    if (summary != null && summary!.isNotEmpty) return summary!;
+    if (firstPrompt != null && firstPrompt!.isNotEmpty) return firstPrompt!;
+    return name;
+  }
+
+  /// Short project name (last path component).
+  String? get projectName {
+    if (workspaceProjectName?.isNotEmpty == true) {
+      return workspaceProjectName;
+    }
+    if (projectPath == null || projectPath!.isEmpty) return null;
+    return pathBasename(projectPath!);
+  }
+
+  String get sizeLabel {
+    if (sizeBytes < 1024) return '$sizeBytes B';
+    if (sizeBytes < 1024 * 1024) {
+      return '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+    }
+    return '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  DateTime? get modifiedDate => DateTime.tryParse(modified);
+}
+
+class PastMessage {
+  final String role;
+  final String? uuid;
+  final String? timestamp;
+
+  /// Whether this is a meta message (e.g. skill loading prompt).
+  final bool isMeta;
+
+  /// Number of images attached to this user message.
+  final int imageCount;
+  final String? toolUseId;
+  final String? toolName;
+  final List<ImageRef> images;
+  final String? toolResultContent;
+  final List<AssistantContent> content;
+  const PastMessage({
+    required this.role,
+    this.uuid,
+    this.timestamp,
+    this.isMeta = false,
+    this.imageCount = 0,
+    this.toolUseId,
+    this.toolName,
+    this.images = const [],
+    this.toolResultContent,
+    required this.content,
+  });
+
+  factory PastMessage.fromJson(Map<String, dynamic> json) {
+    final rawContent = json['content'];
+    final List<AssistantContent> contentList;
+    if (rawContent is String) {
+      // Handle string content (e.g. user message after interrupt)
+      contentList = rawContent.isNotEmpty
+          ? [TextContent(text: rawContent)]
+          : [];
+    } else {
+      contentList = (rawContent as List? ?? [])
+          .map((c) => AssistantContent.fromJson(c as Map<String, dynamic>))
+          .toList();
+    }
+    return PastMessage(
+      role: json['role'] as String? ?? '',
+      uuid: json['uuid'] as String?,
+      timestamp: json['timestamp'] as String?,
+      isMeta: json['isMeta'] as bool? ?? false,
+      imageCount: json['imageCount'] as int? ?? 0,
+      toolUseId: json['toolUseId'] as String?,
+      toolName: json['toolName'] as String?,
+      images:
+          (json['images'] as List?)
+              ?.map((i) => ImageRef.fromJson(i as Map<String, dynamic>))
+              .toList() ??
+          const [],
+      toolResultContent: rawContent is String ? rawContent : null,
+      content: contentList,
+    );
+  }
+}
+
+// ---- Recent session (from sessions-index.json) ----
+
+/// Display mode for session list cards.
+enum SessionDisplayMode {
+  first('First'),
+  last('Last'),
+  summary('Summary');
+
+  final String label;
+  const SessionDisplayMode(this.label);
+}
+
+String pathBasename(String path) {
+  if (path.isEmpty) return path;
+  final normalized = path.replaceAll('\\', '/');
+  final parts = normalized.split('/').where((part) => part.isNotEmpty);
+  final last = parts.isEmpty ? '' : parts.last;
+  return last.isNotEmpty ? last : path;
+}
+
+class SessionWorkspaceInfo {
+  final String kind;
+  final String? projectId;
+  final String? projectName;
+  final List<String> rootPaths;
+
+  const SessionWorkspaceInfo({
+    required this.kind,
+    this.projectId,
+    this.projectName,
+    this.rootPaths = const [],
+  });
+
+  factory SessionWorkspaceInfo.fromJson(Map<String, dynamic> json) =>
+      SessionWorkspaceInfo(
+        kind: json['kind'] as String? ?? 'unassigned',
+        projectId: json['projectId'] as String?,
+        projectName: json['projectName'] as String?,
+        rootPaths: _stringList(json['rootPaths']),
+      );
+}
+
+class RecentSession {
+  final String sessionId;
+  final String? provider;
+  final String? rawPermissionMode;
+
+  /// User-assigned session name (customTitle for Claude, thread_name for Codex).
+  final String? name;
+  final String? agentNickname;
+  final String? agentRole;
+  final String? summary;
+  final String firstPrompt;
+  final String? lastPrompt;
+  final String created;
+  final String modified;
+  final String gitBranch;
+  final String projectPath;
+  final String? resumeCwd;
+  final bool isSidechain;
+  final String? codexApprovalPolicy;
+  final String? codexApprovalsReviewer;
+  final String? codexPermissionsMode;
+  final String? executionMode;
+  final bool planMode;
+  final String? codexSandboxMode;
+  final String? codexModel;
+  final String? codexProfile;
+  final String? codexModelReasoningEffort;
+  final String? codexServiceTier;
+  final bool? codexNetworkAccessEnabled;
+  final String? codexWebSearchMode;
+  final List<String> codexAdditionalWritableRoots;
+  final SessionWorkspaceInfo? workspace;
+
+  const RecentSession({
+    required this.sessionId,
+    this.provider,
+    this.rawPermissionMode,
+    this.name,
+    this.agentNickname,
+    this.agentRole,
+    this.summary,
+    required this.firstPrompt,
+    this.lastPrompt,
+    required this.created,
+    required this.modified,
+    required this.gitBranch,
+    required this.projectPath,
+    this.resumeCwd,
+    required this.isSidechain,
+    this.codexApprovalPolicy,
+    this.codexApprovalsReviewer,
+    this.codexPermissionsMode,
+    this.executionMode,
+    this.planMode = false,
+    this.codexSandboxMode,
+    this.codexModel,
+    this.codexProfile,
+    this.codexModelReasoningEffort,
+    this.codexServiceTier,
+    this.codexNetworkAccessEnabled,
+    this.codexWebSearchMode,
+    this.codexAdditionalWritableRoots = const [],
+    this.workspace,
+  });
+
+  ExecutionMode get resolvedExecutionMode => deriveExecutionMode(
+    provider: provider,
+    executionMode: executionMode,
+    permissionMode: rawPermissionMode,
+    approvalPolicy: codexApprovalPolicy,
+  );
+
+  bool get resolvedPlanMode => planMode;
+
+  String get permissionMode => legacyPermissionModeFromModes(
+    provider == Provider.codex.value ? Provider.codex : Provider.claude,
+    executionMode: resolvedExecutionMode,
+    planMode: resolvedPlanMode,
+  ).value;
+
+  String get effectivePermissionMode => rawPermissionMode?.isNotEmpty == true
+      ? rawPermissionMode!
+      : permissionMode;
+
+  factory RecentSession.fromJson(Map<String, dynamic> json) {
+    final codexSettings = json['codexSettings'] as Map<String, dynamic>?;
+    return RecentSession(
+      sessionId: json['sessionId'] as String,
+      provider: json['provider'] as String?,
+      rawPermissionMode: json['permissionMode'] as String?,
+      name: json['name'] as String?,
+      agentNickname: json['agentNickname'] as String?,
+      agentRole: json['agentRole'] as String?,
+      summary: json['summary'] as String?,
+      firstPrompt: json['firstPrompt'] as String? ?? '',
+      lastPrompt: json['lastPrompt'] as String?,
+      created: json['created'] as String? ?? '',
+      modified: json['modified'] as String? ?? '',
+      gitBranch: json['gitBranch'] as String? ?? '',
+      projectPath: json['projectPath'] as String? ?? '',
+      resumeCwd: json['resumeCwd'] as String?,
+      isSidechain: json['isSidechain'] as bool? ?? false,
+      codexApprovalPolicy: resolveCodexApprovalPolicy(
+        approvalPolicy: codexSettings?['approvalPolicy'] as String?,
+        executionMode: json['executionMode'] as String?,
+      ),
+      codexApprovalsReviewer: codexSettings?['approvalsReviewer'] as String?,
+      codexPermissionsMode: _resolveCodexPermissionsMode(codexSettings),
+      executionMode:
+          json['executionMode'] as String? ??
+          deriveExecutionMode(
+            provider: json['provider'] as String?,
+            permissionMode: json['permissionMode'] as String?,
+            approvalPolicy: codexSettings?['approvalPolicy'] as String?,
+          ).value,
+      planMode: derivePlanMode(
+        planMode: json['planMode'] as bool?,
+        permissionMode: json['permissionMode'] as String?,
+      ),
+      codexSandboxMode: codexSettings?['sandboxMode'] as String?,
+      codexModel: sanitizeCodexModelName(codexSettings?['model'] as String?),
+      codexProfile: codexSettings?['profile'] as String?,
+      codexModelReasoningEffort:
+          codexSettings?['modelReasoningEffort'] as String?,
+      codexServiceTier: codexSettings?['serviceTier'] as String?,
+      codexNetworkAccessEnabled:
+          codexSettings?['networkAccessEnabled'] as bool?,
+      codexWebSearchMode: codexSettings?['webSearchMode'] as String?,
+      codexAdditionalWritableRoots: _stringList(
+        codexSettings?['additionalWritableRoots'],
+      ),
+      workspace: switch (json['workspace']) {
+        final Map workspace => SessionWorkspaceInfo.fromJson(
+          Map<String, dynamic>.from(workspace),
+        ),
+        _ => null,
+      },
+    );
+  }
+
+  /// Extract project name from path (last segment)
+  String get projectName {
+    return workspace?.projectName ?? pathBasename(projectPath);
+  }
+
+  String get workspaceKind => workspace?.kind ?? 'unassigned';
+
+  String get workspaceGroupKey => switch (workspaceKind) {
+    'project' when workspace?.projectId != null =>
+      'project:${workspace!.projectId}',
+    _ => projectPath,
+  };
+
+  List<String> get workspaceRootPaths => workspace?.rootPaths.isNotEmpty == true
+      ? workspace!.rootPaths
+      : [projectPath];
+
+  /// Display text: summary if available, otherwise firstPrompt
+  String get displayText {
+    if (summary != null && summary!.isNotEmpty) return summary!;
+    if (firstPrompt.isNotEmpty) return firstPrompt;
+    return '(no description)';
+  }
+
+  /// Create a copy with an updated name. Use [clearName] to set name to null.
+  RecentSession copyWithName({String? name, bool clearName = false}) {
+    return RecentSession(
+      sessionId: sessionId,
+      provider: provider,
+      rawPermissionMode: rawPermissionMode,
+      name: clearName ? null : (name ?? this.name),
+      agentNickname: agentNickname,
+      agentRole: agentRole,
+      summary: summary,
+      firstPrompt: firstPrompt,
+      lastPrompt: lastPrompt,
+      created: created,
+      modified: modified,
+      gitBranch: gitBranch,
+      projectPath: projectPath,
+      resumeCwd: resumeCwd,
+      isSidechain: isSidechain,
+      codexApprovalPolicy: codexApprovalPolicy,
+      codexApprovalsReviewer: codexApprovalsReviewer,
+      executionMode: executionMode,
+      planMode: planMode,
+      codexSandboxMode: codexSandboxMode,
+      codexModel: codexModel,
+      codexProfile: codexProfile,
+      codexModelReasoningEffort: codexModelReasoningEffort,
+      codexServiceTier: codexServiceTier,
+      codexNetworkAccessEnabled: codexNetworkAccessEnabled,
+      codexWebSearchMode: codexWebSearchMode,
+      codexAdditionalWritableRoots: codexAdditionalWritableRoots,
+      workspace: workspace,
+    );
+  }
+
+  RecentSession copyWithCodexApprovalDefaults({
+    required String approvalPolicy,
+    required String approvalsReviewer,
+    String? codexPermissionsMode,
+  }) {
+    return RecentSession(
+      sessionId: sessionId,
+      provider: provider,
+      rawPermissionMode: rawPermissionMode,
+      name: name,
+      agentNickname: agentNickname,
+      agentRole: agentRole,
+      summary: summary,
+      firstPrompt: firstPrompt,
+      lastPrompt: lastPrompt,
+      created: created,
+      modified: modified,
+      gitBranch: gitBranch,
+      projectPath: projectPath,
+      resumeCwd: resumeCwd,
+      isSidechain: isSidechain,
+      codexApprovalPolicy: approvalPolicy,
+      codexApprovalsReviewer: approvalsReviewer,
+      codexPermissionsMode: codexPermissionsMode ?? this.codexPermissionsMode,
+      executionMode: executionMode,
+      planMode: planMode,
+      codexSandboxMode: codexSandboxMode,
+      codexModel: codexModel,
+      codexProfile: codexProfile,
+      codexModelReasoningEffort: codexModelReasoningEffort,
+      codexServiceTier: codexServiceTier,
+      codexNetworkAccessEnabled: codexNetworkAccessEnabled,
+      codexWebSearchMode: codexWebSearchMode,
+      codexAdditionalWritableRoots: codexAdditionalWritableRoots,
+      workspace: workspace,
+    );
+  }
+}
+
+// ---- Session info (for multi-session) ----
+
+class SessionInfo {
+  final String id;
+  final String? provider;
+  final String projectPath;
+  final String? claudeSessionId;
+
+  /// User-assigned session name.
+  final String? name;
+  final String? agentNickname;
+  final String? agentRole;
+  final String status;
+  final String createdAt;
+  final String lastActivityAt;
+  final String gitBranch;
+  final String lastMessage;
+  final String? worktreePath;
+  final String? worktreeBranch;
+  final String? permissionMode;
+  final String? executionMode;
+  final bool planMode;
+  final String? model;
+  final String? codexApprovalPolicy;
+  final String? codexApprovalsReviewer;
+  final String? codexPermissionsMode;
+  final String? codexSandboxMode;
+  final bool? sandboxEnabled;
+  final String? codexModel;
+  final String? codexProfile;
+  final String? codexModelReasoningEffort;
+  final String? codexServiceTier;
+  final bool? codexNetworkAccessEnabled;
+  final String? codexWebSearchMode;
+  final List<String> codexAdditionalWritableRoots;
+  final PermissionRequestMessage? pendingPermission;
+  final QueuedInputItem? queuedInput;
+  final SessionWorkspaceInfo? workspace;
+
+  const SessionInfo({
+    required this.id,
+    this.provider,
+    required this.projectPath,
+    this.claudeSessionId,
+    this.name,
+    this.agentNickname,
+    this.agentRole,
+    required this.status,
+    required this.createdAt,
+    required this.lastActivityAt,
+    this.gitBranch = '',
+    this.lastMessage = '',
+    this.worktreePath,
+    this.worktreeBranch,
+    this.permissionMode,
+    this.executionMode,
+    this.planMode = false,
+    this.model,
+    this.codexApprovalPolicy,
+    this.codexApprovalsReviewer,
+    this.codexPermissionsMode,
+    this.codexSandboxMode,
+    this.sandboxEnabled,
+    this.codexModel,
+    this.codexProfile,
+    this.codexModelReasoningEffort,
+    this.codexServiceTier,
+    this.codexNetworkAccessEnabled,
+    this.codexWebSearchMode,
+    this.codexAdditionalWritableRoots = const [],
+    this.pendingPermission,
+    this.queuedInput,
+    this.workspace,
+  });
+
+  String get projectName => workspace?.projectName ?? pathBasename(projectPath);
+
+  String get workspaceKind => workspace?.kind ?? 'unassigned';
+
+  String get workspaceGroupKey => switch (workspaceKind) {
+    'project' when workspace?.projectId != null =>
+      'project:${workspace!.projectId}',
+    _ => projectPath,
+  };
+
+  List<String> get workspaceRootPaths => workspace?.rootPaths.isNotEmpty == true
+      ? workspace!.rootPaths
+      : [projectPath];
+
+  ExecutionMode get resolvedExecutionMode => deriveExecutionMode(
+    provider: provider,
+    executionMode: executionMode,
+    permissionMode: permissionMode,
+    approvalPolicy: codexApprovalPolicy,
+  );
+
+  bool get resolvedPlanMode =>
+      planMode || permissionMode == PermissionMode.plan.value;
+
+  String get effectivePermissionMode =>
+      permissionMode ??
+      legacyPermissionModeFromModes(
+        provider == Provider.codex.value ? Provider.codex : Provider.claude,
+        executionMode: resolvedExecutionMode,
+        planMode: resolvedPlanMode,
+      ).value;
+
+  SessionInfo copyWith({
+    String? status,
+    String? name,
+    bool clearName = false,
+    String? lastMessage,
+    String? permissionMode,
+    String? executionMode,
+    bool? planMode,
+    String? model,
+    String? codexApprovalPolicy,
+    String? codexApprovalsReviewer,
+    String? codexPermissionsMode,
+    String? codexSandboxMode,
+    String? codexModel,
+    String? codexProfile,
+    String? codexModelReasoningEffort,
+    String? codexServiceTier,
+    bool? codexNetworkAccessEnabled,
+    String? codexWebSearchMode,
+    List<String>? codexAdditionalWritableRoots,
+    PermissionRequestMessage? pendingPermission,
+    bool clearPermission = false,
+    QueuedInputItem? queuedInput,
+    bool clearQueuedInput = false,
+  }) {
+    return SessionInfo(
+      id: id,
+      provider: provider,
+      projectPath: projectPath,
+      claudeSessionId: claudeSessionId,
+      name: clearName ? null : (name ?? this.name),
+      agentNickname: agentNickname,
+      agentRole: agentRole,
+      status: status ?? this.status,
+      createdAt: createdAt,
+      lastActivityAt: lastActivityAt,
+      gitBranch: gitBranch,
+      lastMessage: lastMessage ?? this.lastMessage,
+      worktreePath: worktreePath,
+      worktreeBranch: worktreeBranch,
+      permissionMode: permissionMode ?? this.permissionMode,
+      executionMode: executionMode ?? this.executionMode,
+      planMode: planMode ?? this.planMode,
+      model: model ?? this.model,
+      codexApprovalPolicy: codexApprovalPolicy ?? this.codexApprovalPolicy,
+      codexApprovalsReviewer:
+          codexApprovalsReviewer ?? this.codexApprovalsReviewer,
+      codexPermissionsMode: codexPermissionsMode ?? this.codexPermissionsMode,
+      codexSandboxMode: codexSandboxMode ?? this.codexSandboxMode,
+      sandboxEnabled: sandboxEnabled,
+      codexModel: codexModel ?? this.codexModel,
+      codexProfile: codexProfile ?? this.codexProfile,
+      codexModelReasoningEffort:
+          codexModelReasoningEffort ?? this.codexModelReasoningEffort,
+      codexServiceTier: codexServiceTier ?? this.codexServiceTier,
+      codexNetworkAccessEnabled:
+          codexNetworkAccessEnabled ?? this.codexNetworkAccessEnabled,
+      codexWebSearchMode: codexWebSearchMode ?? this.codexWebSearchMode,
+      codexAdditionalWritableRoots:
+          codexAdditionalWritableRoots ?? this.codexAdditionalWritableRoots,
+      pendingPermission: clearPermission
+          ? null
+          : (pendingPermission ?? this.pendingPermission),
+      queuedInput: clearQueuedInput ? null : (queuedInput ?? this.queuedInput),
+      workspace: workspace,
+    );
+  }
+
+  factory SessionInfo.fromJson(Map<String, dynamic> json) {
+    final codexSettings = json['codexSettings'] as Map<String, dynamic>?;
+    final permJson = json['pendingPermission'] as Map<String, dynamic>?;
+    final queueJson = json['queuedInput'] as Map<String, dynamic>?;
+    return SessionInfo(
+      id: json['id'] as String,
+      provider: json['provider'] as String?,
+      projectPath: json['projectPath'] as String,
+      claudeSessionId: json['claudeSessionId'] as String?,
+      name: json['name'] as String?,
+      agentNickname: json['agentNickname'] as String?,
+      agentRole: json['agentRole'] as String?,
+      status: json['status'] as String? ?? 'idle',
+      createdAt: json['createdAt'] as String? ?? '',
+      lastActivityAt: json['lastActivityAt'] as String? ?? '',
+      gitBranch: json['gitBranch'] as String? ?? '',
+      lastMessage: json['lastMessage'] as String? ?? '',
+      worktreePath: json['worktreePath'] as String?,
+      worktreeBranch: json['worktreeBranch'] as String?,
+      permissionMode: json['permissionMode'] as String?,
+      executionMode:
+          json['executionMode'] as String? ??
+          deriveExecutionMode(
+            provider: json['provider'] as String?,
+            permissionMode: json['permissionMode'] as String?,
+            approvalPolicy: codexSettings?['approvalPolicy'] as String?,
+          ).value,
+      planMode: derivePlanMode(
+        planMode: json['planMode'] as bool?,
+        permissionMode: json['permissionMode'] as String?,
+      ),
+      model: json['model'] as String?,
+      codexApprovalPolicy: resolveCodexApprovalPolicy(
+        approvalPolicy: codexSettings?['approvalPolicy'] as String?,
+        executionMode: json['executionMode'] as String?,
+      ),
+      codexApprovalsReviewer: codexSettings?['approvalsReviewer'] as String?,
+      codexPermissionsMode: _resolveCodexPermissionsMode(codexSettings),
+      codexSandboxMode: codexSettings?['sandboxMode'] as String?,
+      sandboxEnabled: json['sandboxEnabled'] as bool?,
+      codexModel: sanitizeCodexModelName(codexSettings?['model'] as String?),
+      codexProfile: codexSettings?['profile'] as String?,
+      codexModelReasoningEffort:
+          codexSettings?['modelReasoningEffort'] as String?,
+      codexServiceTier: codexSettings?['serviceTier'] as String?,
+      codexNetworkAccessEnabled:
+          codexSettings?['networkAccessEnabled'] as bool?,
+      codexWebSearchMode: codexSettings?['webSearchMode'] as String?,
+      codexAdditionalWritableRoots: _stringList(
+        codexSettings?['additionalWritableRoots'],
+      ),
+      pendingPermission: permJson != null
+          ? PermissionRequestMessage(
+              toolUseId: permJson['toolUseId'] as String,
+              toolName: permJson['toolName'] as String,
+              input: Map<String, dynamic>.from(permJson['input'] as Map),
+            )
+          : null,
+      queuedInput: queueJson != null
+          ? QueuedInputItem.fromJson(queueJson)
+          : null,
+      workspace: switch (json['workspace']) {
+        final Map workspace => SessionWorkspaceInfo.fromJson(
+          Map<String, dynamic>.from(workspace),
+        ),
+        _ => null,
+      },
+    );
+  }
+}
+
+// ---- Client messages ----
+
+class ClientMessage {
+  final Map<String, dynamic> _json;
+  ClientMessage._(this._json);
+  factory ClientMessage.raw(Map<String, dynamic> json) =>
+      ClientMessage._(Map<String, dynamic>.from(json));
+
+  String get type => _json['type'] as String;
+
+  factory ClientMessage.clientCapabilities({
+    String? appVersion,
+    int protocolVersion = appProtocolMaxVersion,
+    int minimumProtocolVersion = appProtocolMinVersion,
+    List<String> supportedServerMessages = const [
+      'conversation_queue',
+      'goal_state',
+      'guardian_approval',
+      'history_delta',
+      'history_snapshot',
+      'git_status_result',
+      'prompt_history_status',
+      'projects',
+      'push_registration_result',
+      'session_context',
+    ],
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'client_capabilities',
+      'protocolVersion': protocolVersion,
+      'minimumProtocolVersion': minimumProtocolVersion,
+      'appVersion': ?appVersion,
+      if (supportedServerMessages.isNotEmpty)
+        'supportedServerMessages': supportedServerMessages,
+    });
+  }
+
+  factory ClientMessage.start(
+    String projectPath, {
+    String? sessionId,
+    bool? continueMode,
+    String? permissionMode,
+    String? executionMode,
+    String? approvalPolicy,
+    String? approvalsReviewer,
+    String? codexPermissionsMode,
+    bool? planMode,
+    String? effort,
+    int? maxTurns,
+    double? maxBudgetUsd,
+    String? fallbackModel,
+    bool? forkSession,
+    bool? persistSession,
+    String? profile,
+    bool? useWorktree,
+    String? worktreeBranch,
+    String? existingWorktreePath,
+    String? provider,
+    String? model,
+    String? sandboxMode,
+    String? modelReasoningEffort,
+    String? serviceTier,
+    bool? networkAccessEnabled,
+    String? webSearchMode,
+    List<String>? additionalWritableRoots,
+    String? projectId,
+    String? projectName,
+    String? workspaceKind,
+    bool? autoRename,
+    String? requestId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'start',
+      'projectPath': projectPath,
+      'sessionId': ?sessionId,
+      if (continueMode == true) 'continue': true,
+      'permissionMode': ?permissionMode,
+      'executionMode': ?executionMode,
+      'approvalPolicy': ?approvalPolicy,
+      'approvalsReviewer': ?approvalsReviewer,
+      'codexPermissionsMode': ?codexPermissionsMode,
+      'planMode': ?planMode,
+      'effort': ?effort,
+      'maxTurns': ?maxTurns,
+      'maxBudgetUsd': ?maxBudgetUsd,
+      'fallbackModel': ?fallbackModel,
+      'forkSession': ?forkSession,
+      'persistSession': ?persistSession,
+      'profile': ?profile,
+      if (useWorktree == true) 'useWorktree': true,
+      if (worktreeBranch != null && worktreeBranch.isNotEmpty)
+        'worktreeBranch': worktreeBranch,
+      'existingWorktreePath': ?existingWorktreePath,
+      'provider': ?provider,
+      'model': ?model,
+      'sandboxMode': ?sandboxMode,
+      'modelReasoningEffort': ?modelReasoningEffort,
+      'serviceTier': ?serviceTier,
+      'networkAccessEnabled': ?networkAccessEnabled,
+      'webSearchMode': ?webSearchMode,
+      if (additionalWritableRoots != null && additionalWritableRoots.isNotEmpty)
+        'additionalWritableRoots': additionalWritableRoots,
+      'projectId': ?projectId,
+      'projectName': ?projectName,
+      'workspaceKind': ?workspaceKind,
+      'autoRename': ?autoRename,
+      'requestId': ?requestId,
+    });
+  }
+
+  factory ClientMessage.input(
+    String text, {
+    String? sessionId,
+    String? clientMessageId,
+    int? baseSeq,
+    List<Map<String, String>>? images,
+    Map<String, String>? skill,
+    List<Map<String, String>>? skills,
+    List<Map<String, String>>? mentions,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'input',
+      'text': text,
+      'sessionId': ?sessionId,
+      'clientMessageId': ?clientMessageId,
+      'baseSeq': ?baseSeq,
+      if (images != null && images.isNotEmpty) 'images': images,
+      'skill': ?skill,
+      if (skills != null && skills.isNotEmpty) 'skills': skills,
+      if (mentions != null && mentions.isNotEmpty) 'mentions': mentions,
+    });
+  }
+
+  factory ClientMessage.updateQueuedInput({
+    required String sessionId,
+    required String itemId,
+    required String text,
+    List<Map<String, String>>? skills,
+    List<Map<String, String>>? mentions,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'update_queued_input',
+      'sessionId': sessionId,
+      'itemId': itemId,
+      'text': text,
+      if (skills != null && skills.isNotEmpty) 'skills': skills,
+      if (mentions != null && mentions.isNotEmpty) 'mentions': mentions,
+    });
+  }
+
+  factory ClientMessage.steerQueuedInput({
+    required String sessionId,
+    required String itemId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'steer_queued_input',
+      'sessionId': sessionId,
+      'itemId': itemId,
+    });
+  }
+
+  factory ClientMessage.cancelQueuedInput({
+    required String sessionId,
+    required String itemId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'cancel_queued_input',
+      'sessionId': sessionId,
+      'itemId': itemId,
+    });
+  }
+
+  factory ClientMessage.pushRegister({
+    required String token,
+    required String platform,
+    required String requestId,
+    String? locale,
+    bool? privacyMode,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'push_register',
+    'token': token,
+    'platform': platform,
+    'requestId': requestId,
+    'locale': ?locale,
+    'privacyMode': ?privacyMode,
+  });
+
+  factory ClientMessage.pushUnregister(String token) => ClientMessage._(
+    <String, dynamic>{'type': 'push_unregister', 'token': token},
+  );
+
+  factory ClientMessage.setPermissionMode(String mode, {String? sessionId}) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'set_permission_mode',
+      'mode': mode,
+      'sessionId': ?sessionId,
+    });
+  }
+
+  factory ClientMessage.setSessionMode({
+    required String legacyMode,
+    String? executionMode,
+    String? approvalPolicy,
+    String? approvalsReviewer,
+    String? codexPermissionsMode,
+    bool? planMode,
+    String? sessionId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'set_permission_mode',
+      'mode': legacyMode,
+      'executionMode': ?executionMode,
+      'approvalPolicy': ?approvalPolicy,
+      'approvalsReviewer': ?approvalsReviewer,
+      'codexPermissionsMode': ?codexPermissionsMode,
+      'planMode': ?planMode,
+      'sessionId': ?sessionId,
+    });
+  }
+
+  factory ClientMessage.setCodexModel(
+    String model, {
+    String? modelReasoningEffort,
+    String? sessionId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'set_codex_model',
+      'model': model,
+      'modelReasoningEffort': ?modelReasoningEffort,
+      'sessionId': ?sessionId,
+    });
+  }
+
+  factory ClientMessage.setCodexSpeed(String serviceTier, {String? sessionId}) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'set_codex_speed',
+      'serviceTier': serviceTier,
+      'sessionId': ?sessionId,
+    });
+  }
+
+  factory ClientMessage.getGoal(String sessionId) =>
+      ClientMessage._({'type': 'get_goal', 'sessionId': sessionId});
+
+  factory ClientMessage.setGoal({
+    required String sessionId,
+    String? objective,
+    CodexThreadGoalStatus? status,
+  }) => ClientMessage._({
+    'type': 'set_goal',
+    'sessionId': sessionId,
+    'objective': ?objective,
+    if (status != null) 'status': status.value,
+  });
+
+  factory ClientMessage.clearGoal(String sessionId) =>
+      ClientMessage._({'type': 'clear_goal', 'sessionId': sessionId});
+
+  factory ClientMessage.setSandboxMode(
+    String sandboxMode, {
+    String? sessionId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'set_sandbox_mode',
+      'sandboxMode': sandboxMode,
+      'sessionId': ?sessionId,
+    });
+  }
+
+  factory ClientMessage.approve(
+    String id, {
+    bool clearContext = false,
+    String? sessionId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'approve',
+      'id': id,
+      if (clearContext) 'clearContext': true,
+      'sessionId': ?sessionId,
+    });
+  }
+
+  factory ClientMessage.approveAlways(String id, {String? sessionId}) =>
+      ClientMessage._(<String, dynamic>{
+        'type': 'approve_always',
+        'id': id,
+        'sessionId': ?sessionId,
+      });
+
+  factory ClientMessage.reject(
+    String id, {
+    String? message,
+    String? sessionId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'reject',
+      'id': id,
+      'message': ?message,
+      'sessionId': ?sessionId,
+    });
+  }
+
+  factory ClientMessage.answer(
+    String toolUseId,
+    String result, {
+    String? sessionId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'answer',
+      'toolUseId': toolUseId,
+      'result': result,
+      'sessionId': ?sessionId,
+    });
+  }
+
+  factory ClientMessage.installToolSuggestion(
+    String toolUseId, {
+    String? sessionId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'install_tool_suggestion',
+      'toolUseId': toolUseId,
+      'sessionId': ?sessionId,
+    });
+  }
+
+  factory ClientMessage.getHistory(String sessionId) =>
+      ClientMessage._({'type': 'get_history', 'sessionId': sessionId});
+
+  factory ClientMessage.getHistoryDelta(
+    String sessionId, {
+    required int sinceSeq,
+  }) => ClientMessage._({
+    'type': 'get_history_delta',
+    'sessionId': sessionId,
+    'sinceSeq': sinceSeq,
+  });
+
+  factory ClientMessage.getSessionContext(String sessionId) =>
+      ClientMessage._({'type': 'get_session_context', 'sessionId': sessionId});
+
+  factory ClientMessage.resolveSessionLink({
+    required String requestId,
+    required String sessionId,
+    String? provider,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'resolve_session_link',
+    'requestId': requestId,
+    'sessionId': sessionId,
+    'provider': ?provider,
+  });
+
+  factory ClientMessage.refreshBranch(String sessionId) =>
+      ClientMessage._({'type': 'refresh_branch', 'sessionId': sessionId});
+
+  factory ClientMessage.getDebugBundle(
+    String sessionId, {
+    int? traceLimit,
+    bool? includeDiff,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'get_debug_bundle',
+    'sessionId': sessionId,
+    'traceLimit': ?traceLimit,
+    'includeDiff': ?includeDiff,
+  });
+
+  factory ClientMessage.listSessions() =>
+      ClientMessage._({'type': 'list_sessions'});
+
+  factory ClientMessage.stopSession(String sessionId) =>
+      ClientMessage._({'type': 'stop_session', 'sessionId': sessionId});
+
+  /// Rename a session. For running sessions, sessionId is the bridge session id.
+  /// For recent sessions, include provider, providerSessionId, and projectPath.
+  factory ClientMessage.renameSession({
+    required String sessionId,
+    String? name,
+    String? provider,
+    String? providerSessionId,
+    String? projectPath,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'rename_session',
+      'sessionId': sessionId,
+      'name': ?name,
+      'provider': ?provider,
+      'providerSessionId': ?providerSessionId,
+      'projectPath': ?projectPath,
+    });
+  }
+
+  factory ClientMessage.listRecentSessions({
+    int? limit,
+    int? offset,
+    String? projectPath,
+    String? projectId,
+    String? workspaceKind,
+    String? requestScope,
+    String? requestId,
+    String? provider,
+    bool? namedOnly,
+    String? searchQuery,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'list_recent_sessions',
+      'limit': ?limit,
+      'offset': ?offset,
+      'projectPath': ?projectPath,
+      'projectId': ?projectId,
+      'workspaceKind': ?workspaceKind,
+      'requestScope': ?requestScope,
+      'requestId': ?requestId,
+      'provider': ?provider,
+      'namedOnly': ?namedOnly,
+      'searchQuery': ?searchQuery,
+    });
+  }
+
+  factory ClientMessage.resumeSession(
+    String sessionId,
+    String projectPath, {
+    String? permissionMode,
+    String? executionMode,
+    String? approvalPolicy,
+    String? approvalsReviewer,
+    String? codexPermissionsMode,
+    bool? planMode,
+    String? effort,
+    int? maxTurns,
+    double? maxBudgetUsd,
+    String? fallbackModel,
+    bool? forkSession,
+    bool? persistSession,
+    String? profile,
+    String? provider,
+    String? sandboxMode,
+    String? model,
+    String? modelReasoningEffort,
+    String? serviceTier,
+    bool? networkAccessEnabled,
+    String? webSearchMode,
+    List<String>? additionalWritableRoots,
+    String? projectId,
+    String? projectName,
+    String? workspaceKind,
+    String? resumeRequestId,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'resume_session',
+      'sessionId': sessionId,
+      'projectPath': projectPath,
+      'permissionMode': ?permissionMode,
+      'executionMode': ?executionMode,
+      'approvalPolicy': ?approvalPolicy,
+      'approvalsReviewer': ?approvalsReviewer,
+      'codexPermissionsMode': ?codexPermissionsMode,
+      'planMode': ?planMode,
+      'effort': ?effort,
+      'maxTurns': ?maxTurns,
+      'maxBudgetUsd': ?maxBudgetUsd,
+      'fallbackModel': ?fallbackModel,
+      'forkSession': ?forkSession,
+      'persistSession': ?persistSession,
+      'profile': ?profile,
+      'provider': ?provider,
+      'sandboxMode': ?sandboxMode,
+      'model': ?model,
+      'modelReasoningEffort': ?modelReasoningEffort,
+      'serviceTier': ?serviceTier,
+      'networkAccessEnabled': ?networkAccessEnabled,
+      'webSearchMode': ?webSearchMode,
+      'resumeRequestId': ?resumeRequestId,
+      if (additionalWritableRoots != null && additionalWritableRoots.isNotEmpty)
+        'additionalWritableRoots': additionalWritableRoots,
+      'projectId': ?projectId,
+      'projectName': ?projectName,
+      'workspaceKind': ?workspaceKind,
+    });
+  }
+
+  factory ClientMessage.listGallery({
+    String? projectPath,
+    String? sessionId,
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'list_gallery',
+    // Keep the legacy alias so project filtering still reaches older Bridges.
+    'project': ?projectPath,
+    'projectPath': ?projectPath,
+    'sessionId': ?sessionId,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.readFile(
+    String projectPath,
+    String filePath, {
+    int? maxLines,
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'read_file',
+    'projectPath': projectPath,
+    'filePath': filePath,
+    'maxLines': ?maxLines,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.prepareFileDownload({
+    required String projectPath,
+    required String filePath,
+    required String requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'prepare_file_download',
+    'projectPath': projectPath,
+    'filePath': filePath,
+    'requestId': requestId,
+  });
+
+  factory ClientMessage.prepareFileUpload({
+    required String projectPath,
+    required String directoryPath,
+    required String fileName,
+    required int sizeBytes,
+    required String conflictPolicy,
+    required String requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'prepare_file_upload',
+    'projectPath': projectPath,
+    'directoryPath': directoryPath,
+    'fileName': fileName,
+    'sizeBytes': sizeBytes,
+    'conflictPolicy': conflictPolicy,
+    'requestId': requestId,
+  });
+
+  factory ClientMessage.finalizeFileUpload({
+    required String uploadToken,
+    required String sha256,
+    required String requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'finalize_file_upload',
+    'uploadToken': uploadToken,
+    'sha256': sha256,
+    'requestId': requestId,
+  });
+
+  factory ClientMessage.cancelFileUpload(String uploadToken) => ClientMessage._(
+    {'type': 'cancel_file_upload', 'uploadToken': uploadToken},
+  );
+
+  factory ClientMessage.readMediaFile(
+    String projectPath,
+    String filePath, {
+    String? requestId,
+  }) => ClientMessage._({
+    'type': 'read_media_file',
+    'projectPath': projectPath,
+    'filePath': filePath,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.listFiles(String projectPath, {String? requestId}) =>
+      ClientMessage._(<String, dynamic>{
+        'type': 'list_files',
+        'projectPath': projectPath,
+        'requestId': ?requestId,
+      });
+
+  factory ClientMessage.listDirectory(
+    String path, {
+    String? requestId,
+    bool includeHidden = false,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'list_directory',
+    'path': path,
+    'requestId': ?requestId,
+    if (includeHidden) 'includeHidden': true,
+  });
+
+  factory ClientMessage.getDiff(
+    String projectPath, {
+    bool? staged,
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'get_diff',
+    'projectPath': projectPath,
+    'staged': ?staged,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.getDiffImage(
+    String projectPath,
+    String filePath,
+    String version, {
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'get_diff_image',
+    'projectPath': projectPath,
+    'filePath': filePath,
+    'version': version,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.interrupt({String? sessionId}) => ClientMessage._(
+    <String, dynamic>{'type': 'interrupt', 'sessionId': ?sessionId},
+  );
+
+  factory ClientMessage.listProjectHistory() =>
+      ClientMessage._({'type': 'list_project_history'});
+
+  factory ClientMessage.removeProjectHistory(String projectPath) =>
+      ClientMessage._({
+        'type': 'remove_project_history',
+        'projectPath': projectPath,
+      });
+
+  factory ClientMessage.listProjects({String? requestId}) =>
+      ClientMessage._({'type': 'list_projects', 'requestId': ?requestId});
+
+  factory ClientMessage.createProject({
+    required String name,
+    required List<String> rootPaths,
+    String? requestId,
+  }) => ClientMessage._({
+    'type': 'create_project',
+    'name': name,
+    'rootPaths': rootPaths,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.updateProject({
+    required String projectId,
+    required String name,
+    required List<String> rootPaths,
+    String? requestId,
+  }) => ClientMessage._({
+    'type': 'update_project',
+    'projectId': projectId,
+    'name': name,
+    'rootPaths': rootPaths,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.removeProject({
+    required String projectId,
+    String? requestId,
+  }) => ClientMessage._({
+    'type': 'remove_project',
+    'projectId': projectId,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.listWorktrees(
+    String projectPath, {
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'list_worktrees',
+    'projectPath': projectPath,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.removeWorktree(
+    String projectPath,
+    String worktreePath, {
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'remove_worktree',
+    'projectPath': projectPath,
+    'worktreePath': worktreePath,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.rewind(
+    String sessionId,
+    String targetUuid,
+    String mode,
+  ) => ClientMessage._({
+    'type': 'rewind',
+    'sessionId': sessionId,
+    'targetUuid': targetUuid,
+    'mode': mode,
+  });
+
+  factory ClientMessage.rewindDryRun(String sessionId, String targetUuid) =>
+      ClientMessage._({
+        'type': 'rewind_dry_run',
+        'sessionId': sessionId,
+        'targetUuid': targetUuid,
+      });
+
+  factory ClientMessage.forkSession(String sessionId, String targetUuid) =>
+      ClientMessage._({
+        'type': 'fork',
+        'sessionId': sessionId,
+        'targetUuid': targetUuid,
+      });
+
+  factory ClientMessage.listWindows() =>
+      ClientMessage._({'type': 'list_windows'});
+
+  factory ClientMessage.getUsage() => ClientMessage._({'type': 'get_usage'});
+
+  factory ClientMessage.listRecordings() =>
+      ClientMessage._({'type': 'list_recordings'});
+
+  factory ClientMessage.getRecording(String sessionId) =>
+      ClientMessage._({'type': 'get_recording', 'sessionId': sessionId});
+
+  factory ClientMessage.getMessageImages({
+    required String claudeSessionId,
+    required String messageUuid,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'get_message_images',
+    'claudeSessionId': claudeSessionId,
+    'messageUuid': messageUuid,
+  });
+
+  factory ClientMessage.takeScreenshot({
+    required String mode,
+    int? windowId,
+    required String projectPath,
+    String? sessionId,
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'take_screenshot',
+    'mode': mode,
+    'projectPath': projectPath,
+    'windowId': ?windowId,
+    'sessionId': ?sessionId,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.backupPromptHistory({
+    required String data,
+    required String appVersion,
+    required int dbVersion,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'backup_prompt_history',
+    'data': data,
+    'appVersion': appVersion,
+    'dbVersion': dbVersion,
+  });
+
+  factory ClientMessage.restorePromptHistory() =>
+      ClientMessage._({'type': 'restore_prompt_history'});
+
+  factory ClientMessage.getPromptHistoryBackupInfo() =>
+      ClientMessage._({'type': 'get_prompt_history_backup_info'});
+
+  factory ClientMessage.recordPromptHistory({
+    required String text,
+    required String clientId,
+    String? projectPath,
+    String? projectId,
+    String? projectName,
+    String? clientName,
+    String? sessionId,
+    String? usedAt,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'record_prompt_history',
+    'text': text,
+    'projectPath': ?projectPath,
+    'projectId': ?projectId,
+    'projectName': ?projectName,
+    'clientId': clientId,
+    'clientName': ?clientName,
+    'sessionId': ?sessionId,
+    'usedAt': ?usedAt,
+  });
+
+  factory ClientMessage.syncPromptHistory({
+    required String clientId,
+    String? clientName,
+    int? sinceRevision,
+    bool includeDeleted = true,
+    List<PromptHistoryServerEntry> entries = const [],
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'sync_prompt_history',
+    'clientId': clientId,
+    'clientName': ?clientName,
+    'sinceRevision': ?sinceRevision,
+    'includeDeleted': includeDeleted,
+    if (entries.isNotEmpty)
+      'entries': entries.map((entry) => entry.toJson()).toList(),
+  });
+
+  factory ClientMessage.mutatePromptHistory({
+    String? id,
+    String? text,
+    String? projectPath,
+    String? projectId,
+    required String action,
+    bool? isFavorite,
+    String? updatedAt,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'mutate_prompt_history',
+    'id': ?id,
+    'text': ?text,
+    'projectPath': ?projectPath,
+    'projectId': ?projectId,
+    'action': action,
+    'isFavorite': ?isFavorite,
+    'updatedAt': ?updatedAt,
+  });
+
+  factory ClientMessage.importPromptHistoryV1({
+    required String clientId,
+    String? clientName,
+    required List<PromptHistoryServerEntry> entries,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'import_prompt_history_v1',
+    'clientId': clientId,
+    'clientName': ?clientName,
+    'entries': entries.map((entry) => entry.toJson()).toList(),
+  });
+
+  factory ClientMessage.archiveSession({
+    required String sessionId,
+    required String provider,
+    required String projectPath,
+  }) {
+    return ClientMessage._(<String, dynamic>{
+      'type': 'archive_session',
+      'sessionId': sessionId,
+      'provider': provider,
+      'projectPath': projectPath,
+    });
+  }
+
+  // ---- Git Operations (Phase 1-3) ----
+
+  factory ClientMessage.gitStage(
+    String projectPath, {
+    List<String>? files,
+    List<Map<String, dynamic>>? hunks,
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'git_stage',
+    'projectPath': projectPath,
+    'files': ?files,
+    'hunks': ?hunks,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.gitUnstage(
+    String projectPath, {
+    List<String>? files,
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'git_unstage',
+    'projectPath': projectPath,
+    'files': ?files,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.gitUnstageHunks(
+    String projectPath,
+    List<Map<String, dynamic>> hunks, {
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'git_unstage_hunks',
+    'projectPath': projectPath,
+    'hunks': hunks,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.gitCommit(
+    String projectPath, {
+    String? sessionId,
+    String? message,
+    bool? autoGenerate,
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'git_commit',
+    'projectPath': projectPath,
+    'sessionId': ?sessionId,
+    'message': ?message,
+    'autoGenerate': ?autoGenerate,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.gitPush(String projectPath, {String? requestId}) =>
+      ClientMessage._(<String, dynamic>{
+        'type': 'git_push',
+        'projectPath': projectPath,
+        'requestId': ?requestId,
+      });
+
+  factory ClientMessage.gitBranches(String projectPath, {String? requestId}) =>
+      ClientMessage._(<String, dynamic>{
+        'type': 'git_branches',
+        'projectPath': projectPath,
+        'requestId': ?requestId,
+      });
+
+  factory ClientMessage.gitCreateBranch(
+    String projectPath,
+    String name, {
+    bool? checkout,
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'git_create_branch',
+    'projectPath': projectPath,
+    'name': name,
+    'checkout': ?checkout,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.gitCheckoutBranch(
+    String projectPath,
+    String branch, {
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'git_checkout_branch',
+    'projectPath': projectPath,
+    'branch': branch,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.gitRevertFile(
+    String projectPath,
+    List<String> files, {
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'git_revert_file',
+    'projectPath': projectPath,
+    'files': files,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.gitRevertHunks(
+    String projectPath,
+    List<Map<String, dynamic>> hunks, {
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'git_revert_hunks',
+    'projectPath': projectPath,
+    'hunks': hunks,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.gitFetch(String projectPath, {String? requestId}) =>
+      ClientMessage._(<String, dynamic>{
+        'type': 'git_fetch',
+        'projectPath': projectPath,
+        'requestId': ?requestId,
+      });
+
+  factory ClientMessage.gitPull(String projectPath, {String? requestId}) =>
+      ClientMessage._(<String, dynamic>{
+        'type': 'git_pull',
+        'projectPath': projectPath,
+        'requestId': ?requestId,
+      });
+
+  factory ClientMessage.gitStatus(
+    String projectPath, {
+    String? sessionId,
+    bool includeRemote = false,
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'git_status',
+    'projectPath': projectPath,
+    'sessionId': ?sessionId,
+    if (includeRemote) 'includeRemote': true,
+    'requestId': ?requestId,
+  });
+
+  factory ClientMessage.gitRemoteStatus(
+    String projectPath, {
+    String? requestId,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'git_remote_status',
+    'projectPath': projectPath,
+    'requestId': ?requestId,
+  });
+
+  String toJson() => jsonEncode(_json);
+}
+
+// ---- Chat entry (for UI display) ----
+
+sealed class ChatEntry {
+  DateTime get timestamp;
+}
+
+class ServerChatEntry implements ChatEntry {
+  final ServerMessage message;
+  @override
+  final DateTime timestamp;
+  ServerChatEntry(this.message, {DateTime? timestamp})
+    : timestamp = timestamp ?? DateTime.now();
+}
+
+class UserChatEntry implements ChatEntry {
+  final String text;
+  final String? sessionId;
+  final String? clientMessageId;
+  final List<Uint8List> imageBytesList;
+  final List<String> imageUrls;
+  MessageStatus status;
+
+  /// Number of images attached to this user message (from history restoration).
+  final int imageCount;
+
+  /// UUID assigned by the SDK for this user message (set when tool_result arrives).
+  String? messageUuid;
+  @override
+  final DateTime timestamp;
+  UserChatEntry(
+    this.text, {
+    DateTime? timestamp,
+    this.sessionId,
+    this.clientMessageId,
+    List<Uint8List>? imageBytesList,
+    List<String>? imageUrls,
+    this.imageCount = 0,
+    this.status = MessageStatus.sending,
+    this.messageUuid,
+  }) : imageBytesList = imageBytesList ?? const [],
+       imageUrls = imageUrls ?? const [],
+       timestamp = timestamp ?? DateTime.now();
+}
+
+class StreamingChatEntry implements ChatEntry {
+  String text;
+  @override
+  final DateTime timestamp;
+  StreamingChatEntry({this.text = '', DateTime? timestamp})
+    : timestamp = timestamp ?? DateTime.now();
+}

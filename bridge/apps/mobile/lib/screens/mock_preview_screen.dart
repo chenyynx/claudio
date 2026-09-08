@@ -1,0 +1,1590 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:auto_route/auto_route.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+
+import '../l10n/app_localizations.dart';
+import 'landing_preview_screen.dart';
+import '../features/generated_image_preview/generated_image_preview_item.dart';
+import '../features/generated_image_preview/generated_image_preview_screen.dart';
+import '../features/session_list/state/session_list_cubit.dart';
+import '../features/settings/supporter_screen.dart';
+import '../features/settings/widgets/support_section.dart';
+import '../features/git/widgets/diff_image_viewer.dart';
+import '../mock/mock_image_data.dart';
+import '../mock/mock_scenarios.dart';
+import '../mock/mock_sessions.dart';
+import '../mock/store_screenshot_data.dart';
+import '../utils/diff_parser.dart';
+import '../models/messages.dart';
+import '../providers/bridge_cubits.dart';
+import '../services/bridge_service.dart';
+import '../services/draft_service.dart';
+import '../services/mock_bridge_service.dart';
+import '../services/revenuecat_service.dart';
+import '../services/replay_bridge_service.dart';
+import '../services/store_screenshot_extension.dart';
+import '../theme/app_theme.dart';
+import '../widgets/session_card.dart';
+import '../widgets/new_session_sheet.dart';
+import '../features/claude_session/claude_session_screen.dart';
+import '../features/codex_session/codex_session_screen.dart';
+import '../features/git/git_screen.dart';
+
+@RoutePage()
+class MockPreviewScreen extends StatelessWidget {
+  const MockPreviewScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Mock Preview'),
+          bottom: const TabBar(
+            tabs: [
+              Tab(text: 'Scenarios'),
+              Tab(text: 'Replay'),
+            ],
+          ),
+        ),
+        body: const TabBarView(children: [_ScenariosTab(), _ReplayTab()]),
+      ),
+    );
+  }
+}
+
+class _ScenariosTab extends StatelessWidget {
+  const _ScenariosTab();
+
+  @override
+  Widget build(BuildContext context) {
+    final appColors = Theme.of(context).extension<AppColors>()!;
+
+    // Group scenarios by section
+    final grouped = <MockScenarioSection, List<MockScenario>>{};
+    for (final s in mockScenarios) {
+      grouped.putIfAbsent(s.section, () => []).add(s);
+    }
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          child: Text(
+            'Select a scenario to preview UI behavior.',
+            style: TextStyle(fontSize: 13, color: appColors.subtleText),
+          ),
+        ),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            children: [
+              for (final section in MockScenarioSection.values)
+                if (grouped.containsKey(section)) ...[
+                  _SectionHeader(section: section),
+                  for (final scenario in grouped[section]!)
+                    _ScenarioCard(
+                      scenario: scenario,
+                      onTap: () => _launchScenario(context, scenario),
+                    ),
+                  const SizedBox(height: 8),
+                ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _launchScenario(BuildContext context, MockScenario scenario) {
+    final route = buildMockScenarioRoute(context, scenario);
+    if (route != null) {
+      Navigator.push(context, route);
+    }
+  }
+}
+
+Route<void>? buildMockScenarioRoute(
+  BuildContext context,
+  MockScenario scenario,
+) {
+  if (scenario.section == MockScenarioSection.landingScreenshot) {
+    if (scenario.name == 'LP Network') {
+      return buildStoreScenarioRoute('Network Resilience');
+    }
+    return MaterialPageRoute(
+      builder: (_) => LandingPreviewScreen(scenario: scenario.name),
+    );
+  }
+  if (scenario == generatedImageChatPreviewScenario) {
+    return MaterialPageRoute(
+      builder: (_) => const _MockGeneratedImageChatPreviewWrapper(),
+    );
+  }
+  if (scenario == generatedImagePreviewScenario) {
+    return MaterialPageRoute(
+      builder: (_) => const _MockGeneratedImagePreviewWrapper(),
+    );
+  }
+  if (scenario == imageDiffScenario) {
+    return MaterialPageRoute(builder: (_) => const _MockImageDiffWrapper());
+  }
+  if (scenario == storeDiffLineNumberScenario) {
+    return MaterialPageRoute(
+      builder: (_) => const _StoreLineNumberDiffWrapper(),
+    );
+  }
+  if (scenario.section == MockScenarioSection.storeScreenshot) {
+    final draftService = context.read<DraftService>();
+    return buildStoreScenarioRoute(scenario.name, draftService);
+  } else if (scenario == sessionListNewSession20Projects) {
+    final draftService = context.read<DraftService>();
+    return MaterialPageRoute(
+      builder: (_) =>
+          _MockNewSession20ProjectsWrapper(draftService: draftService),
+    );
+  } else if (scenario.section == MockScenarioSection.sessionList) {
+    return MaterialPageRoute(
+      builder: (_) => _MockSessionListWrapper(scenario: scenario),
+    );
+  } else if (scenario.section == MockScenarioSection.supporter) {
+    return MaterialPageRoute(
+      builder: (_) => scenario == settingsSupportEntriesPreview
+          ? const _MockSupporterSettingsComparisonWrapper()
+          : _MockSupporterScreenWrapper(scenario: scenario),
+    );
+  } else {
+    final mockService = MockBridgeService();
+    return MaterialPageRoute(
+      builder: (_) =>
+          _MockChatWrapper(mockService: mockService, scenario: scenario),
+    );
+  }
+}
+
+class _MockGeneratedImageChatPreviewWrapper extends StatefulWidget {
+  const _MockGeneratedImageChatPreviewWrapper();
+
+  @override
+  State<_MockGeneratedImageChatPreviewWrapper> createState() =>
+      _MockGeneratedImageChatPreviewWrapperState();
+}
+
+class _MockGeneratedImageChatPreviewWrapperState
+    extends State<_MockGeneratedImageChatPreviewWrapper> {
+  late final Future<_GeneratedImageChatPreviewData> _preview;
+
+  @override
+  void initState() {
+    super.initState();
+    _preview = _createGeneratedImageChatPreview();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<_GeneratedImageChatPreviewData>(
+      future: _preview,
+      builder: (context, snapshot) {
+        final data = snapshot.data;
+        if (data != null) {
+          return _MockChatWrapper(
+            mockService: data.service,
+            scenario: data.scenario,
+          );
+        }
+        if (snapshot.hasError) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('Generated Image Chat Preview')),
+            body: Center(child: Text('Preview failed: ${snapshot.error}')),
+          );
+        }
+        return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      },
+    );
+  }
+}
+
+class _GeneratedImageChatPreviewData {
+  final MockBridgeService service;
+  final MockScenario scenario;
+
+  const _GeneratedImageChatPreviewData({
+    required this.service,
+    required this.scenario,
+  });
+}
+
+Future<_GeneratedImageChatPreviewData>
+_createGeneratedImageChatPreview() async {
+  final images = await generateMockGeneratedImages();
+  final landscapeImage = await generateMockGeneratedLandscapeImage();
+  const prompts = [
+    'A hand-drawn overview of collaborating with AI teammates.',
+    'A four-step morning workflow with sparse yellow highlights.',
+    'A visual map of one character continuing across every task.',
+    'A playful naming workshop with four project directions.',
+  ];
+  final toolUseIds = List.generate(
+    images.length,
+    (index) => 'mock-image-generation-${index + 1}',
+  );
+  final steps = <MockStep>[
+    MockStep(
+      delay: const Duration(milliseconds: 100),
+      message: const StatusMessage(status: ProcessStatus.running),
+    ),
+    MockStep(
+      delay: const Duration(milliseconds: 250),
+      message: AssistantServerMessage(
+        message: AssistantMessage(
+          id: 'mock-generated-image-chat-intro',
+          role: 'assistant',
+          content: [
+            const TextContent(
+              text:
+                  '方向性に合わせて、白い紙に黒ペン＋黄色マーカーで '
+                  '要点を描いた企画メモ風の4案にまとめました。',
+            ),
+            for (var index = 0; index < toolUseIds.length; index++)
+              ToolUseContent(
+                id: toolUseIds[index],
+                name: 'ImageGeneration',
+                input: {
+                  'status': 'inProgress',
+                  'revisedPrompt': prompts[index],
+                },
+              ),
+          ],
+          model: 'gpt-5.6',
+        ),
+      ),
+    ),
+    for (var index = 0; index < images.length; index++)
+      MockStep(
+        delay: Duration(milliseconds: 500 + index * 120),
+        message: ToolResultMessage(
+          toolUseId: toolUseIds[index],
+          toolName: 'ImageGeneration',
+          content:
+              'status: completed\n'
+              'revisedPrompt: ${prompts[index]}\n'
+              'savedPath: /mock/generated/concept-${index + 1}.png',
+          images: [
+            ImageRef(
+              id: 'mock-generated-chat-${index + 1}',
+              url: 'data:image/png;base64,${base64Encode(images[index])}',
+              mimeType: 'image/png',
+            ),
+          ],
+        ),
+      ),
+    MockStep(
+      delay: const Duration(milliseconds: 1100),
+      message: const ResultMessage(
+        subtype: 'success',
+        duration: 1.1,
+        sessionId: 'mock-generated-image-chat',
+      ),
+    ),
+    MockStep(
+      delay: const Duration(milliseconds: 1200),
+      message: AssistantServerMessage(
+        message: const AssistantMessage(
+          id: 'mock-generated-image-chat-single-intro',
+          role: 'assistant',
+          content: [
+            TextContent(text: '1枚だけ生成した場合は、画像本来の縦横比で表示します。'),
+            ToolUseContent(
+              id: 'mock-image-generation-single',
+              name: 'ImageGeneration',
+              input: {
+                'status': 'inProgress',
+                'revisedPrompt':
+                    'A wide hand-drawn workflow concept on warm white paper.',
+              },
+            ),
+          ],
+          model: 'gpt-5.6',
+        ),
+      ),
+    ),
+    MockStep(
+      delay: const Duration(milliseconds: 1400),
+      message: ToolResultMessage(
+        toolUseId: 'mock-image-generation-single',
+        toolName: 'ImageGeneration',
+        content:
+            'status: completed\n'
+            'revisedPrompt: A wide hand-drawn workflow concept on warm white paper.\n'
+            'savedPath: /mock/generated/wide-concept.png',
+        images: [
+          ImageRef(
+            id: 'mock-generated-chat-single',
+            url: 'data:image/png;base64,${base64Encode(landscapeImage)}',
+            mimeType: 'image/png',
+          ),
+        ],
+      ),
+    ),
+    MockStep(
+      delay: const Duration(milliseconds: 1550),
+      message: const ResultMessage(
+        subtype: 'success',
+        duration: 0.4,
+        sessionId: 'mock-generated-image-chat',
+      ),
+    ),
+    MockStep(
+      delay: const Duration(milliseconds: 1650),
+      message: const StatusMessage(status: ProcessStatus.idle),
+    ),
+  ];
+  final service = MockBridgeService()..mockHttpBaseUrl = '';
+  return _GeneratedImageChatPreviewData(
+    service: service,
+    scenario: MockScenario(
+      name: generatedImageChatPreviewScenario.name,
+      icon: generatedImageChatPreviewScenario.icon,
+      description: generatedImageChatPreviewScenario.description,
+      section: generatedImageChatPreviewScenario.section,
+      provider: generatedImageChatPreviewScenario.provider,
+      steps: steps,
+    ),
+  );
+}
+
+class _MockGeneratedImagePreviewWrapper extends StatefulWidget {
+  const _MockGeneratedImagePreviewWrapper();
+
+  @override
+  State<_MockGeneratedImagePreviewWrapper> createState() =>
+      _MockGeneratedImagePreviewWrapperState();
+}
+
+class _MockGeneratedImagePreviewWrapperState
+    extends State<_MockGeneratedImagePreviewWrapper> {
+  late final Future<List<Uint8List>> _images;
+
+  @override
+  void initState() {
+    super.initState();
+    _images = generateMockGeneratedImages();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Uint8List>>(
+      future: _images,
+      builder: (context, snapshot) =>
+          _MockGeneratedImagePreviewContent(snapshot: snapshot),
+    );
+  }
+}
+
+class _MockGeneratedImagePreviewContent extends StatelessWidget {
+  final AsyncSnapshot<List<Uint8List>> snapshot;
+
+  const _MockGeneratedImagePreviewContent({required this.snapshot});
+
+  static const _prompts = [
+    'A hand-drawn proposal sheet showing how a person collaborates with '
+        'AI teammates, using black ink and yellow marker on warm white paper.',
+    'A compact morning workflow poster with four energetic steps, simple '
+        'characters, arrows, and sparse orange highlights.',
+    'A visual map of one AI character continuing across coding, research, '
+        'writing, and review tasks in a consistent sketch-note style.',
+    'A playful naming workshop board with four project directions, tiny '
+        'mascots, handwritten labels, and green accent marks.',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    if (snapshot.hasError) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              'Failed to generate preview images.\n${snapshot.error}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final images = snapshot.data;
+    if (images == null) {
+      return const Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(child: CircularProgressIndicator(color: Colors.white)),
+      );
+    }
+
+    final items = List.generate(
+      images.length,
+      (index) => GeneratedImagePreviewItem(
+        id: 'mock-generated-$index',
+        bytes: images[index],
+        mimeType: 'image/png',
+        prompt: _prompts[index],
+        status: 'completed',
+        savedPath: '/mock/generated/concept-${index + 1}.png',
+        details:
+            'Use case: style-transfer\n'
+            'Output: coherent proposal-sheet series\n'
+            'Page: ${index + 1} of ${images.length}',
+      ),
+      growable: false,
+    );
+    return GeneratedImagePreviewScreen(items: items);
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  final MockScenarioSection section;
+  const _SectionHeader({required this.section});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 8, left: 4),
+      child: Row(
+        children: [
+          Icon(section.icon, size: 16, color: cs.primary),
+          const SizedBox(width: 6),
+          Text(
+            section.label,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: cs.primary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ScenarioCard extends StatelessWidget {
+  final MockScenario scenario;
+  final VoidCallback onTap;
+  const _ScenarioCard({required this.scenario, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isCodex = scenario.provider == MockScenarioProvider.codex;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: cs.primary.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(scenario.icon, color: cs.primary, size: 22),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            scenario.name,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (isCodex) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 5,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: cs.tertiary.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              'Codex',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: cs.tertiary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      scenario.description,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, color: cs.outline, size: 20),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReplayTab extends StatefulWidget {
+  const _ReplayTab();
+
+  @override
+  State<_ReplayTab> createState() => _ReplayTabState();
+}
+
+class _ReplayTabState extends State<_ReplayTab> {
+  List<RecordingInfo>? _recordings;
+  bool _loading = true;
+  String? _error;
+  StreamSubscription<RecordingListMessage>? _sub;
+
+  BridgeService get _bridge => context.read<BridgeService>();
+
+  @override
+  void initState() {
+    super.initState();
+    _sub = _bridge.recordingList.listen((msg) {
+      if (mounted) {
+        setState(() {
+          _recordings = msg.recordings;
+          _loading = false;
+          _error = null;
+        });
+      }
+    });
+    _loadRecordings();
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadRecordings() async {
+    setState(() => _loading = true);
+    _bridge.send(ClientMessage.listRecordings());
+    // Response comes via the stream listener
+  }
+
+  Future<void> _launchReplay(RecordingInfo info) async {
+    // Request content from Bridge
+    final completer = Completer<String>();
+    late final StreamSubscription<RecordingContentMessage> sub;
+    sub = _bridge.recordingContent.listen((msg) {
+      if (msg.sessionId == info.name) {
+        completer.complete(msg.content);
+        sub.cancel();
+      }
+    });
+    _bridge.send(ClientMessage.getRecording(info.name));
+
+    final content = await completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        sub.cancel();
+        return '';
+      },
+    );
+    if (!mounted || content.isEmpty) return;
+
+    final replayService = ReplayBridgeService();
+    replayService.loadFromJsonlString(content);
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _ReplayChatWrapper(
+          replayService: replayService,
+          recordingName: info.name,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    final cs = Theme.of(context).colorScheme;
+
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text('Error: $_error', style: TextStyle(color: cs.error)),
+        ),
+      );
+    }
+
+    final recordings = _recordings ?? [];
+    if (recordings.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.videocam_off, size: 48, color: cs.outline),
+              const SizedBox(height: 12),
+              Text(
+                'No recordings found',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: cs.onSurface,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Recordings are automatically created when you use '
+                'the Bridge Server.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: appColors.subtleText),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          child: Text(
+            'Replay a recorded session to reproduce bugs deterministically.',
+            style: TextStyle(fontSize: 13, color: appColors.subtleText),
+          ),
+        ),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _loadRecordings,
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              itemCount: recordings.length,
+              itemBuilder: (context, index) {
+                final info = recordings[index];
+                final dt = info.modifiedDate;
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () => _launchReplay(info),
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              color: cs.primary.withValues(alpha: 0.10),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Icon(
+                              Icons.replay,
+                              color: cs.primary,
+                              size: 22,
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  info.displayText,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 15,
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  [
+                                    if (info.projectName != null)
+                                      info.projectName!,
+                                    info.sizeLabel,
+                                    if (dt != null) _formatDate(dt),
+                                  ].join(' · '),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: cs.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Icon(
+                            Icons.chevron_right,
+                            color: cs.outline,
+                            size: 20,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _formatDate(DateTime dt) {
+    return '${dt.month}/${dt.day} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+}
+
+class _MockSupporterSettingsComparisonWrapper extends StatelessWidget {
+  const _MockSupporterSettingsComparisonWrapper();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Settings Support Entries')),
+      body: ListView(
+        children: [
+          const _MockSupportSettingsHeader(),
+          const _MockSupportEntryPreview(
+            label: 'Inactive',
+            catalog: _inactiveSupportCatalog,
+            supporter: SupporterState.inactive(),
+          ),
+          const SizedBox(height: 12),
+          const _MockSupportEntryPreview(
+            label: 'One-time',
+            catalog: _oneTimeSupportCatalog,
+            supporter: SupporterState.inactive(),
+          ),
+          const SizedBox(height: 12),
+          _MockSupportEntryPreview(
+            label: 'Active',
+            catalog: _activeSupportCatalog,
+            supporter: SupporterState.active(),
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+}
+
+class _MockSupportSettingsHeader extends StatelessWidget {
+  const _MockSupportSettingsHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+      child: Text(
+        l.settingsTitle,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.8,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+}
+
+class _MockSupportEntryPreview extends StatelessWidget {
+  const _MockSupportEntryPreview({
+    required this.label,
+    required this.catalog,
+    required this.supporter,
+  });
+
+  final String label;
+  final SupportCatalogState catalog;
+  final SupporterState supporter;
+
+  @override
+  Widget build(BuildContext context) {
+    final service = _MockRevenueCatService(
+      catalog: catalog,
+      supporter: supporter,
+    );
+
+    return RepositoryProvider<RevenueCatService>.value(
+      value: service,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.labelMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+          ),
+          const SupportSectionCard(),
+        ],
+      ),
+    );
+  }
+}
+
+class _MockSupporterScreenWrapper extends StatelessWidget {
+  const _MockSupporterScreenWrapper({required this.scenario});
+
+  final MockScenario scenario;
+
+  @override
+  Widget build(BuildContext context) {
+    final service = _MockRevenueCatService(
+      catalog: _catalogForSupporterScenario(scenario),
+      supporter: _supporterForSupporterScenario(scenario),
+    );
+
+    return RepositoryProvider<RevenueCatService>.value(
+      value: service,
+      child: const SupporterScreen(),
+    );
+  }
+}
+
+class _MockRevenueCatService extends RevenueCatService {
+  _MockRevenueCatService({
+    required SupportCatalogState catalog,
+    required SupporterState supporter,
+  }) : super(publicApiKey: '', platform: TargetPlatform.iOS) {
+    catalogState.value = catalog;
+    supporterState.value = supporter;
+  }
+
+  @override
+  Future<void> refresh() async {}
+
+  @override
+  Future<SupportActionResult> purchasePackage(String packageId) async {
+    return SupportActionResult(
+      type: SupportActionResultType.success,
+      packageId: packageId,
+    );
+  }
+
+  @override
+  Future<SupportActionResult> restorePurchases() async {
+    return const SupportActionResult(type: SupportActionResultType.success);
+  }
+}
+
+const _supportPackages = [
+  SupportPackage(
+    id: r'$rc_monthly',
+    productId: 'supporter_monthly_10_ios',
+    title: 'Supporter Monthly Plus',
+    priceLabel: r'$9.99',
+    price: 9.99,
+    kind: SupportPackageKind.monthly,
+  ),
+  SupportPackage(
+    id: r'$rc_custom_monthly_3',
+    productId: 'supporter_monthly_3_ios',
+    title: 'Supporter Monthly',
+    priceLabel: r'$2.99',
+    price: 2.99,
+    kind: SupportPackageKind.monthly,
+  ),
+  SupportPackage(
+    id: r'$rc_custom_snack',
+    productId: 'support_snack_3',
+    title: 'Snack Support',
+    priceLabel: r'$2.99',
+    price: 2.99,
+    kind: SupportPackageKind.snack,
+  ),
+  SupportPackage(
+    id: r'$rc_custom_coffee',
+    productId: 'support_coffee_5',
+    title: 'Drink Support',
+    priceLabel: r'$4.99',
+    price: 4.99,
+    kind: SupportPackageKind.coffee,
+  ),
+  SupportPackage(
+    id: r'$rc_custom_lunch',
+    productId: 'support_lunch_10',
+    title: 'Lunch Support',
+    priceLabel: r'$9.99',
+    price: 9.99,
+    kind: SupportPackageKind.lunch,
+  ),
+];
+
+const _inactiveSupportCatalog = SupportCatalogState(
+  isAvailable: true,
+  isLoading: false,
+  isSupporter: false,
+  packages: _supportPackages,
+  summary: SupportHistorySummary.empty(),
+);
+
+const _oneTimeSupportCatalog = SupportCatalogState(
+  isAvailable: true,
+  isLoading: false,
+  isSupporter: false,
+  packages: _supportPackages,
+  summary: SupportHistorySummary(
+    oneTimeSupportCount: 2,
+    coffeeSupportCount: 1,
+    lunchSupportCount: 1,
+  ),
+);
+
+final _activeSupportCatalog = SupportCatalogState(
+  isAvailable: true,
+  isLoading: false,
+  isSupporter: true,
+  activeSubscriptionProductId: 'supporter_monthly_10_ios',
+  packages: _supportPackages,
+  summary: SupportHistorySummary(
+    supporterSince: DateTime(2026, 2, 14),
+    latestSubscriptionPurchaseAt: DateTime(2026, 4, 10),
+    oneTimeSupportCount: 3,
+    coffeeSupportCount: 2,
+    lunchSupportCount: 1,
+  ),
+);
+
+final _veteranSupportCatalog = SupportCatalogState(
+  isAvailable: true,
+  isLoading: false,
+  isSupporter: true,
+  activeSubscriptionProductId: 'supporter_monthly_10_ios',
+  packages: _supportPackages,
+  summary: SupportHistorySummary(
+    supporterSince: DateTime(2025, 6, 3),
+    latestSubscriptionPurchaseAt: DateTime(2026, 4, 10),
+    oneTimeSupportCount: 8,
+    coffeeSupportCount: 5,
+    lunchSupportCount: 3,
+  ),
+);
+
+SupportCatalogState _catalogForSupporterScenario(MockScenario scenario) {
+  if (scenario == supporterPreviewOneTime) {
+    return _oneTimeSupportCatalog;
+  }
+  if (scenario == supporterPreviewActive) {
+    return _activeSupportCatalog;
+  }
+  if (scenario == supporterPreviewVeteran) {
+    return _veteranSupportCatalog;
+  }
+  return _inactiveSupportCatalog;
+}
+
+SupporterState _supporterForSupporterScenario(MockScenario scenario) {
+  if (scenario == supporterPreviewActive ||
+      scenario == supporterPreviewVeteran) {
+    return const SupporterState.active();
+  }
+  return const SupporterState.inactive();
+}
+
+/// Wrapper that starts scenario playback after ClaudeSessionScreen's initState completes.
+class _MockChatWrapper extends StatefulWidget {
+  final MockBridgeService mockService;
+  final MockScenario scenario;
+
+  const _MockChatWrapper({required this.mockService, required this.scenario});
+
+  @override
+  State<_MockChatWrapper> createState() => _MockChatWrapperState();
+}
+
+class _MockChatWrapperState extends State<_MockChatWrapper> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.scenario == codexGoalPreviewScenario) {
+      widget.mockService.mockGoal = const CodexGoal(
+        threadId: 'mock-thread-goal',
+        objective: 'Goal機能をCC Pocketに追加する',
+        status: CodexThreadGoalStatus.active,
+        tokenBudget: null,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      );
+    }
+    // Start playback after the frame so ClaudeSessionScreen's listener is ready
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.mockService.playScenario(widget.scenario);
+    });
+  }
+
+  @override
+  void dispose() {
+    widget.mockService.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sessionId =
+        'mock-${widget.scenario.name.toLowerCase().replaceAll(' ', '-')}';
+    final mockService = widget.mockService;
+    return RepositoryProvider<BridgeService>.value(
+      value: mockService,
+      child: MultiBlocProvider(
+        providers: [
+          BlocProvider(
+            create: (_) => ConnectionCubit(
+              BridgeConnectionState.connected,
+              mockService.connectionStatus,
+            ),
+          ),
+          BlocProvider(
+            create: (_) =>
+                ActiveSessionsCubit(const [], mockService.sessionList),
+          ),
+          BlocProvider(
+            create: (_) => FileListCubit(const [], mockService.fileList),
+          ),
+        ],
+        child: switch (widget.scenario.provider) {
+          MockScenarioProvider.codex => CodexSessionScreen(
+            sessionId: sessionId,
+            projectPath: '/mock/preview',
+          ),
+          MockScenarioProvider.claude => ClaudeSessionScreen(
+            sessionId: sessionId,
+            projectPath: '/mock/preview',
+          ),
+        },
+      ),
+    );
+  }
+}
+
+/// Wrapper that starts replay playback after ClaudeSessionScreen's initState completes.
+class _ReplayChatWrapper extends StatefulWidget {
+  final ReplayBridgeService replayService;
+  final String recordingName;
+
+  const _ReplayChatWrapper({
+    required this.replayService,
+    required this.recordingName,
+  });
+
+  @override
+  State<_ReplayChatWrapper> createState() => _ReplayChatWrapperState();
+}
+
+class _ReplayChatWrapperState extends State<_ReplayChatWrapper> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.replayService.play();
+    });
+  }
+
+  @override
+  void dispose() {
+    widget.replayService.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sessionId =
+        'replay-${widget.recordingName.toLowerCase().replaceAll(' ', '-')}';
+    final replayService = widget.replayService;
+    return RepositoryProvider<BridgeService>.value(
+      value: replayService,
+      child: MultiBlocProvider(
+        providers: [
+          BlocProvider(
+            create: (_) => ConnectionCubit(
+              BridgeConnectionState.connected,
+              replayService.connectionStatus,
+            ),
+          ),
+          BlocProvider(
+            create: (_) =>
+                ActiveSessionsCubit(const [], replayService.sessionList),
+          ),
+          BlocProvider(
+            create: (_) => FileListCubit(const [], replayService.fileList),
+          ),
+        ],
+        child: ClaudeSessionScreen(
+          sessionId: sessionId,
+          projectPath: '/replay/${widget.recordingName}',
+        ),
+      ),
+    );
+  }
+}
+
+/// Wrapper that shows mock RunningSessionCards for session-list approval UI
+/// prototyping. No Bridge connection needed.
+class _MockSessionListWrapper extends StatefulWidget {
+  final MockScenario scenario;
+  const _MockSessionListWrapper({required this.scenario});
+
+  @override
+  State<_MockSessionListWrapper> createState() =>
+      _MockSessionListWrapperState();
+}
+
+class _MockSessionListWrapperState extends State<_MockSessionListWrapper> {
+  late List<SessionInfo> _sessions;
+  final List<String> _log = [];
+  final Set<String> _unseenSessionIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _sessions = _buildSessions();
+    _initUnseenSessions();
+  }
+
+  /// Mark idle sessions as unseen for the "All Statuses" scenario
+  /// to demonstrate the unseen indicator.
+  void _initUnseenSessions() {
+    if (widget.scenario.name == 'All Statuses') {
+      _unseenSessionIds.add('mock-status-idle');
+    }
+  }
+
+  List<SessionInfo> _buildSessions() {
+    switch (widget.scenario.name) {
+      case 'All Statuses':
+        return mockSessionsAllStatuses();
+      case 'All Approval UIs':
+        return mockSessionsAllApprovals();
+      case 'Single Question':
+        return [mockSessionSingleQuestion()];
+      case 'PageView Multi-Question':
+        return [mockSessionMultiQuestion()];
+      case 'MultiSelect Question':
+        return [mockSessionMultiSelect()];
+      case 'Batch Approval':
+        return mockSessionsBatchApproval();
+      case 'Plan Approval':
+        return [mockSessionPlanApproval()];
+      case 'Codex Plan Approval':
+        return [mockSessionCodexPlanApproval()];
+      case 'Codex Bash Approval (2 Choices)':
+        return [mockSessionCodexBashApprovalTwoChoices()];
+      case 'Codex Bash Approval (3 Choices)':
+        return [mockSessionCodexBashApprovalThreeChoices()];
+      case 'Codex FileChange Approval':
+        return [mockSessionCodexFileChangeApproval()];
+      case 'Codex MCP Approval':
+        return [mockSessionCodexMcpApproval()];
+      default:
+        return [];
+    }
+  }
+
+  void _addLog(String msg) {
+    setState(() {
+      _log.insert(0, msg);
+      if (_log.length > 20) _log.removeLast();
+    });
+  }
+
+  void _approve(String sessionId, String toolUseId) {
+    _addLog('Approve: $sessionId ($toolUseId)');
+    setState(() {
+      _sessions = _sessions.map((s) {
+        if (s.id == sessionId) {
+          return s.copyWith(status: 'running', clearPermission: true);
+        }
+        return s;
+      }).toList();
+    });
+  }
+
+  void _approveAlways(String sessionId, String toolUseId) {
+    _addLog('Always: $sessionId ($toolUseId)');
+    setState(() {
+      _sessions = _sessions.map((s) {
+        if (s.id == sessionId) {
+          return s.copyWith(status: 'running', clearPermission: true);
+        }
+        return s;
+      }).toList();
+    });
+  }
+
+  void _reject(String sessionId, String toolUseId) {
+    _addLog('Reject: $sessionId ($toolUseId)');
+    setState(() {
+      _sessions = _sessions.map((s) {
+        if (s.id == sessionId) {
+          return s.copyWith(status: 'running', clearPermission: true);
+        }
+        return s;
+      }).toList();
+    });
+  }
+
+  void _answer(String sessionId, String toolUseId, String result) {
+    _addLog('Answer: $sessionId → $result');
+    setState(() {
+      _sessions = _sessions.map((s) {
+        if (s.id == sessionId) {
+          return s.copyWith(status: 'running', clearPermission: true);
+        }
+        return s;
+      }).toList();
+    });
+  }
+
+  void _reset() {
+    setState(() {
+      _sessions = _buildSessions();
+      _unseenSessionIds.clear();
+      _initUnseenSessions();
+      _log.clear();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final appColors = Theme.of(context).extension<AppColors>()!;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.scenario.name),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _reset,
+            tooltip: 'Reset',
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          // Running session cards
+          Expanded(
+            flex: 4,
+            child: ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                for (final session in _sessions)
+                  RunningSessionCard(
+                    session: session,
+                    isUnseen: _unseenSessionIds.contains(session.id),
+                    onTap: () {
+                      if (_unseenSessionIds.contains(session.id)) {
+                        setState(() => _unseenSessionIds.remove(session.id));
+                      }
+                      _addLog('Tap: ${session.id}');
+                    },
+                    onApprove: (toolUseId, {bool clearContext = false}) =>
+                        _approve(session.id, toolUseId),
+                    onApproveAlways: (toolUseId) =>
+                        _approveAlways(session.id, toolUseId),
+                    onReject: (toolUseId, {String? message}) =>
+                        _reject(session.id, toolUseId),
+                    onAnswer: (toolUseId, result) =>
+                        _answer(session.id, toolUseId, result),
+                  ),
+              ],
+            ),
+          ),
+          // Action log
+          Divider(height: 1, color: cs.outlineVariant),
+          Expanded(
+            flex: 1,
+            child: Container(
+              color: cs.surfaceContainerLowest,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+                    child: Text(
+                      'Action Log',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: appColors.subtleText,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: _log.isEmpty
+                        ? Center(
+                            child: Text(
+                              'Interact with the cards above',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: appColors.subtleText,
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            itemCount: _log.length,
+                            itemBuilder: (context, index) {
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 2,
+                                ),
+                                child: Text(
+                                  _log[index],
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontFamily: 'monospace',
+                                    color: cs.onSurface.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StoreLineNumberDiffWrapper extends StatefulWidget {
+  const _StoreLineNumberDiffWrapper();
+
+  @override
+  State<_StoreLineNumberDiffWrapper> createState() =>
+      _StoreLineNumberDiffWrapperState();
+}
+
+class _StoreLineNumberDiffWrapperState
+    extends State<_StoreLineNumberDiffWrapper> {
+  late final MockBridgeService _mockBridge;
+
+  @override
+  void initState() {
+    super.initState();
+    _mockBridge = MockBridgeService()..mockDiff = lineNumberTestDiff;
+  }
+
+  @override
+  void dispose() {
+    _mockBridge.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RepositoryProvider<BridgeService>.value(
+      value: _mockBridge,
+      child: const GitScreen(
+        projectPath: '/mock/line-number-test',
+        title: 'line-number-test',
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// Mock: New Session with 20 projects (for expandable history testing)
+// =============================================================================
+
+class _MockNewSession20ProjectsWrapper extends StatefulWidget {
+  final DraftService draftService;
+  const _MockNewSession20ProjectsWrapper({required this.draftService});
+
+  @override
+  State<_MockNewSession20ProjectsWrapper> createState() =>
+      _MockNewSession20ProjectsWrapperState();
+}
+
+class _MockNewSession20ProjectsWrapperState
+    extends State<_MockNewSession20ProjectsWrapper> {
+  late final MockBridgeService _mockBridge;
+  late final SessionListCubit _sessionListCubit;
+
+  @override
+  void initState() {
+    super.initState();
+    _mockBridge = MockBridgeService();
+    _sessionListCubit = SessionListCubit(bridge: _mockBridge);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showNewSessionSheet();
+    });
+  }
+
+  void _showNewSessionSheet() {
+    if (!mounted) return;
+    showNewSessionSheet(
+      context: context,
+      recentProjects: const [
+        (path: '/Users/dev/projects/shopify-app', name: 'shopify-app'),
+        (path: '/Users/dev/projects/rust-cli', name: 'rust-cli'),
+        (path: '/Users/dev/projects/my-portfolio', name: 'my-portfolio'),
+        (path: '/Users/dev/projects/next-blog', name: 'next-blog'),
+        (path: '/Users/dev/projects/flutter-weather', name: 'flutter-weather'),
+        (path: '/Users/dev/projects/go-api-server', name: 'go-api-server'),
+        (path: '/Users/dev/projects/react-dashboard', name: 'react-dashboard'),
+        (
+          path: '/Users/dev/projects/python-ml-pipeline',
+          name: 'python-ml-pipeline',
+        ),
+        (path: '/Users/dev/projects/swift-ios-app', name: 'swift-ios-app'),
+        (path: '/Users/dev/projects/kotlin-android', name: 'kotlin-android'),
+        (path: '/Users/dev/projects/vue-storefront', name: 'vue-storefront'),
+        (path: '/Users/dev/projects/rails-saas', name: 'rails-saas'),
+        (path: '/Users/dev/projects/django-cms', name: 'django-cms'),
+        (path: '/Users/dev/projects/express-graphql', name: 'express-graphql'),
+        (path: '/Users/dev/projects/svelte-kit-blog', name: 'svelte-kit-blog'),
+        (path: '/Users/dev/projects/tauri-desktop', name: 'tauri-desktop'),
+        (path: '/Users/dev/projects/deno-fresh-app', name: 'deno-fresh-app'),
+        (path: '/Users/dev/projects/elixir-phoenix', name: 'elixir-phoenix'),
+        (path: '/Users/dev/projects/cpp-game-engine', name: 'cpp-game-engine'),
+        (path: '/Users/dev/projects/zig-compiler', name: 'zig-compiler'),
+      ],
+      bridge: _mockBridge,
+    );
+  }
+
+  @override
+  void dispose() {
+    _sessionListCubit.close();
+    _mockBridge.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RepositoryProvider<DraftService>.value(
+      value: widget.draftService,
+      child: BlocProvider.value(
+        value: _sessionListCubit,
+        child: Scaffold(
+          appBar: AppBar(title: const Text('New Session (20 Projects)')),
+          body: const Center(
+            child: Text('New session sheet opens automatically'),
+          ),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: _showNewSessionSheet,
+            icon: const Icon(Icons.add),
+            label: const Text('Open Sheet'),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// Mock Image Diff Viewer
+// =============================================================================
+
+class _MockImageDiffWrapper extends StatefulWidget {
+  const _MockImageDiffWrapper();
+
+  @override
+  State<_MockImageDiffWrapper> createState() => _MockImageDiffWrapperState();
+}
+
+class _MockImageDiffWrapperState extends State<_MockImageDiffWrapper> {
+  Uint8List? _oldBytes;
+  Uint8List? _newBytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _generateImages();
+  }
+
+  Future<void> _generateImages() async {
+    final (oldBytes, newBytes) = await generateMockDiffImages();
+    if (mounted) {
+      setState(() {
+        _oldBytes = oldBytes;
+        _newBytes = newBytes;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_oldBytes == null || _newBytes == null) {
+      return const Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final file = DiffFile(
+      filePath: 'assets/images/app_screenshot.png',
+      hunks: const [],
+      isBinary: true,
+      isImage: true,
+      imageData: DiffImageData(
+        oldBytes: _oldBytes,
+        newBytes: _newBytes,
+        oldSize: _oldBytes!.length,
+        newSize: _newBytes!.length,
+        mimeType: 'image/png',
+        loaded: true,
+      ),
+    );
+
+    return DiffImageViewer(file: file, imageData: file.imageData!);
+  }
+}

@@ -1,0 +1,803 @@
+// Unified diff parser — converts raw `git diff` output into structured data.
+
+import 'dart:convert';
+import 'dart:typed_data';
+
+enum DiffLineType { context, addition, deletion }
+
+/// Extensions treated as image files for diff preview.
+const _imageExtensions = {
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.ico',
+  '.bmp',
+  '.svg',
+};
+
+/// Whether the file path has an image extension.
+bool isImageFile(String filePath) {
+  final lower = filePath.toLowerCase();
+  return _imageExtensions.any((ext) => lower.endsWith(ext));
+}
+
+/// Image data attached to a diff file for visual comparison.
+class DiffImageData {
+  final int? oldSize;
+  final int? newSize;
+  final Uint8List? oldBytes;
+  final Uint8List? newBytes;
+  final String mimeType;
+  final bool isSvg;
+
+  /// Whether the image can be loaded on demand.
+  final bool loadable;
+
+  /// Whether on-demand data has been fetched.
+  final bool loaded;
+
+  /// Whether the image qualifies for auto-display (≤ auto threshold).
+  /// These images are loaded automatically when the widget becomes visible.
+  final bool autoDisplay;
+
+  const DiffImageData({
+    this.oldSize,
+    this.newSize,
+    this.oldBytes,
+    this.newBytes,
+    this.mimeType = 'application/octet-stream',
+    this.isSvg = false,
+    this.loadable = false,
+    this.loaded = false,
+    this.autoDisplay = false,
+  });
+
+  /// Create a copy with updated fields.
+  DiffImageData copyWith({
+    int? oldSize,
+    int? newSize,
+    Uint8List? oldBytes,
+    Uint8List? newBytes,
+    String? mimeType,
+    bool? isSvg,
+    bool? loadable,
+    bool? loaded,
+    bool? autoDisplay,
+  }) => DiffImageData(
+    oldSize: oldSize ?? this.oldSize,
+    newSize: newSize ?? this.newSize,
+    oldBytes: oldBytes ?? this.oldBytes,
+    newBytes: newBytes ?? this.newBytes,
+    mimeType: mimeType ?? this.mimeType,
+    isSvg: isSvg ?? this.isSvg,
+    loadable: loadable ?? this.loadable,
+    loaded: loaded ?? this.loaded,
+    autoDisplay: autoDisplay ?? this.autoDisplay,
+  );
+}
+
+class DiffLine {
+  final DiffLineType type;
+  final String content;
+  final int? oldLineNumber;
+  final int? newLineNumber;
+
+  const DiffLine({
+    required this.type,
+    required this.content,
+    this.oldLineNumber,
+    this.newLineNumber,
+  });
+}
+
+class DiffHunk {
+  final String header;
+  final int oldStart;
+  final int newStart;
+  final List<DiffLine> lines;
+
+  const DiffHunk({
+    required this.header,
+    required this.oldStart,
+    required this.newStart,
+    required this.lines,
+  });
+
+  /// Summary counts for the hunk.
+  ({int added, int removed}) get stats {
+    var added = 0;
+    var removed = 0;
+    for (final line in lines) {
+      if (line.type == DiffLineType.addition) added++;
+      if (line.type == DiffLineType.deletion) removed++;
+    }
+    return (added: added, removed: removed);
+  }
+}
+
+class DiffFile {
+  final String filePath;
+  final List<DiffHunk> hunks;
+  final bool isBinary;
+  final bool isNewFile;
+  final bool isDeleted;
+  final bool isImage;
+  final DiffImageData? imageData;
+
+  const DiffFile({
+    required this.filePath,
+    required this.hunks,
+    this.isBinary = false,
+    this.isNewFile = false,
+    this.isDeleted = false,
+    this.isImage = false,
+    this.imageData,
+  });
+
+  /// Create a copy with updated image data.
+  DiffFile copyWithImageData(DiffImageData? data) => DiffFile(
+    filePath: filePath,
+    hunks: hunks,
+    isBinary: isBinary,
+    isNewFile: isNewFile,
+    isDeleted: isDeleted,
+    isImage: isImage,
+    imageData: data,
+  );
+
+  /// Aggregate stats across all hunks.
+  ({int added, int removed}) get stats {
+    var added = 0;
+    var removed = 0;
+    for (final hunk in hunks) {
+      final s = hunk.stats;
+      added += s.added;
+      removed += s.removed;
+    }
+    return (added: added, removed: removed);
+  }
+}
+
+/// Regex for the hunk header: @@ -oldStart[,oldCount] +newStart[,newCount] @@
+final _hunkHeaderRegex = RegExp(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@');
+
+/// Parse unified diff text into a list of [DiffFile].
+///
+/// Handles:
+/// - Standard `diff --git` format
+/// - New / deleted files
+/// - Binary file markers
+/// - Multiple hunks per file
+/// - Tool-result diffs (may lack `diff --git` header)
+List<DiffFile> parseDiff(String diffText) {
+  if (diffText.trim().isEmpty) return [];
+
+  final lines = diffText.split('\n');
+
+  // If the content has no `diff --git` header, treat it as a single-file diff
+  // (common for tool_result content from Edit/FileEdit tools).
+  if (!diffText.contains('diff --git')) {
+    return [_parseSingleFileDiff(lines)];
+  }
+
+  final files = <DiffFile>[];
+  var i = 0;
+
+  while (i < lines.length) {
+    // Find next `diff --git` header
+    if (!lines[i].startsWith('diff --git ')) {
+      i++;
+      continue;
+    }
+
+    // Extract file path from `diff --git a/path b/path`
+    final filePath = _extractFilePath(lines[i]);
+    i++;
+
+    var isBinary = false;
+    var isNewFile = false;
+    var isDeleted = false;
+
+    // Skip metadata lines until we hit a hunk header or next diff
+    while (i < lines.length && !lines[i].startsWith('diff --git ')) {
+      if (lines[i].startsWith('Binary files')) {
+        isBinary = true;
+        i++;
+        break;
+      }
+      if (lines[i].startsWith('new file mode')) {
+        isNewFile = true;
+      }
+      if (lines[i].startsWith('deleted file mode')) {
+        isDeleted = true;
+      }
+      if (lines[i].startsWith('@@')) break;
+      i++;
+    }
+
+    if (isBinary) {
+      files.add(
+        DiffFile(
+          filePath: filePath,
+          hunks: const [],
+          isBinary: true,
+          isNewFile: isNewFile,
+          isDeleted: isDeleted,
+          isImage: isImageFile(filePath),
+        ),
+      );
+      continue;
+    }
+
+    // Parse hunks
+    final hunks = <DiffHunk>[];
+    while (i < lines.length && !lines[i].startsWith('diff --git ')) {
+      if (lines[i].startsWith('@@')) {
+        final hunk = _parseHunk(lines, i);
+        hunks.add(hunk.hunk);
+        i = hunk.nextIndex;
+      } else {
+        i++;
+      }
+    }
+
+    files.add(
+      DiffFile(
+        filePath: filePath,
+        hunks: hunks,
+        isNewFile: isNewFile,
+        isDeleted: isDeleted,
+        isImage: isImageFile(filePath),
+      ),
+    );
+  }
+
+  return files;
+}
+
+/// Parse a diff that lacks `diff --git` header (single-file tool result).
+DiffFile _parseSingleFileDiff(List<String> lines) {
+  var filePath = '';
+
+  // Try to extract path from --- / +++ lines
+  for (final line in lines) {
+    if (line.startsWith('+++ b/')) {
+      filePath = line.substring(6);
+      break;
+    }
+    if (line.startsWith('+++ "b/')) {
+      filePath = _decodeGitPathToken(line.substring(4));
+      break;
+    }
+    if (line.startsWith('+++ ') && !line.startsWith('+++ /dev/null')) {
+      filePath = _decodeGitPathToken(line.substring(4));
+      break;
+    }
+  }
+
+  final hunks = <DiffHunk>[];
+  var i = 0;
+
+  // Skip to first hunk header
+  while (i < lines.length && !lines[i].startsWith('@@')) {
+    i++;
+  }
+
+  while (i < lines.length) {
+    if (lines[i].startsWith('@@')) {
+      final hunk = _parseHunk(lines, i);
+      hunks.add(hunk.hunk);
+      i = hunk.nextIndex;
+    } else {
+      i++;
+    }
+  }
+
+  // If no hunk headers found, treat all lines as a raw diff
+  if (hunks.isEmpty && lines.isNotEmpty) {
+    hunks.add(_parseRawDiffLines(lines));
+  }
+
+  return DiffFile(filePath: filePath, hunks: hunks);
+}
+
+/// Parse a single hunk starting at [startIndex].
+({DiffHunk hunk, int nextIndex}) _parseHunk(
+  List<String> lines,
+  int startIndex,
+) {
+  final header = lines[startIndex];
+  final match = _hunkHeaderRegex.firstMatch(header);
+  final oldStart = match != null ? int.parse(match.group(1)!) : 1;
+  final newStart = match != null ? int.parse(match.group(2)!) : 1;
+
+  var oldLine = oldStart;
+  var newLine = newStart;
+  final diffLines = <DiffLine>[];
+  var i = startIndex + 1;
+
+  while (i < lines.length) {
+    final line = lines[i];
+
+    // Stop at next hunk or next file
+    if (line.startsWith('@@') || line.startsWith('diff --git ')) break;
+
+    if (line.startsWith('+')) {
+      diffLines.add(
+        DiffLine(
+          type: DiffLineType.addition,
+          content: line.substring(1),
+          newLineNumber: newLine,
+        ),
+      );
+      newLine++;
+    } else if (line.startsWith('-')) {
+      diffLines.add(
+        DiffLine(
+          type: DiffLineType.deletion,
+          content: line.substring(1),
+          oldLineNumber: oldLine,
+        ),
+      );
+      oldLine++;
+    } else if (line.startsWith(' ')) {
+      final content = line.substring(1);
+      diffLines.add(
+        DiffLine(
+          type: DiffLineType.context,
+          content: content,
+          oldLineNumber: oldLine,
+          newLineNumber: newLine,
+        ),
+      );
+      oldLine++;
+      newLine++;
+    } else if (line.startsWith(r'\')) {
+      // "\ No newline at end of file" — skip
+      i++;
+      continue;
+    } else if (line.isEmpty) {
+      // Empty line — likely trailing newline, skip
+      i++;
+      continue;
+    } else {
+      // Unknown line format — treat as context
+      diffLines.add(
+        DiffLine(
+          type: DiffLineType.context,
+          content: line,
+          oldLineNumber: oldLine,
+          newLineNumber: newLine,
+        ),
+      );
+      oldLine++;
+      newLine++;
+    }
+    i++;
+  }
+
+  return (
+    hunk: DiffHunk(
+      header: header,
+      oldStart: oldStart,
+      newStart: newStart,
+      lines: diffLines,
+    ),
+    nextIndex: i,
+  );
+}
+
+/// Fallback: parse lines without hunk headers (raw +/- lines).
+DiffHunk _parseRawDiffLines(List<String> lines) {
+  var oldLine = 1;
+  var newLine = 1;
+  final diffLines = <DiffLine>[];
+
+  for (final line in lines) {
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      diffLines.add(
+        DiffLine(
+          type: DiffLineType.addition,
+          content: line.substring(1),
+          newLineNumber: newLine,
+        ),
+      );
+      newLine++;
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      diffLines.add(
+        DiffLine(
+          type: DiffLineType.deletion,
+          content: line.substring(1),
+          oldLineNumber: oldLine,
+        ),
+      );
+      oldLine++;
+    } else if (!line.startsWith('---') && !line.startsWith('+++')) {
+      diffLines.add(
+        DiffLine(
+          type: DiffLineType.context,
+          content: line.startsWith(' ') ? line.substring(1) : line,
+          oldLineNumber: oldLine,
+          newLineNumber: newLine,
+        ),
+      );
+      oldLine++;
+      newLine++;
+    }
+  }
+
+  return DiffHunk(header: '', oldStart: 1, newStart: 1, lines: diffLines);
+}
+
+class DiffSelection {
+  final String diffText;
+
+  const DiffSelection({required this.diffText});
+
+  bool get isEmpty => diffText.isEmpty;
+}
+
+class DiffSelectionPreviewSummary {
+  final int fileCount;
+  final int hunkCount;
+  final int changedLineCount;
+  final String? primaryFilePath;
+  final String? primaryHunkHeader;
+
+  const DiffSelectionPreviewSummary({
+    required this.fileCount,
+    required this.hunkCount,
+    required this.changedLineCount,
+    this.primaryFilePath,
+    this.primaryHunkHeader,
+  });
+
+  bool get isSingleFile => fileCount == 1;
+
+  bool get isSingleHunk => hunkCount == 1;
+}
+
+DiffSelectionPreviewSummary summarizeDiffSelection(String diffText) {
+  if (diffText.trim().isEmpty) {
+    return const DiffSelectionPreviewSummary(
+      fileCount: 0,
+      hunkCount: 0,
+      changedLineCount: 0,
+    );
+  }
+
+  final files = parseDiff(diffText);
+  var hunkCount = 0;
+  var changedLineCount = 0;
+  String? primaryFilePath;
+  String? primaryHunkHeader;
+
+  for (final file in files) {
+    if ((primaryFilePath == null || primaryFilePath.isEmpty) &&
+        file.filePath.isNotEmpty) {
+      primaryFilePath = file.filePath;
+    }
+
+    hunkCount += file.hunks.length;
+
+    for (final hunk in file.hunks) {
+      if ((primaryHunkHeader == null || primaryHunkHeader.isEmpty) &&
+          hunk.header.isNotEmpty) {
+        primaryHunkHeader = hunk.header;
+      }
+
+      for (final line in hunk.lines) {
+        if (line.type == DiffLineType.addition ||
+            line.type == DiffLineType.deletion) {
+          changedLineCount++;
+        }
+      }
+    }
+  }
+
+  return DiffSelectionPreviewSummary(
+    fileCount: files.length,
+    hunkCount: hunkCount,
+    changedLineCount: changedLineCount,
+    primaryFilePath: primaryFilePath,
+    primaryHunkHeader: primaryHunkHeader,
+  );
+}
+
+DiffSelection reconstructDiff(
+  List<DiffFile> files,
+  Set<String> selectedHunkKeys,
+) {
+  if (selectedHunkKeys.isEmpty) {
+    return const DiffSelection(diffText: '');
+  }
+
+  final buffer = StringBuffer();
+
+  for (var fileIdx = 0; fileIdx < files.length; fileIdx++) {
+    final file = files[fileIdx];
+
+    // Collect selected hunk indices for this file.
+    final selectedHunks = <int>[];
+    for (var hunkIdx = 0; hunkIdx < file.hunks.length; hunkIdx++) {
+      if (selectedHunkKeys.contains('$fileIdx:$hunkIdx')) {
+        selectedHunks.add(hunkIdx);
+      }
+    }
+    if (selectedHunks.isEmpty) continue;
+
+    _writeFileHeader(buffer, file);
+    if (file.isBinary) continue;
+
+    for (final hunkIdx in selectedHunks) {
+      final hunk = file.hunks[hunkIdx];
+      if (hunk.header.isNotEmpty) buffer.writeln(hunk.header);
+      for (final line in hunk.lines) {
+        final prefix = switch (line.type) {
+          DiffLineType.addition => '+',
+          DiffLineType.deletion => '-',
+          DiffLineType.context => ' ',
+        };
+        buffer.writeln('$prefix${line.content}');
+      }
+    }
+  }
+
+  return DiffSelection(diffText: buffer.toString().trimRight());
+}
+
+// ─── Synthesize DiffFile from Edit/Write/MultiEdit tool input ────────────
+
+/// Build a [DiffFile] from an Edit-family tool's `input` map.
+///
+/// Returns `null` for tools that are not edit-related or when input is
+/// malformed.
+DiffFile? synthesizeEditToolDiff(String toolName, Map<String, dynamic> input) {
+  final filePath = (input['file_path'] ?? input['path'] ?? '') as String;
+
+  return switch (toolName) {
+    'Edit' => _synthesizeSingleEdit(filePath, input),
+    'MultiEdit' => _synthesizeMultiEdit(filePath, input),
+    'Write' => _synthesizeWrite(filePath, input),
+    _ => null,
+  };
+}
+
+DiffFile _synthesizeSingleEdit(String filePath, Map<String, dynamic> input) {
+  final oldString = (input['old_string'] ?? '') as String;
+  final newString = (input['new_string'] ?? '') as String;
+  return DiffFile(
+    filePath: filePath,
+    hunks: [_buildHunkFromStrings(oldString, newString)],
+  );
+}
+
+DiffFile _synthesizeMultiEdit(String filePath, Map<String, dynamic> input) {
+  final edits = input['edits'];
+  if (edits is! List) {
+    return DiffFile(filePath: filePath, hunks: const []);
+  }
+
+  final hunks = <DiffHunk>[];
+  for (final edit in edits) {
+    if (edit is Map<String, dynamic>) {
+      final oldString = (edit['old_string'] ?? '') as String;
+      final newString = (edit['new_string'] ?? '') as String;
+      hunks.add(_buildHunkFromStrings(oldString, newString));
+    }
+  }
+  return DiffFile(filePath: filePath, hunks: hunks);
+}
+
+DiffFile _synthesizeWrite(String filePath, Map<String, dynamic> input) {
+  final content = (input['content'] ?? '') as String;
+  final lines = content.split('\n');
+  final diffLines = <DiffLine>[];
+  for (var i = 0; i < lines.length; i++) {
+    diffLines.add(
+      DiffLine(
+        type: DiffLineType.addition,
+        content: lines[i],
+        newLineNumber: i + 1,
+      ),
+    );
+  }
+  return DiffFile(
+    filePath: filePath,
+    hunks: [DiffHunk(header: '', oldStart: 0, newStart: 1, lines: diffLines)],
+    isNewFile: true,
+  );
+}
+
+/// Build a single hunk from old/new strings.
+DiffHunk _buildHunkFromStrings(String oldString, String newString) {
+  final oldLines = oldString.isEmpty ? <String>[] : oldString.split('\n');
+  final newLines = newString.isEmpty ? <String>[] : newString.split('\n');
+  final diffLines = <DiffLine>[];
+
+  var oldLineNum = 1;
+  for (final line in oldLines) {
+    diffLines.add(
+      DiffLine(
+        type: DiffLineType.deletion,
+        content: line,
+        oldLineNumber: oldLineNum++,
+      ),
+    );
+  }
+  var newLineNum = 1;
+  for (final line in newLines) {
+    diffLines.add(
+      DiffLine(
+        type: DiffLineType.addition,
+        content: line,
+        newLineNumber: newLineNum++,
+      ),
+    );
+  }
+
+  return DiffHunk(header: '', oldStart: 1, newStart: 1, lines: diffLines);
+}
+
+/// Reconstruct unified diff text from a [DiffFile].
+///
+/// Used to pass synthesized diff data to [GitScreen].
+String reconstructUnifiedDiff(DiffFile file) {
+  final buffer = StringBuffer();
+  _writeFileHeader(buffer, file);
+  if (file.isBinary) return buffer.toString().trimRight();
+
+  for (final hunk in file.hunks) {
+    if (hunk.header.isNotEmpty) buffer.writeln(hunk.header);
+    for (final line in hunk.lines) {
+      final prefix = switch (line.type) {
+        DiffLineType.addition => '+',
+        DiffLineType.deletion => '-',
+        DiffLineType.context => ' ',
+      };
+      buffer.writeln('$prefix${line.content}');
+    }
+  }
+  return buffer.toString().trimRight();
+}
+
+void _writeFileHeader(StringBuffer buffer, DiffFile file) {
+  buffer.writeln('diff --git a/${file.filePath} b/${file.filePath}');
+  if (file.isNewFile) buffer.writeln('new file mode 100644');
+  if (file.isDeleted) buffer.writeln('deleted file mode 100644');
+  if (file.isBinary) {
+    buffer.writeln(
+      'Binary files a/${file.filePath} and b/${file.filePath} differ',
+    );
+    return;
+  }
+  buffer.writeln(file.isNewFile ? '--- /dev/null' : '--- a/${file.filePath}');
+  buffer.writeln(file.isDeleted ? '+++ /dev/null' : '+++ b/${file.filePath}');
+}
+
+/// Extract file path from `diff --git a/path b/path`.
+String _extractFilePath(String diffGitLine) {
+  final payload = diffGitLine.replaceFirst('diff --git ', '');
+
+  // With core.quotePath=false, Git can emit unquoted paths that contain spaces:
+  // `diff --git a/docs/空 白.md b/docs/空 白.md`.
+  // In that form, tokenizing by spaces loses the path, so prefer the new-path
+  // side after the final ` b/` marker when the payload is not quoted.
+  if (!payload.trimLeft().startsWith('"')) {
+    final newPathMarker = payload.lastIndexOf(' b/');
+    if (newPathMarker >= 0) {
+      return _decodeGitPathToken(payload.substring(newPathMarker + 1));
+    }
+  }
+
+  final tokens = <String>[];
+  final buffer = StringBuffer();
+  var inQuotes = false;
+  var escaping = false;
+
+  for (final rune in payload.runes) {
+    final char = String.fromCharCode(rune);
+    if (escaping) {
+      buffer.write(char);
+      escaping = false;
+      continue;
+    }
+    if (char == r'\') {
+      buffer.write(char);
+      if (inQuotes) escaping = true;
+      continue;
+    }
+    if (char == '"') {
+      inQuotes = !inQuotes;
+      buffer.write(char);
+      continue;
+    }
+    if (char == ' ' && !inQuotes) {
+      if (buffer.isNotEmpty) {
+        tokens.add(buffer.toString());
+        buffer.clear();
+      }
+      continue;
+    }
+    buffer.write(char);
+  }
+
+  if (buffer.isNotEmpty) {
+    tokens.add(buffer.toString());
+  }
+
+  if (tokens.length >= 2) {
+    return _decodeGitPathToken(tokens[1]);
+  }
+
+  return _decodeGitPathToken(payload);
+}
+
+String _decodeGitPathToken(String token) {
+  var normalized = token.trim();
+  if (normalized.startsWith('"') && normalized.endsWith('"')) {
+    normalized = normalized.substring(1, normalized.length - 1);
+  }
+
+  if (normalized.startsWith('a/') || normalized.startsWith('b/')) {
+    normalized = normalized.substring(2);
+  }
+
+  if (!normalized.contains(r'\')) {
+    return normalized;
+  }
+
+  final bytes = <int>[];
+  for (var i = 0; i < normalized.length; i++) {
+    final char = normalized[i];
+    if (char != r'\') {
+      bytes.addAll(utf8.encode(char));
+      continue;
+    }
+
+    if (i + 3 < normalized.length) {
+      final octal = normalized.substring(i + 1, i + 4);
+      if (_isOctal(octal)) {
+        bytes.add(int.parse(octal, radix: 8));
+        i += 3;
+        continue;
+      }
+    }
+
+    if (i + 1 < normalized.length) {
+      final escaped = normalized[++i];
+      switch (escaped) {
+        case 't':
+          bytes.add(0x09);
+          break;
+        case 'n':
+          bytes.add(0x0A);
+          break;
+        case 'r':
+          bytes.add(0x0D);
+          break;
+        case '"':
+        case r'\':
+          bytes.addAll(utf8.encode(escaped));
+          break;
+        default:
+          bytes.addAll(utf8.encode(escaped));
+          break;
+      }
+      continue;
+    }
+
+    bytes.addAll(utf8.encode(char));
+  }
+
+  return utf8.decode(bytes, allowMalformed: true);
+}
+
+bool _isOctal(String value) {
+  for (final rune in value.runes) {
+    if (rune < 0x30 || rune > 0x37) return false;
+  }
+  return value.isNotEmpty;
+}

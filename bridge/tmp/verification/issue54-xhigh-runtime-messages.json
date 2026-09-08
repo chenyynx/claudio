@@ -1,0 +1,308 @@
+[
+  {
+    "type": "session_list",
+    "sessions": [
+      {
+        "id": "044fbf3e",
+        "provider": "codex",
+        "projectPath": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+        "claudeSessionId": "issue54-xhigh-ws",
+        "status": "idle",
+        "createdAt": "2026-04-20T09:19:07.078Z",
+        "lastActivityAt": "2026-04-20T09:19:07.141Z",
+        "gitBranch": "main",
+        "lastMessage": "",
+        "permissionMode": "acceptEdits",
+        "executionMode": "default",
+        "planMode": false,
+        "codexSettings": {
+          "approvalPolicy": "on-request",
+          "sandboxMode": "workspace-write",
+          "model": "gpt-5.4",
+          "modelReasoningEffort": "xhigh"
+        }
+      }
+    ],
+    "allowedDirs": [
+      "/Users/k9i-mini/Workspace"
+    ],
+    "claudeModels": [
+      "claude-opus-4-7",
+      "claude-opus-4-7[1m]",
+      "claude-opus-4-6",
+      "claude-opus-4-6[1m]",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-6"
+    ],
+    "codexModels": [
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark"
+    ],
+    "codexProfiles": [
+      "ccpocket-e2e"
+    ],
+    "bridgeVersion": "1.39.0"
+  },
+  {
+    "type": "project_history",
+    "projects": [
+      "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+      "/Users/k9i-mini/Workspace/ccpocket",
+      "/Users/k9i-mini/Workspace/cmux",
+      "/Users/k9i-mini/Workspace/happy-coder",
+      "/Users/k9i-mini/Workspace/ccpocket/tmp/e2e-sandbox-project",
+      "/Users/k9i-mini/Workspace/zenn-content"
+    ]
+  },
+  {
+    "type": "session_list",
+    "sessions": [
+      {
+        "id": "044fbf3e",
+        "provider": "codex",
+        "projectPath": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+        "claudeSessionId": "issue54-xhigh-ws",
+        "status": "idle",
+        "createdAt": "2026-04-20T09:19:07.078Z",
+        "lastActivityAt": "2026-04-20T09:19:07.141Z",
+        "gitBranch": "main",
+        "lastMessage": "",
+        "permissionMode": "acceptEdits",
+        "executionMode": "default",
+        "planMode": false,
+        "codexSettings": {
+          "approvalPolicy": "on-request",
+          "sandboxMode": "workspace-write",
+          "model": "gpt-5.4",
+          "modelReasoningEffort": "xhigh"
+        }
+      }
+    ],
+    "allowedDirs": [
+      "/Users/k9i-mini/Workspace"
+    ],
+    "claudeModels": [
+      "claude-opus-4-7",
+      "claude-opus-4-7[1m]",
+      "claude-opus-4-6",
+      "claude-opus-4-6[1m]",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-6"
+    ],
+    "codexModels": [
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark"
+    ],
+    "codexProfiles": [
+      "ccpocket-e2e"
+    ],
+    "bridgeVersion": "1.39.0"
+  },
+  {
+    "type": "system",
+    "subtype": "session_created",
+    "sessionId": "f0ef9790",
+    "provider": "codex",
+    "projectPath": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+    "permissionMode": "acceptEdits",
+    "executionMode": "default",
+    "planMode": false,
+    "sandboxMode": "workspace-write",
+    "model": "gpt-5.4",
+    "approvalPolicy": "on-request",
+    "modelReasoningEffort": "xhigh"
+  },
+  {
+    "type": "session_list",
+    "sessions": [
+      {
+        "id": "044fbf3e",
+        "provider": "codex",
+        "projectPath": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+        "claudeSessionId": "issue54-xhigh-ws",
+        "status": "idle",
+        "createdAt": "2026-04-20T09:19:07.078Z",
+        "lastActivityAt": "2026-04-20T09:19:07.141Z",
+        "gitBranch": "main",
+        "lastMessage": "",
+        "permissionMode": "acceptEdits",
+        "executionMode": "default",
+        "planMode": false,
+        "codexSettings": {
+          "approvalPolicy": "on-request",
+          "sandboxMode": "workspace-write",
+          "model": "gpt-5.4",
+          "modelReasoningEffort": "xhigh"
+        }
+      },
+      {
+        "id": "f0ef9790",
+        "provider": "codex",
+        "projectPath": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+        "status": "starting",
+        "createdAt": "2026-04-20T09:19:29.840Z",
+        "lastActivityAt": "2026-04-20T09:19:29.840Z",
+        "gitBranch": "main",
+        "lastMessage": "",
+        "permissionMode": "acceptEdits",
+        "executionMode": "default",
+        "planMode": false,
+        "codexSettings": {
+          "approvalPolicy": "on-request",
+          "sandboxMode": "workspace-write",
+          "model": "gpt-5.4",
+          "modelReasoningEffort": "xhigh"
+        }
+      }
+    ],
+    "allowedDirs": [
+      "/Users/k9i-mini/Workspace"
+    ],
+    "claudeModels": [
+      "claude-opus-4-7",
+      "claude-opus-4-7[1m]",
+      "claude-opus-4-6",
+      "claude-opus-4-6[1m]",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-6"
+    ],
+    "codexModels": [
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark"
+    ],
+    "codexProfiles": [
+      "ccpocket-e2e"
+    ],
+    "bridgeVersion": "1.39.0"
+  },
+  {
+    "type": "system",
+    "subtype": "init",
+    "sessionId": "f0ef9790",
+    "provider": "codex",
+    "model": "gpt-5.4",
+    "approvalPolicy": "on-request",
+    "sandboxMode": "workspace-write",
+    "modelReasoningEffort": "high",
+    "networkAccessEnabled": false
+  },
+  {
+    "type": "status",
+    "status": "idle",
+    "sessionId": "f0ef9790"
+  },
+  {
+    "type": "system",
+    "subtype": "supported_commands",
+    "skills": [
+      "github:gh-address-comments",
+      "github:gh-fix-ci",
+      "github:github",
+      "github:yeet",
+      "imagegen",
+      "openai-docs",
+      "plugin-creator",
+      "skill-creator",
+      "skill-installer"
+    ],
+    "skillMetadata": [
+      {
+        "name": "github:gh-address-comments",
+        "path": "/Users/k9i-mini/.codex/plugins/cache/openai-curated/github/b1986b3d3da5bb8a04d3cb1e69af5a29bb5c2c04/skills/gh-address-comments/SKILL.md",
+        "description": "Address actionable GitHub pull request review feedback. Use when the user wants to inspect unresolved review threads, requested changes, or inline review comments on a PR, then implement selected fixes. Use the GitHub app for PR metadata and flat comment reads, and use the bundled GraphQL script via `gh` whenever thread-level state, resolution status, or inline review context matters.",
+        "shortDescription": "Address actionable PR feedback",
+        "enabled": true,
+        "scope": "user",
+        "displayName": "Review Follow-up",
+        "defaultPrompt": "Use $gh-address-comments to review unresolved pull request feedback, implement the selected fixes, and summarize what changed."
+      },
+      {
+        "name": "github:gh-fix-ci",
+        "path": "/Users/k9i-mini/.codex/plugins/cache/openai-curated/github/b1986b3d3da5bb8a04d3cb1e69af5a29bb5c2c04/skills/gh-fix-ci/SKILL.md",
+        "description": "Use when a user asks to debug or fix failing GitHub PR checks that run in GitHub Actions. Use the GitHub app from this plugin for PR metadata and patch context, and use `gh` for Actions check and log inspection before implementing any approved fix.",
+        "shortDescription": "Debug failing GitHub Actions checks",
+        "enabled": true,
+        "scope": "user",
+        "displayName": "CI Debug",
+        "defaultPrompt": "Use $gh-fix-ci to inspect the failing GitHub Actions checks on this PR, summarize the root cause, and propose the smallest viable fix."
+      },
+      {
+        "name": "github:github",
+        "path": "/Users/k9i-mini/.codex/plugins/cache/openai-curated/github/b1986b3d3da5bb8a04d3cb1e69af5a29bb5c2c04/skills/github/SKILL.md",
+        "description": "Triage and orient GitHub repository, pull request, and issue work through the connected GitHub app. Use when the user asks for general GitHub help, wants PR or issue summaries, or needs repository context before choosing a more specific GitHub workflow.",
+        "shortDescription": "Inspect PRs, issues, CI, and publish flows",
+        "enabled": true,
+        "scope": "user",
+        "displayName": "GitHub",
+        "defaultPrompt": "Use $github to inspect pull requests and issues, orient the repository context, and choose the right GitHub workflow."
+      },
+      {
+        "name": "github:yeet",
+        "path": "/Users/k9i-mini/.codex/plugins/cache/openai-curated/github/b1986b3d3da5bb8a04d3cb1e69af5a29bb5c2c04/skills/yeet/SKILL.md",
+        "description": "Publish local changes to GitHub by confirming scope, committing intentionally, pushing the branch, and opening a draft PR through the GitHub app from this plugin, with `gh` used only as a fallback where connector coverage is insufficient.",
+        "shortDescription": "Commit, push, and open a PR",
+        "enabled": true,
+        "scope": "user",
+        "displayName": "Publish Changes",
+        "defaultPrompt": "Use $yeet to confirm the intended changes, create a focused commit, push it, and open a draft pull request."
+      },
+      {
+        "name": "imagegen",
+        "path": "/Users/k9i-mini/.codex/skills/.system/imagegen/SKILL.md",
+        "description": "Generate or edit raster images when the task benefits from AI-created bitmap visuals such as photos, illustrations, textures, sprites, mockups, or transparent-background cutouts. Use when Codex should create a brand-new image, transform an existing image, or derive visual variants from references, and the output should be a bitmap asset rather than repo-native code or vector. Do not use when the task is better handled by editing existing SVG/vector/code-native assets, extending an established icon or logo system, or building the visual directly in HTML/CSS/canvas.",
+        "shortDescription": "Generate or edit images for websites, games, and more",
+        "enabled": true,
+        "scope": "system",
+        "displayName": "Image Gen",
+        "defaultPrompt": "Generate or edit the visual assets for this task with the built-in `image_gen` tool by default. First confirm that the task actually calls for a raster image; if the project already has SVG/vector/code-native assets and the user wants to extend or match those, do not use this skill. If the task includes reference images, treat them as references unless the user clearly wants an existing image modified. For multi-asset requests, loop built-in calls rather than treating batch as a separate top-level mode. Only use the fallback CLI if the user explicitly asks for it, and keep CLI-only controls such as `generate-batch`, `quality`, `input_fidelity`, masks, and output paths on that fallback path."
+      },
+      {
+        "name": "openai-docs",
+        "path": "/Users/k9i-mini/.codex/skills/.system/openai-docs/SKILL.md",
+        "description": "Use when the user asks how to build with OpenAI products or APIs and needs up-to-date official documentation with citations, help choosing the latest model for a use case, or explicit GPT-5.4 upgrade and prompt-upgrade guidance; prioritize OpenAI docs MCP tools, use bundled references only as helper context, and restrict any fallback browsing to official OpenAI domains.",
+        "shortDescription": "Reference official OpenAI docs, including upgrade guidance",
+        "enabled": true,
+        "scope": "system",
+        "displayName": "OpenAI Docs",
+        "defaultPrompt": "Look up official OpenAI docs, load relevant GPT-5.4 upgrade references when applicable, and answer with concise, cited guidance."
+      },
+      {
+        "name": "plugin-creator",
+        "path": "/Users/k9i-mini/.codex/skills/.system/plugin-creator/SKILL.md",
+        "description": "Create and scaffold plugin directories for Codex with a required `.codex-plugin/plugin.json`, optional plugin folders/files, and baseline placeholders you can edit before publishing or testing. Use when Codex needs to create a new local plugin, add optional plugin structure, or generate or update repo-root `.agents/plugins/marketplace.json` entries for plugin ordering and availability metadata.",
+        "shortDescription": "Scaffold plugins and marketplace entries",
+        "enabled": true,
+        "scope": "system",
+        "displayName": "Plugin Creator",
+        "defaultPrompt": "Use $plugin-creator to scaffold a plugin with placeholder plugin.json, optional structure, and a marketplace.json entry."
+      },
+      {
+        "name": "skill-creator",
+        "path": "/Users/k9i-mini/.codex/skills/.system/skill-creator/SKILL.md",
+        "description": "Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Codex's capabilities with specialized knowledge, workflows, or tool integrations.",
+        "shortDescription": "Create or update a skill",
+        "enabled": true,
+        "scope": "system",
+        "displayName": "Skill Creator"
+      },
+      {
+        "name": "skill-installer",
+        "path": "/Users/k9i-mini/.codex/skills/.system/skill-installer/SKILL.md",
+        "description": "Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos).",
+        "shortDescription": "Install curated skills from openai/skills or other repos",
+        "enabled": true,
+        "scope": "system",
+        "displayName": "Skill Installer"
+      }
+    ],
+    "apps": [],
+    "appMetadata": [],
+    "sessionId": "f0ef9790"
+  }
+]

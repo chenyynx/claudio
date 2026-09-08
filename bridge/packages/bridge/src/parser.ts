@@ -1,0 +1,2113 @@
+import type { GalleryImageInfo } from "./gallery-store.js";
+import type { ImageRef } from "./image-store.js";
+import type {
+  PromptHistoryEntry,
+  PromptHistoryImportEntry,
+} from "./prompt-history-store.js";
+import type { WindowInfo } from "./screenshot.js";
+import type { WorktreeInfo } from "./worktree.js";
+
+// Re-export for convenience
+export type { ImageRef } from "./image-store.js";
+
+// ---- Assistant message content types (used by ServerMessage and session.ts) ----
+
+export interface AssistantTextContent {
+  type: "text";
+  text: string;
+}
+
+export interface AssistantToolUseContent {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface AssistantThinkingContent {
+  type: "thinking";
+  thinking: string;
+}
+
+export type AssistantContent =
+  | AssistantTextContent
+  | AssistantToolUseContent
+  | AssistantThinkingContent;
+
+/** Shape of the assistant message object within ServerMessage. */
+export interface AssistantMessage {
+  id: string;
+  role: "assistant";
+  content: AssistantContent[];
+  model: string;
+}
+
+// ---- Client <-> Server message types ----
+
+export type PermissionMode =
+  | "default"
+  | "auto"
+  | "acceptEdits"
+  | "bypassPermissions"
+  | "plan";
+
+export type ExecutionMode = "default" | "acceptEdits" | "fullAccess";
+export type CodexApprovalPolicy =
+  | "untrusted"
+  | "on-request"
+  | "on-failure"
+  | "never";
+export type CodexApprovalsReviewer =
+  | "user"
+  | "auto_review"
+  | "guardian_subagent";
+export type CodexPermissionsMode =
+  | "default"
+  | "autoReview"
+  | "fullAccess"
+  | "custom";
+
+export type Provider = "claude" | "codex";
+
+export type CodexGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
+export interface CodexGoal {
+  threadId: string;
+  objective: string;
+  status: CodexGoalStatus;
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface QueuedInputItem {
+  itemId: string;
+  text: string;
+  createdAt: string;
+  updatedAt?: string;
+  imageCount?: number;
+  skills?: Array<{ name: string; path: string }>;
+  mentions?: Array<{ name: string; path: string }>;
+}
+
+export type ClientMessage =
+  | {
+      type: "client_capabilities";
+      appVersion?: string;
+      protocolVersion?: number;
+      minimumProtocolVersion?: number;
+      supportedServerMessages?: string[];
+    }
+  | {
+      type: "start";
+      projectPath: string;
+      provider?: Provider;
+      sessionId?: string;
+      continue?: boolean;
+      permissionMode?: PermissionMode;
+      executionMode?: ExecutionMode;
+      approvalPolicy?: CodexApprovalPolicy;
+      approvalsReviewer?: CodexApprovalsReviewer;
+      codexPermissionsMode?: CodexPermissionsMode;
+      planMode?: boolean;
+      sandboxMode?: string;
+      model?: string;
+      effort?: "low" | "medium" | "high" | "xhigh" | "max";
+      maxTurns?: number;
+      maxBudgetUsd?: number;
+      fallbackModel?: string;
+      forkSession?: boolean;
+      persistSession?: boolean;
+      profile?: string;
+      modelReasoningEffort?: string;
+      serviceTier?: string;
+      networkAccessEnabled?: boolean;
+      webSearchMode?: string;
+      additionalWritableRoots?: string[];
+      projectId?: string;
+      projectName?: string;
+      workspaceKind?: "project";
+      useWorktree?: boolean;
+      worktreeBranch?: string;
+      existingWorktreePath?: string;
+      autoRename?: boolean;
+      requestId?: string;
+    }
+  | {
+      type: "input";
+      text: string;
+      sessionId?: string;
+      clientMessageId?: string;
+      baseSeq?: number;
+      images?: Array<{ base64: string; mimeType: string }>;
+      imageId?: string;
+      imageBase64?: string;
+      mimeType?: string;
+      skill?: { name: string; path: string };
+      skills?: Array<{ name: string; path: string }>;
+      mentions?: Array<{ name: string; path: string }>;
+    }
+  | {
+      type: "update_queued_input";
+      sessionId: string;
+      itemId: string;
+      text: string;
+      skills?: Array<{ name: string; path: string }>;
+      mentions?: Array<{ name: string; path: string }>;
+    }
+  | { type: "steer_queued_input"; sessionId: string; itemId: string }
+  | { type: "cancel_queued_input"; sessionId: string; itemId: string }
+  | {
+      type: "push_register";
+      token: string;
+      platform: "ios" | "android" | "web";
+      requestId?: string;
+      locale?: string;
+      privacyMode?: boolean;
+    }
+  | { type: "push_unregister"; token: string }
+  | {
+      type: "set_permission_mode";
+      mode: PermissionMode;
+      executionMode?: ExecutionMode;
+      approvalPolicy?: CodexApprovalPolicy;
+      approvalsReviewer?: CodexApprovalsReviewer;
+      codexPermissionsMode?: CodexPermissionsMode;
+      planMode?: boolean;
+      sessionId?: string;
+    }
+  | {
+      type: "set_codex_model";
+      model: string;
+      modelReasoningEffort?: string;
+      sessionId?: string;
+    }
+  | {
+      type: "set_codex_speed";
+      serviceTier: string;
+      sessionId?: string;
+    }
+  | { type: "get_goal"; sessionId: string }
+  | {
+      type: "set_goal";
+      sessionId: string;
+      objective?: string;
+      status?: CodexGoalStatus;
+    }
+  | { type: "clear_goal"; sessionId: string }
+  | { type: "set_sandbox_mode"; sandboxMode: string; sessionId?: string }
+  | {
+      type: "approve";
+      id: string;
+      clearContext?: boolean;
+      sessionId?: string;
+    }
+  | { type: "approve_always"; id: string; sessionId?: string }
+  | { type: "reject"; id: string; message?: string; sessionId?: string }
+  | { type: "answer"; toolUseId: string; result: string; sessionId?: string }
+  | { type: "install_tool_suggestion"; toolUseId: string; sessionId?: string }
+  | { type: "list_sessions" }
+  | { type: "stop_session"; sessionId: string }
+  | {
+      type: "rename_session";
+      sessionId: string;
+      name?: string;
+      provider?: string;
+      providerSessionId?: string;
+      projectPath?: string;
+    }
+  | { type: "get_history"; sessionId: string }
+  | { type: "get_history_delta"; sessionId: string; sinceSeq: number }
+  | { type: "get_session_context"; sessionId: string }
+  | {
+      type: "resolve_session_link";
+      requestId: string;
+      sessionId: string;
+      provider?: Provider;
+    }
+  | {
+      type: "list_recent_sessions";
+      limit?: number;
+      offset?: number;
+      projectPath?: string;
+      projectId?: string;
+      workspaceKind?: "project" | "unassigned";
+      requestScope?: "list" | "project";
+      requestId?: string;
+      provider?: "claude" | "codex";
+      namedOnly?: boolean;
+      searchQuery?: string;
+    }
+  | {
+      type: "resume_session";
+      sessionId: string;
+      projectPath: string;
+      permissionMode?: PermissionMode;
+      executionMode?: ExecutionMode;
+      approvalPolicy?: CodexApprovalPolicy;
+      approvalsReviewer?: CodexApprovalsReviewer;
+      codexPermissionsMode?: CodexPermissionsMode;
+      planMode?: boolean;
+      provider?: Provider;
+      sandboxMode?: string;
+      model?: string;
+      effort?: "low" | "medium" | "high" | "xhigh" | "max";
+      maxTurns?: number;
+      maxBudgetUsd?: number;
+      fallbackModel?: string;
+      forkSession?: boolean;
+      persistSession?: boolean;
+      profile?: string;
+      modelReasoningEffort?: string;
+      serviceTier?: string;
+      networkAccessEnabled?: boolean;
+      webSearchMode?: string;
+      additionalWritableRoots?: string[];
+      projectId?: string;
+      projectName?: string;
+      workspaceKind?: "project";
+      resumeRequestId?: string;
+    }
+  | {
+      type: "list_gallery";
+      /** Legacy alias retained for older app clients. */
+      project?: string;
+      projectPath?: string;
+      sessionId?: string;
+      requestId?: string;
+    }
+  | {
+      type: "read_file";
+      projectPath: string;
+      filePath: string;
+      maxLines?: number;
+      requestId?: string;
+    }
+  | {
+      type: "read_media_file";
+      projectPath: string;
+      filePath: string;
+      requestId?: string;
+    }
+  | {
+      type: "prepare_file_download";
+      projectPath: string;
+      filePath: string;
+      requestId: string;
+    }
+  | {
+      type: "prepare_file_upload";
+      projectPath: string;
+      directoryPath: string;
+      fileName: string;
+      sizeBytes: number;
+      conflictPolicy: "rename" | "overwrite" | "skip";
+      requestId: string;
+    }
+  | {
+      type: "finalize_file_upload";
+      uploadToken: string;
+      sha256: string;
+      requestId: string;
+    }
+  | { type: "cancel_file_upload"; uploadToken: string }
+  | { type: "list_files"; projectPath: string; requestId?: string }
+  | {
+      type: "list_directory";
+      path: string;
+      requestId?: string;
+      includeHidden?: boolean;
+    }
+  | {
+      type: "get_diff";
+      projectPath: string;
+      staged?: boolean;
+      requestId?: string;
+    }
+  | {
+      type: "get_diff_image";
+      projectPath: string;
+      filePath: string;
+      version: "old" | "new" | "both";
+      requestId?: string;
+    }
+  | { type: "interrupt"; sessionId?: string }
+  | { type: "list_project_history" }
+  | { type: "remove_project_history"; projectPath: string }
+  | { type: "list_projects"; requestId?: string }
+  | {
+      type: "create_project";
+      name: string;
+      rootPaths: string[];
+      requestId?: string;
+    }
+  | {
+      type: "update_project";
+      projectId: string;
+      name: string;
+      rootPaths: string[];
+      requestId?: string;
+    }
+  | { type: "remove_project"; projectId: string; requestId?: string }
+  | { type: "list_worktrees"; projectPath: string; requestId?: string }
+  | {
+      type: "remove_worktree";
+      projectPath: string;
+      worktreePath: string;
+      requestId?: string;
+    }
+  | {
+      type: "rewind";
+      sessionId: string;
+      targetUuid: string;
+      mode: "conversation" | "code" | "both";
+    }
+  | { type: "rewind_dry_run"; sessionId: string; targetUuid: string }
+  | { type: "fork"; sessionId: string; targetUuid: string }
+  | { type: "list_windows" }
+  | {
+      type: "take_screenshot";
+      mode: "fullscreen" | "window";
+      windowId?: number;
+      projectPath: string;
+      sessionId?: string;
+      requestId?: string;
+    }
+  | {
+      type: "get_debug_bundle";
+      sessionId: string;
+      traceLimit?: number;
+      includeDiff?: boolean;
+    }
+  | { type: "get_usage" }
+  | { type: "list_recordings" }
+  | { type: "get_recording"; sessionId: string }
+  | { type: "get_message_images"; claudeSessionId: string; messageUuid: string }
+  | {
+      type: "backup_prompt_history";
+      data: string;
+      appVersion: string;
+      dbVersion: number;
+    }
+  | { type: "restore_prompt_history" }
+  | { type: "get_prompt_history_backup_info" }
+  | {
+      type: "record_prompt_history";
+      text: string;
+      projectPath?: string;
+      projectId?: string;
+      projectName?: string;
+      clientId: string;
+      clientName?: string;
+      sessionId?: string;
+      usedAt?: string;
+    }
+  | {
+      type: "sync_prompt_history";
+      clientId: string;
+      clientName?: string;
+      sinceRevision?: number;
+      entries?: PromptHistoryImportEntry[];
+      includeDeleted?: boolean;
+    }
+  | {
+      type: "mutate_prompt_history";
+      id?: string;
+      text?: string;
+      projectPath?: string;
+      projectId?: string;
+      action: "favorite" | "delete" | "restore";
+      isFavorite?: boolean;
+      updatedAt?: string;
+    }
+  | {
+      type: "import_prompt_history_v1";
+      clientId: string;
+      clientName?: string;
+      entries: PromptHistoryImportEntry[];
+    }
+  | {
+      type: "archive_session";
+      sessionId: string;
+      provider: Provider;
+      projectPath: string;
+    }
+  | { type: "refresh_branch"; sessionId: string }
+  // ---- Git Operations (Phase 1-3) ----
+  | {
+      type: "git_stage";
+      projectPath: string;
+      files?: string[];
+      hunks?: { file: string; hunkIndex: number }[];
+      requestId?: string;
+    }
+  | {
+      type: "git_unstage";
+      projectPath: string;
+      files?: string[];
+      requestId?: string;
+    }
+  | {
+      type: "git_unstage_hunks";
+      projectPath: string;
+      hunks: { file: string; hunkIndex: number }[];
+      requestId?: string;
+    }
+  | {
+      type: "git_commit";
+      projectPath: string;
+      sessionId?: string;
+      message?: string;
+      autoGenerate?: boolean;
+      requestId?: string;
+    }
+  | { type: "git_push"; projectPath: string; requestId?: string }
+  | { type: "git_branches"; projectPath: string; requestId?: string }
+  | {
+      type: "git_create_branch";
+      projectPath: string;
+      name: string;
+      checkout?: boolean;
+      requestId?: string;
+    }
+  | {
+      type: "git_checkout_branch";
+      projectPath: string;
+      branch: string;
+      requestId?: string;
+    }
+  | {
+      type: "git_revert_file";
+      projectPath: string;
+      files: string[];
+      requestId?: string;
+    }
+  | {
+      type: "git_revert_hunks";
+      projectPath: string;
+      hunks: { file: string; hunkIndex: number }[];
+      requestId?: string;
+    }
+  | { type: "git_fetch"; projectPath: string; requestId?: string }
+  | { type: "git_pull"; projectPath: string; requestId?: string }
+  | {
+      type: "git_status";
+      projectPath: string;
+      sessionId?: string;
+      includeRemote?: boolean;
+      requestId?: string;
+    }
+  | { type: "git_remote_status"; projectPath: string; requestId?: string };
+
+/** Image change detected in a git diff (binary image file). */
+export interface ImageChange {
+  filePath: string;
+  isNew: boolean;
+  isDeleted: boolean;
+  isSvg: boolean;
+  oldSize?: number;
+  newSize?: number;
+  /** Base64-encoded old image (included only for on-demand loads). */
+  oldBase64?: string;
+  /** Base64-encoded new image (included only for on-demand loads). */
+  newBase64?: string;
+  mimeType: string;
+  /** Whether the image can be loaded on demand (auto-display or loadable range). */
+  loadable: boolean;
+  /** Whether the image qualifies for auto-display (≤ auto threshold). */
+  autoDisplay?: boolean;
+}
+
+export interface DebugTraceEvent {
+  ts: string;
+  sessionId: string;
+  direction: "incoming" | "outgoing" | "internal";
+  channel: "ws" | "session" | "bridge";
+  type: string;
+  detail?: string;
+}
+
+export interface CodexCliJoinTarget {
+  url: string;
+  command: string;
+}
+
+export type ServerMessage =
+  | {
+      type: "system";
+      subtype: string;
+      sessionId?: string;
+      claudeSessionId?: string;
+      model?: string;
+      provider?: Provider;
+      projectPath?: string;
+      workspace?: {
+        kind: "project";
+        projectId?: string;
+        projectName?: string;
+        rootPaths: string[];
+      };
+      approvalPolicy?: string;
+      approvalsReviewer?: string;
+      codexPermissionsMode?: CodexPermissionsMode;
+      executionMode?: ExecutionMode;
+      planMode?: boolean;
+      slashCommands?: string[];
+      skills?: string[];
+      skillMetadata?: Array<{
+        name: string;
+        path: string;
+        description: string;
+        shortDescription?: string;
+        enabled: boolean;
+        scope: string;
+        displayName?: string;
+        defaultPrompt?: string;
+        brandColor?: string;
+      }>;
+      apps?: string[];
+      appMetadata?: Array<{
+        id: string;
+        name: string;
+        description: string;
+        installUrl?: string;
+        isAccessible: boolean;
+        isEnabled: boolean;
+      }>;
+      plugins?: string[];
+      pluginMetadata?: Array<{
+        id: string;
+        name: string;
+        path: string;
+        marketplaceName: string;
+        marketplacePath?: string;
+        installed: boolean;
+        enabled: boolean;
+        displayName?: string;
+        shortDescription?: string;
+        longDescription?: string;
+        defaultPrompt?: string;
+        brandColor?: string;
+        composerIcon?: string;
+        composerIconUrl?: string;
+      }>;
+      worktreePath?: string;
+      worktreeBranch?: string;
+      permissionMode?: PermissionMode;
+      sandboxMode?: string;
+      modelReasoningEffort?: string;
+      serviceTier?: string;
+      networkAccessEnabled?: boolean;
+      webSearchMode?: string;
+      additionalWritableRoots?: string[];
+      clearContext?: boolean;
+      sourceSessionId?: string;
+      resumeRequestId?: string;
+      requestId?: string;
+      tipCode?: string;
+      codexCliJoin?: CodexCliJoinTarget;
+    }
+  | { type: "assistant"; message: AssistantMessage; messageUuid?: string }
+  | {
+      type: "tool_result";
+      toolUseId: string;
+      content: string;
+      toolName?: string;
+      permissionOutcome?:
+        | "approved"
+        | "approved_for_session"
+        | "rejected"
+        | "answered";
+      images?: ImageRef[];
+      userMessageUuid?: string;
+      rawContentBlocks?: unknown[];
+    }
+  | {
+      type: "result";
+      subtype: string;
+      result?: string;
+      error?: string;
+      cost?: number;
+      duration?: number;
+      sessionId?: string;
+      stopReason?: string;
+      inputTokens?: number;
+      cachedInputTokens?: number;
+      outputTokens?: number;
+      toolCalls?: number;
+      fileEdits?: number;
+    }
+  | {
+      type: "guardian_approval";
+      risk: "medium" | "high";
+      reason: string;
+      authorization?: string;
+    }
+  | {
+      type: "error";
+      message: string;
+      errorCode?: string;
+      protocolVersion?: number;
+      minimumProtocolVersion?: number;
+      sessionId?: string;
+      toolUseId?: string;
+      path?: string;
+      projectId?: string;
+      workspaceKind?: "project" | "unassigned";
+      requestId?: string;
+      requestScope?: "list" | "project";
+      offset?: number;
+    }
+  | {
+      type: "push_registration_result";
+      token: string;
+      requestId: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: "session_link_resolution";
+      requestId: string;
+      sourceSessionId: string;
+      status: "live" | "recent" | "unavailable";
+      bridgeSessionId?: string;
+      provider?: Provider;
+      recentSession?: Record<string, unknown>;
+    }
+  | {
+      type: "session_context";
+      sessionId: string;
+      context: Record<string, unknown>;
+    }
+  | { type: "status"; status: ProcessStatus }
+  | { type: "history"; messages: ServerMessage[] }
+  | {
+      type: "history_delta";
+      sessionId?: string;
+      fromSeq: number;
+      toSeq: number;
+      messages: Array<{ seq: number; message: ServerMessage }>;
+      status?: ProcessStatus;
+    }
+  | {
+      type: "history_snapshot";
+      sessionId?: string;
+      fromSeq: number;
+      toSeq: number;
+      messages: Array<{ seq: number; message: ServerMessage }>;
+      status?: ProcessStatus;
+      reason: "compacted" | "reset";
+    }
+  | {
+      type: "conversation_queue";
+      sessionId?: string;
+      limit: number;
+      items: QueuedInputItem[];
+    }
+  | {
+      type: "goal_state";
+      sessionId?: string;
+      goal: CodexGoal | null;
+    }
+  | {
+      type: "permission_request";
+      toolUseId: string;
+      toolName: string;
+      input: Record<string, unknown>;
+    }
+  | { type: "permission_resolved"; toolUseId: string }
+  | { type: "stream_delta"; text: string }
+  | { type: "thinking_delta"; text: string }
+  | {
+      type: "file_content";
+      projectPath?: string;
+      requestId?: string;
+      filePath: string;
+      kind?: "text" | "image" | "audio" | "video";
+      content: string;
+      language?: string;
+      error?: string;
+      totalLines?: number;
+      truncated?: boolean;
+      base64?: string;
+      mimeType?: string;
+      sizeBytes?: number;
+      mediaUrl?: string;
+    }
+  | {
+      type: "file_list";
+      projectPath?: string;
+      requestId?: string;
+      files: string[];
+      ignored?: boolean[];
+      modifiedAt?: Record<string, number>;
+      totalFiles?: number;
+      truncated?: boolean;
+      error?: string;
+    }
+  | {
+      type: "file_download_ready";
+      requestId: string;
+      filePath: string;
+      fileName: string;
+      mimeType: string;
+      sizeBytes: number;
+      downloadUrl: string;
+    }
+  | {
+      type: "file_upload_ready";
+      requestId: string;
+      fileName: string;
+      sizeBytes: number;
+      uploadUrl: string;
+      uploadToken: string;
+    }
+  | {
+      type: "file_upload_complete";
+      requestId: string;
+      filePath: string;
+      fileName: string;
+      sizeBytes: number;
+      sha256: string;
+      skipped: boolean;
+    }
+  | { type: "project_history"; projects: string[] }
+  | {
+      type: "projects";
+      projects: Array<{
+        id: string;
+        name: string;
+        rootPaths: string[];
+        createdAt: string;
+        updatedAt: string;
+      }>;
+      requestId?: string;
+    }
+  | {
+      type: "gallery_list";
+      images: GalleryImageInfo[];
+      projectPath?: string;
+      sessionId?: string;
+      requestId?: string;
+    }
+  | { type: "gallery_new_image"; image: GalleryImageInfo }
+  | {
+      type: "directory_listing";
+      path: string;
+      directories: Array<{ name: string; path: string }>;
+      requestId?: string;
+    }
+  | {
+      type: "diff_result";
+      projectPath?: string;
+      requestId?: string;
+      staged?: boolean;
+      diff: string;
+      error?: string;
+      errorCode?: string;
+      imageChanges?: ImageChange[];
+    }
+  | {
+      type: "diff_image_result";
+      projectPath?: string;
+      requestId?: string;
+      filePath: string;
+      version: "old" | "new" | "both";
+      base64?: string;
+      mimeType?: string;
+      error?: string;
+      oldBase64?: string;
+      newBase64?: string;
+    }
+  | {
+      type: "worktree_list";
+      projectPath?: string;
+      requestId?: string;
+      worktrees: WorktreeInfo[];
+      mainBranch?: string;
+      error?: string;
+    }
+  | {
+      type: "worktree_removed";
+      projectPath?: string;
+      requestId?: string;
+      worktreePath: string;
+      error?: string;
+    }
+  | { type: "tool_use_summary"; summary: string; precedingToolUseIds: string[] }
+  | {
+      type: "rewind_preview";
+      sessionId?: string;
+      canRewind: boolean;
+      filesChanged?: string[];
+      insertions?: number;
+      deletions?: number;
+      error?: string;
+    }
+  | {
+      type: "rewind_result";
+      sessionId?: string;
+      success: boolean;
+      mode: "conversation" | "code" | "both";
+      error?: string;
+    }
+  | {
+      type: "user_input";
+      text: string;
+      clientMessageId?: string;
+      userMessageUuid?: string;
+      isSynthetic?: boolean;
+      isMeta?: boolean;
+      imageCount?: number;
+      timestamp?: string;
+      images?: ImageRef[];
+    }
+  | { type: "window_list"; windows: WindowInfo[] }
+  | {
+      type: "screenshot_result";
+      projectPath?: string;
+      sessionId?: string;
+      requestId?: string;
+      success: boolean;
+      image?: GalleryImageInfo;
+      error?: string;
+    }
+  | {
+      type: "debug_bundle";
+      sessionId: string;
+      generatedAt: string;
+      session: {
+        id: string;
+        provider: Provider;
+        status: ProcessStatus;
+        projectPath: string;
+        worktreePath?: string;
+        worktreeBranch?: string;
+        claudeSessionId?: string;
+        createdAt: string;
+        lastActivityAt: string;
+      };
+      pastMessageCount: number;
+      historySummary: string[];
+      debugTrace: DebugTraceEvent[];
+      traceFilePath: string;
+      reproRecipe: {
+        wsUrlHint: string;
+        startBridgeCommand: string;
+        resumeSessionMessage: Record<string, unknown>;
+        getHistoryMessage: Record<string, unknown>;
+        getDebugBundleMessage: Record<string, unknown>;
+        notes: string[];
+      };
+      agentPrompt: string;
+      diff: string;
+      diffError?: string;
+      savedBundlePath?: string;
+    }
+  | { type: "usage_result"; providers: UsageInfoPayload[] }
+  | { type: "message_images_result"; messageUuid: string; images: ImageRef[] }
+  | {
+      type: "prompt_history_backup_result";
+      success: boolean;
+      backedUpAt?: string;
+      error?: string;
+    }
+  | {
+      type: "prompt_history_restore_result";
+      success: boolean;
+      data?: string;
+      appVersion?: string;
+      dbVersion?: number;
+      backedUpAt?: string;
+      error?: string;
+    }
+  | {
+      type: "prompt_history_backup_info";
+      exists: boolean;
+      appVersion?: string;
+      dbVersion?: number;
+      backedUpAt?: string;
+      sizeBytes?: number;
+    }
+  | {
+      type: "prompt_history_sync_result";
+      success: boolean;
+      bridgeInstanceId?: string;
+      revision?: number;
+      syncedAt?: string;
+      fullSnapshot?: boolean;
+      entries?: PromptHistoryEntry[];
+      error?: string;
+    }
+  | {
+      type: "prompt_history_mutation_result";
+      success: boolean;
+      bridgeInstanceId?: string;
+      revision?: number;
+      entry?: PromptHistoryEntry;
+      error?: string;
+    }
+  | {
+      type: "prompt_history_status";
+      bridgeInstanceId: string;
+      revision: number;
+      entryCount: number;
+      updatedAt?: string;
+    }
+  | {
+      type: "rename_result";
+      sessionId: string;
+      name: string | null;
+      success: boolean;
+      error?: string;
+    }
+  // ---- Git Operations (Phase 1-3) ----
+  | {
+      type: "git_stage_result";
+      projectPath?: string;
+      requestId?: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: "git_unstage_result";
+      projectPath?: string;
+      requestId?: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: "git_unstage_hunks_result";
+      projectPath?: string;
+      requestId?: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: "git_commit_result";
+      projectPath?: string;
+      requestId?: string;
+      success: boolean;
+      commitHash?: string;
+      message?: string;
+      error?: string;
+    }
+  | {
+      type: "git_push_result";
+      projectPath?: string;
+      requestId?: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: "git_branches_result";
+      projectPath?: string;
+      requestId?: string;
+      current: string;
+      branches: string[];
+      checkedOutBranches?: string[];
+      remoteStatusByBranch?: Record<
+        string,
+        { ahead: number; behind: number; hasUpstream: boolean }
+      >;
+      error?: string;
+    }
+  | {
+      type: "git_create_branch_result";
+      projectPath?: string;
+      requestId?: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: "git_checkout_branch_result";
+      projectPath?: string;
+      requestId?: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: "git_revert_file_result";
+      projectPath?: string;
+      requestId?: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: "git_revert_hunks_result";
+      projectPath?: string;
+      requestId?: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: "git_fetch_result";
+      projectPath?: string;
+      requestId?: string;
+      success: boolean;
+      error?: string;
+    }
+  | {
+      type: "git_pull_result";
+      projectPath?: string;
+      requestId?: string;
+      success: boolean;
+      message?: string;
+      error?: string;
+    }
+  | {
+      type: "git_status_result";
+      sessionId?: string;
+      projectPath: string;
+      requestId?: string;
+      hasUncommittedChanges: boolean;
+      stagedCount: number;
+      unstagedCount: number;
+      untrackedCount: number;
+      remoteStatusIncluded?: boolean;
+      hasRemoteChanges?: boolean;
+      commitsAhead?: number;
+      commitsBehind?: number;
+      hasUpstream?: boolean;
+      branch?: string;
+      remoteError?: string;
+      error?: string;
+    }
+  | {
+      type: "git_remote_status_result";
+      projectPath?: string;
+      requestId?: string;
+      ahead: number;
+      behind: number;
+      branch: string;
+      hasUpstream: boolean;
+      error?: string;
+    };
+
+export interface UsageWindowPayload {
+  utilization: number;
+  resetsAt: string;
+}
+
+export interface UsageInfoPayload {
+  provider: "claude" | "codex";
+  fiveHour: UsageWindowPayload | null;
+  sevenDay: UsageWindowPayload | null;
+  error?: string;
+}
+
+export type ProcessStatus =
+  | "starting"
+  | "idle"
+  | "running"
+  | "waiting_approval"
+  | "compacting";
+
+// ---- Helpers ----
+
+/** Normalize tool_result content: may be string or array of content blocks. */
+export function normalizeToolResultContent(
+  content: string | unknown[],
+): string {
+  if (Array.isArray(content)) {
+    return (content as Array<Record<string, unknown>>)
+      .filter((c) => c.type === "text")
+      .map((c) => c.text as string)
+      .join("\n");
+  }
+  return typeof content === "string" ? content : String(content ?? "");
+}
+
+const PROVIDERS = ["claude", "codex"] as const;
+const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+const PERMISSION_MODES = [
+  "default",
+  "auto",
+  "acceptEdits",
+  "bypassPermissions",
+  "plan",
+] as const;
+const EXECUTION_MODES = ["default", "acceptEdits", "fullAccess"] as const;
+const APPROVAL_POLICIES = [
+  "untrusted",
+  "on-request",
+  "on-failure",
+  "never",
+] as const;
+const APPROVAL_REVIEWERS = [
+  "user",
+  "auto_review",
+  "guardian_subagent",
+] as const;
+const CODEX_PERMISSION_MODES = [
+  "default",
+  "autoReview",
+  "fullAccess",
+  "custom",
+] as const;
+const WEB_SEARCH_MODES = ["disabled", "cached", "live"] as const;
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === "boolean";
+}
+
+function isOptionalNonEmptyString(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === "string" && value.trim().length > 0)
+  );
+}
+
+function isEnum(value: unknown, allowed: readonly string[]): boolean {
+  return typeof value === "string" && allowed.includes(value);
+}
+
+function isOptionalEnum(
+  value: unknown,
+  allowed: readonly string[],
+): boolean {
+  return value === undefined || isEnum(value, allowed);
+}
+
+function isOptionalStringArray(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (Array.isArray(value) && value.every((item) => typeof item === "string"))
+  );
+}
+
+/** Options shared by new and resumed sessions must follow one contract. */
+function hasValidSessionOptions(msg: Record<string, unknown>): boolean {
+  return (
+    isOptionalEnum(msg.provider, PROVIDERS) &&
+    isOptionalString(msg.sandboxMode) &&
+    isOptionalString(msg.model) &&
+    isOptionalEnum(msg.effort, CLAUDE_EFFORTS) &&
+    (msg.maxTurns === undefined ||
+      (Number.isInteger(msg.maxTurns) && Number(msg.maxTurns) >= 1)) &&
+    (msg.maxBudgetUsd === undefined ||
+      (typeof msg.maxBudgetUsd === "number" &&
+        Number.isFinite(msg.maxBudgetUsd) &&
+        msg.maxBudgetUsd >= 0)) &&
+    isOptionalString(msg.fallbackModel) &&
+    isOptionalBoolean(msg.forkSession) &&
+    isOptionalBoolean(msg.persistSession) &&
+    isOptionalString(msg.profile) &&
+    isOptionalNonEmptyString(msg.modelReasoningEffort) &&
+    isOptionalNonEmptyString(msg.serviceTier) &&
+    isOptionalBoolean(msg.networkAccessEnabled) &&
+    isOptionalEnum(msg.permissionMode, PERMISSION_MODES) &&
+    isOptionalEnum(msg.executionMode, EXECUTION_MODES) &&
+    isOptionalEnum(msg.approvalPolicy, APPROVAL_POLICIES) &&
+    isOptionalEnum(msg.approvalsReviewer, APPROVAL_REVIEWERS) &&
+    isOptionalEnum(msg.codexPermissionsMode, CODEX_PERMISSION_MODES) &&
+    isOptionalBoolean(msg.planMode) &&
+    isOptionalEnum(msg.webSearchMode, WEB_SEARCH_MODES) &&
+    isOptionalStringArray(msg.additionalWritableRoots) &&
+    isOptionalNonEmptyString(msg.projectId) &&
+    isOptionalNonEmptyString(msg.projectName) &&
+    isOptionalEnum(msg.workspaceKind, ["project"])
+  );
+}
+
+function hasValidStartOptions(msg: Record<string, unknown>): boolean {
+  return (
+    hasValidSessionOptions(msg) &&
+    isOptionalString(msg.sessionId) &&
+    isOptionalBoolean(msg.continue) &&
+    isOptionalBoolean(msg.useWorktree) &&
+    isOptionalString(msg.worktreeBranch) &&
+    isOptionalString(msg.existingWorktreePath) &&
+    isOptionalBoolean(msg.autoRename)
+  );
+}
+
+// ---- Parser ----
+
+const RECENT_SESSIONS_MAX_LIMIT = 500;
+const RECENT_SESSIONS_MAX_OFFSET = 100_000;
+const RECENT_SESSIONS_MAX_REQUEST_ID_LENGTH = 128;
+const GALLERY_MAX_PROJECT_PATH_LENGTH = 4096;
+const GALLERY_MAX_SESSION_ID_LENGTH = 512;
+const GALLERY_MAX_REQUEST_ID_LENGTH = 128;
+
+export function parseClientMessage(data: string): ClientMessage | null {
+  try {
+    const msg = JSON.parse(data) as Record<string, unknown>;
+    if (!msg.type || typeof msg.type !== "string") return null;
+    if (
+      msg.requestId !== undefined &&
+      (typeof msg.requestId !== "string" ||
+        msg.requestId.trim().length === 0 ||
+        msg.requestId.length > GALLERY_MAX_REQUEST_ID_LENGTH)
+    )
+      return null;
+    const hasOnlyKeys = (allowedKeys: readonly string[]): boolean => {
+      const allowed = new Set(allowedKeys);
+      return Object.keys(msg).every((key) => allowed.has(key));
+    };
+    const isPromptHistoryEntry = (value: unknown): boolean => {
+      if (!value || typeof value !== "object") return false;
+      const entry = value as Record<string, unknown>;
+      if (typeof entry.text !== "string") return false;
+      if (
+        entry.projectPath !== undefined &&
+        typeof entry.projectPath !== "string"
+      )
+        return false;
+      if (entry.projectId !== undefined && typeof entry.projectId !== "string")
+        return false;
+      if (entry.projectName !== undefined && typeof entry.projectName !== "string")
+        return false;
+      if (
+        entry.id !== undefined &&
+        typeof entry.id !== "string"
+      )
+        return false;
+      if (
+        entry.useCount !== undefined &&
+        (!Number.isInteger(entry.useCount) || Number(entry.useCount) < 0)
+      )
+        return false;
+      if (
+        entry.totalUseCount !== undefined &&
+        (!Number.isInteger(entry.totalUseCount) ||
+          Number(entry.totalUseCount) < 0)
+      )
+        return false;
+      if (
+        entry.isFavorite !== undefined &&
+        typeof entry.isFavorite !== "boolean"
+      )
+        return false;
+      return true;
+    };
+
+    switch (msg.type) {
+      case "client_capabilities":
+        if (msg.appVersion !== undefined && typeof msg.appVersion !== "string")
+          return null;
+        if (
+          msg.protocolVersion !== undefined &&
+          (!Number.isInteger(msg.protocolVersion) ||
+            Number(msg.protocolVersion) < 1)
+        )
+          return null;
+        if (
+          msg.minimumProtocolVersion !== undefined &&
+          (!Number.isInteger(msg.minimumProtocolVersion) ||
+            Number(msg.minimumProtocolVersion) < 1)
+        )
+          return null;
+        if (
+          msg.minimumProtocolVersion !== undefined &&
+          (msg.protocolVersion === undefined ||
+            Number(msg.minimumProtocolVersion) > Number(msg.protocolVersion))
+        )
+          return null;
+        if (msg.supportedServerMessages !== undefined) {
+          if (!Array.isArray(msg.supportedServerMessages)) return null;
+          if (
+            msg.supportedServerMessages.some(
+              (type) => typeof type !== "string",
+            )
+          )
+            return null;
+        }
+        break;
+      case "start":
+        if (
+          typeof msg.projectPath !== "string" ||
+          !hasValidStartOptions(msg)
+        )
+          return null;
+        break;
+      case "input":
+        if (typeof msg.text !== "string") return null;
+        if (
+          msg.clientMessageId !== undefined &&
+          typeof msg.clientMessageId !== "string"
+        )
+          return null;
+        if (
+          msg.baseSeq !== undefined &&
+          (typeof msg.baseSeq !== "number" ||
+            !Number.isInteger(msg.baseSeq) ||
+            msg.baseSeq < 0)
+        )
+          return null;
+        // Validate images array if provided
+        if (msg.images !== undefined) {
+          if (!Array.isArray(msg.images)) return null;
+          for (const img of msg.images) {
+            if (
+              typeof img?.base64 !== "string" ||
+              typeof img?.mimeType !== "string"
+            )
+              return null;
+          }
+        }
+        if (msg.skills !== undefined) {
+          if (!Array.isArray(msg.skills)) return null;
+          for (const skill of msg.skills) {
+            if (
+              typeof skill?.name !== "string" ||
+              typeof skill?.path !== "string"
+            )
+              return null;
+          }
+        }
+        if (msg.mentions !== undefined) {
+          if (!Array.isArray(msg.mentions)) return null;
+          for (const mention of msg.mentions) {
+            if (
+              typeof mention?.name !== "string" ||
+              typeof mention?.path !== "string"
+            )
+              return null;
+          }
+        }
+        // Legacy: imageBase64 requires mimeType
+        if (msg.imageBase64 && typeof msg.mimeType !== "string") return null;
+        break;
+      case "update_queued_input":
+        if (
+          typeof msg.sessionId !== "string" ||
+          typeof msg.itemId !== "string" ||
+          typeof msg.text !== "string"
+        )
+          return null;
+        if (msg.skills !== undefined) {
+          if (!Array.isArray(msg.skills)) return null;
+          for (const skill of msg.skills) {
+            if (
+              typeof skill?.name !== "string" ||
+              typeof skill?.path !== "string"
+            )
+              return null;
+          }
+        }
+        if (msg.mentions !== undefined) {
+          if (!Array.isArray(msg.mentions)) return null;
+          for (const mention of msg.mentions) {
+            if (
+              typeof mention?.name !== "string" ||
+              typeof mention?.path !== "string"
+            )
+              return null;
+          }
+        }
+        break;
+      case "steer_queued_input":
+        if (
+          typeof msg.sessionId !== "string" ||
+          typeof msg.itemId !== "string"
+        )
+          return null;
+        break;
+      case "cancel_queued_input":
+        if (
+          typeof msg.sessionId !== "string" ||
+          typeof msg.itemId !== "string"
+        )
+          return null;
+        break;
+      case "push_register":
+        if (typeof msg.token !== "string") return null;
+        if (msg.requestId != null && typeof msg.requestId !== "string")
+          return null;
+        if (
+          msg.platform !== "ios" &&
+          msg.platform !== "android" &&
+          msg.platform !== "web"
+        )
+          return null;
+        break;
+      case "push_unregister":
+        if (typeof msg.token !== "string") return null;
+        break;
+      case "set_permission_mode":
+        if (
+          !isEnum(msg.mode, PERMISSION_MODES) ||
+          !isOptionalEnum(msg.executionMode, EXECUTION_MODES) ||
+          !isOptionalEnum(msg.approvalPolicy, APPROVAL_POLICIES) ||
+          !isOptionalEnum(msg.approvalsReviewer, APPROVAL_REVIEWERS) ||
+          !isOptionalEnum(msg.codexPermissionsMode, CODEX_PERMISSION_MODES) ||
+          !isOptionalBoolean(msg.planMode)
+        )
+          return null;
+        break;
+      case "set_codex_model":
+        if (typeof msg.model !== "string" || msg.model.trim() === "")
+          return null;
+        if (
+          msg.modelReasoningEffort !== undefined &&
+          (typeof msg.modelReasoningEffort !== "string" ||
+            msg.modelReasoningEffort.trim().length === 0)
+        )
+          return null;
+        if (msg.sessionId !== undefined && typeof msg.sessionId !== "string")
+          return null;
+        break;
+      case "set_codex_speed":
+        if (
+          typeof msg.serviceTier !== "string" ||
+          msg.serviceTier.trim().length === 0
+        )
+          return null;
+        if (msg.sessionId !== undefined && typeof msg.sessionId !== "string")
+          return null;
+        break;
+      case "get_goal":
+      case "clear_goal":
+        if (typeof msg.sessionId !== "string") return null;
+        break;
+      case "set_goal": {
+        if (typeof msg.sessionId !== "string") return null;
+        const hasObjective = msg.objective !== undefined;
+        const hasStatus = msg.status !== undefined;
+        if (!hasObjective && !hasStatus) return null;
+        if (
+          hasObjective &&
+          (typeof msg.objective !== "string" ||
+            msg.objective.trim().length === 0 ||
+            msg.objective.length > 4000)
+        ) {
+          return null;
+        }
+        if (
+          hasStatus &&
+          ![
+            "active",
+            "paused",
+            "blocked",
+            "usageLimited",
+            "budgetLimited",
+            "complete",
+          ].includes(String(msg.status))
+        ) {
+          return null;
+        }
+        break;
+      }
+      case "set_sandbox_mode":
+        if (typeof msg.sandboxMode !== "string") return null;
+        break;
+      case "approve":
+        if (typeof msg.id !== "string") return null;
+        break;
+      case "approve_always":
+        if (typeof msg.id !== "string") return null;
+        break;
+      case "reject":
+        if (typeof msg.id !== "string") return null;
+        break;
+      case "answer":
+        if (typeof msg.toolUseId !== "string" || typeof msg.result !== "string")
+          return null;
+        break;
+      case "install_tool_suggestion":
+        if (typeof msg.toolUseId !== "string") return null;
+        break;
+      case "list_sessions":
+        break;
+      case "stop_session":
+        if (typeof msg.sessionId !== "string") return null;
+        break;
+      case "rename_session":
+        if (typeof msg.sessionId !== "string") return null;
+        break;
+      case "get_history":
+        if (typeof msg.sessionId !== "string") return null;
+        break;
+      case "get_history_delta":
+        if (typeof msg.sessionId !== "string") return null;
+        if (
+          typeof msg.sinceSeq !== "number" ||
+          !Number.isInteger(msg.sinceSeq) ||
+          msg.sinceSeq < 0
+        )
+          return null;
+        break;
+      case "get_session_context":
+        if (typeof msg.sessionId !== "string") return null;
+        break;
+      case "resolve_session_link":
+        if (
+          typeof msg.requestId !== "string" ||
+          typeof msg.sessionId !== "string"
+        )
+          return null;
+        if (
+          msg.provider !== undefined &&
+          msg.provider !== "claude" &&
+          msg.provider !== "codex"
+        )
+          return null;
+        break;
+      case "list_recent_sessions":
+        if (
+          msg.limit !== undefined &&
+          (typeof msg.limit !== "number" ||
+            !Number.isInteger(msg.limit) ||
+            msg.limit < 1 ||
+            msg.limit > RECENT_SESSIONS_MAX_LIMIT)
+        )
+          return null;
+        if (
+          msg.offset !== undefined &&
+          (typeof msg.offset !== "number" ||
+            !Number.isInteger(msg.offset) ||
+            msg.offset < 0 ||
+            msg.offset > RECENT_SESSIONS_MAX_OFFSET)
+        )
+          return null;
+        if (
+          msg.projectPath !== undefined &&
+          typeof msg.projectPath !== "string"
+        )
+          return null;
+        if (msg.projectId !== undefined && typeof msg.projectId !== "string")
+          return null;
+        if (
+          msg.projectId !== undefined &&
+          !isNonEmptyString(msg.projectId)
+        )
+          return null;
+        if (
+          msg.workspaceKind !== undefined &&
+          msg.workspaceKind !== "project" &&
+          msg.workspaceKind !== "unassigned"
+        )
+          return null;
+        if (
+          msg.requestScope !== undefined &&
+          msg.requestScope !== "list" &&
+          msg.requestScope !== "project"
+        )
+          return null;
+        if (
+          msg.requestId !== undefined &&
+          (typeof msg.requestId !== "string" ||
+            msg.requestId.trim().length === 0 ||
+            msg.requestId.length > RECENT_SESSIONS_MAX_REQUEST_ID_LENGTH)
+        )
+          return null;
+        if (
+          msg.provider !== undefined &&
+          msg.provider !== "claude" &&
+          msg.provider !== "codex"
+        )
+          return null;
+        if (
+          msg.namedOnly !== undefined &&
+          typeof msg.namedOnly !== "boolean"
+        )
+          return null;
+        if (
+          msg.searchQuery !== undefined &&
+          typeof msg.searchQuery !== "string"
+        )
+          return null;
+        break;
+      case "resume_session":
+        if (
+          typeof msg.sessionId !== "string" ||
+          typeof msg.projectPath !== "string"
+        )
+          return null;
+        if (
+          msg.resumeRequestId !== undefined &&
+          typeof msg.resumeRequestId !== "string"
+        )
+          return null;
+        if (!hasValidSessionOptions(msg)) return null;
+        break;
+      case "list_gallery":
+        if (
+          !hasOnlyKeys([
+            "type",
+            "project",
+            "projectPath",
+            "sessionId",
+            "requestId",
+          ])
+        )
+          return null;
+        if (
+          msg.project !== undefined &&
+          (typeof msg.project !== "string" ||
+            msg.project.trim().length === 0 ||
+            msg.project.length > GALLERY_MAX_PROJECT_PATH_LENGTH)
+        )
+          return null;
+        if (
+          msg.projectPath !== undefined &&
+          (typeof msg.projectPath !== "string" ||
+            msg.projectPath.trim().length === 0 ||
+            msg.projectPath.length > GALLERY_MAX_PROJECT_PATH_LENGTH)
+        )
+          return null;
+        if (
+          msg.project !== undefined &&
+          msg.projectPath !== undefined &&
+          msg.project !== msg.projectPath
+        )
+          return null;
+        if (
+          msg.sessionId !== undefined &&
+          (typeof msg.sessionId !== "string" ||
+            msg.sessionId.trim().length === 0 ||
+            msg.sessionId.length > GALLERY_MAX_SESSION_ID_LENGTH)
+        )
+          return null;
+        if (
+          msg.requestId !== undefined &&
+          (typeof msg.requestId !== "string" ||
+            msg.requestId.trim().length === 0 ||
+            msg.requestId.length > GALLERY_MAX_REQUEST_ID_LENGTH)
+        )
+          return null;
+        break;
+      case "read_file":
+      case "read_media_file":
+        if (typeof msg.projectPath !== "string") return null;
+        if (typeof msg.filePath !== "string") return null;
+        break;
+      case "prepare_file_download":
+        if (
+          !hasOnlyKeys([
+            "type",
+            "projectPath",
+            "filePath",
+            "requestId",
+          ]) ||
+          typeof msg.projectPath !== "string" ||
+          msg.projectPath.trim().length === 0 ||
+          typeof msg.filePath !== "string" ||
+          msg.filePath.trim().length === 0 ||
+          typeof msg.requestId !== "string" ||
+          msg.requestId.trim().length === 0 ||
+          msg.requestId.length > GALLERY_MAX_REQUEST_ID_LENGTH
+        )
+          return null;
+        break;
+      case "prepare_file_upload":
+        if (
+          !hasOnlyKeys([
+            "type",
+            "projectPath",
+            "directoryPath",
+            "fileName",
+            "sizeBytes",
+            "conflictPolicy",
+            "requestId",
+          ]) ||
+          typeof msg.projectPath !== "string" ||
+          msg.projectPath.trim().length === 0 ||
+          typeof msg.directoryPath !== "string" ||
+          typeof msg.fileName !== "string" ||
+          msg.fileName.length === 0 ||
+          msg.fileName.length > 255 ||
+          typeof msg.sizeBytes !== "number" ||
+          !Number.isSafeInteger(msg.sizeBytes) ||
+          msg.sizeBytes < 0 ||
+          !["rename", "overwrite", "skip"].includes(msg.conflictPolicy as string) ||
+          typeof msg.requestId !== "string" ||
+          msg.requestId.trim().length === 0 ||
+          msg.requestId.length > GALLERY_MAX_REQUEST_ID_LENGTH
+        )
+          return null;
+        break;
+      case "finalize_file_upload":
+        if (
+          !hasOnlyKeys(["type", "uploadToken", "sha256", "requestId"]) ||
+          typeof msg.uploadToken !== "string" ||
+          !/^[a-f0-9]{48}$/.test(msg.uploadToken) ||
+          typeof msg.sha256 !== "string" ||
+          !/^[a-f0-9]{64}$/i.test(msg.sha256) ||
+          typeof msg.requestId !== "string" ||
+          msg.requestId.trim().length === 0 ||
+          msg.requestId.length > GALLERY_MAX_REQUEST_ID_LENGTH
+        )
+          return null;
+        break;
+      case "cancel_file_upload":
+        if (
+          !hasOnlyKeys(["type", "uploadToken"]) ||
+          typeof msg.uploadToken !== "string" ||
+          !/^[a-f0-9]{48}$/.test(msg.uploadToken)
+        )
+          return null;
+        break;
+      case "list_files":
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "list_directory":
+        if (!hasOnlyKeys(["type", "path", "requestId", "includeHidden"]))
+          return null;
+        if (
+          typeof msg.path !== "string" ||
+          msg.path.trim().length === 0
+        )
+          return null;
+        if (
+          msg.requestId !== undefined &&
+          (typeof msg.requestId !== "string" || msg.requestId.trim().length === 0)
+        )
+          return null;
+        if (
+          msg.includeHidden !== undefined &&
+          typeof msg.includeHidden !== "boolean"
+        )
+          return null;
+        break;
+      case "get_diff":
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "get_diff_image":
+        if (typeof msg.projectPath !== "string") return null;
+        if (typeof msg.filePath !== "string") return null;
+        if (
+          msg.version !== "old" &&
+          msg.version !== "new" &&
+          msg.version !== "both"
+        )
+          return null;
+        break;
+      case "interrupt":
+        break;
+      case "list_project_history":
+        break;
+      case "remove_project_history":
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "list_projects":
+        if (msg.requestId !== undefined && typeof msg.requestId !== "string")
+          return null;
+        break;
+      case "create_project":
+        if (!isOptionalNonEmptyString(msg.name) || msg.name === undefined)
+          return null;
+        if (
+          !Array.isArray(msg.rootPaths) ||
+          msg.rootPaths.length === 0 ||
+          !msg.rootPaths.every(isNonEmptyString)
+        )
+          return null;
+        if (msg.requestId !== undefined && typeof msg.requestId !== "string")
+          return null;
+        break;
+      case "update_project":
+        if (!isOptionalNonEmptyString(msg.projectId) || msg.projectId === undefined)
+          return null;
+        if (!isOptionalNonEmptyString(msg.name) || msg.name === undefined)
+          return null;
+        if (
+          !Array.isArray(msg.rootPaths) ||
+          msg.rootPaths.length === 0 ||
+          !msg.rootPaths.every(isNonEmptyString)
+        )
+          return null;
+        if (msg.requestId !== undefined && typeof msg.requestId !== "string")
+          return null;
+        break;
+      case "remove_project":
+        if (!isOptionalNonEmptyString(msg.projectId) || msg.projectId === undefined)
+          return null;
+        if (msg.requestId !== undefined && typeof msg.requestId !== "string")
+          return null;
+        break;
+      case "list_worktrees":
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "remove_worktree":
+        if (
+          typeof msg.projectPath !== "string" ||
+          typeof msg.worktreePath !== "string"
+        )
+          return null;
+        break;
+      case "rewind":
+        if (
+          typeof msg.sessionId !== "string" ||
+          typeof msg.targetUuid !== "string"
+        )
+          return null;
+        if (
+          msg.mode !== "conversation" &&
+          msg.mode !== "code" &&
+          msg.mode !== "both"
+        )
+          return null;
+        break;
+      case "rewind_dry_run":
+        if (
+          typeof msg.sessionId !== "string" ||
+          typeof msg.targetUuid !== "string"
+        )
+          return null;
+        break;
+      case "fork":
+        if (
+          typeof msg.sessionId !== "string" ||
+          typeof msg.targetUuid !== "string"
+        )
+          return null;
+        break;
+      case "list_windows":
+        break;
+      case "take_screenshot":
+        if (msg.mode !== "fullscreen" && msg.mode !== "window") return null;
+        if (msg.mode === "window" && typeof msg.windowId !== "number")
+          return null;
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "get_debug_bundle":
+        if (typeof msg.sessionId !== "string") return null;
+        if (msg.traceLimit !== undefined && typeof msg.traceLimit !== "number")
+          return null;
+        if (
+          msg.includeDiff !== undefined &&
+          typeof msg.includeDiff !== "boolean"
+        )
+          return null;
+        break;
+      case "get_usage":
+        break;
+      case "list_recordings":
+        break;
+      case "get_recording":
+        if (typeof msg.sessionId !== "string") return null;
+        break;
+      case "get_message_images":
+        if (
+          typeof msg.claudeSessionId !== "string" ||
+          typeof msg.messageUuid !== "string"
+        )
+          return null;
+        break;
+      case "backup_prompt_history":
+        if (typeof msg.data !== "string") return null;
+        if (typeof msg.appVersion !== "string") return null;
+        if (
+          typeof msg.dbVersion !== "number" ||
+          !Number.isInteger(msg.dbVersion)
+        )
+          return null;
+        break;
+      case "restore_prompt_history":
+        break;
+      case "get_prompt_history_backup_info":
+        break;
+      case "record_prompt_history":
+        if (typeof msg.text !== "string") return null;
+        if (typeof msg.clientId !== "string") return null;
+        if (
+          msg.projectPath !== undefined &&
+          typeof msg.projectPath !== "string"
+        )
+          return null;
+        if (msg.projectId !== undefined && typeof msg.projectId !== "string")
+          return null;
+        if (msg.projectName !== undefined && typeof msg.projectName !== "string")
+          return null;
+        if (msg.clientName !== undefined && typeof msg.clientName !== "string")
+          return null;
+        if (msg.sessionId !== undefined && typeof msg.sessionId !== "string")
+          return null;
+        if (msg.usedAt !== undefined && typeof msg.usedAt !== "string")
+          return null;
+        break;
+      case "sync_prompt_history":
+        if (typeof msg.clientId !== "string") return null;
+        if (msg.clientName !== undefined && typeof msg.clientName !== "string")
+          return null;
+        if (
+          msg.sinceRevision !== undefined &&
+          (!Number.isInteger(msg.sinceRevision) || Number(msg.sinceRevision) < 0)
+        )
+          return null;
+        if (
+          msg.entries !== undefined &&
+          (!Array.isArray(msg.entries) ||
+            !msg.entries.every(isPromptHistoryEntry))
+        )
+          return null;
+        if (
+          msg.includeDeleted !== undefined &&
+          typeof msg.includeDeleted !== "boolean"
+        )
+          return null;
+        break;
+      case "mutate_prompt_history":
+        if (!["favorite", "delete", "restore"].includes(String(msg.action)))
+          return null;
+        if (msg.id !== undefined && typeof msg.id !== "string") return null;
+        if (msg.text !== undefined && typeof msg.text !== "string") return null;
+        if (
+          msg.projectPath !== undefined &&
+          typeof msg.projectPath !== "string"
+        )
+          return null;
+        if (msg.projectId !== undefined && typeof msg.projectId !== "string")
+          return null;
+        if (
+          msg.isFavorite !== undefined &&
+          typeof msg.isFavorite !== "boolean"
+        )
+          return null;
+        if (msg.updatedAt !== undefined && typeof msg.updatedAt !== "string")
+          return null;
+        break;
+      case "import_prompt_history_v1":
+        if (typeof msg.clientId !== "string") return null;
+        if (msg.clientName !== undefined && typeof msg.clientName !== "string")
+          return null;
+        if (msg.mode !== undefined) return null;
+        if (
+          !Array.isArray(msg.entries) ||
+          !msg.entries.every(isPromptHistoryEntry)
+        )
+          return null;
+        break;
+      case "refresh_branch":
+        if (typeof msg.sessionId !== "string") return null;
+        break;
+      // ---- Git Operations (Phase 1-3) ----
+      case "git_stage":
+        if (typeof msg.projectPath !== "string") return null;
+        if (!Array.isArray(msg.files) && !Array.isArray(msg.hunks)) return null;
+        if (msg.hunks !== undefined) {
+          if (!Array.isArray(msg.hunks)) return null;
+          for (const h of msg.hunks as unknown[]) {
+            const hunk = h as Record<string, unknown>;
+            if (
+              typeof hunk?.file !== "string" ||
+              typeof hunk?.hunkIndex !== "number"
+            )
+              return null;
+          }
+        }
+        break;
+      case "git_unstage":
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "git_unstage_hunks":
+        if (typeof msg.projectPath !== "string") return null;
+        if (!Array.isArray(msg.hunks) || msg.hunks.length === 0) return null;
+        for (const h of msg.hunks as unknown[]) {
+          const hunk = h as Record<string, unknown>;
+          if (
+            typeof hunk?.file !== "string" ||
+            typeof hunk?.hunkIndex !== "number"
+          )
+            return null;
+        }
+        break;
+      case "git_commit":
+        if (
+          !hasOnlyKeys([
+            "type",
+            "projectPath",
+            "sessionId",
+            "message",
+            "autoGenerate",
+            "requestId",
+          ])
+        )
+          return null;
+        if (typeof msg.projectPath !== "string") return null;
+        if (msg.sessionId !== undefined && typeof msg.sessionId !== "string")
+          return null;
+        if (msg.message !== undefined && typeof msg.message !== "string")
+          return null;
+        if (
+          msg.autoGenerate !== undefined &&
+          typeof msg.autoGenerate !== "boolean"
+        )
+          return null;
+        break;
+      case "git_push":
+        if (!hasOnlyKeys(["type", "projectPath", "requestId"])) return null;
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "git_branches":
+        if (!hasOnlyKeys(["type", "projectPath", "requestId"])) return null;
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "git_create_branch":
+        if (typeof msg.projectPath !== "string") return null;
+        if (typeof msg.name !== "string") return null;
+        if (msg.checkout !== undefined && typeof msg.checkout !== "boolean")
+          return null;
+        break;
+      case "git_checkout_branch":
+        if (typeof msg.projectPath !== "string") return null;
+        if (typeof msg.branch !== "string") return null;
+        break;
+      case "git_revert_file":
+        if (typeof msg.projectPath !== "string") return null;
+        if (!Array.isArray(msg.files)) return null;
+        break;
+      case "git_revert_hunks":
+        if (typeof msg.projectPath !== "string") return null;
+        if (!Array.isArray(msg.hunks) || msg.hunks.length === 0) return null;
+        for (const h of msg.hunks as unknown[]) {
+          const hunk = h as Record<string, unknown>;
+          if (
+            typeof hunk?.file !== "string" ||
+            typeof hunk?.hunkIndex !== "number"
+          )
+            return null;
+        }
+        break;
+      case "git_fetch":
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "git_pull":
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "git_status":
+        if (typeof msg.projectPath !== "string") return null;
+        if (msg.sessionId !== undefined && typeof msg.sessionId !== "string")
+          return null;
+        if (
+          msg.includeRemote !== undefined &&
+          typeof msg.includeRemote !== "boolean"
+        )
+          return null;
+        break;
+      case "git_remote_status":
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      case "archive_session":
+        if (typeof msg.sessionId !== "string") return null;
+        if (msg.provider !== "claude" && msg.provider !== "codex") return null;
+        if (typeof msg.projectPath !== "string") return null;
+        break;
+      default:
+        return null;
+    }
+
+    return msg as unknown as ClientMessage;
+  } catch {
+    return null;
+  }
+}

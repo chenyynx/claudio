@@ -1,0 +1,14 @@
+diff --git a/docs/あいう.md b/docs/あいう.md
+index ce01362..14be0d4 100644
+--- a/docs/あいう.md
++++ b/docs/あいう.md
+@@ -1 +1 @@
+-hello
++hello2
+diff --git a/docs/空 白.md b/docs/空 白.md
+index ce01362..14be0d4 100644
+--- a/docs/空 白.md	
++++ b/docs/空 白.md	
+@@ -1 +1 @@
+-hello
++hello2

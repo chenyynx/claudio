@@ -1,0 +1,155 @@
+[
+  {
+    "type": "session_list",
+    "sessions": [],
+    "allowedDirs": [
+      "/Users/k9i-mini/Workspace"
+    ],
+    "claudeModels": [
+      "claude-opus-4-7",
+      "claude-opus-4-7[1m]",
+      "claude-opus-4-6",
+      "claude-opus-4-6[1m]",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-6"
+    ],
+    "codexModels": [
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark"
+    ],
+    "codexProfiles": [],
+    "bridgeVersion": "1.39.0"
+  },
+  {
+    "type": "project_history",
+    "projects": [
+      "/Users/k9i-mini/Workspace/ccpocket",
+      "/Users/k9i-mini/Workspace/cmux",
+      "/Users/k9i-mini/Workspace/happy-coder",
+      "/Users/k9i-mini/Workspace/ccpocket/tmp/e2e-sandbox-project",
+      "/Users/k9i-mini/Workspace/zenn-content"
+    ]
+  },
+  {
+    "type": "system",
+    "subtype": "session_created",
+    "sessionId": "044fbf3e",
+    "provider": "codex",
+    "projectPath": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+    "permissionMode": "acceptEdits",
+    "executionMode": "default",
+    "planMode": false,
+    "sandboxMode": "workspace-write",
+    "model": "gpt-5.4",
+    "approvalPolicy": "on-request",
+    "modelReasoningEffort": "xhigh"
+  },
+  {
+    "type": "session_list",
+    "sessions": [
+      {
+        "id": "044fbf3e",
+        "provider": "codex",
+        "projectPath": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+        "claudeSessionId": "issue54-xhigh-ws",
+        "status": "starting",
+        "createdAt": "2026-04-20T09:19:07.078Z",
+        "lastActivityAt": "2026-04-20T09:19:07.078Z",
+        "gitBranch": "main",
+        "lastMessage": "",
+        "permissionMode": "acceptEdits",
+        "executionMode": "default",
+        "planMode": false,
+        "codexSettings": {
+          "approvalPolicy": "on-request",
+          "sandboxMode": "workspace-write",
+          "model": "gpt-5.4",
+          "modelReasoningEffort": "xhigh"
+        }
+      }
+    ],
+    "allowedDirs": [
+      "/Users/k9i-mini/Workspace"
+    ],
+    "claudeModels": [
+      "claude-opus-4-7",
+      "claude-opus-4-7[1m]",
+      "claude-opus-4-6",
+      "claude-opus-4-6[1m]",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-6"
+    ],
+    "codexModels": [
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark"
+    ],
+    "codexProfiles": [],
+    "bridgeVersion": "1.39.0"
+  },
+  {
+    "type": "session_list",
+    "sessions": [
+      {
+        "id": "044fbf3e",
+        "provider": "codex",
+        "projectPath": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+        "claudeSessionId": "issue54-xhigh-ws",
+        "status": "starting",
+        "createdAt": "2026-04-20T09:19:07.078Z",
+        "lastActivityAt": "2026-04-20T09:19:07.078Z",
+        "gitBranch": "main",
+        "lastMessage": "",
+        "permissionMode": "acceptEdits",
+        "executionMode": "default",
+        "planMode": false,
+        "codexSettings": {
+          "approvalPolicy": "on-request",
+          "sandboxMode": "workspace-write",
+          "model": "gpt-5.4",
+          "modelReasoningEffort": "xhigh"
+        }
+      }
+    ],
+    "allowedDirs": [
+      "/Users/k9i-mini/Workspace"
+    ],
+    "claudeModels": [
+      "claude-opus-4-7",
+      "claude-opus-4-7[1m]",
+      "claude-opus-4-6",
+      "claude-opus-4-6[1m]",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-6"
+    ],
+    "codexModels": [
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark"
+    ],
+    "codexProfiles": [
+      "ccpocket-e2e"
+    ],
+    "bridgeVersion": "1.39.0"
+  },
+  {
+    "type": "error",
+    "message": "Codex error: invalid thread id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `i` at 1",
+    "sessionId": "044fbf3e"
+  },
+  {
+    "type": "result",
+    "subtype": "error",
+    "error": "invalid thread id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `i` at 1",
+    "sessionId": "044fbf3e"
+  },
+  {
+    "type": "status",
+    "status": "idle",
+    "sessionId": "044fbf3e"
+  }
+]

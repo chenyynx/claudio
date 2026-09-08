@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ccpocket.bridge</string>
+
+    <!--
+        Launch via login+interactive shell to inherit the user's full
+        environment (nvm, pyenv, Homebrew, etc.) — same as Terminal.app.
+        `exec` replaces the zsh process with node, so the process tree
+        becomes: launchd → node (no leftover zsh).
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-li</string>
+        <string>-c</string>
+        <!-- Update the path to your built bridge entry point -->
+        <string>exec node /Users/YOUR_USERNAME/Workspace/ccpocket/packages/bridge/dist/index.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <!-- Update this to your ccpocket project root -->
+    <string>/Users/YOUR_USERNAME/Workspace/ccpocket</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>BRIDGE_PORT</key>
+        <string>8765</string>
+        <key>BRIDGE_HOST</key>
+        <string>0.0.0.0</string>
+        <!-- Set your API key for authentication -->
+        <key>BRIDGE_API_KEY</key>
+        <string>YOUR_SECRET_KEY_HERE</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/ccpocket-bridge.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/ccpocket-bridge.stderr.log</string>
+</dict>
+</plist>

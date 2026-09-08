@@ -1,0 +1,10335 @@
+import type { Server as HttpServer } from "node:http";
+import { createHash, randomUUID } from "node:crypto";
+import { execFile, execFileSync } from "node:child_process";
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { lstat, readFile, readlink, realpath, stat, unlink } from "node:fs/promises";
+import { resolve, join, extname, basename, relative, posix, win32 } from "node:path";
+import { promisify } from "node:util";
+import { WebSocketServer, WebSocket } from "ws";
+import {
+  SessionManager,
+  MAX_HISTORY_PER_SESSION,
+  type HistoryEntry,
+  type SessionInfo,
+  type SessionSummary,
+  type WorktreeOptions,
+} from "./session.js";
+import {
+  SdkProcess,
+  listAvailableClaudeModels,
+  type ClaudeEffortLevel,
+  type ClaudeModelMetadata,
+} from "./sdk-process.js";
+import type { StartOptions } from "./sdk-process.js";
+import {
+  codexErrorMessage,
+  isCodexThreadWriterConflict,
+  normalizeCodexReasoningEffortForModel,
+  CodexRpcError,
+  CodexProcess,
+  type CodexModelMetadata,
+  type CodexStartOptions,
+  type CodexThreadSourceKind,
+  type CodexThreadSummary,
+} from "./codex-process.js";
+import { stopManagedCodexAppServers } from "./codex-transport.js";
+import {
+  parseClientMessage,
+  type AssistantContent,
+  type ClientMessage,
+  type DebugTraceEvent,
+  type ImageChange,
+  type Provider,
+  type ServerMessage,
+} from "./parser.js";
+import {
+  BRIDGE_PROTOCOL_MAX_VERSION,
+  BRIDGE_PROTOCOL_MIN_VERSION,
+  clientProtocolRange,
+  negotiateProtocolVersion,
+} from "./protocol-version.js";
+import {
+  getAllRecentSessions,
+  getCodexSessionHistory,
+  getSessionHistory,
+  codexUserTurnUuid,
+  codexThreadToSessionHistory,
+  type SessionHistoryMessage,
+  findSessionsByClaudeIds,
+  extractMessageImages,
+  getClaudeSessionName,
+  getCodexSessionIndexMetadata,
+  type CodexSessionIndexMetadata,
+  loadCodexSessionNames,
+  renameClaudeSession,
+  renameCodexSession,
+  saveCodexSessionProfile,
+} from "./sessions-index.js";
+import type { ImageRef, ImageStore } from "./image-store.js";
+import type { MediaStore } from "./media-store.js";
+import {
+  isSafeUploadFileName,
+  UploadStoreError,
+  type UploadStore,
+} from "./upload-store.js";
+import {
+  formatResumePerformanceLog,
+  summarizeResumeHistory,
+} from "./resume-metrics.js";
+import type { GalleryStore } from "./gallery-store.js";
+import type { ProjectHistory } from "./project-history.js";
+import {
+  type ResolvedWorkspace,
+  type WorkspaceStore,
+} from "./workspace-store.js";
+import { ArchiveStore } from "./archive-store.js";
+import { WorktreeStore } from "./worktree-store.js";
+import {
+  listWorktrees,
+  removeWorktree,
+  createWorktree,
+  worktreeExists,
+  getMainBranch,
+} from "./worktree.js";
+import {
+  stageFiles,
+  stageHunks,
+  unstageFiles,
+  unstageHunks,
+  gitCommit,
+  gitPush,
+  listProjectFilesAndDirectoriesForClient,
+  listBranches,
+  createBranch,
+  checkoutBranch,
+  revertFiles,
+  revertHunks,
+  gitFetch,
+  gitPull,
+  gitRemoteStatus,
+  gitStatus,
+} from "./git-operations.js";
+import { generateCommitMessage } from "./git-assist.js";
+import { listWindows, takeScreenshot } from "./screenshot.js";
+import { DebugTraceStore } from "./debug-trace-store.js";
+import { RecordingStore } from "./recording-store.js";
+import { PushRelayClient } from "./push-relay.js";
+import type { FirebaseAuthClient } from "./firebase-auth.js";
+import { type PushLocale, normalizePushLocale, t } from "./push-i18n.js";
+import { fetchAllUsage } from "./usage.js";
+import type { PromptHistoryBackupStore } from "./prompt-history-backup.js";
+import type { PromptHistoryStore } from "./prompt-history-store.js";
+import { getPackageVersion } from "./version.js";
+import {
+  isPathWithinAllowedDirectory,
+  resolvePlatformPath,
+  resolvePlatformPathFrom,
+} from "./path-utils.js";
+import {
+  DirectoryListingError,
+  listAllowedDirectories,
+} from "./directory-listing.js";
+import {
+  deriveCodexPermissionsMode,
+  normalizeCodexPermissionsMode,
+  withDerivedCodexPermissionsMode,
+} from "./codex-permissions.js";
+
+type SystemServerMessage = Extract<ServerMessage, { type: "system" }>;
+type InputClientMessage = Extract<ClientMessage, { type: "input" }>;
+type ResumeClientMessage = Extract<ClientMessage, { type: "resume_session" }>;
+type CorrelatedProjectRequest = {
+  projectPath: string;
+  requestId?: string;
+};
+
+function projectRequestMetadata(
+  request: CorrelatedProjectRequest,
+): { projectPath: string; requestId?: string } {
+  return {
+    projectPath: request.projectPath,
+    ...(request.requestId ? { requestId: request.requestId } : {}),
+  };
+}
+type ResumeOperation = {
+  id: string;
+  provider: Provider;
+  sourceSessionId: string;
+  projectPath: string;
+  resumeRequestId?: string;
+  fingerprint: string;
+  waiters: Set<WebSocket>;
+  provisionalSessionId?: string;
+  timeout?: ReturnType<typeof setTimeout>;
+  completed?: {
+    sessionId: string;
+    message: SystemServerMessage;
+    completedAt: number;
+  };
+};
+const RESUME_OPERATION_TIMEOUT_MS = 5 * 60 * 1000;
+const RESUME_COMPLETED_TTL_MS = 30 * 1000;
+type ClaudePermissionMode =
+  | "default"
+  | "auto"
+  | "acceptEdits"
+  | "bypassPermissions"
+  | "plan";
+
+// ---- Available model lists (delivered to clients via session_list) ----
+
+const FALLBACK_CLAUDE_MODELS: string[] = [
+  "claude-opus-4-7",
+  "claude-opus-4-7[1m]",
+  "claude-opus-4-6",
+  "claude-opus-4-6[1m]",
+  "claude-opus-4-5-20251101",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-6",
+];
+
+const FALLBACK_CLAUDE_MODEL_EFFORTS: Record<string, ClaudeEffortLevel[]> = {
+  "claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
+  "claude-opus-4-7[1m]": ["low", "medium", "high", "xhigh", "max"],
+  "claude-opus-4-6": ["low", "medium", "high", "max"],
+  "claude-opus-4-6[1m]": ["low", "medium", "high", "max"],
+  "claude-opus-4-5-20251101": ["low", "medium", "high"],
+  "claude-sonnet-4-6": ["low", "medium", "high", "max"],
+  "claude-haiku-4-6": [],
+};
+
+const FALLBACK_CODEX_MODELS: string[] = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex",
+  "gpt-5.3-codex-spark",
+];
+
+const FALLBACK_CODEX_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"];
+const FALLBACK_GPT_5_6_REASONING_EFFORTS = [
+  ...FALLBACK_CODEX_REASONING_EFFORTS,
+  "max",
+];
+const FALLBACK_GPT_5_6_ULTRA_REASONING_EFFORTS = [
+  ...FALLBACK_GPT_5_6_REASONING_EFFORTS,
+  "ultra",
+];
+
+function fallbackCodexReasoningEfforts(model: string): string[] {
+  if (model === "gpt-5.6-sol" || model === "gpt-5.6-terra") {
+    return FALLBACK_GPT_5_6_ULTRA_REASONING_EFFORTS;
+  }
+  if (model === "gpt-5.6-luna") return FALLBACK_GPT_5_6_REASONING_EFFORTS;
+  return FALLBACK_CODEX_REASONING_EFFORTS;
+}
+
+function fallbackCodexServiceTiers(model: string): string[] {
+  return [
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+  ].includes(model)
+    ? ["fast"]
+    : [];
+}
+
+const CODEX_RECENT_THREAD_SOURCE_KINDS: CodexThreadSourceKind[] = [
+  "cli",
+  "vscode",
+  "appServer",
+];
+
+const CODEX_USER_TURN_UUID_RE = /^codex:user-turn:(\d+)$/;
+
+const OPT_IN_SERVER_MESSAGES = new Set<string>([
+  "conversation_queue",
+  "goal_state",
+  "guardian_approval",
+  "prompt_history_status",
+  "projects",
+  "push_registration_result",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseCodexUserTurnOrdinal(uuid: string | undefined): number | null {
+  if (!uuid) return null;
+  const match = uuid.match(CODEX_USER_TURN_UUID_RE);
+  if (!match) return null;
+  const ordinal = Number(match[1]);
+  return Number.isInteger(ordinal) && ordinal > 0 ? ordinal : null;
+}
+
+function countCodexUserTurnsInSession(session: SessionInfo): number {
+  let count = 0;
+  let maxOrdinal = 0;
+
+  const observe = (uuid?: string): void => {
+    count += 1;
+    const ordinal = parseCodexUserTurnOrdinal(uuid);
+    if (ordinal !== null) {
+      maxOrdinal = Math.max(maxOrdinal, ordinal);
+    }
+  };
+
+  if (Array.isArray(session.pastMessages)) {
+    for (const message of session.pastMessages) {
+      if (!message || typeof message !== "object") continue;
+      const item = message as { role?: unknown; uuid?: unknown; isMeta?: unknown };
+      if (item.role === "user" && item.isMeta !== true) {
+        observe(typeof item.uuid === "string" ? item.uuid : undefined);
+      }
+    }
+  }
+
+  for (const message of session.history) {
+    if (message.type === "user_input") {
+      observe(message.userMessageUuid);
+    }
+  }
+
+  return Math.max(count, maxOrdinal);
+}
+
+function nextCodexUserTurnUuid(session: SessionInfo): string {
+  return codexUserTurnUuid(countCodexUserTurnsInSession(session) + 1);
+}
+
+function normalizeHistoryContent(
+  content: unknown,
+): SessionHistoryMessage["content"] {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return [];
+
+  const normalized: Array<{
+    type: string;
+    text?: string;
+    id?: string;
+    name?: string;
+    input?: Record<string, unknown>;
+  }> = [];
+
+  for (const item of content) {
+    if (!item || typeof item !== "object") continue;
+    const value = item as Record<string, unknown>;
+    if (typeof value.type !== "string") continue;
+    if (value.type === "text") {
+      normalized.push({
+        type: "text",
+        text: typeof value.text === "string" ? value.text : "",
+      });
+    } else if (value.type === "tool_use") {
+      normalized.push({
+        type: "tool_use",
+        id: typeof value.id === "string" ? value.id : undefined,
+        name: typeof value.name === "string" ? value.name : undefined,
+        input:
+          value.input && typeof value.input === "object" && !Array.isArray(value.input)
+            ? (value.input as Record<string, unknown>)
+            : undefined,
+      });
+    }
+  }
+
+  return normalized;
+}
+
+function buildCodexHistoryPrefix(
+  session: SessionInfo,
+  targetOrdinal: number,
+): SessionHistoryMessage[] {
+  const messages: SessionHistoryMessage[] = [];
+  let userOrdinal = 0;
+  let reachedEnd = false;
+
+  const appendPastMessage = (message: unknown): void => {
+    if (reachedEnd || !message || typeof message !== "object") return;
+    const item = message as SessionHistoryMessage;
+    if (item.role === "user" && item.isMeta !== true) {
+      userOrdinal += 1;
+      if (userOrdinal > targetOrdinal) {
+        reachedEnd = true;
+        return;
+      }
+      messages.push({ ...item });
+      return;
+    }
+    if (item.role === "assistant" && userOrdinal > 0 && userOrdinal <= targetOrdinal) {
+      messages.push({ ...item });
+    }
+  };
+
+  for (const message of session.pastMessages ?? []) {
+    appendPastMessage(message);
+    if (reachedEnd) return messages;
+  }
+
+  for (const message of session.history) {
+    if (message.type === "user_input") {
+      if (message.isMeta === true) continue;
+      const userInput = message as typeof message & { timestamp?: string };
+      userOrdinal += 1;
+      if (userOrdinal > targetOrdinal) break;
+      messages.push({
+        role: "user",
+        uuid: userInput.userMessageUuid,
+        timestamp: userInput.timestamp,
+        imageCount: userInput.imageCount,
+        content: [{ type: "text", text: userInput.text }],
+      });
+    } else if (
+      message.type === "assistant" &&
+      userOrdinal > 0 &&
+      userOrdinal <= targetOrdinal
+    ) {
+      messages.push({
+        role: "assistant",
+        uuid: message.messageUuid,
+        content: normalizeHistoryContent(message.message.content),
+      });
+    }
+  }
+
+  return messages;
+}
+
+function countCodexHistoryUserTurns(messages: SessionHistoryMessage[]): number {
+  return messages.filter((message) => message.role === "user" && !message.isMeta)
+    .length;
+}
+
+// ---- Codex mode mapping helpers ----
+
+/** Map unified PermissionMode to Codex approval_policy.
+ *  Only "bypassPermissions" maps to "never"; all others use "on-request". */
+function permissionModeToApprovalPolicy(mode?: string): "never" | "on-request" {
+  return mode === "bypassPermissions" ? "never" : "on-request";
+}
+
+function normalizeCodexApprovalPolicy(
+  value?: string,
+): "never" | "on-request" | "on-failure" | "untrusted" {
+  switch (value) {
+    case "untrusted":
+      return "untrusted";
+    case "on-failure":
+      return "on-failure";
+    case "never":
+      return "never";
+    case "on-request":
+    default:
+      return "on-request";
+  }
+}
+
+type CodexPermissionsMode = NonNullable<
+  CodexStartOptions["codexPermissionsMode"]
+>;
+
+interface CodexPermissionSettings {
+  codexPermissionsMode?: CodexPermissionsMode;
+  approvalPolicy?: CodexStartOptions["approvalPolicy"];
+  approvalsReviewer?: CodexStartOptions["approvalsReviewer"];
+  sandboxMode?: CodexStartOptions["sandboxMode"];
+}
+
+function isCodexAutoReviewApprovalsReviewer(value: unknown): boolean {
+  return value === "auto_review" || value === "guardian_subagent";
+}
+
+function sanitizeCodexModel(model: unknown): string | undefined {
+  if (typeof model !== "string") return undefined;
+  const normalized = model.trim();
+  if (!normalized || normalized === "codex") return undefined;
+  return normalized;
+}
+
+function codexSettingsFromPermissionsMode(
+  mode: CodexPermissionsMode,
+): CodexPermissionSettings {
+  switch (mode) {
+    case "default":
+      return {
+        codexPermissionsMode: mode,
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandboxMode: "workspace-write",
+      };
+    case "autoReview":
+      return {
+        codexPermissionsMode: mode,
+        approvalPolicy: "on-request",
+        approvalsReviewer: "auto_review",
+        sandboxMode: "workspace-write",
+      };
+    case "fullAccess":
+      return {
+        codexPermissionsMode: mode,
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandboxMode: "danger-full-access",
+      };
+    case "custom":
+      return { codexPermissionsMode: mode };
+  }
+}
+
+function errorMessageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isClaudeAutoModeUnavailableError(err: unknown): boolean {
+  const message = errorMessageOf(err).toLowerCase();
+  const autoMentionsMode =
+    message.includes("auto mode") ||
+    message.includes('permission mode "auto"') ||
+    message.includes("permission mode auto") ||
+    message.includes("mode auto");
+  if (!autoMentionsMode) return false;
+  return (
+    message.includes("unavailable") ||
+    message.includes("not available") ||
+    message.includes("unsupported") ||
+    message.includes("not supported") ||
+    message.includes("disabled") ||
+    message.includes("requires") ||
+    message.includes("only available") ||
+    message.includes("not enabled")
+  );
+}
+
+function deriveExecutionMode(params: {
+  permissionMode?: string;
+  executionMode?: string;
+  approvalPolicy?: string;
+  provider?: Provider;
+}): "default" | "acceptEdits" | "fullAccess" {
+  if (
+    params.executionMode === "default" ||
+    params.executionMode === "acceptEdits" ||
+    params.executionMode === "fullAccess"
+  ) {
+    return params.executionMode;
+  }
+  if (
+    params.permissionMode === "bypassPermissions" ||
+    params.approvalPolicy === "never"
+  ) {
+    return "fullAccess";
+  }
+  if (params.permissionMode === "acceptEdits") {
+    return params.provider === "codex" ? "default" : "acceptEdits";
+  }
+  return "default";
+}
+
+function derivePlanMode(params: {
+  permissionMode?: string;
+  planMode?: boolean;
+  collaborationMode?: "plan" | "default";
+}): boolean {
+  return (
+    params.planMode ??
+    (params.permissionMode === "plan" || params.collaborationMode === "plan")
+  );
+}
+
+function modesToLegacyPermissionMode(
+  provider: Provider,
+  executionMode: "default" | "acceptEdits" | "fullAccess",
+  planMode: boolean,
+): "default" | "acceptEdits" | "bypassPermissions" | "plan" {
+  if (planMode) return "plan";
+  switch (executionMode) {
+    case "fullAccess":
+      return "bypassPermissions";
+    case "acceptEdits":
+      return "acceptEdits";
+    case "default":
+    default:
+      return provider === "codex" ? "acceptEdits" : "default";
+  }
+}
+
+/** Map simplified SandboxMode (on/off) to Codex internal sandbox mode. */
+function sandboxModeToInternal(
+  mode?: string,
+): "read-only" | "workspace-write" | "danger-full-access" {
+  switch (mode) {
+    case "danger-full-access":
+    case "workspace-write":
+    case "read-only":
+      return mode;
+    case "off":
+      return "danger-full-access";
+    default:
+      return "workspace-write";
+  }
+}
+
+/** Map Codex internal sandbox mode back to simplified on/off for clients. */
+function sandboxModeToExternal(mode?: string): "on" | "off" {
+  return mode === "danger-full-access" ? "off" : "on";
+}
+
+function threadTimestampToIso(value: number): string {
+  return value > 0 ? new Date(value * 1000).toISOString() : "";
+}
+
+function envFlagEnabled(name: string): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+function positiveEnvInt(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function nonNegativeEnvInt(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= MAX_TIMER_DELAY_MS
+    ? value
+    : fallback;
+}
+
+function normalizePositiveLimit(
+  value: number | undefined,
+  fallback: number,
+): number {
+  return value !== undefined && Number.isSafeInteger(value) && value > 0
+    ? value
+    : fallback;
+}
+
+function normalizeNonNegativeLimit(
+  value: number | undefined,
+  fallback: number,
+): number {
+  return value !== undefined &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= MAX_TIMER_DELAY_MS
+    ? value
+    : fallback;
+}
+
+const FILE_PEEK_MEDIA_TYPES: Record<
+  string,
+  { kind: "audio" | "video"; mimeType: string }
+> = {
+  ".wav": { kind: "audio", mimeType: "audio/wav" },
+  ".mp3": { kind: "audio", mimeType: "audio/mpeg" },
+  ".m4a": { kind: "audio", mimeType: "audio/mp4" },
+  ".aac": { kind: "audio", mimeType: "audio/aac" },
+  ".flac": { kind: "audio", mimeType: "audio/flac" },
+  ".ogg": { kind: "audio", mimeType: "audio/ogg" },
+  ".opus": { kind: "audio", mimeType: "audio/ogg" },
+  ".aif": { kind: "audio", mimeType: "audio/aiff" },
+  ".aiff": { kind: "audio", mimeType: "audio/aiff" },
+  ".aifc": { kind: "audio", mimeType: "audio/aiff" },
+  ".mp4": { kind: "video", mimeType: "video/mp4" },
+  ".mov": { kind: "video", mimeType: "video/quicktime" },
+  ".m4v": { kind: "video", mimeType: "video/x-m4v" },
+  ".webm": { kind: "video", mimeType: "video/webm" },
+  ".mkv": { kind: "video", mimeType: "video/x-matroska" },
+  ".avi": { kind: "video", mimeType: "video/x-msvideo" },
+  ".mpg": { kind: "video", mimeType: "video/mpeg" },
+  ".mpeg": { kind: "video", mimeType: "video/mpeg" },
+};
+
+export function downloadMimeType(filePath: string): string {
+  const extension = extname(filePath).toLowerCase();
+  const mediaType = FILE_PEEK_MEDIA_TYPES[extension];
+  if (mediaType) return mediaType.mimeType;
+  const mimeTypes: Record<string, string> = {
+    ".bmp": "image/bmp",
+    ".csv": "text/csv",
+    ".doc": "application/msword",
+    ".docx":
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".gif": "image/gif",
+    ".gz": "application/gzip",
+    ".html": "text/html",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".json": "application/json",
+    ".md": "text/markdown",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx":
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".svg": "image/svg+xml",
+    ".tar": "application/x-tar",
+    ".txt": "text/plain",
+    ".webp": "image/webp",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx":
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xml": "application/xml",
+    ".zip": "application/zip",
+  };
+  return mimeTypes[extension] ?? "application/octet-stream";
+}
+
+function codexThreadToRecentSession(
+  thread: CodexThreadSummary,
+  indexed?: CodexSessionIndexMetadata,
+): Record<string, unknown> {
+  // thread/list only exposes a single preview blob; prefer the real
+  // first/last/summary texts parsed from the rollout file so display-mode
+  // switches (first prompt / last prompt / summary) show distinct content.
+  return {
+    sessionId: thread.id,
+    provider: "codex",
+    ...(thread.name ? { name: thread.name } : {}),
+    ...(thread.agentNickname ? { agentNickname: thread.agentNickname } : {}),
+    ...(thread.agentRole ? { agentRole: thread.agentRole } : {}),
+    summary: indexed?.summary || thread.preview || undefined,
+    firstPrompt: indexed?.firstPrompt || thread.preview || "",
+    ...(indexed?.lastPrompt ? { lastPrompt: indexed.lastPrompt } : {}),
+    created: threadTimestampToIso(thread.createdAt),
+    modified: threadTimestampToIso(thread.updatedAt),
+    gitBranch: thread.gitBranch ?? "",
+    projectPath: thread.cwd,
+    ...(indexed?.resumeCwd ? { resumeCwd: indexed.resumeCwd } : {}),
+    isSidechain: false,
+    ...(indexed?.codexSettings ? { codexSettings: indexed.codexSettings } : {}),
+  };
+}
+
+function recentSessionModifiedTime(session: unknown): number {
+  const modified = (session as { modified?: unknown })?.modified;
+  return typeof modified === "string" ? new Date(modified).getTime() || 0 : 0;
+}
+
+function recentSessionDedupeKey(session: unknown, fallbackIndex: number): string {
+  const value = session as { provider?: unknown; sessionId?: unknown };
+  return typeof value.provider === "string" && typeof value.sessionId === "string"
+    ? `${value.provider}:${value.sessionId}`
+    : `unknown:${fallbackIndex}`;
+}
+
+function mergeRecentSessionPages(sessions: unknown[]): unknown[] {
+  const seen = new Set<string>();
+  const merged: unknown[] = [];
+  for (const session of sessions) {
+    const key = recentSessionDedupeKey(session, merged.length);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(session);
+  }
+  return merged.sort(
+    (a, b) => recentSessionModifiedTime(b) - recentSessionModifiedTime(a),
+  );
+}
+
+export interface BridgeServerOptions {
+  server: HttpServer;
+  apiKey?: string;
+  allowedDirs?: string[];
+  imageStore?: ImageStore;
+  mediaStore?: MediaStore;
+  uploadStore?: UploadStore;
+  galleryStore?: GalleryStore;
+  projectHistory?: ProjectHistory;
+  workspaceStore?: WorkspaceStore;
+  debugTraceStore?: DebugTraceStore;
+  recordingStore?: RecordingStore;
+  firebaseAuth?: FirebaseAuthClient;
+  promptHistoryBackup?: PromptHistoryBackupStore;
+  promptHistoryStore?: PromptHistoryStore;
+  platform?: NodeJS.Platform;
+  fileListMaxEntries?: number;
+  fileListMaxBytes?: number;
+  fileDownloadMaxBytes?: number;
+  fileUploadMaxBytes?: number;
+  deltaBatchMs?: number;
+  deltaBatchMaxChars?: number;
+}
+
+type DeltaServerMessage = Extract<
+  ServerMessage,
+  { type: "stream_delta" | "thinking_delta" }
+>;
+
+interface DeltaBatch {
+  messages: DeltaServerMessage[];
+  timer: NodeJS.Timeout;
+  charCount: number;
+}
+
+interface DeltaTextChunk {
+  text: string;
+  charCount: number;
+}
+
+export class BridgeWebSocketServer {
+  private static readonly MAX_DEBUG_EVENTS = 800;
+  private static readonly MAX_HISTORY_SUMMARY_ITEMS = 300;
+  private static readonly CONNECT_METADATA_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
+  private static readonly DEFAULT_FILE_LIST_MAX_ENTRIES = 5000;
+  private static readonly DEFAULT_FILE_LIST_MAX_BYTES = 512 * 1024;
+  private static readonly DEFAULT_FILE_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024;
+  private static readonly DEFAULT_FILE_UPLOAD_MAX_BYTES = 512 * 1024 * 1024;
+  private static readonly DEFAULT_DELTA_BATCH_MS = 100;
+  private static readonly DEFAULT_DELTA_BATCH_MAX_CHARS = 4096;
+
+  private wss: WebSocketServer;
+  private sessionManager: SessionManager;
+  private apiKey: string | null;
+  private allowedDirs: string[];
+  private imageStore: ImageStore | null;
+  private mediaStore: MediaStore | null;
+  private uploadStore: UploadStore | null;
+  private galleryStore: GalleryStore | null;
+  private projectHistory: ProjectHistory | null;
+  private workspaceStore: WorkspaceStore | null;
+  private pendingSessionWorkspaces = new Map<string, ResolvedWorkspace>();
+  private debugTraceStore: DebugTraceStore;
+  private recordingStore: RecordingStore | null;
+  private worktreeStore: WorktreeStore;
+  private pushRelay: PushRelayClient;
+  private promptHistoryBackup: PromptHistoryBackupStore | null;
+  private promptHistoryStore: PromptHistoryStore | null;
+
+  private recentSessionsRequestIds = new WeakMap<WebSocket, number>();
+  private recentSessionsInFlight = new Map<
+    string,
+    Promise<{ sessions: unknown[]; hasMore: boolean }>
+  >();
+  private debugEvents = new Map<string, DebugTraceEvent[]>();
+  private notifiedPermissionToolUses = new Map<string, Set<string>>();
+  private archiveStore: ArchiveStore;
+  private codexProfiles: string[] = [];
+  private defaultCodexProfile: string | undefined;
+  private codexAutoReviewDisabled = false;
+  private codexAutoReviewPolicyLoaded = false;
+  private codexMetadataRequest: Promise<void> | null = null;
+  private lastConnectMetadataRefreshAt: number | null = null;
+  private claudeModels: string[] = FALLBACK_CLAUDE_MODELS;
+  private claudeModelEfforts: Record<string, ClaudeEffortLevel[]> = {
+    ...FALLBACK_CLAUDE_MODEL_EFFORTS,
+  };
+  private claudeModelsRequest: Promise<void> | null = null;
+  private codexModels: string[] = FALLBACK_CODEX_MODELS;
+  private codexModelReasoningEfforts: Record<string, string[]> =
+    Object.fromEntries(
+      FALLBACK_CODEX_MODELS.map((model) => [
+        model,
+        fallbackCodexReasoningEfforts(model),
+      ]),
+    );
+  private codexModelServiceTiers: Record<string, string[]> = Object.fromEntries(
+    FALLBACK_CODEX_MODELS.map((model) => [
+      model,
+      fallbackCodexServiceTiers(model),
+    ]),
+  );
+  /** FCM token → push notification locale */
+  private tokenLocales = new Map<string, PushLocale>();
+  private tokenPrivacyMode = new Map<string, boolean>();
+  private pushTokenGeneration = new Map<string, number>();
+  private pushTokenOperations = new Map<string, Promise<void>>();
+  private nextPushTokenGeneration = 0;
+  private failSetPermissionMode = envFlagEnabled(
+    "BRIDGE_FAIL_SET_PERMISSION_MODE",
+  );
+  private failSetSandboxMode = envFlagEnabled("BRIDGE_FAIL_SET_SANDBOX_MODE");
+  private readonly fileListMaxEntries: number;
+  private readonly fileListMaxBytes: number;
+  private readonly fileDownloadMaxBytes: number;
+  private readonly fileUploadMaxBytes: number;
+  private readonly deltaBatchMs: number;
+  private readonly deltaBatchMaxChars: number;
+  private deltaBatches = new Map<WebSocket, Map<string, DeltaBatch>>();
+  private platform: NodeJS.Platform;
+  private clientSupportedServerMessages = new WeakMap<WebSocket, Set<string>>();
+  private clientProtocolVersions = new WeakMap<WebSocket, number>();
+  private rejectedProtocolClients = new WeakSet<WebSocket>();
+  private pendingClaudeResumeInputs = new WeakMap<
+    WebSocket,
+    Map<string, InputClientMessage[]>
+  >();
+  private resumeOperations = new Map<string, ResumeOperation>();
+
+  /**
+   * 启发式判断当前 SDK 模型是否支持 vision（图片输入）。
+   * 不支持时，图片存盘 + 发文本路径给 agent，让 Claude Code 用工具处理。
+   * (claudio 私有 fork: 让 non-vision 模型也能接收图片)
+   */
+  private modelSupportsVision(): boolean {
+    const model = (process.env.ANTHROPIC_MODEL || "").toLowerCase();
+    const baseUrl = (process.env.ANTHROPIC_BASE_URL || "").toLowerCase();
+    // 已知纯文本模型（不支持 vision）
+    const noVisionTokens = ["deepseek", "kimi", "glm-", "sensenova", "qwen"];
+    for (const tok of noVisionTokens) {
+      if (model.includes(tok) || baseUrl.includes(tok)) return false;
+    }
+    // Claude 原生 API 始终支持 vision
+    if (baseUrl.includes("api.anthropic.com")) return true;
+    // 其他情况默认支持（未知模型按能处理图片对待）
+    return true;
+  }
+
+  private mimeToExt(mime: string): string {
+    const m = mime.toLowerCase();
+    if (m.includes("png")) return "png";
+    if (m.includes("gif")) return "gif";
+    if (m.includes("webp")) return "webp";
+    if (m.includes("bmp")) return "bmp";
+    return "jpg";
+  }
+
+  constructor(options: BridgeServerOptions) {
+    const {
+      server,
+      apiKey,
+      allowedDirs,
+      imageStore,
+      mediaStore,
+      uploadStore,
+      galleryStore,
+      projectHistory,
+      workspaceStore,
+      debugTraceStore,
+      recordingStore,
+      firebaseAuth,
+      promptHistoryBackup,
+      promptHistoryStore,
+      platform,
+      fileListMaxEntries,
+      fileListMaxBytes,
+      fileDownloadMaxBytes,
+      fileUploadMaxBytes,
+      deltaBatchMs,
+      deltaBatchMaxChars,
+    } = options;
+    this.apiKey = apiKey ?? null;
+    this.allowedDirs = allowedDirs ?? [];
+    this.imageStore = imageStore ?? null;
+    this.mediaStore = mediaStore ?? null;
+    this.uploadStore = uploadStore ?? null;
+    this.galleryStore = galleryStore ?? null;
+    this.projectHistory = projectHistory ?? null;
+    this.workspaceStore = workspaceStore ?? null;
+    this.debugTraceStore = debugTraceStore ?? new DebugTraceStore();
+    this.recordingStore = recordingStore ?? null;
+    this.worktreeStore = new WorktreeStore();
+    this.pushRelay = new PushRelayClient({ firebaseAuth });
+    this.promptHistoryBackup = promptHistoryBackup ?? null;
+    this.promptHistoryStore = promptHistoryStore ?? null;
+    this.platform = platform ?? process.platform;
+    this.fileListMaxEntries = normalizePositiveLimit(
+      fileListMaxEntries,
+      positiveEnvInt(
+        "BRIDGE_FILE_LIST_MAX_ENTRIES",
+        BridgeWebSocketServer.DEFAULT_FILE_LIST_MAX_ENTRIES,
+      ),
+    );
+    this.fileListMaxBytes = normalizePositiveLimit(
+      fileListMaxBytes,
+      positiveEnvInt(
+        "BRIDGE_FILE_LIST_MAX_BYTES",
+        BridgeWebSocketServer.DEFAULT_FILE_LIST_MAX_BYTES,
+      ),
+    );
+    this.fileDownloadMaxBytes = normalizePositiveLimit(
+      fileDownloadMaxBytes,
+      positiveEnvInt(
+        "BRIDGE_FILE_DOWNLOAD_MAX_SIZE_MB",
+        BridgeWebSocketServer.DEFAULT_FILE_DOWNLOAD_MAX_BYTES / 1024 / 1024,
+      ) * 1024 * 1024,
+    );
+    this.fileUploadMaxBytes = normalizePositiveLimit(
+      fileUploadMaxBytes,
+      positiveEnvInt(
+        "BRIDGE_FILE_UPLOAD_MAX_SIZE_MB",
+        BridgeWebSocketServer.DEFAULT_FILE_UPLOAD_MAX_BYTES / 1024 / 1024,
+      ) * 1024 * 1024,
+    );
+    this.deltaBatchMs = normalizeNonNegativeLimit(
+      deltaBatchMs,
+      nonNegativeEnvInt(
+        "BRIDGE_DELTA_BATCH_MS",
+        BridgeWebSocketServer.DEFAULT_DELTA_BATCH_MS,
+      ),
+    );
+    this.deltaBatchMaxChars = normalizePositiveLimit(
+      deltaBatchMaxChars,
+      positiveEnvInt(
+        "BRIDGE_DELTA_BATCH_MAX_CHARS",
+        BridgeWebSocketServer.DEFAULT_DELTA_BATCH_MAX_CHARS,
+      ),
+    );
+
+    this.archiveStore = new ArchiveStore();
+    void this.debugTraceStore.init().catch((err) => {
+      console.error("[ws] Failed to initialize debug trace store:", err);
+    });
+    if (this.recordingStore) {
+      void this.recordingStore.init().catch((err) => {
+        console.error("[ws] Failed to initialize recording store:", err);
+      });
+    }
+    void this.archiveStore.init().catch((err) => {
+      console.error("[ws] Failed to initialize archive store:", err);
+    });
+    if (!this.pushRelay.isConfigured) {
+      console.log("[ws] Push relay disabled (Firebase auth not available)");
+    } else {
+      console.log("[ws] Push relay enabled (Firebase Anonymous Auth)");
+    }
+
+    this.wss = new WebSocketServer({ server });
+
+    this.sessionManager = new SessionManager(
+      (sessionId, msg) => {
+        this.broadcastSessionMessage(sessionId, msg);
+      },
+      imageStore,
+      galleryStore,
+      // Broadcast gallery_new_image when a new image is added
+      (meta) => {
+        if (this.galleryStore) {
+          const info = this.galleryStore.metaToInfo(meta);
+          this.broadcast({ type: "gallery_new_image", image: info });
+        }
+      },
+      this.worktreeStore,
+      (sessionId) => {
+        void this.persistPendingSessionWorkspace(sessionId);
+        this.broadcastSessionList();
+      },
+    );
+
+    this.wss.on("connection", (ws, req) => {
+      // API key authentication
+      if (this.apiKey) {
+        const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+        const token = url.searchParams.get("token");
+        if (token !== this.apiKey) {
+          console.log("[ws] Client rejected: invalid token");
+          ws.close(4001, "Unauthorized");
+          return;
+        }
+      }
+
+      console.log("[ws] Client connected");
+      this.handleConnection(ws);
+    });
+
+    this.wss.on("error", (err) => {
+      console.error("[ws] Server error:", err.message);
+    });
+
+    console.log(`[ws] WebSocket server attached to HTTP server`);
+  }
+
+  /**
+   * Validate that a project path is within the allowed directories.
+   * Returns true if the path is allowed, false otherwise.
+   */
+  private isPathAllowed(path: string): boolean {
+    if (this.allowedDirs.length === 0) return true;
+    return this.allowedDirs.some(
+      (dir) => isPathWithinAllowedDirectory(path, dir, this.platform),
+    );
+  }
+
+  private async isCanonicalPathAllowed(path: string): Promise<boolean> {
+    if (this.allowedDirs.length === 0) return true;
+    for (const dir of this.allowedDirs) {
+      let canonicalDir = dir;
+      try {
+        canonicalDir = await realpath(dir);
+      } catch {
+        // Keep the configured path when the allowed root cannot be resolved.
+      }
+      if (isPathWithinAllowedDirectory(path, canonicalDir, this.platform)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private sendFileDownloadError(
+    ws: WebSocket,
+    request: Extract<ClientMessage, { type: "prepare_file_download" }>,
+    errorCode:
+      | "file_download_not_allowed"
+      | "file_download_not_found"
+      | "file_download_not_file"
+      | "file_download_too_large"
+      | "file_download_unavailable"
+      | "file_download_failed",
+    message: string,
+  ): void {
+    this.send(ws, {
+      type: "error",
+      errorCode,
+      message,
+      path: request.filePath,
+      requestId: request.requestId,
+    });
+  }
+
+  private async prepareFileDownload(
+    ws: WebSocket,
+    request: Extract<ClientMessage, { type: "prepare_file_download" }>,
+  ): Promise<void> {
+    const pathApi = this.platform === "win32" ? win32 : posix;
+    const projectPath = pathApi.resolve(request.projectPath);
+    if (pathApi.isAbsolute(request.filePath)) {
+      this.sendFileDownloadError(
+        ws,
+        request,
+        "file_download_not_allowed",
+        "Only project-relative file paths can be downloaded.",
+      );
+      return;
+    }
+
+    const requestedPath = pathApi.resolve(projectPath, request.filePath);
+    if (
+      !this.isPathAllowed(projectPath) ||
+      !isPathWithinAllowedDirectory(
+        requestedPath,
+        projectPath,
+        this.platform,
+      )
+    ) {
+      this.sendFileDownloadError(
+        ws,
+        request,
+        "file_download_not_allowed",
+        "The requested file is outside the current project.",
+      );
+      return;
+    }
+
+    let canonicalProjectPath: string;
+    try {
+      canonicalProjectPath = await realpath(projectPath);
+      const projectStat = await stat(canonicalProjectPath);
+      if (!projectStat.isDirectory()) throw new Error("not a directory");
+    } catch {
+      this.sendFileDownloadError(
+        ws,
+        request,
+        "file_download_not_allowed",
+        "The current project is unavailable or not allowed.",
+      );
+      return;
+    }
+
+    let canonicalFilePath: string;
+    try {
+      canonicalFilePath = await realpath(requestedPath);
+    } catch {
+      this.sendFileDownloadError(
+        ws,
+        request,
+        "file_download_not_found",
+        "File not found.",
+      );
+      return;
+    }
+
+    if (
+      !isPathWithinAllowedDirectory(
+        canonicalFilePath,
+        canonicalProjectPath,
+        this.platform,
+      ) ||
+      !(await this.isCanonicalPathAllowed(canonicalFilePath))
+    ) {
+      this.sendFileDownloadError(
+        ws,
+        request,
+        "file_download_not_allowed",
+        "The requested file resolves outside the current project.",
+      );
+      return;
+    }
+
+    try {
+      const fileStat = await stat(canonicalFilePath);
+      if (!fileStat.isFile()) {
+        this.sendFileDownloadError(
+          ws,
+          request,
+          "file_download_not_file",
+          "Only regular files can be downloaded.",
+        );
+        return;
+      }
+      if (fileStat.size > this.fileDownloadMaxBytes) {
+        const maxSizeMb = Math.max(
+          1,
+          Math.ceil(this.fileDownloadMaxBytes / 1024 / 1024),
+        );
+        this.sendFileDownloadError(
+          ws,
+          request,
+          "file_download_too_large",
+          `File is too large to download. Maximum size is ${maxSizeMb} MB.`,
+        );
+        return;
+      }
+      if (!this.mediaStore) {
+        this.sendFileDownloadError(
+          ws,
+          request,
+          "file_download_unavailable",
+          "File downloads are unavailable on this Bridge.",
+        );
+        return;
+      }
+
+      const fileName = pathApi.basename(requestedPath);
+      const mimeType = downloadMimeType(fileName);
+      const ref = await this.mediaStore.register(
+        canonicalFilePath,
+        mimeType,
+        fileStat.size,
+        fileName,
+      );
+      this.send(ws, {
+        type: "file_download_ready",
+        requestId: request.requestId,
+        filePath: request.filePath,
+        fileName,
+        mimeType: ref.mimeType,
+        sizeBytes: ref.sizeBytes,
+        downloadUrl: ref.url,
+      });
+    } catch {
+      this.sendFileDownloadError(
+        ws,
+        request,
+        "file_download_failed",
+        "Unable to prepare the file download.",
+      );
+    }
+  }
+
+  private sendFileUploadError(
+    ws: WebSocket,
+    requestId: string,
+    errorCode: string,
+    message: string,
+    path?: string,
+  ): void {
+    this.send(ws, { type: "error", errorCode, message, requestId, path });
+  }
+
+  private async prepareFileUpload(
+    ws: WebSocket,
+    request: Extract<ClientMessage, { type: "prepare_file_upload" }>,
+  ): Promise<void> {
+    const pathApi = this.platform === "win32" ? win32 : posix;
+    const projectPath = pathApi.resolve(request.projectPath);
+    if (
+      !this.uploadStore ||
+      pathApi.isAbsolute(request.directoryPath) ||
+      !isSafeUploadFileName(request.fileName)
+    ) {
+      this.sendFileUploadError(
+        ws,
+        request.requestId,
+        !this.uploadStore ? "file_upload_unavailable" : "file_upload_not_allowed",
+        !this.uploadStore
+          ? "File uploads are unavailable on this Bridge."
+          : "The upload destination or file name is not allowed.",
+        request.directoryPath,
+      );
+      return;
+    }
+    if (request.sizeBytes > this.fileUploadMaxBytes) {
+      this.sendFileUploadError(
+        ws,
+        request.requestId,
+        "file_upload_too_large",
+        `File is too large to upload. Maximum size is ${Math.ceil(this.fileUploadMaxBytes / 1024 / 1024)} MB.`,
+        request.fileName,
+      );
+      return;
+    }
+
+    const requestedDirectory = pathApi.resolve(projectPath, request.directoryPath || ".");
+    if (
+      !this.isPathAllowed(projectPath) ||
+      !isPathWithinAllowedDirectory(requestedDirectory, projectPath, this.platform)
+    ) {
+      this.sendFileUploadError(ws, request.requestId, "file_upload_not_allowed", "The upload destination is outside the current project.", request.directoryPath);
+      return;
+    }
+
+    try {
+      const canonicalProject = await realpath(projectPath);
+      const canonicalDirectory = await realpath(requestedDirectory);
+      const directoryStat = await stat(canonicalDirectory);
+      if (
+        !directoryStat.isDirectory() ||
+        !isPathWithinAllowedDirectory(canonicalDirectory, canonicalProject, this.platform) ||
+        !(await this.isCanonicalPathAllowed(canonicalDirectory))
+      ) {
+        throw new UploadStoreError("file_upload_directory_changed", "The upload destination is not allowed.");
+      }
+      const ref = await this.uploadStore.register({
+        directoryPath: canonicalDirectory,
+        relativeDirectoryPath: pathApi
+          .relative(projectPath, requestedDirectory)
+          .split(pathApi.sep)
+          .join("/"),
+        fileName: request.fileName,
+        sizeBytes: request.sizeBytes,
+        conflictPolicy: request.conflictPolicy,
+      });
+      this.send(ws, {
+        type: "file_upload_ready",
+        requestId: request.requestId,
+        fileName: request.fileName,
+        sizeBytes: request.sizeBytes,
+        uploadUrl: ref.url,
+        uploadToken: ref.token,
+      });
+    } catch (error) {
+      const known = error instanceof UploadStoreError ? error : null;
+      this.sendFileUploadError(
+        ws,
+        request.requestId,
+        known?.code ?? "file_upload_directory_not_found",
+        known?.message ?? "The upload destination was not found or is not allowed.",
+        request.directoryPath,
+      );
+    }
+  }
+
+  private async finalizeFileUpload(
+    ws: WebSocket,
+    request: Extract<ClientMessage, { type: "finalize_file_upload" }>,
+  ): Promise<void> {
+    if (!this.uploadStore) {
+      this.sendFileUploadError(ws, request.requestId, "file_upload_unavailable", "File uploads are unavailable on this Bridge.");
+      return;
+    }
+    try {
+      const result = await this.uploadStore.finalize(request.uploadToken, request.sha256);
+      this.send(ws, { type: "file_upload_complete", requestId: request.requestId, ...result });
+    } catch (error) {
+      const known = error instanceof UploadStoreError ? error : null;
+      this.sendFileUploadError(ws, request.requestId, known?.code ?? "file_upload_failed", known?.message ?? "Unable to finish the file upload.");
+    }
+  }
+
+  /** Build a user-friendly error for disallowed project paths. */
+  private buildPathNotAllowedError(
+    projectPath: string,
+    requestId?: string,
+  ): Extract<ServerMessage, { type: "error" }> {
+    return {
+      type: "error",
+      message: `⚠ Project path not allowed\n\n"${projectPath}" is not in the allowed directories.\n\nFix: Update BRIDGE_ALLOWED_DIRS on the Bridge server to include this path.`,
+      errorCode: "path_not_allowed",
+      path: projectPath,
+      requestId,
+    };
+  }
+
+  private sendToolActionError(
+    ws: WebSocket,
+    message: { sessionId?: string; id?: string; toolUseId?: string },
+    error: string,
+  ): void {
+    this.send(ws, {
+      type: "error",
+      message: error,
+      sessionId: message.sessionId,
+      toolUseId: message.toolUseId ?? message.id,
+    });
+  }
+
+  private normalizeAdditionalWritableRoots(
+    roots: string[] | undefined,
+    projectPath: string,
+  ): { roots?: string[]; deniedRoot?: string } {
+    if (!roots || roots.length === 0) return {};
+    const normalized = new Map<string, string>();
+    for (const root of roots) {
+      const trimmed = root.trim();
+      if (!trimmed) continue;
+      const resolved = resolvePlatformPathFrom(
+        projectPath,
+        trimmed,
+        this.platform,
+      );
+      if (!this.isPathAllowed(resolved)) {
+        return { deniedRoot: root };
+      }
+      const key = this.platform === "win32" ? resolved.toLowerCase() : resolved;
+      if (!normalized.has(key)) {
+        normalized.set(key, resolved);
+      }
+    }
+    return { roots: [...normalized.values()] };
+  }
+
+  private buildSessionCreatedMessage(params: {
+    sessionId: string;
+    provider: Provider;
+    projectPath: string;
+    session?: SessionInfo;
+    permissionMode?: string;
+    executionMode?: string;
+    planMode?: boolean;
+    approvalsReviewer?: string;
+    codexPermissionsMode?: string;
+    sandboxMode?: string;
+    slashCommands?: string[];
+    skills?: string[];
+    skillMetadata?: Array<Record<string, unknown>>;
+    apps?: string[];
+    appMetadata?: Array<Record<string, unknown>>;
+    plugins?: string[];
+    pluginMetadata?: Array<Record<string, unknown>>;
+    sourceSessionId?: string;
+    resumeRequestId?: string;
+    requestId?: string;
+  }): SystemServerMessage {
+    const {
+      sessionId,
+      provider,
+      projectPath,
+      session,
+      permissionMode,
+      executionMode,
+      planMode,
+      approvalsReviewer,
+      codexPermissionsMode,
+      sandboxMode,
+      slashCommands,
+      skills,
+      skillMetadata,
+      apps,
+      appMetadata,
+      plugins,
+      pluginMetadata,
+      sourceSessionId,
+      resumeRequestId,
+      requestId,
+    } = params;
+    const derivedCodexSettings = provider === "codex"
+      ? withDerivedCodexPermissionsMode(session?.codexSettings)
+      : session?.codexSettings;
+    const workspace = session
+      ? this.workspaceForRuntimeSession(session)
+      : undefined;
+
+    const msg: SystemServerMessage = {
+      type: "system",
+      subtype: "session_created",
+      sessionId,
+      provider,
+      projectPath,
+      ...(workspace ? { workspace } : {}),
+      ...(permissionMode
+        ? {
+            permissionMode: permissionMode as
+              | "default"
+              | "auto"
+              | "acceptEdits"
+              | "bypassPermissions"
+              | "plan",
+          }
+        : {}),
+      ...((approvalsReviewer ?? derivedCodexSettings?.approvalsReviewer)
+        ? {
+            approvalsReviewer:
+              approvalsReviewer ?? derivedCodexSettings?.approvalsReviewer,
+          }
+        : {}),
+      ...((codexPermissionsMode ?? derivedCodexSettings?.codexPermissionsMode)
+        ? {
+            codexPermissionsMode: (codexPermissionsMode ??
+              derivedCodexSettings?.codexPermissionsMode) as
+              | "default"
+              | "autoReview"
+              | "fullAccess"
+              | "custom",
+          }
+        : {}),
+      ...((executionMode ??
+      (session?.process instanceof SdkProcess
+        ? session.process.permissionMode === "bypassPermissions"
+          ? "fullAccess"
+          : session.process.permissionMode === "acceptEdits"
+            ? "acceptEdits"
+            : "default"
+        : session?.process instanceof CodexProcess
+          ? session.process.approvalPolicy === "never"
+            ? "fullAccess"
+            : "default"
+          : undefined))
+        ? {
+            executionMode: (executionMode ??
+              (session?.process instanceof SdkProcess
+                ? session.process.permissionMode === "bypassPermissions"
+                  ? "fullAccess"
+                  : session.process.permissionMode === "acceptEdits"
+                    ? "acceptEdits"
+                    : "default"
+                : session?.process instanceof CodexProcess
+                  ? session.process.approvalPolicy === "never"
+                    ? "fullAccess"
+                    : "default"
+                  : undefined)) as "default" | "acceptEdits" | "fullAccess",
+          }
+        : {}),
+      ...((planMode ??
+        (session?.process instanceof SdkProcess
+          ? session.process.permissionMode === "plan"
+          : session?.process instanceof CodexProcess
+            ? session.process.collaborationMode === "plan"
+            : undefined)) != null
+        ? {
+            planMode:
+              planMode ??
+              (session?.process instanceof SdkProcess
+                ? session.process.permissionMode === "plan"
+                : session?.process instanceof CodexProcess
+                  ? session.process.collaborationMode === "plan"
+                  : false),
+          }
+        : {}),
+      ...(sandboxMode ? { sandboxMode } : {}),
+      ...(slashCommands ? { slashCommands } : {}),
+      ...(skills ? { skills } : {}),
+      ...(skillMetadata
+        ? {
+            skillMetadata:
+              skillMetadata as SystemServerMessage["skillMetadata"],
+          }
+        : {}),
+      ...(apps ? { apps } : {}),
+      ...(appMetadata
+        ? {
+            appMetadata:
+              appMetadata as SystemServerMessage["appMetadata"],
+          }
+        : {}),
+      ...(plugins ? { plugins } : {}),
+      ...(pluginMetadata
+        ? {
+            pluginMetadata:
+              pluginMetadata as SystemServerMessage["pluginMetadata"],
+          }
+        : {}),
+      ...(session?.worktreePath
+        ? {
+            worktreePath: session.worktreePath,
+            worktreeBranch: session.worktreeBranch,
+          }
+        : {}),
+      ...(sourceSessionId ? { sourceSessionId } : {}),
+      ...(resumeRequestId ? { resumeRequestId } : {}),
+      ...(requestId ? { requestId } : {}),
+    };
+
+    if (provider === "codex" && derivedCodexSettings) {
+      if (derivedCodexSettings.model !== undefined) {
+        msg.model = derivedCodexSettings.model;
+      }
+      if (derivedCodexSettings.approvalPolicy !== undefined) {
+        msg.approvalPolicy = derivedCodexSettings.approvalPolicy;
+      }
+      if (derivedCodexSettings.codexPermissionsMode !== undefined) {
+        msg.codexPermissionsMode = derivedCodexSettings.codexPermissionsMode as
+          | "default"
+          | "autoReview"
+          | "fullAccess"
+          | "custom";
+      }
+      if (derivedCodexSettings.modelReasoningEffort !== undefined) {
+        msg.modelReasoningEffort = derivedCodexSettings.modelReasoningEffort;
+      }
+      if (derivedCodexSettings.serviceTier !== undefined) {
+        msg.serviceTier = derivedCodexSettings.serviceTier;
+      }
+      if (derivedCodexSettings.networkAccessEnabled !== undefined) {
+        msg.networkAccessEnabled = derivedCodexSettings.networkAccessEnabled;
+      }
+      if (derivedCodexSettings.webSearchMode !== undefined) {
+        msg.webSearchMode = derivedCodexSettings.webSearchMode;
+      }
+      if (derivedCodexSettings.additionalWritableRoots !== undefined) {
+        msg.additionalWritableRoots =
+          derivedCodexSettings.additionalWritableRoots;
+      }
+    }
+
+    return msg;
+  }
+
+  private async rewindCodexConversation(
+    ws: WebSocket,
+    sessionId: string,
+    targetUuid: string,
+    mode: "conversation" | "code" | "both",
+  ): Promise<void> {
+    if (mode !== "conversation") {
+      this.send(ws, {
+        type: "rewind_result",
+        sessionId,
+        success: false,
+        mode,
+        error: "Codex only supports conversation rewind",
+      });
+      return;
+    }
+
+    const session = this.sessionManager.get(sessionId);
+    if (!session) {
+      this.send(ws, {
+        type: "rewind_result",
+        sessionId,
+        success: false,
+        mode,
+        error: `Session ${sessionId} not found`,
+      });
+      return;
+    }
+    const codexProcess = session.process as CodexProcess;
+    if (
+      session.provider !== "codex" ||
+      typeof codexProcess.rollbackThread !== "function"
+    ) {
+      this.send(ws, {
+        type: "rewind_result",
+        sessionId,
+        success: false,
+        mode,
+        error: "Session is not a Codex session",
+      });
+      return;
+    }
+    if (session.status !== "idle" || (codexProcess.status ?? session.status) !== "idle") {
+      this.send(ws, {
+        type: "rewind_result",
+        sessionId,
+        success: false,
+        mode,
+        error: "Cannot rewind while Codex is running",
+      });
+      return;
+    }
+    if (session.codexQueuedInput) {
+      this.send(ws, {
+        type: "rewind_result",
+        sessionId,
+        success: false,
+        mode,
+        error: "Cannot rewind while Codex has queued input",
+      });
+      return;
+    }
+
+    const targetOrdinal = parseCodexUserTurnOrdinal(targetUuid);
+    const totalUserTurns = countCodexUserTurnsInSession(session);
+    if (targetOrdinal === null || targetOrdinal > totalUserTurns) {
+      this.send(ws, {
+        type: "rewind_result",
+        sessionId,
+        success: false,
+        mode,
+        error: "Invalid Codex rewind target",
+      });
+      return;
+    }
+
+    const numTurns = totalUserTurns - targetOrdinal + 1;
+    if (numTurns <= 0) {
+      this.send(ws, {
+        type: "rewind_result",
+        sessionId,
+        success: false,
+        mode,
+        error: "Invalid Codex rewind target",
+      });
+      return;
+    }
+
+    const threadId = codexProcess.sessionId ?? session.claudeSessionId;
+    if (!threadId) {
+      this.send(ws, {
+        type: "rewind_result",
+        sessionId,
+        success: false,
+        mode,
+        error: "No Codex thread ID available for rewind",
+      });
+      return;
+    }
+
+    const projectPath = session.projectPath;
+    const codexSettings = session.codexSettings;
+    const workspace = this.workspaceForRuntimeSession(session);
+    const worktreeOpts: WorktreeOptions | undefined = session.worktreePath
+      ? {
+          existingWorktreePath: session.worktreePath,
+          worktreeBranch: session.worktreeBranch,
+        }
+      : undefined;
+
+    const rolledBackThread = await codexProcess.rollbackThread(numTurns);
+
+    const pastMessages = this.codexHistoryFromThreadOrFallback({
+      thread: rolledBackThread,
+      expectedUserTurns: targetOrdinal - 1,
+      fallback: buildCodexHistoryPrefix(session, targetOrdinal - 1),
+    });
+    this.destroySession(sessionId);
+    const newSessionId = this.sessionManager.create(
+      projectPath,
+      undefined,
+      pastMessages,
+      worktreeOpts,
+      "codex",
+      this.withCodexAutoReviewPolicy({
+        ...(codexSettings ?? {}),
+        threadId,
+      } as CodexStartOptions),
+    );
+    this.attachWorkspaceToRuntimeSession(newSessionId, workspace);
+    const newSession = this.sessionManager.get(newSessionId);
+
+    this.send(ws, {
+      type: "rewind_result",
+      sessionId,
+      success: true,
+      mode,
+    });
+    this.send(
+      ws,
+      this.buildSessionCreatedMessage({
+        sessionId: newSessionId,
+        provider: "codex",
+        projectPath,
+        session: newSession,
+        approvalsReviewer: newSession?.codexSettings?.approvalsReviewer,
+        sandboxMode: newSession?.codexSettings?.sandboxMode,
+        sourceSessionId: sessionId,
+      }),
+    );
+    this.sendSessionList(ws);
+  }
+
+  private async forkCodexSession(
+    ws: WebSocket,
+    sessionId: string,
+    targetUuid: string,
+  ): Promise<void> {
+    const session = this.sessionManager.get(sessionId);
+    if (!session) {
+      this.send(ws, {
+        type: "error",
+        message: `Session ${sessionId} not found`,
+        errorCode: "fork_failed",
+      });
+      return;
+    }
+    const codexProcess = session.process as CodexProcess;
+    if (
+      session.provider !== "codex" ||
+      typeof codexProcess.forkThread !== "function"
+    ) {
+      this.send(ws, {
+        type: "error",
+        message: "Fork is only supported for Codex sessions",
+        errorCode: "fork_failed",
+      });
+      return;
+    }
+    if (session.status !== "idle" || (codexProcess.status ?? session.status) !== "idle") {
+      this.send(ws, {
+        type: "error",
+        message: "Cannot fork while Codex is running",
+        errorCode: "fork_failed",
+      });
+      return;
+    }
+    if (session.codexQueuedInput) {
+      this.send(ws, {
+        type: "error",
+        message: "Cannot fork while Codex has queued input",
+        errorCode: "fork_failed",
+      });
+      return;
+    }
+
+    const targetOrdinal = parseCodexUserTurnOrdinal(targetUuid);
+    const totalUserTurns = countCodexUserTurnsInSession(session);
+    if (targetOrdinal === null || targetOrdinal > totalUserTurns) {
+      this.send(ws, {
+        type: "error",
+        message: "Invalid Codex fork target",
+        errorCode: "fork_failed",
+      });
+      return;
+    }
+
+    const projectPath = session.projectPath;
+    const codexSettings = session.codexSettings;
+    const workspace = this.workspaceForRuntimeSession(session);
+    const worktreeOpts: WorktreeOptions | undefined = session.worktreePath
+      ? {
+          existingWorktreePath: session.worktreePath,
+          worktreeBranch: session.worktreeBranch,
+        }
+      : undefined;
+
+    const forked = await codexProcess.forkThread();
+    const forkedThreadId = forked.threadId;
+    const turnsToDrop = totalUserTurns - targetOrdinal;
+    let forkedThread: unknown = forked.thread;
+    if (turnsToDrop > 0) {
+      forkedThread = await codexProcess.rollbackThreadById(
+        forkedThreadId,
+        turnsToDrop,
+      );
+    }
+
+    const pastMessages = this.codexHistoryFromThreadOrFallback({
+      thread: forkedThread,
+      expectedUserTurns: targetOrdinal,
+      fallback: buildCodexHistoryPrefix(session, targetOrdinal),
+    });
+    const newSessionId = this.sessionManager.create(
+      projectPath,
+      undefined,
+      pastMessages,
+      worktreeOpts,
+      "codex",
+      this.withCodexAutoReviewPolicy({
+        ...(codexSettings ?? {}),
+        threadId: forkedThreadId,
+      } as CodexStartOptions),
+    );
+    this.attachWorkspaceToRuntimeSession(newSessionId, workspace);
+    const newSession = this.sessionManager.get(newSessionId);
+
+    this.send(
+      ws,
+      this.buildSessionCreatedMessage({
+        sessionId: newSessionId,
+        provider: "codex",
+        projectPath,
+        session: newSession,
+        approvalsReviewer: newSession?.codexSettings?.approvalsReviewer,
+        sandboxMode: newSession?.codexSettings?.sandboxMode,
+        sourceSessionId: sessionId,
+      }),
+    );
+    this.sendSessionList(ws);
+  }
+
+  private sendTip(
+    ws: WebSocket,
+    sessionId: string,
+    tipCode: string,
+    session?: SessionInfo,
+  ): void {
+    const tipMsg = {
+      type: "system",
+      subtype: "tip",
+      tipCode,
+      sessionId,
+    } as ServerMessage;
+    if (session) {
+      this.sessionManager.appendHistory(session.id, tipMsg);
+    }
+    this.send(ws, tipMsg);
+  }
+
+  private async splitPastHistoryMessages(
+    session: SessionInfo,
+  ): Promise<{ pastMessages: unknown[]; historyMessages: ServerMessage[] }> {
+    const messages = session.pastMessages ?? [];
+    const pastMessages: unknown[] = [];
+    const historyMessages: ServerMessage[] = [];
+
+    for (const raw of messages) {
+      const msg = raw as Record<string, unknown>;
+      if (msg.role === "user") {
+        const images = await this.registerPastUserMessageImages(session, msg);
+        pastMessages.push(
+          images.length > 0
+            ? {
+                ...msg,
+                images,
+                imageCount:
+                  typeof msg.imageCount === "number"
+                    ? Math.max(msg.imageCount, images.length)
+                    : images.length,
+              }
+            : raw,
+        );
+        continue;
+      }
+
+      if (msg.role !== "tool_result") {
+        pastMessages.push(raw);
+        continue;
+      }
+
+      const content = typeof msg.content === "string" ? msg.content : "";
+      const images = await this.registerPastToolResultImages(session, msg);
+
+      pastMessages.push({
+        role: "tool_result",
+        toolUseId:
+          typeof msg.toolUseId === "string"
+            ? msg.toolUseId
+            : `past-tool-result-${pastMessages.length}`,
+        content,
+        ...(typeof msg.toolName === "string" ? { toolName: msg.toolName } : {}),
+        ...(images.length > 0 ? { images } : {}),
+      });
+    }
+
+    return { pastMessages, historyMessages };
+  }
+
+  private codexThreadIdForSession(session: SessionInfo): string | undefined {
+    if (session.provider !== "codex") return undefined;
+    if (session.claudeSessionId) return session.claudeSessionId;
+    if (session.process instanceof CodexProcess) {
+      return session.process.sessionId ?? undefined;
+    }
+    return undefined;
+  }
+
+  private async codexCanonicalHistoryEntries(
+    session: SessionInfo,
+  ): Promise<HistoryEntry[] | null> {
+    const threadId = this.codexThreadIdForSession(session);
+    if (!threadId) return null;
+
+    const history = session.codexInitialHistoryPending
+      ? ((session.pastMessages ?? []) as SessionHistoryMessage[])
+      : await this.getCodexThreadHistoryFromRpc(
+          threadId,
+          session.projectPath,
+          session.process as CodexProcess,
+        );
+    session.claudeSessionId = threadId;
+
+    const messages = await this.codexHistoryToServerMessages(session, history);
+    const entries = messages.map((message, index) => ({
+      seq: index + 1,
+      message,
+    }));
+    this.applyCodexCanonicalHistoryBaseline(
+      session,
+      history,
+      entries,
+    );
+    session.codexInitialHistoryPending = false;
+    return entries;
+  }
+
+  private applyCodexCanonicalHistoryBaseline(
+    session: SessionInfo,
+    history: SessionHistoryMessage[],
+    canonicalEntries: HistoryEntry[],
+  ): void {
+    const orderedRevision = session.codexOrderedHistoryRevision ?? 0;
+    const liveEntries: HistoryEntry[] = [
+      ...(session.codexOrderedHistoryEntries ?? []),
+      ...session.historyEntries.filter((entry) => entry.seq > orderedRevision),
+    ].map((entry) => ({
+      seq: entry.seq,
+      message: entry.message,
+    }));
+    const latestUserInput = session.codexLatestUserInput;
+    const latestUserKeys = latestUserInput
+      ? this.codexHistoryMessageIdentityKeys(latestUserInput)
+      : [];
+    if (
+      latestUserInput &&
+      !liveEntries.some(
+        (entry) =>
+          entry.message === latestUserInput ||
+          (entry.message.type === "user_input" &&
+            this.codexHistoryMessageIdentityKeys(entry.message).some((key) =>
+              latestUserKeys.includes(key),
+            )),
+      )
+    ) {
+      const historySeq = (latestUserInput as Record<string, unknown>)
+        .historySeq;
+      liveEntries.unshift({
+        seq: typeof historySeq === "number" ? historySeq : 0,
+        message: latestUserInput,
+      });
+    }
+    const canonicalUserUuids = new Set<string>();
+    for (const entry of canonicalEntries) {
+      const message = entry.message;
+      if (message.type === "user_input" && message.userMessageUuid) {
+        canonicalUserUuids.add(message.userMessageUuid);
+      }
+    }
+
+    this.seedCodexCanonicalUserTurnUuidMap(session, history);
+
+    const merged: Array<{ message: ServerMessage; retained: boolean }> = [];
+    let canonicalCursor = 0;
+    let hasCanonicalAnchor = false;
+    let canMatchAssistantContent = false;
+    const appendCanonicalUntil = (endExclusive: number): void => {
+      while (canonicalCursor < endExclusive) {
+        const message = canonicalEntries[canonicalCursor].message;
+        merged.push({ message, retained: false });
+        canonicalCursor += 1;
+        hasCanonicalAnchor = true;
+        if (message.type === "user_input") {
+          canMatchAssistantContent = true;
+        }
+      }
+    };
+
+    for (let liveIndex = 0; liveIndex < liveEntries.length; liveIndex++) {
+      const liveEntry = liveEntries[liveIndex];
+      const matchIndex = this.findCodexCanonicalMatchIndex(
+        canonicalEntries,
+        liveEntry.message,
+        canonicalCursor,
+        canMatchAssistantContent,
+      );
+      if (matchIndex === -1) {
+        let nextMatchIndex = -1;
+        for (
+          let nextLiveIndex = liveIndex + 1;
+          nextLiveIndex < liveEntries.length;
+          nextLiveIndex++
+        ) {
+          nextMatchIndex = this.findCodexCanonicalMatchIndex(
+            canonicalEntries,
+            liveEntries[nextLiveIndex].message,
+            canonicalCursor,
+            canMatchAssistantContent,
+          );
+          if (nextMatchIndex !== -1) break;
+        }
+        if (nextMatchIndex !== -1) {
+          appendCanonicalUntil(nextMatchIndex);
+        } else if (!hasCanonicalAnchor) {
+          appendCanonicalUntil(canonicalEntries.length);
+        }
+        if (this.shouldRetainCodexLiveHistoryMessage(liveEntry.message)) {
+          merged.push({ message: liveEntry.message, retained: true });
+        }
+        continue;
+      }
+
+      appendCanonicalUntil(matchIndex + 1);
+    }
+    appendCanonicalUntil(canonicalEntries.length);
+
+    const retainedMessages: ServerMessage[] = [];
+    const retainedEntries: HistoryEntry[] = [];
+    let canonicalRevision = 0;
+    const previousRevision = session.historyRevision;
+    const requiresNewBaselineRevision = previousRevision > 0;
+    const targetRevision = requiresNewBaselineRevision
+      ? Math.max(merged.length, previousRevision + 1)
+      : merged.length;
+    const sequenceOffset = targetRevision - merged.length;
+    const mergedEntries = merged.map(({ message, retained }, index) => {
+      const seq = sequenceOffset + index + 1;
+      if (retained) {
+        (message as Record<string, unknown>).historySeq = seq;
+        retainedMessages.push(message);
+        retainedEntries.push({ seq, message });
+      } else {
+        canonicalRevision = seq;
+      }
+      return { seq, message };
+    });
+    canonicalEntries.splice(0, canonicalEntries.length, ...mergedEntries);
+
+    session.codexOrderedHistoryEntries =
+      this.buildCodexOrderedHistoryWindow(mergedEntries);
+    session.codexOrderedHistoryRevision = targetRevision;
+
+    session.pastMessages = history;
+    session.history = retainedMessages;
+    session.historyEntries = retainedEntries;
+    session.historyRevision = targetRevision;
+    session.codexCanonicalHistoryRevision = canonicalRevision;
+    session.codexHistoryResetRevision = targetRevision;
+    session.historyLowWatermark =
+      retainedEntries[0]?.seq ?? session.historyRevision + 1;
+
+    if (session.pendingCodexUserEchoUuids) {
+      for (const uuid of canonicalUserUuids) {
+        session.pendingCodexUserEchoUuids.delete(uuid);
+      }
+      for (const uuid of [...session.pendingCodexUserEchoUuids]) {
+        const stillLive = retainedMessages.some(
+          (message) =>
+            message.type === "user_input" && message.userMessageUuid === uuid,
+        );
+        if (!stillLive) session.pendingCodexUserEchoUuids.delete(uuid);
+      }
+    }
+  }
+
+  private buildCodexOrderedHistoryWindow(
+    entries: HistoryEntry[],
+  ): HistoryEntry[] {
+    if (entries.length <= MAX_HISTORY_PER_SESSION) {
+      return entries.map((entry) => ({
+        seq: entry.seq,
+        message: entry.message,
+      }));
+    }
+
+    const tail = entries.slice(-MAX_HISTORY_PER_SESSION);
+    if (tail.some((entry) => entry.message.type === "user_input")) {
+      return tail;
+    }
+
+    let latestUser: HistoryEntry | undefined;
+    for (let index = entries.length - 1; index >= 0; index--) {
+      if (entries[index].message.type === "user_input") {
+        latestUser = entries[index];
+        break;
+      }
+    }
+    return latestUser
+      ? [latestUser, ...entries.slice(-(MAX_HISTORY_PER_SESSION - 1))]
+      : tail;
+  }
+
+  private findCodexCanonicalMatchIndex(
+    canonicalEntries: HistoryEntry[],
+    liveMessage: ServerMessage,
+    start: number,
+    allowAssistantContentMatch: boolean,
+  ): number {
+    const liveKeys = this.codexHistoryMessageIdentityKeys(liveMessage);
+    if (liveKeys.length > 0) {
+      for (let index = start; index < canonicalEntries.length; index++) {
+        const canonicalKeys = this.codexHistoryMessageIdentityKeys(
+          canonicalEntries[index].message,
+        );
+        if (liveKeys.some((key) => canonicalKeys.includes(key))) return index;
+      }
+    }
+
+    if (!allowAssistantContentMatch || liveMessage.type !== "assistant") {
+      return -1;
+    }
+    const liveContent = this.historyValueKey(liveMessage.message.content);
+    for (let index = start; index < canonicalEntries.length; index++) {
+      const canonicalMessage = canonicalEntries[index].message;
+      if (canonicalMessage.type === "user_input") break;
+      if (
+        canonicalMessage.type === "assistant" &&
+        this.historyValueKey(canonicalMessage.message.content) === liveContent
+      ) {
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  private seedCodexCanonicalUserTurnUuidMap(
+    session: SessionInfo,
+    history: SessionHistoryMessage[],
+  ): void {
+    if (session.provider !== "codex") return;
+    for (const message of history) {
+      if (
+        message.role !== "user" ||
+        !message.rawItemId ||
+        !message.uuid
+      ) {
+        continue;
+      }
+      session.codexUserTurnUuidByRawId ??= new Map<string, string>();
+      session.codexUserTurnUuidByRawId.set(message.rawItemId, message.uuid);
+    }
+  }
+
+  private shouldRetainCodexLiveHistoryMessage(message: ServerMessage): boolean {
+    return !(
+      message.type === "system" &&
+      (message as Record<string, unknown>).subtype === "tip"
+    );
+  }
+
+  private codexHistoryMessageIdentityKeys(message: ServerMessage): string[] {
+    if (message.type === "user_input") {
+      return message.userMessageUuid ? [`user:${message.userMessageUuid}`] : [];
+    }
+    if (message.type === "assistant") {
+      const assistantId = message.messageUuid ?? message.message.id;
+      if (assistantId) return [`assistant:${assistantId}`];
+      return [
+        `assistant-content:${this.historyValueKey(message.message.content)}`,
+      ];
+    }
+    if (message.type === "tool_result") {
+      if (message.toolUseId) {
+        return [`tool-result:${message.toolUseId}:${message.toolName ?? ""}`];
+      }
+      return [
+        `tool-result-content:${message.toolName ?? ""}:${message.content}`,
+      ];
+    }
+    return [];
+  }
+
+  private historyValueKey(value: unknown): string {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  private sendCodexCurrentSettings(
+    ws: WebSocket,
+    sessionId: string,
+    session: SessionInfo,
+  ): void {
+    const process = session.process instanceof CodexProcess
+      ? session.process
+      : undefined;
+    const settings = session.codexSettings;
+    this.send(ws, {
+      type: "system",
+      subtype: "codex_settings",
+      sessionId,
+      provider: "codex",
+      ...(settings?.model ?? process?.model
+        ? { model: settings?.model ?? process?.model }
+        : {}),
+      ...(settings?.modelReasoningEffort ?? process?.modelReasoningEffort
+        ? {
+            modelReasoningEffort:
+              settings?.modelReasoningEffort ?? process?.modelReasoningEffort,
+          }
+        : {}),
+      serviceTier: settings?.serviceTier ?? process?.serviceTier ?? "standard",
+    });
+  }
+
+  private async sendCodexCanonicalHistorySnapshot(
+    ws: WebSocket,
+    sessionId: string,
+    session: SessionInfo,
+    options: { includeCachedCommands?: boolean } = {},
+  ): Promise<boolean> {
+    try {
+      const entries = await this.codexCanonicalHistoryEntries(session);
+      if (!entries) return false;
+      this.send(ws, {
+        type: "history_snapshot",
+        sessionId,
+        fromSeq: entries[0]?.seq ?? session.historyRevision + 1,
+        toSeq: session.historyRevision,
+        messages: entries,
+        status: session.status,
+        reason: "reset",
+      } satisfies Extract<ServerMessage, { type: "history_snapshot" }>);
+      this.sendCodexCurrentSettings(ws, sessionId, session);
+      this.sendCodexQueueState(ws, sessionId, session);
+      this.sendCodexGoalState(ws, sessionId, session);
+      if (options.includeCachedCommands) {
+        this.sendCachedCommands(ws, sessionId, session);
+      }
+      return true;
+    } catch (err) {
+      this.send(ws, {
+        type: "error",
+        message: `Failed to read Codex thread history: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      });
+      return true;
+    }
+  }
+
+  private async sendCodexCanonicalLegacyHistory(
+    ws: WebSocket,
+    sessionId: string,
+    session: SessionInfo,
+  ): Promise<boolean> {
+    try {
+      const entries = await this.codexCanonicalHistoryEntries(session);
+      if (!entries) return false;
+      this.send(ws, {
+        type: "history",
+        messages: entries.map((entry) => entry.message),
+        sessionId,
+      } as Record<string, unknown>);
+      this.sendCodexCurrentSettings(ws, sessionId, session);
+      this.send(ws, {
+        type: "status",
+        status: session.status,
+        sessionId,
+      } as Record<string, unknown>);
+      this.sendCodexQueueState(ws, sessionId, session);
+      this.sendCodexGoalState(ws, sessionId, session);
+      this.sendCachedCommands(ws, sessionId, session);
+      return true;
+    } catch (err) {
+      this.send(ws, {
+        type: "error",
+        message: `Failed to read Codex thread history: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      });
+      return true;
+    }
+  }
+
+  private shouldResetCodexHistoryDelta(
+    session: SessionInfo,
+    sinceSeq: number,
+    resultKind: "delta" | "snapshot",
+  ): boolean {
+    if (!this.codexThreadIdForSession(session)) return false;
+    const resetRevision = session.codexHistoryResetRevision ??
+      session.codexCanonicalHistoryRevision;
+    if (typeof resetRevision !== "number") return true;
+    if (sinceSeq < resetRevision) return true;
+    return resultKind === "snapshot";
+  }
+
+  private async codexHistoryToServerMessages(
+    session: SessionInfo,
+    history: SessionHistoryMessage[],
+  ): Promise<ServerMessage[]> {
+    const messages: ServerMessage[] = [];
+    for (const item of history) {
+      const converted = await this.codexHistoryMessageToServerMessage(
+        session,
+        item,
+      );
+      if (converted) messages.push(converted);
+    }
+    return messages;
+  }
+
+  private async codexHistoryMessageToServerMessage(
+    session: SessionInfo,
+    item: SessionHistoryMessage,
+  ): Promise<ServerMessage | null> {
+    if (item.role === "user") {
+      const images = await this.registerPastUserMessageImages(
+        session,
+        item as unknown as Record<string, unknown>,
+      );
+      const text = this.sessionHistoryText(item.content);
+      if (!text && item.imageCount == null && images.length === 0) return null;
+      return {
+        type: "user_input",
+        text,
+        ...(item.uuid ? { userMessageUuid: item.uuid } : {}),
+        ...(item.isMeta ? { isMeta: true } : {}),
+        ...(item.imageCount != null || images.length > 0
+          ? { imageCount: Math.max(item.imageCount ?? 0, images.length) }
+          : {}),
+        ...(item.timestamp ? { timestamp: item.timestamp } : {}),
+        ...(images.length > 0 ? { images } : {}),
+      };
+    }
+
+    if (item.role === "assistant") {
+      const content = this.sessionHistoryAssistantContent(item.content);
+      if (content.length === 0) return null;
+      const messageId =
+        item.uuid ??
+        this.sessionHistorySingleToolUseId(item.content) ??
+        randomUUID();
+      return {
+        type: "assistant",
+        message: {
+          id: messageId,
+          role: "assistant",
+          content,
+          model: session.codexSettings?.model ?? "",
+        },
+        ...(item.uuid ? { messageUuid: item.uuid } : {}),
+      };
+    }
+
+    const images = await this.registerPastToolResultImages(
+      session,
+      item as unknown as Record<string, unknown>,
+    );
+    const content = this.sessionHistoryText(item.content);
+    if (!content && images.length === 0) return null;
+    return {
+      type: "tool_result",
+      toolUseId:
+        item.toolUseId ?? item.uuid ?? `codex-history-tool-${randomUUID()}`,
+      content,
+      ...(item.toolName ? { toolName: item.toolName } : {}),
+      ...(images.length > 0 ? { images } : {}),
+    };
+  }
+
+  private sessionHistoryText(content: SessionHistoryMessage["content"]): string {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((item) => {
+        if (item.type === "text" && typeof item.text === "string") {
+          return item.text;
+        }
+        if (item.type === "thinking" && typeof item.thinking === "string") {
+          return item.thinking;
+        }
+        return "";
+      })
+      .filter((text) => text.length > 0)
+      .join("\n");
+  }
+
+  private sessionHistoryAssistantContent(
+    content: SessionHistoryMessage["content"],
+  ): AssistantContent[] {
+    if (typeof content === "string") {
+      return content.trim().length > 0
+        ? [{ type: "text", text: content }]
+        : [];
+    }
+    if (!Array.isArray(content)) return [];
+    const items: AssistantContent[] = [];
+    for (const item of content) {
+      if (item.type === "text" && typeof item.text === "string") {
+        items.push({ type: "text", text: item.text });
+      } else if (
+        item.type === "thinking" &&
+        typeof item.thinking === "string"
+      ) {
+        items.push({ type: "thinking", thinking: item.thinking });
+      } else if (
+        item.type === "tool_use" &&
+        typeof item.id === "string" &&
+        typeof item.name === "string"
+      ) {
+        items.push({
+          type: "tool_use",
+          id: item.id,
+          name: item.name,
+          input: item.input ?? {},
+        });
+      }
+    }
+    return items;
+  }
+
+  private sessionHistorySingleToolUseId(
+    content: SessionHistoryMessage["content"],
+  ): string | undefined {
+    if (!Array.isArray(content) || content.length !== 1) return undefined;
+    const item = content[0];
+    return item.type === "tool_use" && typeof item.id === "string"
+      ? item.id
+      : undefined;
+  }
+
+  private async registerPastUserMessageImages(
+    session: SessionInfo,
+    msg: Record<string, unknown>,
+  ): Promise<ImageRef[]> {
+    if (!this.imageStore) return [];
+
+    const existingImages = Array.isArray(msg.images)
+      ? (msg.images as ImageRef[])
+      : [];
+    const refs: ImageRef[] = [...existingImages];
+
+    if (Array.isArray(msg.imagePaths)) {
+      const paths = msg.imagePaths.filter(
+        (path): path is string => typeof path === "string" && path.length > 0,
+      );
+      if (paths.length > 0) {
+        refs.push(
+          ...(await this.imageStore.registerImages(paths, session.projectPath)),
+        );
+      }
+    }
+
+    if (Array.isArray(msg.imageBase64)) {
+      for (const image of msg.imageBase64) {
+        const rawImage = image as Record<string, unknown>;
+        if (
+          typeof rawImage.data !== "string" ||
+          typeof rawImage.mimeType !== "string"
+        ) {
+          continue;
+        }
+        const ref = this.imageStore.registerFromBase64(
+          rawImage.data,
+          rawImage.mimeType,
+        );
+        if (ref) refs.push(ref);
+      }
+    }
+
+    const messageUuid = typeof msg.uuid === "string" ? msg.uuid : undefined;
+    const providerSessionId = session.claudeSessionId;
+    if (
+      refs.length === existingImages.length &&
+      messageUuid &&
+      providerSessionId
+    ) {
+      try {
+        const extracted = await extractMessageImages(
+          providerSessionId,
+          messageUuid,
+        );
+        for (const image of extracted) {
+          const ref = this.imageStore.registerFromBase64(
+            image.base64,
+            image.mimeType,
+          );
+          if (ref) refs.push(ref);
+        }
+      } catch (err) {
+        console.warn(
+          `[ws] Failed to restore user message images for ${messageUuid}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    return refs;
+  }
+
+  private async registerPastToolResultImages(
+    session: SessionInfo,
+    msg: Record<string, unknown>,
+  ): Promise<ImageRef[]> {
+    const existingImages = Array.isArray(msg.images)
+      ? (msg.images as ImageRef[])
+      : [];
+    if (!this.imageStore) return [...existingImages];
+
+    const paths = new Set<string>();
+    if (Array.isArray(msg.imagePaths)) {
+      for (const path of msg.imagePaths) {
+        if (typeof path === "string" && path.length > 0) paths.add(path);
+      }
+    }
+
+    const content = typeof msg.content === "string" ? msg.content : "";
+    if (content) {
+      for (const path of this.imageStore.extractImagePaths(content)) {
+        paths.add(path);
+      }
+    }
+
+    const refs: ImageRef[] = [...existingImages];
+    if (paths.size > 0) {
+      refs.push(
+        ...(await this.imageStore.registerImages([...paths], session.projectPath)),
+      );
+    }
+
+    if (Array.isArray(msg.imageBase64)) {
+      for (const image of msg.imageBase64) {
+        const rawImage = image as Record<string, unknown>;
+        if (
+          typeof rawImage.data !== "string" ||
+          typeof rawImage.mimeType !== "string"
+        ) {
+          continue;
+        }
+        const ref = this.imageStore.registerFromBase64(
+          rawImage.data,
+          rawImage.mimeType,
+        );
+        if (ref) refs.push(ref);
+      }
+    }
+
+    return refs;
+  }
+
+  private async getCodexThreadHistoryFromRpc(
+    threadId: string,
+    projectPath?: string,
+    preferredProcess?: CodexProcess,
+  ): Promise<SessionHistoryMessage[]> {
+    const activeProcess = preferredProcess ?? this.getActiveCodexProcess();
+    const process =
+      activeProcess ?? (await this.createStandaloneCodexProcess(projectPath));
+    const isStandalone = process !== activeProcess;
+    try {
+      const thread = await process.readThread(threadId, true);
+      return codexThreadToSessionHistory(thread);
+    } catch (err) {
+      if (this.isCodexThreadNotMaterializedError(err)) return [];
+      throw err;
+    } finally {
+      if (isStandalone) {
+        process.stop();
+      }
+    }
+  }
+
+  private isCodexThreadNotMaterializedError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err);
+    return (
+      message.includes("is not materialized yet") &&
+      message.includes("includeTurns is unavailable before first user message")
+    );
+  }
+
+  private async getCodexThreadHistory(
+    threadId: string,
+    projectPath?: string,
+  ): Promise<SessionHistoryMessage[]> {
+    if (!this.getActiveCodexProcess() && process.env.NODE_ENV === "test") {
+      return getCodexSessionHistory(threadId);
+    }
+    return this.getCodexThreadHistoryFromRpc(threadId, projectPath);
+  }
+
+  private codexHistoryFromThreadOrFallback(params: {
+    thread: unknown;
+    expectedUserTurns: number;
+    fallback: SessionHistoryMessage[];
+  }): SessionHistoryMessage[] {
+    const messages = codexThreadToSessionHistory(params.thread);
+    if (countCodexHistoryUserTurns(messages) >= params.expectedUserTurns) {
+      return messages;
+    }
+    return params.fallback;
+  }
+
+  private createClaudeSessionWithFallback(params: {
+    projectPath: string;
+    options?: StartOptions & { permissionMode?: ClaudePermissionMode };
+    pastMessages?: unknown[];
+    worktreeOptions?: WorktreeOptions;
+  }): {
+    sessionId: string;
+    permissionMode: ClaudePermissionMode;
+    executionMode: "default" | "acceptEdits" | "fullAccess";
+    planMode: boolean;
+    usedFallback: boolean;
+  } {
+    const initialMode = params.options?.permissionMode ?? "default";
+    try {
+      const sessionId = this.sessionManager.create(
+        params.projectPath,
+        params.options,
+        params.pastMessages,
+        params.worktreeOptions,
+      );
+      return {
+        sessionId,
+        permissionMode: initialMode,
+        executionMode: deriveExecutionMode({
+          provider: "claude",
+          permissionMode: initialMode,
+        }),
+        planMode: derivePlanMode({ permissionMode: initialMode }),
+        usedFallback: false,
+      };
+    } catch (err) {
+      if (
+        initialMode !== "auto" ||
+        !isClaudeAutoModeUnavailableError(err)
+      ) {
+        throw err;
+      }
+      const fallbackOptions = {
+        ...params.options,
+        permissionMode: "default" as const,
+      };
+      const sessionId = this.sessionManager.create(
+        params.projectPath,
+        fallbackOptions,
+        params.pastMessages,
+        params.worktreeOptions,
+      );
+      return {
+        sessionId,
+        permissionMode: "default",
+        executionMode: "default",
+        planMode: false,
+        usedFallback: true,
+      };
+    }
+  }
+
+  close(): void {
+    console.log("[ws] Shutting down...");
+    for (const operation of this.resumeOperations.values()) {
+      if (operation.timeout) clearTimeout(operation.timeout);
+    }
+    this.resumeOperations.clear();
+    this.flushAllDeltaBatches();
+    this.sessionManager.destroyAll();
+    this.flushAllDeltaBatches();
+    stopManagedCodexAppServers();
+    this.debugEvents.clear();
+    this.wss.close();
+  }
+
+  /** Return session count for /health endpoint. */
+  get sessionCount(): number {
+    return this.sessionManager.list().length;
+  }
+
+  /** Return connected WebSocket client count. */
+  get clientCount(): number {
+    return this.wss.clients.size;
+  }
+
+  private handleConnection(ws: WebSocket): void {
+    // Send session list and project history on connect
+    this.refreshConnectionMetadata();
+    this.sendSessionList(ws);
+    const projects = this.legacyProjectHistoryProjects();
+    this.send(ws, { type: "project_history", projects });
+
+    ws.on("message", (data) => {
+      if (this.rejectedProtocolClients.has(ws)) return;
+      const raw = data.toString();
+      const msg = parseClientMessage(raw);
+
+      if (!msg) {
+        // Try to extract the message type so the client can decide how to
+        // handle the unsupported message (suppress vs show update hint).
+        let rawType: string | undefined;
+        try {
+          rawType = (JSON.parse(raw) as Record<string, unknown>)
+            ?.type as string;
+        } catch {
+          /* ignore */
+        }
+        if (rawType === "client_capabilities") {
+          this.rejectedProtocolClients.add(ws);
+          this.send(ws, {
+            type: "error",
+            errorCode: "incompatible_protocol",
+            message: "Client advertised a malformed protocol range.",
+            protocolVersion: BRIDGE_PROTOCOL_MAX_VERSION,
+            minimumProtocolVersion: BRIDGE_PROTOCOL_MIN_VERSION,
+          });
+          ws.close(4406, "Incompatible protocol version");
+          return;
+        }
+        console.error(
+          "[ws] Unsupported message:",
+          rawType ?? raw.slice(0, 200),
+        );
+        this.send(ws, {
+          type: "error",
+          errorCode: "unsupported_message",
+          message: rawType ?? "unknown",
+        });
+        return;
+      }
+
+      console.log(`[ws] Received: ${msg.type}`);
+      this.handleClientMessage(msg, ws);
+    });
+
+    ws.on("close", () => {
+      console.log("[ws] Client disconnected");
+      this.recentSessionsRequestIds.delete(ws);
+      this.discardClientDeltaBatches(ws);
+      this.clearPendingClaudeResumeInputs(ws);
+    });
+
+    ws.on("error", (err) => {
+      console.error("[ws] Client error:", err.message);
+    });
+  }
+
+  private refreshConnectionMetadata(now = Date.now()): void {
+    const lastRefreshAt = this.lastConnectMetadataRefreshAt;
+    if (
+      lastRefreshAt !== null &&
+      now >= lastRefreshAt &&
+      now - lastRefreshAt <
+        BridgeWebSocketServer.CONNECT_METADATA_REFRESH_COOLDOWN_MS
+    ) {
+      return;
+    }
+    this.lastConnectMetadataRefreshAt = now;
+    void this.refreshCodexMetadata();
+    void this.refreshClaudeModels();
+  }
+
+  private async handleClientMessage(
+    msg: ClientMessage,
+    ws: WebSocket,
+  ): Promise<void> {
+    if (this.rejectedProtocolClients.has(ws)) return;
+    if (msg.type === "client_capabilities") {
+      const clientRange = clientProtocolRange(msg);
+      const selectedProtocolVersion = negotiateProtocolVersion(clientRange);
+      if (selectedProtocolVersion === null) {
+        this.rejectedProtocolClients.add(ws);
+        this.send(ws, {
+          type: "error",
+          errorCode: "incompatible_protocol",
+          protocolVersion: BRIDGE_PROTOCOL_MAX_VERSION,
+          minimumProtocolVersion: BRIDGE_PROTOCOL_MIN_VERSION,
+          message:
+            `Client protocol range ${clientRange.min}-${clientRange.max} `
+            + `does not overlap Bridge protocol range `
+            + `${BRIDGE_PROTOCOL_MIN_VERSION}-${BRIDGE_PROTOCOL_MAX_VERSION}.`,
+        });
+        ws.close(4406, "Incompatible protocol version");
+        return;
+      }
+      this.clientProtocolVersions.set(ws, selectedProtocolVersion);
+      this.clientSupportedServerMessages.set(
+        ws,
+        new Set(msg.supportedServerMessages ?? []),
+      );
+      this.sendPromptHistoryStatus(ws);
+      return;
+    }
+
+    const incomingSessionId = this.extractSessionIdFromClientMessage(msg);
+    const isActiveRuntimeSession =
+      incomingSessionId != null &&
+      this.sessionManager.get(incomingSessionId) != null;
+    if (incomingSessionId && isActiveRuntimeSession) {
+      this.recordDebugEvent(incomingSessionId, {
+        direction: "incoming",
+        channel: "ws",
+        type: msg.type,
+        detail: this.summarizeClientMessage(msg),
+      });
+      this.recordingStore?.record(incomingSessionId, "incoming", msg);
+    }
+
+    switch (msg.type) {
+      case "start": {
+        let projectPath = resolvePlatformPath(msg.projectPath, this.platform);
+        let resolvedWorkspace: ResolvedWorkspace | undefined;
+        if (msg.projectId) {
+          const project = this.workspaceStore?.getProject(msg.projectId);
+          if (!project) {
+            this.send(ws, {
+              type: "error",
+              requestId: msg.requestId,
+              errorCode: "project_not_found",
+              message: `Project not found: ${msg.projectId}`,
+            });
+            break;
+          }
+          const normalized = this.normalizeWorkspaceRoots(project.rootPaths);
+          if (normalized.deniedRoot || !normalized.roots) {
+            this.send(
+              ws,
+              this.buildPathNotAllowedError(
+                normalized.deniedRoot ?? project.rootPaths[0],
+              ),
+            );
+            break;
+          }
+          projectPath = normalized.roots[0];
+          resolvedWorkspace = {
+            kind: "project",
+            projectId: project.id,
+            projectName: project.name,
+            rootPaths: normalized.roots,
+          };
+        }
+        if (!this.isPathAllowed(projectPath)) {
+          this.send(ws, {
+            ...this.buildPathNotAllowedError(msg.projectPath),
+            requestId: msg.requestId,
+            path: msg.projectPath,
+          });
+          break;
+        }
+        try {
+          const provider = msg.provider ?? "claude";
+          const normalizedCodexPermissionsMode =
+            provider === "codex"
+              ? normalizeCodexPermissionsMode(msg.codexPermissionsMode)
+              : undefined;
+          const requestedCodexPermissionsMode =
+            this.codexAutoReviewDisabled &&
+            normalizedCodexPermissionsMode === "autoReview"
+              ? "default"
+              : normalizedCodexPermissionsMode;
+          const codexPermissionSettings = requestedCodexPermissionsMode
+            ? codexSettingsFromPermissionsMode(requestedCodexPermissionsMode)
+            : undefined;
+          const codexApprovalPolicy =
+            provider === "codex"
+              ? requestedCodexPermissionsMode
+                ? codexPermissionSettings?.approvalPolicy
+                : normalizeCodexApprovalPolicy(
+                    msg.approvalPolicy ??
+                      (msg.executionMode == null
+                        ? undefined
+                        : msg.executionMode === "fullAccess"
+                          ? "never"
+                          : "on-request"),
+                  )
+              : undefined;
+          const executionMode = deriveExecutionMode({
+            provider,
+            permissionMode: msg.permissionMode,
+            executionMode: msg.executionMode,
+            approvalPolicy: codexApprovalPolicy,
+          });
+          const planMode = derivePlanMode({
+            permissionMode: msg.permissionMode,
+            planMode: msg.planMode,
+          });
+          const legacyPermissionMode = modesToLegacyPermissionMode(
+            provider,
+            executionMode,
+            planMode,
+          );
+          const claudePermissionMode =
+            provider === "claude"
+              ? ((msg.permissionMode as
+                  | "default"
+                  | "auto"
+                  | "acceptEdits"
+                  | "bypassPermissions"
+                  | "plan"
+                  | undefined) ?? legacyPermissionMode)
+              : legacyPermissionMode;
+          if (provider === "codex") {
+            console.log(
+              `[ws] start(codex): execution=${executionMode} plan=${planMode}`,
+            );
+            if (
+              msg.profile &&
+              !(await this.validateCodexProfile(msg.profile, projectPath))
+            ) {
+              this.send(ws, {
+                type: "error",
+                requestId: msg.requestId,
+                path: projectPath,
+                message: `Codex profile not found: ${msg.profile}`,
+              });
+              break;
+            }
+          }
+          const requestedAdditionalRoots =
+            resolvedWorkspace?.rootPaths.slice(1) ??
+            msg.additionalWritableRoots;
+          const additionalWritableRoots = this.normalizeAdditionalWritableRoots(
+            requestedAdditionalRoots,
+            projectPath,
+          );
+          if (additionalWritableRoots.deniedRoot) {
+            this.send(
+              ws,
+              {
+                ...this.buildPathNotAllowedError(
+                  additionalWritableRoots.deniedRoot,
+                ),
+                requestId: msg.requestId,
+                path: projectPath,
+              },
+            );
+            break;
+          }
+          const {
+            sessionId,
+            permissionMode: effectivePermissionMode,
+            executionMode: effectiveExecutionMode,
+            planMode: effectivePlanMode,
+            usedFallback: autoFallbackUsed,
+          } =
+            provider === "claude"
+              ? this.createClaudeSessionWithFallback({
+                  projectPath,
+                  options: {
+                    sessionId: msg.sessionId,
+                    continueMode: msg.continue,
+                    permissionMode: claudePermissionMode,
+                    model: msg.model,
+                    effort: msg.effort,
+                    maxTurns: msg.maxTurns,
+                    maxBudgetUsd: msg.maxBudgetUsd,
+                    fallbackModel: msg.fallbackModel,
+                    forkSession: msg.forkSession,
+                    persistSession: msg.persistSession,
+                    autoRename: msg.autoRename,
+                    ...(msg.sandboxMode
+                      ? { sandboxEnabled: msg.sandboxMode === "on" }
+                      : {}),
+                    additionalDirectories: additionalWritableRoots.roots,
+                  },
+                  worktreeOptions: {
+                    useWorktree: msg.useWorktree,
+                    worktreeBranch: msg.worktreeBranch,
+                    existingWorktreePath: msg.existingWorktreePath,
+                  },
+                })
+              : {
+                  sessionId: this.sessionManager.create(
+                    projectPath,
+                    { autoRename: msg.autoRename },
+                    undefined,
+                    {
+                      useWorktree: msg.useWorktree,
+                      worktreeBranch: msg.worktreeBranch,
+                      existingWorktreePath: msg.existingWorktreePath,
+                    },
+                    provider,
+                    this.withCodexAutoReviewPolicy({
+                      profile: msg.profile,
+                      approvalPolicy: codexPermissionSettings
+                        ? codexPermissionSettings.approvalPolicy
+                        : (codexApprovalPolicy ??
+                          normalizeCodexApprovalPolicy(
+                            executionMode === "fullAccess"
+                              ? "never"
+                              : "on-request",
+                          )),
+                      approvalsReviewer:
+                        codexPermissionSettings?.approvalsReviewer ??
+                        msg.approvalsReviewer,
+                      codexPermissionsMode:
+                        codexPermissionSettings?.codexPermissionsMode,
+                      sandboxMode: codexPermissionSettings
+                        ? codexPermissionSettings.sandboxMode
+                        : sandboxModeToInternal(msg.sandboxMode),
+                      model: msg.model,
+                      modelReasoningEffort:
+                        (msg.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"]) ??
+                        undefined,
+                      serviceTier: msg.serviceTier,
+                      networkAccessEnabled: msg.networkAccessEnabled,
+                      webSearchMode:
+                        (msg.webSearchMode as "disabled" | "cached" | "live") ??
+                        undefined,
+                      additionalWritableRoots: additionalWritableRoots.roots,
+                      threadId: msg.sessionId,
+                      collaborationMode: planMode
+                        ? ("plan" as const)
+                        : ("default" as const),
+                    }),
+                  ),
+                  permissionMode: claudePermissionMode,
+                  executionMode,
+                  planMode,
+                  usedFallback: false,
+                };
+          const createdSession = this.sessionManager.get(sessionId);
+          if (resolvedWorkspace) {
+            this.pendingSessionWorkspaces.set(sessionId, resolvedWorkspace);
+            void this.persistPendingSessionWorkspace(sessionId);
+          }
+          const cached = this.sessionManager.getCachedCommands(
+            provider,
+            createdSession?.worktreePath ?? projectPath,
+          );
+
+          // Load saved session name from CLI storage (for resumed sessions)
+          void this.loadAndSetSessionName(
+            createdSession,
+            provider,
+            projectPath,
+            msg.sessionId,
+          ).then(() => {
+            this.send(
+              ws,
+              this.buildSessionCreatedMessage({
+                sessionId,
+                provider,
+                projectPath,
+                session: createdSession,
+                permissionMode:
+                  provider === "claude"
+                    ? effectivePermissionMode
+                    : claudePermissionMode,
+                executionMode:
+                  provider === "claude"
+                    ? effectiveExecutionMode
+                    : executionMode,
+                planMode: provider === "claude" ? effectivePlanMode : planMode,
+                sandboxMode: createdSession?.codexSettings?.sandboxMode
+                  ? sandboxModeToExternal(createdSession.codexSettings.sandboxMode)
+                  : msg.sandboxMode,
+                codexPermissionsMode:
+                  createdSession?.codexSettings?.codexPermissionsMode,
+                approvalsReviewer:
+                  createdSession?.codexSettings?.approvalsReviewer,
+                requestId: msg.requestId,
+                ...(cached
+                  ? {
+                      slashCommands: cached.slashCommands,
+                      skills: cached.skills,
+                      ...(cached.skillMetadata
+                        ? { skillMetadata: cached.skillMetadata }
+                        : {}),
+                      apps: cached.apps,
+                      ...(cached.appMetadata
+                        ? { appMetadata: cached.appMetadata }
+                        : {}),
+                      plugins: cached.plugins,
+                      ...(cached.pluginMetadata
+                        ? { pluginMetadata: cached.pluginMetadata }
+                        : {}),
+                    }
+                  : {}),
+              }),
+            );
+            this.broadcastSessionList();
+            if (provider === "codex") {
+              void this.refreshCodexMetadata(projectPath);
+            } else {
+              void this.refreshClaudeModels(projectPath);
+            }
+            if (autoFallbackUsed) {
+              this.sendTip(
+                ws,
+                sessionId,
+                "auto_mode_fallback_default",
+                createdSession,
+              );
+            }
+            // Send a gentle tip when the project is not a git repository
+            if (createdSession && !createdSession.gitBranch) {
+              this.sendTip(ws, sessionId, "git_not_available", createdSession);
+            }
+          });
+          this.debugEvents.set(sessionId, []);
+          this.recordDebugEvent(sessionId, {
+            direction: "internal",
+            channel: "bridge",
+            type: "session_created",
+            detail: `provider=${provider} projectPath=${projectPath}`,
+          });
+          this.recordingStore?.saveMeta(sessionId, {
+            bridgeSessionId: sessionId,
+            projectPath,
+            ...(resolvedWorkspace?.projectId
+              ? { projectId: resolvedWorkspace.projectId }
+              : {}),
+            ...(resolvedWorkspace?.projectName
+              ? { projectName: resolvedWorkspace.projectName }
+              : {}),
+            createdAt: new Date().toISOString(),
+          });
+          if (!resolvedWorkspace) {
+            this.projectHistory?.addProject(projectPath);
+          }
+        } catch (err) {
+          console.error(`[ws] Failed to start session:`, err);
+          this.send(ws, {
+            type: "error",
+            requestId: msg.requestId,
+            path: msg.projectPath,
+            message: `Failed to start session: ${(err as Error).message}`,
+          });
+        }
+        break;
+      }
+
+      case "input": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session) {
+          const pendingInputs = msg.sessionId
+            ? this.pendingClaudeResumeInputs.get(ws)?.get(msg.sessionId)
+            : undefined;
+          if (pendingInputs) {
+            pendingInputs.push(msg);
+            return;
+          }
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "No active session. Send 'start' first.",
+          });
+          return;
+        }
+        const text = msg.text;
+        const clientMessageId = msg.clientMessageId;
+        const baseSeq = msg.baseSeq;
+        const codexSkills = msg.skills ?? (msg.skill ? [msg.skill] : []);
+        const codexMentions = msg.mentions ?? [];
+
+        // Snapshot busy state before dispatch. We prefer the actual enqueue
+        // result returned by SdkProcess sendInput* below, but keep this as a
+        // fallback for test doubles and async paths.
+        const isAgentBusySnapshot =
+          session.provider === "claude" && !session.process.isWaitingForInput;
+
+        // Normalize images: support new `images` array and legacy single-image fields
+        let images: Array<{ base64: string; mimeType: string }> = [];
+        if (msg.images && msg.images.length > 0) {
+          images = msg.images;
+        } else if (msg.imageBase64 && msg.mimeType) {
+          // Legacy single-image fallback
+          images = [{ base64: msg.imageBase64, mimeType: msg.mimeType }];
+        }
+
+        // Add user_input to in-memory history.
+        // The SDK stream does NOT emit user messages, so session.history would
+        // otherwise lack them.  This ensures get_history responses include user
+        // messages and replaceEntries on the client side preserves them.
+        // Flutter already shows the user bubble optimistically. For Codex we
+        // echo the accepted user_input back with its synthetic UUID so the live
+        // bubble becomes rewindable/forkable without requiring a stop+resume.
+        //
+        // Register images in the image store so they can be served via HTTP
+        // when the client re-enters the session and loads history.
+        let imageRefs:
+          | Array<{ id: string; url: string; mimeType: string }>
+          | undefined;
+        if (images.length > 0 && this.imageStore) {
+          imageRefs = [];
+          for (const img of images) {
+            const ref = this.imageStore.registerFromBase64(
+              img.base64,
+              img.mimeType,
+            );
+            if (ref) imageRefs.push(ref);
+          }
+          if (imageRefs.length === 0) imageRefs = undefined;
+        }
+
+        if (
+          clientMessageId &&
+          baseSeq !== undefined &&
+          this.hasInputConflictSince(session, baseSeq)
+        ) {
+          this.send(ws, {
+            type: "input_rejected",
+            sessionId: session.id,
+            clientMessageId,
+            reason: "conflict",
+          });
+          break;
+        }
+
+        if (
+          session.provider === "codex" &&
+          !session.process.isWaitingForInput
+        ) {
+          if (session.codexQueuedInput) {
+            this.send(ws, {
+              type: "input_rejected",
+              sessionId: session.id,
+              ...(clientMessageId ? { clientMessageId } : {}),
+              reason: "Queue is full",
+            });
+            break;
+          }
+
+          const queued = this.sessionManager.queueCodexInput(session.id, {
+            itemId: randomUUID(),
+            text,
+            createdAt: new Date().toISOString(),
+            userMessageUuid: nextCodexUserTurnUuid(session),
+            ...(images.length > 0 ? { imageCount: images.length, images } : {}),
+            ...(imageRefs ? { imageRefs } : {}),
+            ...(codexSkills.length > 0 ? { skills: codexSkills } : {}),
+            ...(codexMentions.length > 0 ? { mentions: codexMentions } : {}),
+          });
+          if (!queued) {
+            this.send(ws, {
+              type: "input_rejected",
+              sessionId: session.id,
+              ...(clientMessageId ? { clientMessageId } : {}),
+              reason: "Queue is full",
+            });
+            break;
+          }
+          if (images.length > 0 && this.galleryStore && session.projectPath) {
+            for (const img of images) {
+              this.galleryStore
+                .addImageFromBase64(
+                  img.base64,
+                  img.mimeType,
+                  session.projectPath,
+                  msg.sessionId,
+                )
+                .catch((err) => {
+                  console.warn(
+                    `[ws] Failed to persist queued image to gallery: ${err}`,
+                  );
+                });
+            }
+          }
+          this.send(ws, {
+            type: "input_ack",
+            sessionId: session.id,
+            ...(clientMessageId ? { clientMessageId } : {}),
+            acceptedSeq: session.historyRevision,
+            queued: true,
+          });
+          this.broadcastSessionList();
+          break;
+        }
+
+        const userEntry = this.sessionManager.appendHistory(session.id, {
+          type: "user_input",
+          text,
+          ...(session.provider === "codex"
+            ? { userMessageUuid: nextCodexUserTurnUuid(session) }
+            : {}),
+          ...(clientMessageId ? { clientMessageId } : {}),
+          timestamp: new Date().toISOString(),
+          ...(images.length > 0 ? { imageCount: images.length } : {}),
+          ...(imageRefs ? { images: imageRefs } : {}),
+        } as ServerMessage);
+        const acceptedSeq = userEntry?.seq ?? session.historyRevision;
+
+        if (session.provider === "codex" && userEntry) {
+          this.send(ws, {
+            ...userEntry.message,
+            sessionId: session.id,
+            historySeq: acceptedSeq,
+          } as ServerMessage & { sessionId: string; historySeq: number });
+        }
+        if (userEntry) {
+          this.broadcastSessionMessage(
+            session.id,
+            {
+              ...userEntry.message,
+              historySeq: acceptedSeq,
+            } as ServerMessage & { historySeq: number },
+            ws,
+          );
+        }
+
+        // Persist images to Gallery Store asynchronously (fire-and-forget)
+        if (images.length > 0 && this.galleryStore && session.projectPath) {
+          for (const img of images) {
+            this.galleryStore
+              .addImageFromBase64(
+                img.base64,
+                img.mimeType,
+                session.projectPath,
+                msg.sessionId,
+              )
+              .catch((err) => {
+                console.warn(`[ws] Failed to persist image to gallery: ${err}`);
+              });
+          }
+        }
+
+        // Codex input path
+        if (session.provider === "codex") {
+          this.send(ws, {
+            type: "input_ack",
+            sessionId: session.id,
+            ...(clientMessageId ? { clientMessageId } : {}),
+            acceptedSeq,
+            queued: false,
+          });
+          const codexProc = session.process as CodexProcess;
+          if (images.length > 0) {
+            codexProc.sendInputStructured(text, {
+              images,
+              skills: codexSkills,
+              mentions: codexMentions,
+            });
+          } else if (msg.imageId && this.galleryStore) {
+            this.galleryStore
+              .getImageAsBase64(msg.imageId)
+              .then((imageData) => {
+                if (imageData) {
+                  codexProc.sendInputStructured(text, {
+                    images: [imageData],
+                    skills: codexSkills,
+                    mentions: codexMentions,
+                  });
+                } else {
+                  console.warn(`[ws] Image not found: ${msg.imageId}`);
+                  codexProc.sendInputStructured(text, {
+                    skills: codexSkills,
+                    mentions: codexMentions,
+                  });
+                }
+              })
+              .catch((err) => {
+                console.error(`[ws] Failed to load image: ${err}`);
+                codexProc.sendInputStructured(text, {
+                  skills: codexSkills,
+                  mentions: codexMentions,
+                });
+              });
+          } else if (codexSkills.length > 0 || codexMentions.length > 0) {
+            codexProc.sendInputStructured(text, {
+              skills: codexSkills,
+              mentions: codexMentions,
+            });
+          } else {
+            codexProc.sendInput(text);
+          }
+          break;
+        }
+
+        // Claude Code input path — enqueue first, then interrupt if busy
+        const claudeProc = session.process as SdkProcess;
+        let wasQueued = false;
+        let shouldInterrupt = false;
+        if (images.length > 0) {
+          // 不可变 text 用中间变量接收修改
+          let inputText = text;
+          if (this.modelSupportsVision()) {
+            // 模型支持 vision — 走 inline base64
+            console.log(
+              `[ws] Sending message with ${images.length} inline Base64 image(s)`,
+            );
+            if (typeof claudeProc.dispatchInputWithImages === "function") {
+              const result = claudeProc.dispatchInputWithImages(text, images);
+              wasQueued = result.queued;
+              shouldInterrupt = result.shouldInterrupt;
+            } else {
+              const result = claudeProc.sendInputWithImages(text, images);
+              wasQueued =
+                typeof result === "boolean" ? result : isAgentBusySnapshot;
+              shouldInterrupt = wasQueued;
+            }
+          } else if (session.projectPath) {
+            // 模型不支持 vision：存盘 + 发文本路径，让 Claude Code 用工具处理
+            console.log(
+              `[ws] Model lacks vision — saving ${images.length} image(s) to disk`,
+            );
+            const uploadDir = resolve(session.projectPath, ".claude-uploads");
+            let saved = false;
+            try {
+              mkdirSync(uploadDir, { recursive: true });
+              for (const img of images) {
+                const filePath = join(
+                  uploadDir,
+                  `${randomUUID()}.${this.mimeToExt(img.mimeType)}`,
+                );
+                writeFileSync(filePath, Buffer.from(img.base64, "base64"));
+                const note = `[User uploaded image: ${filePath}]`;
+                inputText = inputText ? `${inputText}\n${note}` : note;
+                console.log(`[ws] Image saved: ${filePath}`);
+              }
+              saved = true;
+            } catch (err) {
+              console.error(
+                `[ws] Failed to save image, falling back to inline base64: ${err}`,
+              );
+            }
+            if (saved) {
+              // 存盘成功 → 纯文本路径（agent 用工具处理文件）
+              if (typeof claudeProc.dispatchInput === "function") {
+                const result = claudeProc.dispatchInput(inputText);
+                wasQueued = result.queued;
+                shouldInterrupt = result.shouldInterrupt;
+              } else {
+                wasQueued = claudeProc.sendInput(inputText);
+                shouldInterrupt = wasQueued;
+              }
+            } else {
+              // 存盘失败 → 回退 inline base64（尽力而为）
+              if (typeof claudeProc.dispatchInputWithImages === "function") {
+                const result = claudeProc.dispatchInputWithImages(text, images);
+                wasQueued = result.queued;
+                shouldInterrupt = result.shouldInterrupt;
+              }
+            }
+          } else {
+            // 无 projectPath，走 inline（会失败但保持兼容）
+            if (typeof claudeProc.dispatchInputWithImages === "function") {
+              const result = claudeProc.dispatchInputWithImages(text, images);
+              wasQueued = result.queued;
+              shouldInterrupt = result.shouldInterrupt;
+            }
+          }
+        }
+        // Legacy imageId mode (backward compatibility)
+        else if (msg.imageId && this.galleryStore) {
+          this.send(ws, {
+            type: "input_ack",
+            sessionId: session.id,
+            ...(clientMessageId ? { clientMessageId } : {}),
+            acceptedSeq,
+            queued: isAgentBusySnapshot,
+          });
+          this.galleryStore
+            .getImageAsBase64(msg.imageId)
+            .then((imageData) => {
+              let queuedAfterResolve = false;
+              if (imageData) {
+                if (typeof claudeProc.dispatchInputWithImages === "function") {
+                  const result = claudeProc.dispatchInputWithImages(text, [
+                    imageData,
+                  ]);
+                  queuedAfterResolve = result.queued;
+                  if (result.shouldInterrupt) claudeProc.interrupt();
+                } else {
+                  const result = claudeProc.sendInputWithImages(text, [
+                    imageData,
+                  ]);
+                  queuedAfterResolve =
+                    typeof result === "boolean"
+                      ? result
+                      : isAgentBusySnapshot;
+                  if (queuedAfterResolve) claudeProc.interrupt();
+                }
+              } else {
+                console.warn(`[ws] Image not found: ${msg.imageId}`);
+                if (typeof claudeProc.dispatchInput === "function") {
+                  const result = claudeProc.dispatchInput(text);
+                  queuedAfterResolve = result.queued;
+                  if (result.shouldInterrupt) claudeProc.interrupt();
+                } else {
+                  const result = session.process.sendInput(text);
+                  queuedAfterResolve =
+                    typeof result === "boolean"
+                      ? result
+                      : isAgentBusySnapshot;
+                  if (queuedAfterResolve) claudeProc.interrupt();
+                }
+              }
+            })
+            .catch((err) => {
+              console.error(`[ws] Failed to load image: ${err}`);
+              if (typeof claudeProc.dispatchInput === "function") {
+                const result = claudeProc.dispatchInput(text);
+                if (result.shouldInterrupt) claudeProc.interrupt();
+              } else {
+                const result = session.process.sendInput(text);
+                const queuedAfterResolve =
+                  typeof result === "boolean" ? result : isAgentBusySnapshot;
+                if (queuedAfterResolve) claudeProc.interrupt();
+              }
+            });
+          break;
+        }
+        // Text-only message
+        else {
+          if (typeof claudeProc.dispatchInput === "function") {
+            const result = claudeProc.dispatchInput(text);
+            wasQueued = result.queued;
+            shouldInterrupt = result.shouldInterrupt;
+          } else {
+            const result = session.process.sendInput(text);
+            wasQueued =
+              typeof result === "boolean" ? result : isAgentBusySnapshot;
+            shouldInterrupt = wasQueued;
+          }
+        }
+
+        // Acknowledge receipt so the client can mark the message state.
+        // queued=true means the input was enqueued instead of being consumed
+        // immediately by the SDK stream.
+        this.send(ws, {
+          type: "input_ack",
+          sessionId: session.id,
+          ...(clientMessageId ? { clientMessageId } : {}),
+          acceptedSeq,
+          queued: wasQueued,
+        });
+
+        if (shouldInterrupt) {
+          console.log(
+            `[ws] Agent is busy — will queue input and interrupt current turn`,
+          );
+          claudeProc.interrupt();
+        }
+        break;
+      }
+
+      case "update_queued_input": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session || session.provider !== "codex") {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "No active Codex session.",
+          });
+          return;
+        }
+        if (!msg.text.trim()) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "Queued message cannot be empty.",
+          });
+          return;
+        }
+        const success = this.sessionManager.updateCodexQueuedInput(
+          session.id,
+          msg.itemId,
+          msg.text,
+          { skills: msg.skills ?? [], mentions: msg.mentions ?? [] },
+        );
+        if (!success) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "Queued message not found.",
+            errorCode: "queued_input_not_found",
+          });
+          return;
+        }
+        this.broadcastSessionList();
+        break;
+      }
+
+      case "cancel_queued_input": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session || session.provider !== "codex") {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "No active Codex session.",
+          });
+          return;
+        }
+        const success = this.sessionManager.cancelCodexQueuedInput(
+          session.id,
+          msg.itemId,
+        );
+        if (!success) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "Queued message not found.",
+            errorCode: "queued_input_not_found",
+          });
+          return;
+        }
+        this.broadcastSessionList();
+        break;
+      }
+
+      case "steer_queued_input": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session || session.provider !== "codex") {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "No active Codex session.",
+          });
+          return;
+        }
+        const result = await this.sessionManager.steerCodexQueuedInput(
+          session.id,
+          msg.itemId,
+        );
+        if (!result.ok) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: result.error,
+            errorCode:
+              result.error === "Queued message not found."
+                ? "queued_input_not_found"
+                : "queued_input_steer_failed",
+          });
+          return;
+        }
+        this.broadcastSessionList();
+        break;
+      }
+
+      case "push_register": {
+        const locale = normalizePushLocale(msg.locale);
+        const privacyMode = msg.privacyMode === true;
+        const supportsRegistrationResult =
+          this.clientSupportedServerMessages
+            .get(ws)
+            ?.has("push_registration_result") ?? false;
+        console.log(
+          `[ws] push_register received (platform: ${msg.platform}, locale: ${locale}, privacy: ${privacyMode}, configured: ${this.pushRelay.isConfigured})`,
+        );
+        const generation = this.beginPushTokenOperation(msg.token);
+        if (!this.pushRelay.isConfigured) {
+          const error = "Push relay is not configured on bridge";
+          this.send(
+            ws,
+            supportsRegistrationResult
+              ? {
+                  type: "push_registration_result",
+                  token: msg.token,
+                  requestId: msg.requestId ?? "",
+                  success: false,
+                  error,
+                }
+              : { type: "error", message: error },
+          );
+          return;
+        }
+        const operation = this.enqueuePushTokenOperation(msg.token, () =>
+          this.pushRelay.registerToken(msg.token, msg.platform, locale),
+        );
+        operation
+          .then(() => {
+            if (!this.isCurrentPushTokenOperation(msg.token, generation)) return;
+            console.log("[ws] push_register: token registered successfully");
+            if (supportsRegistrationResult) {
+              this.send(ws, {
+                type: "push_registration_result",
+                token: msg.token,
+                requestId: msg.requestId ?? "",
+                success: true,
+              });
+            }
+            // Enable delivery only after the acknowledgement has been queued
+            // on the WebSocket, keeping the app on local fallback until then.
+            this.tokenLocales.set(msg.token, locale);
+            this.tokenPrivacyMode.set(msg.token, privacyMode);
+          })
+          .catch((err) => {
+            if (!this.isCurrentPushTokenOperation(msg.token, generation)) return;
+            const detail = err instanceof Error ? err.message : String(err);
+            console.error(`[ws] push_register failed: ${detail}`);
+            const error = `Failed to register push token: ${detail}`;
+            this.send(
+              ws,
+              supportsRegistrationResult
+                ? {
+                    type: "push_registration_result",
+                    token: msg.token,
+                    requestId: msg.requestId ?? "",
+                    success: false,
+                    error,
+                  }
+                : { type: "error", message: error },
+            );
+          });
+        break;
+      }
+
+      case "push_unregister": {
+        console.log("[ws] push_unregister received");
+        const generation = this.beginPushTokenOperation(msg.token);
+        if (!this.pushRelay.isConfigured) {
+          this.send(ws, {
+            type: "error",
+            message: "Push relay is not configured on bridge",
+          });
+          return;
+        }
+        this.enqueuePushTokenOperation(msg.token, () =>
+          this.pushRelay.unregisterToken(msg.token),
+        )
+          .then(() => {
+            if (!this.isCurrentPushTokenOperation(msg.token, generation)) return;
+            console.log(
+              "[ws] push_unregister: token unregistered successfully",
+            );
+          })
+          .catch((err) => {
+            if (!this.isCurrentPushTokenOperation(msg.token, generation)) return;
+            const detail = err instanceof Error ? err.message : String(err);
+            console.error(`[ws] push_unregister failed: ${detail}`);
+            this.send(ws, {
+              type: "error",
+              message: `Failed to unregister push token: ${detail}`,
+            });
+          });
+        break;
+      }
+
+      case "set_permission_mode": {
+        if (this.failSetPermissionMode) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "Failed to set permission mode: forced test failure",
+            errorCode: "set_permission_mode_rejected",
+          });
+          break;
+        }
+        const session = this.resolveSession(msg.sessionId);
+        if (!session) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "No active session.",
+          });
+          return;
+        }
+        if (session.provider === "codex") {
+          // Permission mode for Codex requires a session restart (like sandbox mode).
+          // approvalPolicy and collaborationMode are thread-level settings that
+          // only take effect reliably at thread/start or thread/resume time.
+          const normalizedCodexPermissionsMode =
+            normalizeCodexPermissionsMode(msg.codexPermissionsMode);
+          const requestedCodexPermissionsMode =
+            this.codexAutoReviewDisabled &&
+            normalizedCodexPermissionsMode === "autoReview"
+              ? "default"
+              : normalizedCodexPermissionsMode;
+          const requestedApprovalsReviewer =
+            this.codexAutoReviewDisabled &&
+            isCodexAutoReviewApprovalsReviewer(msg.approvalsReviewer)
+              ? "user"
+              : msg.approvalsReviewer;
+          const codexPermissionSettings = requestedCodexPermissionsMode
+            ? codexSettingsFromPermissionsMode(requestedCodexPermissionsMode)
+            : undefined;
+          const process = session.process as CodexProcess;
+          const currentApproval = normalizeCodexApprovalPolicy(
+            process.approvalPolicy,
+          );
+          const currentReviewer = process.approvalsReviewer;
+          const currentSandboxMode = session.codexSettings?.sandboxMode;
+          const currentPermissionsMode = normalizeCodexPermissionsMode(
+            session.codexSettings?.codexPermissionsMode,
+          );
+          const collaborationOnlyChange =
+            requestedCodexPermissionsMode === undefined &&
+            msg.approvalPolicy === undefined &&
+            msg.approvalsReviewer === undefined &&
+            (msg.planMode !== undefined || msg.mode === "plan");
+          const explicitApproval = requestedCodexPermissionsMode
+            ? codexPermissionSettings?.approvalPolicy
+            : collaborationOnlyChange
+              ? currentApproval
+            : normalizeCodexApprovalPolicy(
+                msg.approvalPolicy ??
+                  (msg.executionMode == null
+                    ? undefined
+                    : msg.executionMode === "fullAccess"
+                      ? "never"
+                      : "on-request"),
+              );
+          const executionMode = deriveExecutionMode({
+            provider: "codex",
+            permissionMode: msg.mode,
+            executionMode: msg.executionMode,
+            approvalPolicy: explicitApproval,
+          });
+          const planMode = derivePlanMode({
+            permissionMode: msg.mode,
+            planMode: msg.planMode,
+          });
+          const legacyPermissionMode = modesToLegacyPermissionMode(
+            "codex",
+            executionMode,
+            planMode,
+          );
+          const newApproval = explicitApproval;
+          const newSandboxMode = codexPermissionSettings
+            ? codexPermissionSettings.sandboxMode
+            : currentSandboxMode;
+          const configuredReviewer =
+            requestedCodexPermissionsMode === "custom"
+              ? undefined
+              : (codexPermissionSettings?.approvalsReviewer ??
+                requestedApprovalsReviewer ??
+                currentReviewer);
+          const newReviewer = this.codexAutoReviewDisabled
+            ? "user"
+            : configuredReviewer;
+          const derivedPermissionsMode =
+            codexPermissionSettings?.codexPermissionsMode ??
+            (collaborationOnlyChange ? currentPermissionsMode : undefined) ??
+            deriveCodexPermissionsMode({
+              approvalPolicy: newApproval,
+              approvalsReviewer: newReviewer,
+              sandboxMode: newSandboxMode,
+            });
+          const newPermissionsMode =
+            this.codexAutoReviewDisabled &&
+            derivedPermissionsMode === "autoReview"
+              ? "default"
+              : derivedPermissionsMode;
+          const newCollaboration: "plan" | "default" = planMode
+            ? "plan"
+            : "default";
+          const currentCollaboration = process.collaborationMode;
+          if (
+            newApproval === currentApproval &&
+            newReviewer === currentReviewer &&
+            newSandboxMode === currentSandboxMode &&
+            newPermissionsMode === currentPermissionsMode &&
+            newCollaboration === currentCollaboration
+          ) {
+            break; // No change needed
+          }
+          const canApplyModeInPlace =
+            session.status === "idle" &&
+            requestedCodexPermissionsMode !== "custom" &&
+            newSandboxMode === currentSandboxMode &&
+            (this.codexAutoReviewPolicyLoaded ||
+              !isCodexAutoReviewApprovalsReviewer(newReviewer));
+
+          if (canApplyModeInPlace) {
+            const process = session.process as CodexProcess;
+            if (newApproval && newApproval !== currentApproval) {
+              process.setApprovalPolicy(newApproval);
+            }
+            if (newReviewer && newReviewer !== currentReviewer) {
+              process.setApprovalsReviewer(newReviewer);
+            }
+            if (newCollaboration !== currentCollaboration) {
+              process.setCollaborationMode(newCollaboration);
+            }
+            session.codexSettings = {
+              ...(session.codexSettings ?? {}),
+              approvalPolicy: newApproval,
+              approvalsReviewer: newReviewer,
+              codexPermissionsMode: newPermissionsMode,
+              sandboxMode: newSandboxMode,
+            };
+            session.lastActivityAt = new Date();
+            this.broadcast({
+              type: "system",
+              subtype: "set_permission_mode",
+              sessionId: session.id,
+              permissionMode: legacyPermissionMode,
+              executionMode,
+              approvalPolicy: newApproval,
+              approvalsReviewer: newReviewer,
+              codexPermissionsMode: newPermissionsMode,
+              planMode,
+            });
+            this.broadcastSessionList();
+            this.recordDebugEvent(session.id, {
+              direction: "internal" as const,
+              channel: "bridge" as const,
+              type: "permission_mode_changed",
+              detail: `mode=${msg.mode} approval=${newApproval} reviewer=${newReviewer} collaboration=${newCollaboration} applied=in-place`,
+            });
+            console.log(
+              `[ws] set_permission_mode(codex): execution=${executionMode} plan=${planMode} → approval=${newApproval}, reviewer=${newReviewer}, collaboration=${newCollaboration} (in-place)`,
+            );
+            break;
+          }
+          console.log(
+            `[ws] set_permission_mode(codex): execution=${executionMode} plan=${planMode} → approval=${newApproval}, reviewer=${newReviewer}, collaboration=${newCollaboration} (restart)`,
+          );
+
+          const oldSessionId = session.id;
+          const threadId = session.claudeSessionId;
+          const projectPath = session.projectPath;
+          const oldSettings = session.codexSettings ?? {};
+          const worktreePath = session.worktreePath;
+          const worktreeBranch = session.worktreeBranch;
+          const sessionName = session.name;
+          const workspace = this.workspaceForRuntimeSession(session);
+
+          this.destroySession(oldSessionId);
+          console.log(
+            `[ws] Permission mode change: destroyed session ${oldSessionId}`,
+          );
+
+          const hasUserMessages =
+            session.history?.some(
+              (m: Record<string, unknown>) =>
+                m.type === "user_input" || m.type === "assistant",
+            ) ||
+            (session.pastMessages && session.pastMessages.length > 0);
+          if (!threadId || !hasUserMessages) {
+            const newId = this.sessionManager.create(
+              projectPath,
+              undefined,
+              undefined,
+              worktreePath
+                ? { existingWorktreePath: worktreePath, worktreeBranch }
+                : undefined,
+              "codex",
+              this.withCodexAutoReviewPolicy({
+                approvalPolicy: newApproval,
+                approvalsReviewer: newReviewer as
+                  | "user"
+                  | "auto_review"
+                  | "guardian_subagent",
+                codexPermissionsMode: newPermissionsMode,
+                sandboxMode: newSandboxMode as
+                  | "read-only"
+                  | "workspace-write"
+                  | "danger-full-access"
+                  | undefined,
+                model: oldSettings.model,
+                modelReasoningEffort:
+                  oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
+                serviceTier: oldSettings.serviceTier,
+                networkAccessEnabled: oldSettings.networkAccessEnabled as
+                  | boolean
+                  | undefined,
+                webSearchMode: oldSettings.webSearchMode as
+                  | "disabled"
+                  | "cached"
+                  | "live"
+                  | undefined,
+                additionalWritableRoots: oldSettings.additionalWritableRoots,
+                collaborationMode: newCollaboration,
+              }),
+            );
+            this.attachWorkspaceToRuntimeSession(newId, workspace);
+            const newSession = this.sessionManager.get(newId);
+            if (newSession && sessionName) newSession.name = sessionName;
+            this.broadcast(
+              this.buildSessionCreatedMessage({
+                sessionId: newId,
+                provider: "codex",
+                projectPath,
+                session: newSession,
+                permissionMode: legacyPermissionMode,
+                executionMode,
+                planMode,
+                sandboxMode: newSandboxMode
+                  ? sandboxModeToExternal(newSandboxMode)
+                  : undefined,
+                approvalsReviewer: newReviewer,
+                codexPermissionsMode: newPermissionsMode,
+                sourceSessionId: oldSessionId,
+              }),
+            );
+            this.broadcastSessionList();
+            console.log(
+              `[ws] Permission mode change (no thread): created new session ${newId} (mode=${msg.mode})`,
+            );
+            break;
+          }
+
+          // Worktree resolution
+          const wtMapping = this.worktreeStore.get(threadId);
+          const effectiveProjectPath = wtMapping?.projectPath ?? projectPath;
+          let worktreeOpts:
+            | {
+                useWorktree?: boolean;
+                worktreeBranch?: string;
+                existingWorktreePath?: string;
+              }
+            | undefined;
+          if (wtMapping) {
+            if (worktreeExists(wtMapping.worktreePath)) {
+              worktreeOpts = {
+                existingWorktreePath: wtMapping.worktreePath,
+                worktreeBranch: wtMapping.worktreeBranch,
+              };
+            } else {
+              worktreeOpts = {
+                useWorktree: true,
+                worktreeBranch: wtMapping.worktreeBranch,
+              };
+            }
+          } else if (worktreePath) {
+            worktreeOpts = {
+              existingWorktreePath: worktreePath,
+              worktreeBranch,
+            };
+          }
+
+          this.getCodexThreadHistory(threadId, effectiveProjectPath)
+            .then((pastMessages) => {
+              const newId = this.sessionManager.create(
+                effectiveProjectPath,
+                undefined,
+                pastMessages,
+                worktreeOpts,
+                "codex",
+                this.withCodexAutoReviewPolicy({
+                  threadId,
+                  approvalPolicy: newApproval,
+                  approvalsReviewer: newReviewer as
+                    | "user"
+                    | "auto_review"
+                    | "guardian_subagent",
+                  codexPermissionsMode: newPermissionsMode,
+                  sandboxMode: newSandboxMode as
+                    | "read-only"
+                    | "workspace-write"
+                    | "danger-full-access"
+                    | undefined,
+                  model: oldSettings.model,
+                  modelReasoningEffort:
+                    oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
+                  serviceTier: oldSettings.serviceTier,
+                  networkAccessEnabled: oldSettings.networkAccessEnabled as
+                    | boolean
+                    | undefined,
+                  webSearchMode: oldSettings.webSearchMode as
+                    | "disabled"
+                    | "cached"
+                    | "live"
+                    | undefined,
+                  additionalWritableRoots: oldSettings.additionalWritableRoots,
+                  collaborationMode: newCollaboration,
+                }),
+              );
+              this.attachWorkspaceToRuntimeSession(newId, workspace);
+
+              const newSession = this.sessionManager.get(newId);
+              if (newSession && sessionName) {
+                newSession.name = sessionName;
+              }
+
+              void this.loadAndSetSessionName(
+                newSession,
+                "codex",
+                effectiveProjectPath,
+                threadId,
+              ).then(() => {
+                this.broadcast(
+                  this.buildSessionCreatedMessage({
+                    sessionId: newId,
+                    provider: "codex",
+                    projectPath: effectiveProjectPath,
+                    session: newSession,
+                    permissionMode: legacyPermissionMode,
+                    executionMode,
+                    planMode,
+                    sandboxMode: newSandboxMode
+                      ? sandboxModeToExternal(newSandboxMode)
+                      : undefined,
+                    approvalsReviewer: newReviewer,
+                    codexPermissionsMode: newPermissionsMode,
+                    sourceSessionId: oldSessionId,
+                  }),
+                );
+                this.broadcastSessionList();
+              });
+
+              this.debugEvents.set(newId, []);
+              this.recordDebugEvent(newId, {
+                direction: "internal" as const,
+                channel: "bridge" as const,
+                type: "permission_mode_changed",
+                detail: `mode=${msg.mode} approval=${newApproval} reviewer=${newReviewer} collaboration=${newCollaboration} thread=${threadId} oldSession=${oldSessionId}`,
+              });
+              console.log(
+                `[ws] Permission mode change: created new session ${newId} (thread=${threadId}, mode=${msg.mode})`,
+              );
+            })
+            .catch((err) => {
+              this.send(ws, {
+                type: "error",
+                sessionId: msg.sessionId,
+                message: `Failed to restart session for permission mode change: ${err}`,
+              });
+            });
+          break;
+        }
+        (session.process as SdkProcess)
+          .setPermissionMode(msg.mode)
+          .catch((err) => {
+            if (
+              msg.mode === "auto" &&
+              isClaudeAutoModeUnavailableError(err)
+            ) {
+              this.send(ws, {
+                type: "error",
+                sessionId: msg.sessionId,
+                message:
+                  "Auto mode is unavailable in this environment. Keeping the current permission mode.",
+                errorCode: "auto_mode_unavailable",
+              });
+              return;
+            }
+            this.send(ws, {
+              type: "error",
+              sessionId: msg.sessionId,
+              message: `Failed to set permission mode: ${errorMessageOf(err)}`,
+            });
+          });
+        break;
+      }
+
+      case "set_codex_model": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "No active session.",
+          });
+          return;
+        }
+        if (session.provider !== "codex") {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "Model switching is only supported for Codex sessions.",
+            errorCode: "set_codex_model_unsupported",
+          });
+          break;
+        }
+
+        const model = sanitizeCodexModel(msg.model);
+        if (!model) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: `Invalid Codex model: ${msg.model}`,
+            errorCode: "set_codex_model_rejected",
+          });
+          break;
+        }
+
+        const currentModel = sanitizeCodexModel(session.codexSettings?.model);
+        const currentEffort = session.codexSettings?.modelReasoningEffort;
+        const modelReasoningEffort = normalizeCodexReasoningEffortForModel(
+          model,
+          (msg.modelReasoningEffort ??
+            currentEffort) as CodexStartOptions["modelReasoningEffort"],
+        );
+        if (model === currentModel && modelReasoningEffort === currentEffort) {
+          break;
+        }
+
+        const process = session.process as CodexProcess;
+        process.setModel(model, modelReasoningEffort);
+        session.codexSettings = {
+          ...(session.codexSettings ?? {}),
+          model,
+          ...(modelReasoningEffort !== undefined
+            ? { modelReasoningEffort }
+            : {}),
+        };
+        session.lastActivityAt = new Date();
+        this.broadcast({
+          type: "system",
+          subtype: "set_codex_model",
+          sessionId: session.id,
+          provider: "codex",
+          model,
+          ...(modelReasoningEffort !== undefined
+            ? { modelReasoningEffort }
+            : {}),
+        });
+        this.broadcastSessionList();
+        this.recordDebugEvent(session.id, {
+          direction: "internal" as const,
+          channel: "bridge",
+          type: "codex_model_changed",
+          detail: `model=${model} effort=${modelReasoningEffort ?? ""}`,
+        });
+        console.log(
+          `[ws] set_codex_model(codex): model=${model} effort=${modelReasoningEffort ?? ""}`,
+        );
+        break;
+      }
+
+      case "set_codex_speed": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session || session.provider !== "codex") {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "No active Codex session.",
+            errorCode: "set_codex_speed_unsupported",
+          });
+          return;
+        }
+
+        const serviceTier = msg.serviceTier === "fast" ? "fast" : "standard";
+        if (session.codexSettings?.serviceTier === serviceTier) break;
+
+        const process = session.process as CodexProcess;
+        process.setServiceTier(serviceTier);
+        session.codexSettings = {
+          ...(session.codexSettings ?? {}),
+          serviceTier,
+        };
+        session.lastActivityAt = new Date();
+        this.broadcastSessionMessage(session.id, {
+          type: "system",
+          subtype: "set_codex_speed",
+          sessionId: session.id,
+          provider: "codex",
+          serviceTier,
+        });
+        this.broadcastSessionList();
+        console.log(
+          `[ws] set_codex_speed(codex): serviceTier=${serviceTier}`,
+        );
+        break;
+      }
+
+      case "get_goal": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session || session.provider !== "codex") {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "Goal lookup is only supported for active Codex sessions.",
+            errorCode: "goal_get_unsupported",
+          });
+          break;
+        }
+        try {
+          const goal = await (session.process as CodexProcess).getGoal();
+          session.codexGoal = goal;
+          this.send(ws, { type: "goal_state", sessionId: session.id, goal });
+        } catch (err) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: `Failed to get goal: ${errorMessageOf(err)}`,
+            errorCode: "goal_get_failed",
+          });
+        }
+        break;
+      }
+
+      case "set_goal": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session || session.provider !== "codex") {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "Goal updates are only supported for active Codex sessions.",
+            errorCode: "goal_set_unsupported",
+          });
+          break;
+        }
+        try {
+          const goal = await (session.process as CodexProcess).setGoal({
+            ...(msg.objective !== undefined
+              ? { objective: msg.objective }
+              : {}),
+            ...(msg.status !== undefined ? { status: msg.status } : {}),
+          });
+          session.codexGoal = goal;
+          this.broadcastSessionMessage(session.id, {
+            type: "goal_state",
+            goal,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: `Failed to set goal: ${errorMessageOf(err)}`,
+            errorCode: "goal_set_failed",
+          });
+        }
+        break;
+      }
+
+      case "clear_goal": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session || session.provider !== "codex") {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "Goal clearing is only supported for active Codex sessions.",
+            errorCode: "goal_clear_unsupported",
+          });
+          break;
+        }
+        try {
+          await (session.process as CodexProcess).clearGoal();
+          session.codexGoal = null;
+          this.broadcastSessionMessage(session.id, {
+            type: "goal_state",
+            goal: null,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: `Failed to clear goal: ${errorMessageOf(err)}`,
+            errorCode: "goal_clear_failed",
+          });
+        }
+        break;
+      }
+
+      case "set_sandbox_mode": {
+        if (this.failSetSandboxMode) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "Failed to set sandbox mode: forced test failure",
+            errorCode: "set_sandbox_mode_rejected",
+          });
+          break;
+        }
+        const session = this.resolveSession(msg.sessionId);
+        if (!session) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "No active session.",
+          });
+          return;
+        }
+        if (msg.sandboxMode !== "on" && msg.sandboxMode !== "off") {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: `Invalid sandbox mode: ${msg.sandboxMode}`,
+          });
+          return;
+        }
+
+        // ---- Claude sandbox toggle ----
+        if (session.provider === "claude") {
+          const newEnabled = msg.sandboxMode === "on";
+          if (session.sandboxEnabled === newEnabled) {
+            break; // No change needed
+          }
+
+          // Sandbox is a query-level setting — requires session restart.
+          const oldSessionId = session.id;
+          const claudeSessionId = session.claudeSessionId;
+          const projectPath = session.projectPath;
+          const worktreePath = session.worktreePath;
+          const worktreeBranch = session.worktreeBranch;
+          const sessionName = session.name;
+          const permissionMode = (session.process as SdkProcess).permissionMode;
+          const model = (session.process as SdkProcess).model;
+          const workspace = this.workspaceForRuntimeSession(session);
+
+          this.destroySession(oldSessionId);
+          console.log(
+            `[ws] Claude sandbox change: destroyed session ${oldSessionId}`,
+          );
+
+          const newId = this.sessionManager.create(
+            projectPath,
+            {
+              sessionId: claudeSessionId,
+              permissionMode,
+              model,
+              sandboxEnabled: newEnabled,
+              additionalDirectories: workspace?.rootPaths.slice(1),
+            },
+            undefined,
+            worktreePath
+              ? { existingWorktreePath: worktreePath, worktreeBranch }
+              : undefined,
+            "claude",
+          );
+          this.attachWorkspaceToRuntimeSession(newId, workspace);
+
+          const newSession = this.sessionManager.get(newId);
+          if (newSession && sessionName) newSession.name = sessionName;
+
+          void this.loadAndSetSessionName(
+            newSession,
+            "claude",
+            projectPath,
+            claudeSessionId,
+          ).then(() => {
+            this.broadcast(
+              this.buildSessionCreatedMessage({
+                sessionId: newId,
+                provider: "claude",
+                projectPath,
+                session: newSession,
+                sandboxMode: msg.sandboxMode,
+                sourceSessionId: oldSessionId,
+              }),
+            );
+            this.broadcastSessionList();
+          });
+
+          this.debugEvents.set(newId, []);
+          this.recordDebugEvent(newId, {
+            direction: "internal" as const,
+            channel: "bridge" as const,
+            type: "sandbox_mode_changed",
+            detail: `sandbox=${newEnabled} claude=${claudeSessionId} oldSession=${oldSessionId}`,
+          });
+          console.log(
+            `[ws] Claude sandbox change: created new session ${newId} (sandbox=${newEnabled})`,
+          );
+          break;
+        }
+
+        // ---- Codex sandbox toggle ----
+        const newSandboxMode = sandboxModeToInternal(msg.sandboxMode);
+        const currentSandboxMode =
+          session.codexSettings?.sandboxMode ?? "workspace-write";
+        if (newSandboxMode === currentSandboxMode) {
+          break; // No change needed
+        }
+
+        // Sandbox mode is a thread-level setting — it can only be applied at
+        // thread/start or thread/resume time, not per-turn. To apply the new
+        // mode we destroy the current session and resume the same Codex thread
+        // with the updated sandbox parameter (same pattern as clearContext).
+        const oldSessionId = session.id;
+        const threadId = session.claudeSessionId;
+        const projectPath = session.projectPath;
+        const oldSettings = session.codexSettings ?? {};
+        const worktreePath = session.worktreePath;
+        const worktreeBranch = session.worktreeBranch;
+        const sessionName = session.name;
+        const collaborationMode = (session.process as CodexProcess)
+          .collaborationMode;
+        const workspace = this.workspaceForRuntimeSession(session);
+        const executionMode =
+          oldSettings.approvalPolicy === "never" ? "fullAccess" : "default";
+        const planMode = collaborationMode === "plan";
+        const legacyPermissionMode = modesToLegacyPermissionMode(
+          "codex",
+          executionMode,
+          planMode,
+        );
+
+        this.destroySession(oldSessionId);
+        console.log(
+          `[ws] Sandbox mode change: destroyed session ${oldSessionId}`,
+        );
+
+        // Check if the user actually exchanged messages in this session.
+        // session.history always contains system events (init, status, etc.)
+        // even before the first user turn, so we check for user_input/assistant
+        // messages specifically.
+        const hasUserMessages =
+          session.history?.some(
+            (m: Record<string, unknown>) =>
+              m.type === "user_input" || m.type === "assistant",
+          ) ||
+          (session.pastMessages && session.pastMessages.length > 0);
+        if (!threadId || !hasUserMessages) {
+          // Session has no thread yet, or has a thread but no messages exchanged.
+          // Create a fresh session with the new sandbox — no resume needed.
+          // (A thread with no messages cannot be resumed — Codex returns
+          // "no rollout found for thread id".)
+          const newId = this.sessionManager.create(
+            projectPath,
+            undefined,
+            undefined,
+            worktreePath
+              ? { existingWorktreePath: worktreePath, worktreeBranch }
+              : undefined,
+            "codex",
+            this.withCodexAutoReviewPolicy({
+              approvalPolicy: oldSettings.approvalPolicy as
+                | "never"
+                | "on-request"
+                | undefined,
+              approvalsReviewer: oldSettings.approvalsReviewer as
+                | "user"
+                | "auto_review"
+                | "guardian_subagent"
+                | undefined,
+              codexPermissionsMode: oldSettings.codexPermissionsMode as
+                | "default"
+                | "autoReview"
+                | "fullAccess"
+                | "custom"
+                | undefined,
+              sandboxMode: newSandboxMode,
+              model: oldSettings.model,
+              modelReasoningEffort:
+                oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
+              serviceTier: oldSettings.serviceTier,
+              networkAccessEnabled: oldSettings.networkAccessEnabled as
+                | boolean
+                | undefined,
+              webSearchMode: oldSettings.webSearchMode as
+                | "disabled"
+                | "cached"
+                | "live"
+                | undefined,
+              additionalWritableRoots: oldSettings.additionalWritableRoots,
+              collaborationMode,
+            }),
+          );
+          this.attachWorkspaceToRuntimeSession(newId, workspace);
+          const newSession = this.sessionManager.get(newId);
+          if (newSession && sessionName) newSession.name = sessionName;
+          this.broadcast(
+            this.buildSessionCreatedMessage({
+              sessionId: newId,
+              provider: "codex",
+              projectPath,
+              session: newSession,
+              permissionMode: legacyPermissionMode,
+              executionMode,
+              planMode,
+              sandboxMode: sandboxModeToExternal(newSandboxMode),
+              sourceSessionId: oldSessionId,
+            }),
+          );
+          this.broadcastSessionList();
+          console.log(
+            `[ws] Sandbox mode change (no thread): created new session ${newId} (sandbox=${newSandboxMode})`,
+          );
+          break;
+        }
+
+        // Worktree resolution (same as resume_session)
+        const wtMapping = this.worktreeStore.get(threadId);
+        const effectiveProjectPath = wtMapping?.projectPath ?? projectPath;
+        let worktreeOpts:
+          | {
+              useWorktree?: boolean;
+              worktreeBranch?: string;
+              existingWorktreePath?: string;
+            }
+          | undefined;
+        if (wtMapping) {
+          if (worktreeExists(wtMapping.worktreePath)) {
+            worktreeOpts = {
+              existingWorktreePath: wtMapping.worktreePath,
+              worktreeBranch: wtMapping.worktreeBranch,
+            };
+          } else {
+            worktreeOpts = {
+              useWorktree: true,
+              worktreeBranch: wtMapping.worktreeBranch,
+            };
+          }
+        } else if (worktreePath) {
+          worktreeOpts = { existingWorktreePath: worktreePath, worktreeBranch };
+        }
+
+        this.getCodexThreadHistory(threadId, effectiveProjectPath)
+          .then((pastMessages) => {
+            const newId = this.sessionManager.create(
+              effectiveProjectPath,
+              undefined,
+              pastMessages,
+              worktreeOpts,
+              "codex",
+              this.withCodexAutoReviewPolicy({
+                threadId,
+                approvalPolicy: oldSettings.approvalPolicy as
+                  | "never"
+                  | "on-request"
+                  | undefined,
+                approvalsReviewer: oldSettings.approvalsReviewer as
+                  | "user"
+                  | "auto_review"
+                  | "guardian_subagent"
+                  | undefined,
+                codexPermissionsMode: oldSettings.codexPermissionsMode as
+                  | "default"
+                  | "autoReview"
+                  | "fullAccess"
+                  | "custom"
+                  | undefined,
+                sandboxMode: newSandboxMode,
+                model: oldSettings.model,
+                modelReasoningEffort:
+                  oldSettings.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"],
+                serviceTier: oldSettings.serviceTier,
+                networkAccessEnabled: oldSettings.networkAccessEnabled as
+                  | boolean
+                  | undefined,
+                webSearchMode: oldSettings.webSearchMode as
+                  | "disabled"
+                  | "cached"
+                  | "live"
+                  | undefined,
+                additionalWritableRoots: oldSettings.additionalWritableRoots,
+                collaborationMode,
+              }),
+            );
+            this.attachWorkspaceToRuntimeSession(newId, workspace);
+
+            // Restore session name
+            const newSession = this.sessionManager.get(newId);
+            if (newSession && sessionName) {
+              newSession.name = sessionName;
+            }
+
+            void this.loadAndSetSessionName(
+              newSession,
+              "codex",
+              effectiveProjectPath,
+              threadId,
+            ).then(() => {
+              this.broadcast(
+                this.buildSessionCreatedMessage({
+                  sessionId: newId,
+                  provider: "codex",
+                  projectPath: effectiveProjectPath,
+                  session: newSession,
+                  permissionMode: legacyPermissionMode,
+                  executionMode,
+                  planMode,
+                  sandboxMode: sandboxModeToExternal(newSandboxMode),
+                  sourceSessionId: oldSessionId,
+                }),
+              );
+              this.broadcastSessionList();
+            });
+
+            this.debugEvents.set(newId, []);
+            this.recordDebugEvent(newId, {
+              direction: "internal" as const,
+              channel: "bridge" as const,
+              type: "sandbox_mode_changed",
+              detail: `sandbox=${newSandboxMode} thread=${threadId} oldSession=${oldSessionId}`,
+            });
+            console.log(
+              `[ws] Sandbox mode change: created new session ${newId} (thread=${threadId}, sandbox=${newSandboxMode})`,
+            );
+          })
+          .catch((err) => {
+            this.send(ws, {
+              type: "error",
+              sessionId: msg.sessionId,
+              message: `Failed to restart session for sandbox mode change: ${err}`,
+            });
+          });
+        break;
+      }
+
+      case "approve": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session) {
+          this.sendToolActionError(ws, msg, "No active session.");
+          return;
+        }
+        if (session.provider === "codex") {
+          const handled = (session.process as CodexProcess).approve(msg.id);
+          if (handled === false) {
+            this.sendToolActionError(
+              ws,
+              msg,
+              "No matching pending tool action.",
+            );
+          }
+          break;
+        }
+        const sdkProc = session.process as SdkProcess;
+        if (msg.clearContext) {
+          // Clear & Accept: immediately destroy this runtime session and
+          // create a fresh one that continues the same Claude conversation.
+          // This guarantees chat history is cleared in the mobile UI without
+          // waiting for additional in-turn tool approvals.
+          const pending = sdkProc.getPendingPermission(msg.id);
+          const planText =
+            typeof pending?.input.plan === "string" ? pending.input.plan : "";
+
+          // Use session.id (always present) instead of msg.sessionId.
+          const sessionId = session.id;
+
+          // Capture session properties before destroy.
+          const claudeSessionId = session.claudeSessionId;
+          const projectPath = session.projectPath;
+          const permissionMode = sdkProc.permissionMode;
+          const worktreePath = session.worktreePath;
+          const worktreeBranch = session.worktreeBranch;
+          const workspace = this.workspaceForRuntimeSession(session);
+
+          this.destroySession(sessionId);
+          console.log(`[ws] Clear context: destroyed session ${sessionId}`);
+
+          const newId = this.sessionManager.create(
+            projectPath,
+            {
+              ...(claudeSessionId
+                ? {
+                    sessionId: claudeSessionId,
+                    continueMode: true,
+                  }
+                : {}),
+              permissionMode,
+              initialInput: planText || undefined,
+              additionalDirectories: workspace?.rootPaths.slice(1),
+            },
+            undefined,
+            worktreePath
+              ? { existingWorktreePath: worktreePath, worktreeBranch }
+            : undefined,
+          );
+          this.attachWorkspaceToRuntimeSession(newId, workspace);
+          console.log(
+            `[ws] Clear context: created new session ${newId} (CLI session: ${claudeSessionId ?? "new"})`,
+          );
+
+          // Notify all clients. Broadcast is used so reconnecting clients also receive it.
+          const newSession = this.sessionManager.get(newId);
+          const createdMsg = this.buildSessionCreatedMessage({
+            sessionId: newId,
+            provider: newSession?.provider ?? "claude",
+            projectPath,
+            session: newSession,
+            permissionMode,
+            sourceSessionId: sessionId,
+          });
+          this.broadcast({ ...createdMsg, clearContext: true });
+          this.broadcastSessionList();
+        } else {
+          const handled = sdkProc.approve(msg.id);
+          if (handled === false) {
+            this.sendToolActionError(
+              ws,
+              msg,
+              "No matching pending tool action.",
+            );
+          }
+        }
+        break;
+      }
+
+      case "approve_always": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session) {
+          this.sendToolActionError(ws, msg, "No active session.");
+          return;
+        }
+        if (session.provider === "codex") {
+          const handled = (session.process as CodexProcess).approveAlways(
+            msg.id,
+          );
+          if (handled === false) {
+            this.sendToolActionError(
+              ws,
+              msg,
+              "No matching pending tool action.",
+            );
+          }
+          break;
+        }
+        const handled = (session.process as SdkProcess).approveAlways(msg.id);
+        if (handled === false) {
+          this.sendToolActionError(
+            ws,
+            msg,
+            "No matching pending tool action.",
+          );
+        }
+        break;
+      }
+
+      case "reject": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session) {
+          this.sendToolActionError(ws, msg, "No active session.");
+          return;
+        }
+        if (session.provider === "codex") {
+          const handled = (session.process as CodexProcess).reject(
+            msg.id,
+            msg.message,
+          );
+          if (handled === false) {
+            this.sendToolActionError(
+              ws,
+              msg,
+              "No matching pending tool action.",
+            );
+          }
+          break;
+        }
+        const handled = (session.process as SdkProcess).reject(
+          msg.id,
+          msg.message,
+        );
+        if (handled === false) {
+          this.sendToolActionError(
+            ws,
+            msg,
+            "No matching pending tool action.",
+          );
+        }
+        break;
+      }
+
+      case "answer": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session) {
+          this.sendToolActionError(ws, msg, "No active session.");
+          return;
+        }
+        if (session.provider === "codex") {
+          const handled = (session.process as CodexProcess).answer(
+            msg.toolUseId,
+            msg.result,
+          );
+          if (handled === false) {
+            this.sendToolActionError(
+              ws,
+              msg,
+              "No matching pending tool action.",
+            );
+          }
+          break;
+        }
+        const handled = (session.process as SdkProcess).answer(
+          msg.toolUseId,
+          msg.result,
+        );
+        if (handled === false) {
+          this.sendToolActionError(
+            ws,
+            msg,
+            "No matching pending tool action.",
+          );
+        }
+        break;
+      }
+
+      case "install_tool_suggestion": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session) {
+          this.sendToolActionError(ws, msg, "No active session.");
+          return;
+        }
+        if (session.provider !== "codex") {
+          this.sendToolActionError(
+            ws,
+            msg,
+            "Tool suggestions are only supported for Codex sessions.",
+          );
+          return;
+        }
+        try {
+          await (session.process as CodexProcess).installToolSuggestion(
+            msg.toolUseId,
+          );
+        } catch (err) {
+          this.sendToolActionError(
+            ws,
+            msg,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+        break;
+      }
+
+      case "list_sessions": {
+        this.sendSessionList(ws);
+        break;
+      }
+
+      case "stop_session": {
+        const session = this.sessionManager.get(msg.sessionId);
+        if (session) {
+          // Notify clients before destroying (destroy removes listeners)
+          this.broadcastSessionMessage(msg.sessionId, {
+            type: "result",
+            subtype: "stopped",
+            sessionId: session.claudeSessionId,
+          });
+          this.destroySession(msg.sessionId);
+          this.recordDebugEvent(msg.sessionId, {
+            direction: "internal",
+            channel: "bridge",
+            type: "session_stopped",
+          });
+          this.debugEvents.delete(msg.sessionId);
+          this.notifiedPermissionToolUses.delete(msg.sessionId);
+          this.broadcastSessionList();
+        } else {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: `Session ${msg.sessionId} not found`,
+          });
+        }
+        break;
+      }
+
+      case "get_history": {
+        const session = this.sessionManager.get(msg.sessionId);
+        if (session) {
+          if (session.provider === "codex") {
+            const handled = await this.sendCodexCanonicalLegacyHistory(
+              ws,
+              msg.sessionId,
+              session,
+            );
+            if (handled) {
+              break;
+            }
+          }
+
+          const splitPastHistory =
+            session.pastMessages && session.pastMessages.length > 0
+              ? await this.splitPastHistoryMessages(session)
+              : { pastMessages: [], historyMessages: [] };
+          // Send past conversation from disk (resume) before in-memory history
+          if (splitPastHistory.pastMessages.length > 0) {
+            this.send(ws, {
+              type: "past_history",
+              claudeSessionId: session.claudeSessionId ?? msg.sessionId,
+              sessionId: msg.sessionId,
+              messages: splitPastHistory.pastMessages,
+            } as Record<string, unknown>);
+          }
+          this.send(ws, {
+            type: "history",
+            messages: [...splitPastHistory.historyMessages, ...session.history],
+            sessionId: msg.sessionId,
+          } as Record<string, unknown>);
+          if (session.provider === "codex") {
+            this.sendCodexCurrentSettings(ws, msg.sessionId, session);
+          }
+          this.send(ws, {
+            type: "status",
+            status: session.status,
+            sessionId: msg.sessionId,
+          } as Record<string, unknown>);
+          if (session.provider === "codex") {
+            this.sendCodexQueueState(ws, msg.sessionId, session);
+            this.sendCodexGoalState(ws, msg.sessionId, session);
+          }
+
+          this.sendCachedCommands(ws, msg.sessionId, session);
+        } else {
+          this.send(ws, {
+            type: "error",
+            message: `Session ${msg.sessionId} not found`,
+            errorCode: "session_not_found",
+            sessionId: msg.sessionId,
+          });
+        }
+        break;
+      }
+
+      case "get_session_context": {
+        const context = this.sessionManager.summary(msg.sessionId);
+        if (context) {
+          this.send(ws, {
+            type: "session_context",
+            sessionId: msg.sessionId,
+            context: { ...this.runtimeSessionWithWorkspace(context) },
+          });
+        } else {
+          this.send(ws, {
+            type: "error",
+            message: `Session ${msg.sessionId} not found`,
+            errorCode: "session_not_found",
+            sessionId: msg.sessionId,
+          });
+        }
+        break;
+      }
+
+      case "resolve_session_link": {
+        const provider = msg.provider ?? "claude";
+        const activeSession = this.sessionManager
+          .list()
+          .find(
+            (session) =>
+              session.provider === provider &&
+              (session.id === msg.sessionId ||
+                session.claudeSessionId === msg.sessionId),
+          );
+        if (activeSession) {
+          this.send(ws, {
+            type: "session_link_resolution",
+            requestId: msg.requestId,
+            sourceSessionId: msg.sessionId,
+            status: "live",
+            bridgeSessionId: activeSession.id,
+            provider,
+          });
+          break;
+        }
+
+        try {
+          const { sessions } = await getAllRecentSessions({
+            limit: 1,
+            provider,
+            sessionId: msg.sessionId,
+            archivedSessionIds: this.archiveStore.archivedIds(),
+          });
+          const recentSession = sessions[0];
+          this.send(ws, {
+            type: "session_link_resolution",
+            requestId: msg.requestId,
+            sourceSessionId: msg.sessionId,
+            status: recentSession ? "recent" : "unavailable",
+            provider,
+            ...(recentSession ? { recentSession } : {}),
+          } as Record<string, unknown>);
+        } catch (err) {
+          console.error("[ws] Failed to resolve session link:", err);
+          this.send(ws, {
+            type: "session_link_resolution",
+            requestId: msg.requestId,
+            sourceSessionId: msg.sessionId,
+            status: "unavailable",
+            provider,
+          });
+        }
+        break;
+      }
+
+      case "get_history_delta": {
+        const session = this.sessionManager.get(msg.sessionId);
+        if (session?.provider === "codex") {
+          const result = this.sessionManager.getHistorySince(
+            msg.sessionId,
+            msg.sinceSeq,
+          );
+          if (!result) {
+            this.send(ws, {
+              type: "error",
+              sessionId: msg.sessionId,
+              message: `Session ${msg.sessionId} not found`,
+            });
+            break;
+          }
+
+          if (
+            this.shouldResetCodexHistoryDelta(
+              session,
+              msg.sinceSeq,
+              result.kind,
+            )
+          ) {
+            await this.sendCodexCanonicalHistorySnapshot(
+              ws,
+              msg.sessionId,
+              session,
+            );
+            break;
+          }
+
+          this.send(ws, {
+            type:
+              result.kind === "snapshot" ? "history_snapshot" : "history_delta",
+            sessionId: msg.sessionId,
+            fromSeq: result.fromSeq,
+            toSeq: result.toSeq,
+            messages: result.entries,
+            status: session.status,
+            ...(result.kind === "snapshot" ? { reason: result.reason } : {}),
+          } as ServerMessage);
+          this.sendCodexCurrentSettings(ws, msg.sessionId, session);
+          this.sendCodexQueueState(ws, msg.sessionId, session);
+          this.sendCodexGoalState(ws, msg.sessionId, session);
+          break;
+        }
+
+        if (session) {
+          const result = this.sessionManager.getHistorySince(
+            msg.sessionId,
+            msg.sinceSeq,
+          );
+          if (!result) {
+            this.send(ws, {
+              type: "error",
+              sessionId: msg.sessionId,
+              message: `Session ${msg.sessionId} not found`,
+            });
+            break;
+          }
+          if (session.pastMessages && session.pastMessages.length > 0) {
+            const splitPastHistory =
+              await this.splitPastHistoryMessages(session);
+            if (splitPastHistory.pastMessages.length > 0) {
+              this.send(ws, {
+                type: "past_history",
+                claudeSessionId: session.claudeSessionId ?? msg.sessionId,
+                sessionId: msg.sessionId,
+                messages: splitPastHistory.pastMessages,
+              } as Record<string, unknown>);
+            }
+          }
+          this.send(ws, {
+            type:
+              result.kind === "snapshot"
+                ? "history_snapshot"
+                : "history_delta",
+            sessionId: msg.sessionId,
+            fromSeq: result.fromSeq,
+            toSeq: result.toSeq,
+            messages: result.entries,
+            status: session.status,
+            ...(result.kind === "snapshot" ? { reason: result.reason } : {}),
+          } as ServerMessage);
+        } else {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: `Session ${msg.sessionId} not found`,
+          });
+        }
+        break;
+      }
+
+      case "refresh_branch": {
+        const session = this.sessionManager.get(msg.sessionId);
+        if (session) {
+          const cwd = session.worktreePath ?? session.projectPath;
+          let branch = "";
+          try {
+            branch = execFileSync(
+              "git",
+              ["rev-parse", "--abbrev-ref", "HEAD"],
+              {
+                cwd,
+                encoding: "utf-8",
+              },
+            ).trim();
+          } catch {
+            /* not a git repo */
+          }
+          // Update stored branch so future session_list responses are also current
+          session.gitBranch = branch;
+          this.send(ws, {
+            type: "branch_update",
+            sessionId: msg.sessionId,
+            branch,
+          });
+        } else {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: `Session ${msg.sessionId} not found`,
+          });
+        }
+        break;
+      }
+
+      case "get_debug_bundle": {
+        const session = this.sessionManager.get(msg.sessionId);
+        if (!session) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: `Session ${msg.sessionId} not found`,
+          });
+          return;
+        }
+
+        const emitBundle = (diff: string, diffError?: string): void => {
+          const traceLimit =
+            msg.traceLimit ?? BridgeWebSocketServer.MAX_DEBUG_EVENTS;
+          const trace = this.getDebugEvents(msg.sessionId, traceLimit);
+          const generatedAt = new Date().toISOString();
+          const includeDiff = msg.includeDiff !== false;
+          const bundlePayload: Record<string, unknown> = {
+            type: "debug_bundle",
+            sessionId: msg.sessionId,
+            generatedAt,
+            session: {
+              id: session.id,
+              provider: session.provider,
+              status: session.status,
+              projectPath: session.projectPath,
+              worktreePath: session.worktreePath,
+              worktreeBranch: session.worktreeBranch,
+              claudeSessionId: session.claudeSessionId,
+              createdAt: session.createdAt.toISOString(),
+              lastActivityAt: session.lastActivityAt.toISOString(),
+            },
+            pastMessageCount: session.pastMessages?.length ?? 0,
+            historySummary: this.buildHistorySummary(session.history),
+            debugTrace: trace,
+            traceFilePath: this.debugTraceStore.getTraceFilePath(msg.sessionId),
+            reproRecipe: this.buildReproRecipe(
+              session,
+              traceLimit,
+              includeDiff,
+            ),
+            agentPrompt: this.buildAgentPrompt(session),
+            diff,
+            diffError,
+          };
+          const savedBundlePath = this.debugTraceStore.getBundleFilePath(
+            msg.sessionId,
+            generatedAt,
+          );
+          bundlePayload.savedBundlePath = savedBundlePath;
+          this.debugTraceStore.saveBundleAtPath(savedBundlePath, bundlePayload);
+          this.send(ws, bundlePayload);
+        };
+
+        if (msg.includeDiff === false) {
+          emitBundle("");
+          break;
+        }
+
+        const cwd = session.worktreePath ?? session.projectPath;
+        this.collectGitDiff(cwd, ({ diff, error }) => {
+          emitBundle(diff, error);
+        });
+        break;
+      }
+
+      case "get_usage": {
+        fetchAllUsage()
+          .then((providers) => {
+            this.send(ws, { type: "usage_result", providers } as Record<
+              string,
+              unknown
+            >);
+          })
+          .catch((err) => {
+            this.send(ws, {
+              type: "error",
+              message: `Failed to fetch usage: ${err}`,
+            });
+          });
+        break;
+      }
+
+      case "list_recent_sessions": {
+        const isProjectScopedRequest = msg.requestScope === "project";
+        const currentRequestId = this.recentSessionsRequestIds.get(ws) ?? 0;
+        const requestId = isProjectScopedRequest
+          ? currentRequestId
+          : currentRequestId + 1;
+        if (!isProjectScopedRequest) {
+          this.recentSessionsRequestIds.set(ws, requestId);
+        }
+        this.listRecentSessionsCoalesced(msg)
+          .then(({ sessions, hasMore }) => {
+            // List refreshes supersede older list responses. Project responses
+            // are correlated independently by requestId on the client.
+            if (
+              !isProjectScopedRequest &&
+              requestId !== (this.recentSessionsRequestIds.get(ws) ?? 0)
+            ) {
+              return;
+            }
+            this.send(ws, {
+              type: "recent_sessions",
+              sessions,
+              hasMore,
+              limit: msg.limit,
+              offset: msg.offset,
+              projectPath: msg.projectPath,
+              projectId: msg.projectId,
+              workspaceKind: msg.workspaceKind,
+              requestScope: msg.requestScope,
+              requestId: msg.requestId,
+            } as Record<string, unknown>);
+          })
+          .catch((err) => {
+            if (
+              !isProjectScopedRequest &&
+              requestId !== (this.recentSessionsRequestIds.get(ws) ?? 0)
+            ) {
+              return;
+            }
+            this.send(ws, {
+              type: "error",
+              message: `Failed to list recent sessions: ${err}`,
+              errorCode: "recent_sessions_failed",
+              path: msg.projectPath,
+              projectId: msg.projectId,
+              workspaceKind: msg.workspaceKind,
+              requestId: msg.requestId,
+              requestScope: msg.requestScope,
+              offset: msg.offset,
+            });
+          });
+        break;
+      }
+
+      case "archive_session": {
+        const { sessionId, provider, projectPath } = msg;
+        const archiveProjectPath = resolvePlatformPath(
+          projectPath,
+          this.platform,
+        );
+        if (!this.isPathAllowed(archiveProjectPath)) {
+          const pathError = this.buildPathNotAllowedError(projectPath);
+          this.send(ws, {
+            type: "archive_result",
+            sessionId,
+            success: false,
+            error: pathError.message,
+          } as Record<string, unknown>);
+          break;
+        }
+        void (async () => {
+          if (provider === "codex") {
+            const activeProcess = this.getActiveCodexProcess();
+            const codexProcess =
+              activeProcess ??
+              (await this.createStandaloneCodexProcess(archiveProjectPath));
+            try {
+              await codexProcess.archiveThread(sessionId);
+            } catch (err) {
+              if (!(err instanceof CodexRpcError && err.code === -32601)) {
+                throw err;
+              }
+              console.warn(
+                "[ws] thread/archive unsupported; using local archive marker",
+              );
+            } finally {
+              if (!activeProcess) codexProcess.stop();
+            }
+          }
+          await this.archiveStore.archive(
+            sessionId,
+            provider,
+            archiveProjectPath,
+          );
+        })()
+          .then(() => {
+            this.send(ws, {
+              type: "archive_result",
+              sessionId,
+              success: true,
+            } as Record<string, unknown>);
+          })
+          .catch((err) => {
+            this.send(ws, {
+              type: "archive_result",
+              sessionId,
+              success: false,
+              error: codexErrorMessage(err),
+            } as Record<string, unknown>);
+          });
+        break;
+      }
+
+      case "resume_session": {
+        const resumeStartedAt = Date.now();
+        const provider = msg.provider ?? "claude";
+        const storedAssignment = this.workspaceStore?.getAssignment(
+          provider,
+          msg.sessionId,
+        );
+        const requestedProject =
+          !storedAssignment && msg.projectId
+            ? this.workspaceStore?.getProject(msg.projectId)
+            : undefined;
+        if (!storedAssignment && msg.projectId && !requestedProject) {
+          this.sendResumeFailed(ws, {
+            provider,
+            sourceSessionId: msg.sessionId,
+            projectPath: msg.projectPath,
+            resumeRequestId: msg.resumeRequestId,
+          });
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            requestId: msg.resumeRequestId,
+            errorCode: "project_not_found",
+            message: `Project not found: ${msg.projectId}`,
+          });
+          break;
+        }
+        const assignedProject = storedAssignment?.projectId
+          ? this.workspaceStore?.getProject(storedAssignment.projectId)
+          : undefined;
+        const resolvedResumeProjectName =
+          assignedProject?.name ?? storedAssignment?.projectName;
+        const resumeRoots =
+          storedAssignment?.rootPaths ?? requestedProject?.rootPaths;
+        console.log(
+          `[ws] resume_session: sessionId=${msg.sessionId} projectPath=${msg.projectPath} provider=${msg.provider ?? "claude"}`,
+        );
+        // A stored assignment supplies the root snapshot and secondary roots,
+        // while the recent-session path may be a worktree cwd that must win.
+        const resumeProjectPath = resolvePlatformPath(
+          storedAssignment
+            ? msg.projectPath
+            : (resumeRoots?.[0] ?? msg.projectPath),
+          this.platform,
+        );
+        const resumeAdditionalRoots =
+          resumeRoots?.slice(1) ?? msg.additionalWritableRoots;
+        const resolvedResumeWorkspace: ResolvedWorkspace | undefined =
+          storedAssignment
+            ? {
+                kind: storedAssignment.kind,
+                ...(storedAssignment.projectId
+                  ? { projectId: storedAssignment.projectId }
+                  : {}),
+                ...(resolvedResumeProjectName
+                  ? { projectName: resolvedResumeProjectName }
+                  : {}),
+                rootPaths: storedAssignment.rootPaths,
+              }
+            : requestedProject
+              ? {
+                  kind: "project",
+                  projectId: requestedProject.id,
+                  projectName: requestedProject.name,
+                  rootPaths: requestedProject.rootPaths,
+                }
+              : undefined;
+        if (!this.isPathAllowed(resumeProjectPath)) {
+          this.sendResumeFailed(ws, {
+            provider,
+            sourceSessionId: msg.sessionId,
+            projectPath: resumeProjectPath,
+            resumeRequestId: msg.resumeRequestId,
+          });
+          this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          break;
+        }
+        if (
+          resolvedResumeWorkspace &&
+          !storedAssignment &&
+          this.workspaceStore
+        ) {
+          void this.workspaceStore.assignSession(
+            provider,
+            msg.sessionId,
+            resolvedResumeWorkspace,
+          ).catch((error) => {
+            console.error("[workspace] Failed to persist resume assignment:", error);
+          });
+        }
+        const normalizedCodexPermissionsMode =
+          provider === "codex"
+            ? normalizeCodexPermissionsMode(msg.codexPermissionsMode)
+            : undefined;
+        const requestedCodexPermissionsMode =
+          this.codexAutoReviewDisabled &&
+          normalizedCodexPermissionsMode === "autoReview"
+            ? "default"
+            : normalizedCodexPermissionsMode;
+        const codexPermissionSettings = requestedCodexPermissionsMode
+          ? codexSettingsFromPermissionsMode(requestedCodexPermissionsMode)
+          : undefined;
+        const codexApprovalPolicy =
+          provider === "codex"
+            ? requestedCodexPermissionsMode
+              ? codexPermissionSettings?.approvalPolicy
+              : normalizeCodexApprovalPolicy(
+                  msg.approvalPolicy ??
+                    (msg.executionMode == null
+                      ? undefined
+                      : msg.executionMode === "fullAccess"
+                        ? "never"
+                        : "on-request"),
+                )
+            : undefined;
+        const executionMode = deriveExecutionMode({
+          provider,
+          permissionMode: msg.permissionMode,
+          executionMode: msg.executionMode,
+          approvalPolicy: codexApprovalPolicy,
+        });
+        const planMode = derivePlanMode({
+          permissionMode: msg.permissionMode,
+          planMode: msg.planMode,
+        });
+        const legacyPermissionMode = modesToLegacyPermissionMode(
+          provider,
+          executionMode,
+          planMode,
+        );
+        const claudePermissionMode =
+          provider === "claude"
+            ? ((msg.permissionMode as
+                | "default"
+                | "auto"
+                | "acceptEdits"
+                | "bypassPermissions"
+                | "plan"
+                | undefined) ?? legacyPermissionMode)
+            : legacyPermissionMode;
+        const sessionRefId = msg.sessionId;
+        // Resume flow: keep past history in SessionInfo and deliver it only
+        // via get_history(sessionId) to avoid duplicate/missed replay races.
+        if (provider === "codex") {
+          const wtMapping = this.worktreeStore.get(sessionRefId);
+          const effectiveProjectPath =
+            resolvePlatformPath(
+              wtMapping?.projectPath ?? resumeProjectPath,
+              this.platform,
+            );
+          const effectiveProfile = msg.profile
+            ? await this.resolveCodexResumeProfile(
+                msg.profile,
+                sessionRefId,
+                effectiveProjectPath,
+              )
+            : undefined;
+          const additionalWritableRoots =
+            this.normalizeAdditionalWritableRoots(
+              resumeAdditionalRoots,
+              effectiveProjectPath,
+            );
+          if (additionalWritableRoots.deniedRoot) {
+            this.sendResumeFailed(ws, {
+              provider,
+              sourceSessionId: sessionRefId,
+              projectPath: effectiveProjectPath,
+              resumeRequestId: msg.resumeRequestId,
+            });
+            this.send(
+              ws,
+              this.buildPathNotAllowedError(additionalWritableRoots.deniedRoot),
+            );
+            break;
+          }
+          let worktreeOpts:
+            | {
+                useWorktree?: boolean;
+                worktreeBranch?: string;
+                existingWorktreePath?: string;
+              }
+            | undefined;
+          if (wtMapping) {
+            if (worktreeExists(wtMapping.worktreePath)) {
+              worktreeOpts = {
+                existingWorktreePath: wtMapping.worktreePath,
+                worktreeBranch: wtMapping.worktreeBranch,
+              };
+            } else {
+              worktreeOpts = {
+                useWorktree: true,
+                worktreeBranch: wtMapping.worktreeBranch,
+              };
+            }
+          }
+
+          const resumeOperation = this.beginResumeOperation({
+            ws,
+            provider: "codex",
+            sourceSessionId: sessionRefId,
+            projectPath: effectiveProjectPath,
+            request: msg,
+          });
+          if (!resumeOperation.isOwner) break;
+
+          let historyMetrics = summarizeResumeHistory([]);
+          let historyLoadMs = 0;
+          let historyLoaded = false;
+          let sessionCreateMs = 0;
+          let nameLoadMs = 0;
+          const historyStartedAt = Date.now();
+          try {
+            const pastMessages = await this.getCodexThreadHistory(
+              sessionRefId,
+              effectiveProjectPath,
+            );
+            historyLoadMs = Date.now() - historyStartedAt;
+            historyLoaded = true;
+            historyMetrics = summarizeResumeHistory(pastMessages);
+            const createStartedAt = Date.now();
+            const sessionId = this.sessionManager.create(
+              effectiveProjectPath,
+              undefined,
+              pastMessages,
+              worktreeOpts,
+              "codex",
+              this.withCodexAutoReviewPolicy({
+                threadId: sessionRefId,
+                profile: effectiveProfile,
+                approvalPolicy: codexPermissionSettings
+                  ? codexPermissionSettings.approvalPolicy
+                  : (codexApprovalPolicy ??
+                    normalizeCodexApprovalPolicy(
+                      executionMode === "fullAccess" ? "never" : "on-request",
+                    )),
+                approvalsReviewer:
+                  codexPermissionSettings?.approvalsReviewer ??
+                  msg.approvalsReviewer,
+                codexPermissionsMode:
+                  codexPermissionSettings?.codexPermissionsMode,
+                sandboxMode: codexPermissionSettings
+                  ? codexPermissionSettings.sandboxMode
+                  : sandboxModeToInternal(msg.sandboxMode),
+                model: msg.model,
+                modelReasoningEffort:
+                  (msg.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"]) ??
+                  undefined,
+                serviceTier: msg.serviceTier,
+                networkAccessEnabled: msg.networkAccessEnabled,
+                webSearchMode:
+                  (msg.webSearchMode as "disabled" | "cached" | "live") ??
+                  undefined,
+                additionalWritableRoots: additionalWritableRoots.roots,
+                collaborationMode: planMode
+                  ? ("plan" as const)
+                  : ("default" as const),
+              }),
+              { deferProcessMessages: true },
+            );
+            if (
+              !this.attachProvisionalResumeSession(
+                resumeOperation.key,
+                resumeOperation.operationId,
+                sessionId,
+              )
+            ) {
+              this.sessionManager.destroy(sessionId);
+              break;
+            }
+            sessionCreateMs = Date.now() - createStartedAt;
+            const createdSession = this.sessionManager.get(sessionId);
+            const waitUntilReady = (
+              createdSession?.process as
+                | { waitUntilReady?: () => Promise<void> }
+                | undefined
+            )?.waitUntilReady;
+            if (!waitUntilReady) {
+              throw new Error("Codex session readiness is unavailable");
+            }
+            await waitUntilReady.call(createdSession?.process);
+            if (createdSession) {
+              // get_history immediately follows session_created on the app.
+              // Reuse the canonical history loaded above instead of issuing a
+              // second thread/read for the same restored session.
+              createdSession.codexInitialHistoryPending = true;
+            }
+            const cached = this.sessionManager.getCachedCommands(
+              "codex",
+              createdSession?.worktreePath ?? effectiveProjectPath,
+            );
+            const nameStartedAt = Date.now();
+            await this.loadAndSetSessionName(
+              createdSession,
+              "codex",
+              effectiveProjectPath,
+              sessionRefId,
+            );
+            nameLoadMs = Date.now() - nameStartedAt;
+            const createdMessage = this.buildSessionCreatedMessage({
+              sessionId,
+              provider: "codex",
+              projectPath: effectiveProjectPath,
+              session: createdSession,
+              sandboxMode: createdSession?.codexSettings?.sandboxMode
+                ? sandboxModeToExternal(createdSession.codexSettings.sandboxMode)
+                : undefined,
+              approvalsReviewer:
+                createdSession?.codexSettings?.approvalsReviewer,
+              codexPermissionsMode:
+                createdSession?.codexSettings?.codexPermissionsMode,
+              permissionMode: legacyPermissionMode,
+              executionMode,
+              planMode,
+              resumeRequestId: msg.resumeRequestId,
+              ...(cached
+                ? {
+                    slashCommands: cached.slashCommands,
+                    skills: cached.skills,
+                    ...(cached.skillMetadata
+                      ? { skillMetadata: cached.skillMetadata }
+                      : {}),
+                    apps: cached.apps,
+                    ...(cached.appMetadata
+                      ? { appMetadata: cached.appMetadata }
+                      : {}),
+                    plugins: cached.plugins,
+                    ...(cached.pluginMetadata
+                      ? { pluginMetadata: cached.pluginMetadata }
+                      : {}),
+                  }
+                : {}),
+            });
+            if (
+              !this.completeResumeOperation(
+                resumeOperation.key,
+                resumeOperation.operationId,
+                sessionId,
+                createdMessage,
+              )
+            ) {
+              this.sessionManager.destroy(sessionId);
+              break;
+            }
+            this.sessionManager.releaseDeferredProcessMessages(sessionId);
+            this.broadcastSessionList();
+            this.debugEvents.set(sessionId, []);
+            this.recordDebugEvent(sessionId, {
+              direction: "internal",
+              channel: "bridge",
+              type: "session_resumed",
+              detail: `provider=codex thread=${sessionRefId}`,
+            });
+            if (!resolvedResumeWorkspace) {
+              this.projectHistory?.addProject(effectiveProjectPath);
+            }
+            console.info(
+              formatResumePerformanceLog({
+                provider: "codex",
+                sourceSessionId: sessionRefId,
+                outcome: "success",
+                ...historyMetrics,
+                historyLoadMs,
+                sessionCreateMs,
+                nameLoadMs,
+                totalMs: Date.now() - resumeStartedAt,
+              }),
+            );
+          } catch (err) {
+            if (!historyLoaded) {
+              historyLoadMs = Date.now() - historyStartedAt;
+            }
+            console.info(
+              formatResumePerformanceLog({
+                provider: "codex",
+                sourceSessionId: sessionRefId,
+                outcome: "failed",
+                ...historyMetrics,
+                historyLoadMs,
+                sessionCreateMs,
+                nameLoadMs,
+                totalMs: Date.now() - resumeStartedAt,
+              }),
+            );
+            const activeWriterConflict = isCodexThreadWriterConflict(err);
+            this.failResumeOperation(
+              resumeOperation.key,
+              resumeOperation.operationId,
+              activeWriterConflict
+                ? codexErrorMessage(err)
+                : historyLoaded
+                  ? `Failed to restore Codex session: ${err}`
+                  : `Failed to load Codex session history: ${err}`,
+              activeWriterConflict
+                ? "codex_thread_writer_conflict"
+                : undefined,
+            );
+          }
+          break;
+        }
+
+        const claudeSessionId = sessionRefId;
+        const additionalDirectories = this.normalizeAdditionalWritableRoots(
+          resumeAdditionalRoots,
+          resumeProjectPath,
+        );
+        if (additionalDirectories.deniedRoot) {
+          this.sendResumeFailed(ws, {
+            provider,
+            sourceSessionId: sessionRefId,
+            projectPath: resumeProjectPath,
+            resumeRequestId: msg.resumeRequestId,
+          });
+          this.send(
+            ws,
+            this.buildPathNotAllowedError(additionalDirectories.deniedRoot),
+          );
+          break;
+        }
+        // Look up worktree mapping for this Claude session
+        const wtMapping = this.worktreeStore.get(claudeSessionId);
+        let worktreeOpts:
+          | {
+              useWorktree?: boolean;
+              worktreeBranch?: string;
+              existingWorktreePath?: string;
+            }
+          | undefined;
+        if (wtMapping) {
+          if (worktreeExists(wtMapping.worktreePath)) {
+            // Worktree exists — reuse it directly
+            worktreeOpts = {
+              existingWorktreePath: wtMapping.worktreePath,
+              worktreeBranch: wtMapping.worktreeBranch,
+            };
+          } else {
+            // Worktree was deleted — recreate on the same branch
+            worktreeOpts = {
+              useWorktree: true,
+              worktreeBranch: wtMapping.worktreeBranch,
+            };
+          }
+        }
+
+        const resumeOperation = this.beginResumeOperation({
+          ws,
+          provider: "claude",
+          sourceSessionId: claudeSessionId,
+          projectPath: resumeProjectPath,
+          request: msg,
+        });
+        if (!resumeOperation.isOwner) break;
+
+        const historyStartedAt = Date.now();
+        let historyMetrics = summarizeResumeHistory([]);
+        let historyLoadMs = 0;
+        let historyLoaded = false;
+        let sessionCreateMs = 0;
+        getSessionHistory(claudeSessionId)
+          .then((pastMessages) => {
+            historyLoadMs = Date.now() - historyStartedAt;
+            historyLoaded = true;
+            historyMetrics = summarizeResumeHistory(pastMessages);
+            const createStartedAt = Date.now();
+            const {
+              sessionId,
+              permissionMode: effectivePermissionMode,
+              executionMode: effectiveExecutionMode,
+              planMode: effectivePlanMode,
+              usedFallback: autoFallbackUsed,
+            } = this.createClaudeSessionWithFallback({
+              projectPath: resumeProjectPath,
+              options: {
+                sessionId: claudeSessionId,
+                permissionMode: claudePermissionMode,
+                model: msg.model,
+                effort: msg.effort,
+                maxTurns: msg.maxTurns,
+                maxBudgetUsd: msg.maxBudgetUsd,
+                fallbackModel: msg.fallbackModel,
+                forkSession: msg.forkSession,
+                persistSession: msg.persistSession,
+                ...(msg.sandboxMode
+                  ? { sandboxEnabled: msg.sandboxMode === "on" }
+                  : {}),
+                additionalDirectories: additionalDirectories.roots,
+              },
+              pastMessages,
+              worktreeOptions: worktreeOpts,
+            });
+            sessionCreateMs = Date.now() - createStartedAt;
+            const createdSession = this.sessionManager.get(sessionId);
+            const cached = this.sessionManager.getCachedCommands(
+              "claude",
+              createdSession?.worktreePath ?? resumeProjectPath,
+            );
+            const nameStartedAt = Date.now();
+            const finishResume = () => {
+              const createdMessage = {
+                ...this.buildSessionCreatedMessage({
+                  sessionId,
+                  provider: "claude",
+                  projectPath: resumeProjectPath,
+                  session: createdSession,
+                  permissionMode: effectivePermissionMode,
+                  executionMode: effectiveExecutionMode,
+                  planMode: effectivePlanMode,
+                  sandboxMode: msg.sandboxMode,
+                  resumeRequestId: msg.resumeRequestId,
+                  ...(cached
+                    ? {
+                        slashCommands: cached.slashCommands,
+                        skills: cached.skills,
+                        ...(cached.skillMetadata
+                          ? { skillMetadata: cached.skillMetadata }
+                          : {}),
+                        apps: cached.apps,
+                        ...(cached.appMetadata
+                          ? { appMetadata: cached.appMetadata }
+                          : {}),
+                        plugins: cached.plugins,
+                        ...(cached.pluginMetadata
+                          ? { pluginMetadata: cached.pluginMetadata }
+                          : {}),
+                      }
+                    : {}),
+                }),
+                claudeSessionId,
+              } as SystemServerMessage;
+              if (
+                !this.completeResumeOperation(
+                  resumeOperation.key,
+                  resumeOperation.operationId,
+                  sessionId,
+                  createdMessage,
+                )
+              ) {
+                this.sessionManager.destroy(sessionId);
+                return;
+              }
+              this.broadcastSessionList();
+              if (autoFallbackUsed) {
+                this.sendTip(
+                  ws,
+                  sessionId,
+                  "auto_mode_fallback_default",
+                  createdSession,
+                );
+              }
+              console.info(
+                formatResumePerformanceLog({
+                  provider: "claude",
+                  sourceSessionId: claudeSessionId,
+                  outcome: "success",
+                  ...historyMetrics,
+                  historyLoadMs,
+                  sessionCreateMs,
+                  nameLoadMs: Date.now() - nameStartedAt,
+                  totalMs: Date.now() - resumeStartedAt,
+                }),
+              );
+            };
+            void this.loadAndSetSessionName(
+              createdSession,
+              "claude",
+              resumeProjectPath,
+              claudeSessionId,
+            ).then(finishResume, (err) => {
+              console.error("[ws] Failed to load resumed session name:", err);
+              finishResume();
+            });
+            this.debugEvents.set(sessionId, []);
+            this.recordDebugEvent(sessionId, {
+              direction: "internal",
+              channel: "bridge",
+              type: "session_resumed",
+              detail: `provider=claude session=${claudeSessionId}`,
+            });
+            if (!resolvedResumeWorkspace) {
+              this.projectHistory?.addProject(resumeProjectPath);
+            }
+          })
+          .catch((err) => {
+            if (!historyLoaded) {
+              historyLoadMs = Date.now() - historyStartedAt;
+            }
+            console.info(
+              formatResumePerformanceLog({
+                provider: "claude",
+                sourceSessionId: claudeSessionId,
+                outcome: "failed",
+                ...historyMetrics,
+                historyLoadMs,
+                sessionCreateMs,
+                nameLoadMs: 0,
+                totalMs: Date.now() - resumeStartedAt,
+              }),
+            );
+            this.failResumeOperation(
+              resumeOperation.key,
+              resumeOperation.operationId,
+              `Failed to load session history: ${err}`,
+            );
+          });
+        break;
+      }
+
+      case "list_gallery": {
+        const projectPath = msg.projectPath ?? msg.project;
+        if (this.galleryStore) {
+          const images = this.galleryStore.list({
+            projectPath,
+            sessionId: msg.sessionId,
+          });
+          this.send(ws, {
+            type: "gallery_list",
+            images,
+            projectPath,
+            sessionId: msg.sessionId,
+            requestId: msg.requestId,
+          });
+        } else {
+          this.send(ws, {
+            type: "gallery_list",
+            images: [],
+            projectPath,
+            sessionId: msg.sessionId,
+            requestId: msg.requestId,
+          });
+        }
+        break;
+      }
+
+      case "get_message_images": {
+        void extractMessageImages(msg.claudeSessionId, msg.messageUuid)
+          .then((images) => {
+            const refs: Array<{ id: string; url: string; mimeType: string }> =
+              [];
+            if (this.imageStore) {
+              for (const img of images) {
+                const ref = this.imageStore.registerFromBase64(
+                  img.base64,
+                  img.mimeType,
+                );
+                if (ref) refs.push(ref);
+              }
+            }
+            this.send(ws, {
+              type: "message_images_result",
+              messageUuid: msg.messageUuid,
+              images: refs,
+            });
+          })
+          .catch((err) => {
+            console.error("[ws] Failed to extract message images:", err);
+            this.send(ws, {
+              type: "message_images_result",
+              messageUuid: msg.messageUuid,
+              images: [],
+            });
+          });
+        break;
+      }
+
+      case "interrupt": {
+        const session = this.resolveSession(msg.sessionId);
+        if (!session) {
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: "No active session.",
+          });
+          return;
+        }
+        session.process.interrupt();
+        break;
+      }
+
+      case "list_project_history": {
+        const projects = this.legacyProjectHistoryProjects();
+        this.send(ws, { type: "project_history", projects });
+        break;
+      }
+
+      case "remove_project_history": {
+        this.projectHistory?.removeProject(msg.projectPath);
+        const projects = this.legacyProjectHistoryProjects();
+        this.send(ws, { type: "project_history", projects });
+        break;
+      }
+
+      case "list_projects": {
+        this.send(ws, this.projectsMessage(msg.requestId));
+        break;
+      }
+
+      case "create_project": {
+        if (!this.workspaceStore) {
+          this.send(ws, {
+            type: "error",
+            requestId: msg.requestId,
+            errorCode: "projects_unavailable",
+            message: "Project storage is unavailable",
+          });
+          break;
+        }
+        const normalized = this.normalizeWorkspaceRoots(msg.rootPaths);
+        if (normalized.deniedRoot || !normalized.roots) {
+          this.send(
+            ws,
+            this.buildPathNotAllowedError(
+              normalized.deniedRoot ?? msg.rootPaths[0],
+            ),
+          );
+          break;
+        }
+        try {
+          await this.workspaceStore.createProject(msg.name, normalized.roots);
+          this.broadcast(this.projectsMessage(msg.requestId));
+        } catch (error) {
+          this.sendWorkspaceMutationError(ws, msg.requestId, "create Project", error);
+        }
+        break;
+      }
+
+      case "update_project": {
+        if (!this.workspaceStore) {
+          this.send(ws, {
+            type: "error",
+            requestId: msg.requestId,
+            errorCode: "projects_unavailable",
+            message: "Project storage is unavailable",
+          });
+          break;
+        }
+        const normalized = this.normalizeWorkspaceRoots(msg.rootPaths);
+        if (normalized.deniedRoot || !normalized.roots) {
+          this.send(
+            ws,
+            this.buildPathNotAllowedError(
+              normalized.deniedRoot ?? msg.rootPaths[0],
+            ),
+          );
+          break;
+        }
+        let updated;
+        try {
+          updated = await this.workspaceStore.updateProject(
+            msg.projectId,
+            msg.name,
+            normalized.roots,
+          );
+        } catch (error) {
+          this.sendWorkspaceMutationError(ws, msg.requestId, "update Project", error);
+          break;
+        }
+        if (!updated) {
+          this.send(ws, {
+            type: "error",
+            requestId: msg.requestId,
+            errorCode: "project_not_found",
+            message: `Project not found: ${msg.projectId}`,
+          });
+          break;
+        }
+        this.broadcast(this.projectsMessage(msg.requestId));
+        break;
+      }
+
+      case "remove_project": {
+        if (!this.workspaceStore) {
+          this.sendWorkspaceMutationError(
+            ws,
+            msg.requestId,
+            "remove Project",
+            new Error("Project storage is unavailable"),
+          );
+          break;
+        }
+        let removed;
+        try {
+          removed = await this.workspaceStore.removeProject(msg.projectId);
+        } catch (error) {
+          this.sendWorkspaceMutationError(ws, msg.requestId, "remove Project", error);
+          break;
+        }
+        if (!removed) {
+          this.send(ws, {
+            type: "error",
+            requestId: msg.requestId,
+            errorCode: "project_not_found",
+            message: `Project not found: ${msg.projectId}`,
+          });
+          break;
+        }
+        this.broadcast(this.projectsMessage(msg.requestId));
+        break;
+      }
+
+      case "list_directory": {
+        try {
+          const listing = await listAllowedDirectories(
+            msg.path,
+            this.allowedDirs,
+            this.platform,
+            msg.includeHidden ?? false,
+          );
+          this.send(ws, {
+            type: "directory_listing",
+            path: listing.path,
+            directories: listing.directories,
+            requestId: msg.requestId,
+          });
+        } catch (error) {
+          const listingError =
+            error instanceof DirectoryListingError
+              ? error
+              : new DirectoryListingError(
+                  "directory_read_failed",
+                  "Unable to read directory",
+                );
+          this.send(ws, {
+            type: "error",
+            errorCode: listingError.code,
+            message: listingError.message,
+            path: msg.path,
+            requestId: msg.requestId,
+          });
+        }
+        break;
+      }
+
+      case "prepare_file_download": {
+        void this.prepareFileDownload(ws, msg);
+        break;
+      }
+
+      case "prepare_file_upload": {
+        void this.prepareFileUpload(ws, msg);
+        break;
+      }
+
+      case "finalize_file_upload": {
+        void this.finalizeFileUpload(ws, msg);
+        break;
+      }
+
+      case "cancel_file_upload": {
+        if (this.uploadStore) void this.uploadStore.cancel(msg.uploadToken);
+        break;
+      }
+
+      case "read_file":
+      case "read_media_file": {
+        const responseMetadata = {
+          ...projectRequestMetadata(msg),
+          filePath: msg.filePath,
+        };
+        const absPath = resolve(msg.projectPath, msg.filePath);
+        if (!this.isPathAllowed(absPath)) {
+          this.send(ws, {
+            type: "file_content",
+            ...responseMetadata,
+            content: "",
+            error: "Path not allowed",
+          });
+          break;
+        }
+        void (async () => {
+          try {
+            if (!existsSync(absPath)) {
+              this.send(ws, {
+                type: "file_content",
+                ...responseMetadata,
+                content: "",
+                error: "File not found",
+              });
+              return;
+            }
+            const fileStat = await lstat(absPath);
+            if (fileStat.isSymbolicLink()) {
+              let targetPath = "";
+              try {
+                targetPath = await readlink(absPath);
+              } catch {
+                // Best effort only; the user-facing error still works without it.
+              }
+              let resolvedTargetStat;
+              try {
+                resolvedTargetStat = await stat(absPath);
+              } catch {
+                this.send(ws, {
+                  type: "file_content",
+                  ...responseMetadata,
+                  content: "",
+                  error:
+                    targetPath.length > 0
+                      ? `This symbolic link points to a missing target: ${targetPath}`
+                      : "This symbolic link points to a missing target.",
+                });
+                return;
+              }
+              if (resolvedTargetStat.isDirectory()) {
+                this.send(ws, {
+                  type: "file_content",
+                  ...responseMetadata,
+                  content: "",
+                  error:
+                    targetPath.length > 0
+                      ? `This symbolic link points to a directory (${targetPath}). Open the target directory instead.`
+                      : "This symbolic link points to a directory. Open the target directory instead.",
+                });
+                return;
+              }
+            } else if (fileStat.isDirectory()) {
+              this.send(ws, {
+                type: "file_content",
+                ...responseMetadata,
+                content: "",
+                error: "This path is a directory. Open a file instead.",
+              });
+              return;
+            }
+            const resolvedFileStat = fileStat.isSymbolicLink()
+              ? await stat(absPath)
+              : fileStat;
+            const canonicalPath = await realpath(absPath);
+            if (!(await this.isCanonicalPathAllowed(canonicalPath))) {
+              this.send(ws, {
+                type: "file_content",
+                ...responseMetadata,
+                content: "",
+                error: "Path not allowed",
+              });
+              return;
+            }
+            const ext = extname(absPath).toLowerCase();
+            const mediaType = FILE_PEEK_MEDIA_TYPES[ext];
+            if (mediaType) {
+              if (!this.mediaStore) {
+                this.send(ws, {
+                  type: "file_content",
+                  ...responseMetadata,
+                  kind: mediaType.kind,
+                  content: "",
+                  mimeType: mediaType.mimeType,
+                  sizeBytes: resolvedFileStat.size,
+                  error: "Media preview is unavailable on this Bridge.",
+                });
+                return;
+              }
+              const ref = await this.mediaStore.register(
+                canonicalPath,
+                mediaType.mimeType,
+                resolvedFileStat.size,
+              );
+              this.send(ws, {
+                type: "file_content",
+                ...responseMetadata,
+                kind: mediaType.kind,
+                content: "",
+                mimeType: ref.mimeType,
+                sizeBytes: ref.sizeBytes,
+                mediaUrl: ref.url,
+              });
+              return;
+            }
+            if (msg.type === "read_media_file") {
+              this.send(ws, {
+                type: "file_content",
+                ...responseMetadata,
+                content: "",
+                error: "Unsupported media file type.",
+              });
+              return;
+            }
+            if (BridgeWebSocketServer.FILE_PEEK_IMAGE_EXTENSIONS.has(ext)) {
+              const mimeType = BridgeWebSocketServer.mimeTypeForExt(ext);
+              if (resolvedFileStat.size > BridgeWebSocketServer.MAX_IMAGE_SIZE) {
+                this.send(ws, {
+                  type: "file_content",
+                  ...responseMetadata,
+                  kind: "image",
+                  content: "",
+                  mimeType,
+                  sizeBytes: resolvedFileStat.size,
+                  error: "Image too large to preview. Maximum size is 5 MB.",
+                });
+                return;
+              }
+              const buf = await readFile(absPath);
+              this.send(ws, {
+                type: "file_content",
+                ...responseMetadata,
+                kind: "image",
+                content: "",
+                base64: buf.toString("base64"),
+                mimeType,
+                sizeBytes: buf.length,
+              });
+              return;
+            }
+            const maxLines =
+              typeof msg.maxLines === "number" && msg.maxLines > 0
+                ? msg.maxLines
+                : 5000;
+            const raw = await readFile(absPath, "utf-8");
+            const textExt = ext.replace(/^\./, "").toLowerCase();
+            const languageMap: Record<string, string> = {
+              ts: "typescript",
+              tsx: "typescript",
+              js: "javascript",
+              jsx: "javascript",
+              py: "python",
+              rb: "ruby",
+              rs: "rust",
+              go: "go",
+              java: "java",
+              kt: "kotlin",
+              swift: "swift",
+              dart: "dart",
+              c: "c",
+              cpp: "cpp",
+              h: "c",
+              hpp: "cpp",
+              cs: "csharp",
+              sh: "bash",
+              zsh: "bash",
+              yml: "yaml",
+              yaml: "yaml",
+              json: "json",
+              toml: "toml",
+              md: "markdown",
+              html: "html",
+              css: "css",
+              scss: "css",
+              sql: "sql",
+              xml: "xml",
+              dockerfile: "dockerfile",
+              makefile: "makefile",
+              gradle: "groovy",
+            };
+            const language = languageMap[textExt] ?? (textExt || undefined);
+            const lines = raw.split("\n");
+            const truncated = lines.length > maxLines;
+            const content = truncated
+              ? lines.slice(0, maxLines).join("\n")
+              : raw;
+            this.send(ws, {
+              type: "file_content",
+              ...responseMetadata,
+              kind: "text",
+              content,
+              language,
+              totalLines: lines.length,
+              truncated,
+            });
+          } catch (err) {
+            this.send(ws, {
+              type: "file_content",
+              ...responseMetadata,
+              content: "",
+              error: `Failed to read file: ${err}`,
+            });
+          }
+        })();
+        break;
+      }
+
+      case "list_files": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "file_list",
+            ...projectRequestMetadata(msg),
+            files: [],
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        void (async () => {
+          try {
+            const result = await listProjectFilesAndDirectoriesForClient(
+              msg.projectPath,
+              {
+                maxEntries: this.fileListMaxEntries,
+                maxBytes: this.fileListMaxBytes,
+              },
+            );
+            this.send(ws, {
+              type: "file_list",
+              ...projectRequestMetadata(msg),
+              files: result.files,
+              ignored: result.ignored,
+              modifiedAt: result.modifiedAt,
+              totalFiles: result.totalFiles,
+              truncated: result.truncated,
+            } as Record<string, unknown>);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.send(ws, {
+              type: "file_list",
+              ...projectRequestMetadata(msg),
+              files: [],
+              error: `Failed to list files: ${message}`,
+            });
+          }
+        })();
+        break;
+      }
+
+      case "list_recordings": {
+        if (!this.recordingStore) {
+          this.send(ws, { type: "recording_list", recordings: [] } as Record<
+            string,
+            unknown
+          >);
+          break;
+        }
+        const store = this.recordingStore;
+        void store.listRecordings().then(async (recordings) => {
+          // First pass: extract info from JSONL for recordings missing firstPrompt
+          // This covers both meta-less legacy recordings and new ones where sessions-index hasn't indexed yet
+          await Promise.all(
+            recordings.map(async (rec) => {
+              const info = await store.extractInfoFromJsonl(rec.name);
+              if (info.firstPrompt && !rec.firstPrompt)
+                rec.firstPrompt = info.firstPrompt;
+              if (info.lastPrompt && !rec.lastPrompt)
+                rec.lastPrompt = info.lastPrompt;
+              // Backfill meta for legacy recordings
+              if (!rec.meta && (info.claudeSessionId || info.projectPath)) {
+                rec.meta = {
+                  bridgeSessionId: rec.name,
+                  claudeSessionId: info.claudeSessionId,
+                  projectPath: info.projectPath ?? "",
+                  createdAt: rec.modified,
+                };
+              }
+            }),
+          );
+
+          // Second pass: look up sessions-index for summaries (if claudeSessionIds available)
+          const claudeIds = new Set<string>();
+          const idToIdx = new Map<string, number[]>();
+          for (let i = 0; i < recordings.length; i++) {
+            const cid = recordings[i].meta?.claudeSessionId;
+            if (cid) {
+              claudeIds.add(cid);
+              const arr = idToIdx.get(cid) ?? [];
+              arr.push(i);
+              idToIdx.set(cid, arr);
+            }
+          }
+
+          if (claudeIds.size > 0) {
+            const sessionInfo = await findSessionsByClaudeIds(claudeIds);
+            for (const [cid, info] of sessionInfo) {
+              const indices = idToIdx.get(cid) ?? [];
+              for (const idx of indices) {
+                if (info.summary) recordings[idx].summary = info.summary;
+                if (info.firstPrompt)
+                  recordings[idx].firstPrompt = info.firstPrompt;
+                if (info.lastPrompt)
+                  recordings[idx].lastPrompt = info.lastPrompt;
+              }
+            }
+          }
+
+          // A recording keeps its name snapshot after Project deletion, but a
+          // live Project rename should be reflected when the list is read.
+          for (const recording of recordings) {
+            const projectId = recording.meta?.projectId;
+            if (!projectId) continue;
+            const project = this.workspaceStore?.getProject(projectId);
+            if (project && recording.meta) {
+              recording.meta = {
+                ...recording.meta,
+                projectName: project.name,
+              };
+            }
+          }
+
+          this.send(ws, { type: "recording_list", recordings } as Record<
+            string,
+            unknown
+          >);
+        });
+        break;
+      }
+
+      case "get_recording": {
+        if (!this.recordingStore) {
+          this.send(ws, {
+            type: "error",
+            message: "Recording is not enabled on this server",
+          });
+          break;
+        }
+        void this.recordingStore
+          .getRecordingContent(msg.sessionId)
+          .then((content) => {
+            if (content !== null) {
+              this.send(ws, {
+                type: "recording_content",
+                sessionId: msg.sessionId,
+                content,
+              } as Record<string, unknown>);
+            } else {
+              this.send(ws, {
+                type: "error",
+                message: `Recording ${msg.sessionId} not found`,
+              });
+            }
+          });
+        break;
+      }
+
+      case "get_diff": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "diff_result",
+            ...projectRequestMetadata(msg),
+            staged: msg.staged === true,
+            diff: "",
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId)
+              .message,
+            errorCode: "path_not_allowed",
+          });
+          break;
+        }
+        this.collectGitDiff(
+          msg.projectPath,
+          ({ diff, error }) => {
+            if (error) {
+              if (/not a git repository/i.test(error)) {
+                this.send(ws, {
+                  type: "diff_result",
+                  ...projectRequestMetadata(msg),
+                  staged: msg.staged === true,
+                  diff: "",
+                  error: "This project is not a git repository",
+                  errorCode: "git_not_available",
+                });
+              } else {
+                this.send(ws, {
+                  type: "diff_result",
+                  ...projectRequestMetadata(msg),
+                  staged: msg.staged === true,
+                  diff: "",
+                  error: `Failed to get diff: ${error}`,
+                });
+              }
+              return;
+            }
+            void this.collectImageChanges(msg.projectPath, diff).then(
+              (imageChanges) => {
+                if (imageChanges.length > 0) {
+                  this.send(ws, {
+                    type: "diff_result",
+                    ...projectRequestMetadata(msg),
+                    staged: msg.staged === true,
+                    diff,
+                    imageChanges,
+                  });
+                } else {
+                  this.send(ws, {
+                    type: "diff_result",
+                    ...projectRequestMetadata(msg),
+                    staged: msg.staged === true,
+                    diff,
+                  });
+                }
+              },
+            );
+          },
+          msg.staged === true
+            ? { staged: true }
+            : msg.staged === false
+              ? { unstaged: true }
+              : undefined,
+        );
+        break;
+      }
+
+      case "get_diff_image": {
+        if (
+          !this.isPathAllowed(msg.projectPath) ||
+          !this.isPathAllowed(resolve(msg.projectPath, msg.filePath))
+        ) {
+          this.send(ws, {
+            type: "diff_image_result",
+            ...projectRequestMetadata(msg),
+            filePath: msg.filePath,
+            version: msg.version,
+            error: "Path not allowed",
+          });
+          break;
+        }
+        if (msg.version === "both") {
+          void (async () => {
+            try {
+              const [oldResult, newResult] = await Promise.all([
+                this.loadDiffImageAsync(msg.projectPath, msg.filePath, "old"),
+                this.loadDiffImageAsync(msg.projectPath, msg.filePath, "new"),
+              ]);
+              const errors = [oldResult.error, newResult.error].filter(Boolean);
+              this.send(ws, {
+                type: "diff_image_result",
+                ...projectRequestMetadata(msg),
+                filePath: msg.filePath,
+                version: "both" as const,
+                oldBase64: oldResult.base64,
+                newBase64: newResult.base64,
+                mimeType: oldResult.mimeType ?? newResult.mimeType,
+                ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
+              });
+            } catch {
+              // WebSocket may have closed; ignore send errors.
+            }
+          })();
+        } else {
+          const version = msg.version as "old" | "new";
+          void (async () => {
+            try {
+              const result = await this.loadDiffImageAsync(
+                msg.projectPath,
+                msg.filePath,
+                version,
+              );
+              this.send(ws, {
+                type: "diff_image_result",
+                ...projectRequestMetadata(msg),
+                filePath: msg.filePath,
+                version,
+                ...result,
+              });
+            } catch {
+              // WebSocket may have closed; ignore send errors.
+            }
+          })();
+        }
+        break;
+      }
+
+      case "list_worktrees": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "worktree_list",
+            ...projectRequestMetadata(msg),
+            worktrees: [],
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          const worktrees = listWorktrees(msg.projectPath);
+          const mainBranch = getMainBranch(msg.projectPath);
+          this.send(ws, {
+            type: "worktree_list",
+            ...projectRequestMetadata(msg),
+            worktrees,
+            mainBranch,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "worktree_list",
+            ...projectRequestMetadata(msg),
+            worktrees: [],
+            error: `Failed to list worktrees: ${err}`,
+          });
+        }
+        break;
+      }
+
+      case "remove_worktree": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "worktree_removed",
+            ...projectRequestMetadata(msg),
+            worktreePath: msg.worktreePath,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          removeWorktree(msg.projectPath, msg.worktreePath);
+          this.worktreeStore.deleteByWorktreePath(msg.worktreePath);
+          this.send(ws, {
+            type: "worktree_removed",
+            ...projectRequestMetadata(msg),
+            worktreePath: msg.worktreePath,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "worktree_removed",
+            ...projectRequestMetadata(msg),
+            worktreePath: msg.worktreePath,
+            error: `Failed to remove worktree: ${err}`,
+          });
+        }
+        break;
+      }
+
+      // ---- Git Operations (Phase 1-3) ----
+
+      case "git_stage": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_stage_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          if (msg.files?.length) stageFiles(msg.projectPath, msg.files);
+          if (msg.hunks?.length) stageHunks(msg.projectPath, msg.hunks);
+          this.send(ws, {
+            type: "git_stage_result",
+            ...projectRequestMetadata(msg),
+            success: true,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_stage_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_unstage": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_unstage_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          unstageFiles(msg.projectPath, msg.files ?? []);
+          this.send(ws, {
+            type: "git_unstage_result",
+            ...projectRequestMetadata(msg),
+            success: true,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_unstage_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_unstage_hunks": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_unstage_hunks_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          unstageHunks(msg.projectPath, msg.hunks);
+          this.send(ws, {
+            type: "git_unstage_hunks_result",
+            ...projectRequestMetadata(msg),
+            success: true,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_unstage_hunks_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_commit": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_commit_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        const session = msg.sessionId
+          ? this.sessionManager.get(msg.sessionId)
+          : undefined;
+        try {
+          const message =
+            msg.autoGenerate === true
+              ? (() => {
+                  if (!msg.sessionId) {
+                    throw new Error(
+                      "git_commit with autoGenerate=true requires sessionId",
+                    );
+                  }
+                  if (!session) {
+                    throw new Error(`Session ${msg.sessionId} not found`);
+                  }
+                  const expectedPath = resolve(
+                    session.worktreePath ?? session.projectPath,
+                  );
+                  const requestedPath = resolve(msg.projectPath);
+                  if (requestedPath !== expectedPath) {
+                    throw new Error(
+                      "git_commit projectPath must match the active session cwd",
+                    );
+                  }
+                  return generateCommitMessage({
+                    provider: session.provider,
+                    projectPath: msg.projectPath,
+                    model:
+                      session.provider === "claude"
+                        ? session.process instanceof SdkProcess
+                          ? session.process.model
+                          : undefined
+                        : session.codexSettings?.model,
+                  });
+                })()
+              : msg.message ?? "";
+          const result = gitCommit(msg.projectPath, message);
+          this.send(ws, {
+            type: "git_commit_result",
+            ...projectRequestMetadata(msg),
+            success: true,
+            commitHash: result.hash,
+            message: result.message,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_commit_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_push": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_push_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          gitPush(msg.projectPath);
+          this.send(ws, {
+            type: "git_push_result",
+            ...projectRequestMetadata(msg),
+            success: true,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_push_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_branches": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_branches_result",
+            ...projectRequestMetadata(msg),
+            current: "",
+            branches: [],
+            checkedOutBranches: [],
+            remoteStatusByBranch: {},
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          const result = listBranches(msg.projectPath);
+          this.send(ws, {
+            type: "git_branches_result",
+            ...projectRequestMetadata(msg),
+            current: result.current,
+            branches: result.branches,
+            checkedOutBranches: result.checkedOutBranches,
+            remoteStatusByBranch: result.remoteStatusByBranch,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_branches_result",
+            ...projectRequestMetadata(msg),
+            current: "",
+            branches: [],
+            remoteStatusByBranch: {},
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_create_branch": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_create_branch_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          createBranch(msg.projectPath, msg.name, msg.checkout);
+          this.send(ws, {
+            type: "git_create_branch_result",
+            ...projectRequestMetadata(msg),
+            success: true,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_create_branch_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_checkout_branch": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_checkout_branch_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          checkoutBranch(msg.projectPath, msg.branch);
+          this.send(ws, {
+            type: "git_checkout_branch_result",
+            ...projectRequestMetadata(msg),
+            success: true,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_checkout_branch_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_revert_file": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_revert_file_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          revertFiles(msg.projectPath, msg.files);
+          this.send(ws, {
+            type: "git_revert_file_result",
+            ...projectRequestMetadata(msg),
+            success: true,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_revert_file_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_revert_hunks": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_revert_hunks_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          revertHunks(msg.projectPath, msg.hunks);
+          this.send(ws, {
+            type: "git_revert_hunks_result",
+            ...projectRequestMetadata(msg),
+            success: true,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_revert_hunks_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_fetch": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_fetch_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          gitFetch(msg.projectPath);
+          this.send(ws, {
+            type: "git_fetch_result",
+            ...projectRequestMetadata(msg),
+            success: true,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_fetch_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_pull": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_pull_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          const result = gitPull(msg.projectPath);
+          if (result.success) {
+            this.send(ws, {
+              type: "git_pull_result",
+              ...projectRequestMetadata(msg),
+              success: true,
+              message: result.message,
+            });
+          } else {
+            this.send(ws, {
+              type: "git_pull_result",
+              ...projectRequestMetadata(msg),
+              success: false,
+              error: result.message,
+            });
+          }
+        } catch (err) {
+          this.send(ws, {
+            type: "git_pull_result",
+            ...projectRequestMetadata(msg),
+            success: false,
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_status": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_status_result",
+            requestId: msg.requestId,
+            sessionId: msg.sessionId,
+            projectPath: msg.projectPath,
+            hasUncommittedChanges: false,
+            stagedCount: 0,
+            unstagedCount: 0,
+            untrackedCount: 0,
+            remoteStatusIncluded: false,
+            hasRemoteChanges: false,
+            commitsAhead: 0,
+            commitsBehind: 0,
+            hasUpstream: false,
+            error: `Path not allowed: ${msg.projectPath}`,
+          });
+          break;
+        }
+        try {
+          const result = gitStatus(msg.projectPath, {
+            includeRemote: msg.includeRemote,
+          });
+          this.send(ws, {
+            type: "git_status_result",
+            requestId: msg.requestId,
+            sessionId: msg.sessionId,
+            projectPath: msg.projectPath,
+            hasUncommittedChanges: result.hasUncommittedChanges,
+            stagedCount: result.stagedCount,
+            unstagedCount: result.unstagedCount,
+            untrackedCount: result.untrackedCount,
+            remoteStatusIncluded: result.remoteStatusIncluded,
+            hasRemoteChanges: result.hasRemoteChanges,
+            commitsAhead: result.commitsAhead,
+            commitsBehind: result.commitsBehind,
+            hasUpstream: result.hasUpstream,
+            branch: result.branch,
+            remoteError: result.remoteError,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_status_result",
+            requestId: msg.requestId,
+            sessionId: msg.sessionId,
+            projectPath: msg.projectPath,
+            hasUncommittedChanges: false,
+            stagedCount: 0,
+            unstagedCount: 0,
+            untrackedCount: 0,
+            remoteStatusIncluded: false,
+            hasRemoteChanges: false,
+            commitsAhead: 0,
+            commitsBehind: 0,
+            hasUpstream: false,
+            error: String(err),
+          });
+        }
+        break;
+      }
+
+      case "git_remote_status": {
+        if (!this.isPathAllowed(msg.projectPath)) {
+          this.send(ws, {
+            type: "git_remote_status_result",
+            ...projectRequestMetadata(msg),
+            ahead: 0,
+            behind: 0,
+            branch: "",
+            hasUpstream: false,
+            error: this.buildPathNotAllowedError(msg.projectPath, msg.requestId).message,
+          });
+          break;
+        }
+        try {
+          const result = gitRemoteStatus(msg.projectPath);
+          this.send(ws, {
+            type: "git_remote_status_result",
+            ...projectRequestMetadata(msg),
+            ahead: result.ahead,
+            behind: result.behind,
+            branch: result.branch,
+            hasUpstream: result.hasUpstream,
+          });
+        } catch (err) {
+          this.send(ws, {
+            type: "git_remote_status_result",
+            ...projectRequestMetadata(msg),
+            ahead: 0,
+            behind: 0,
+            branch: "",
+            hasUpstream: false,
+          });
+        }
+        break;
+      }
+
+      case "rewind_dry_run": {
+        const session = this.sessionManager.get(msg.sessionId);
+        if (!session) {
+          this.send(ws, {
+            type: "rewind_preview",
+            sessionId: msg.sessionId,
+            canRewind: false,
+            error: `Session ${msg.sessionId} not found`,
+          });
+          return;
+        }
+        if (session.provider === "codex") {
+          this.send(ws, {
+            type: "rewind_preview",
+            sessionId: msg.sessionId,
+            canRewind: false,
+            error: "Codex rewind does not restore files",
+          });
+          return;
+        }
+        this.sessionManager
+          .rewindFiles(msg.sessionId, msg.targetUuid, true)
+          .then((result) => {
+            this.send(ws, {
+              type: "rewind_preview",
+              sessionId: msg.sessionId,
+              canRewind: result.canRewind,
+              filesChanged: result.filesChanged,
+              insertions: result.insertions,
+              deletions: result.deletions,
+              error: result.error,
+            });
+          })
+          .catch((err) => {
+            this.send(ws, {
+              type: "rewind_preview",
+              sessionId: msg.sessionId,
+              canRewind: false,
+              error: `Dry run failed: ${err}`,
+            });
+          });
+        break;
+      }
+
+      case "rewind": {
+        const session = this.sessionManager.get(msg.sessionId);
+        if (!session) {
+          this.send(ws, {
+            type: "rewind_result",
+            sessionId: msg.sessionId,
+            success: false,
+            mode: msg.mode,
+            error: `Session ${msg.sessionId} not found`,
+          });
+          return;
+        }
+
+        const handleError = (err: unknown) => {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          this.send(ws, {
+            type: "rewind_result",
+            sessionId: msg.sessionId,
+            success: false,
+            mode: msg.mode,
+            error: errMsg,
+          });
+        };
+
+        if (session.provider === "codex") {
+          this.rewindCodexConversation(ws, msg.sessionId, msg.targetUuid, msg.mode)
+            .catch(handleError);
+          break;
+        }
+
+        if (msg.mode === "code") {
+          // Code-only rewind: rewind files without restarting the conversation
+          this.sessionManager
+            .rewindFiles(msg.sessionId, msg.targetUuid)
+            .then((result) => {
+              if (result.canRewind) {
+                this.send(ws, {
+                  type: "rewind_result",
+                  sessionId: msg.sessionId,
+                  success: true,
+                  mode: "code",
+                });
+              } else {
+                this.send(ws, {
+                  type: "rewind_result",
+                  sessionId: msg.sessionId,
+                  success: false,
+                  mode: "code",
+                  error: result.error ?? "Cannot rewind files",
+                });
+              }
+            })
+            .catch(handleError);
+        } else if (msg.mode === "conversation") {
+          // Conversation-only rewind: restart session at the target UUID
+          try {
+            this.flushSessionDeltaBatches(msg.sessionId);
+            this.sessionManager.rewindConversation(
+              msg.sessionId,
+              msg.targetUuid,
+              (newSessionId) => {
+                this.send(ws, {
+                  type: "rewind_result",
+                  sessionId: msg.sessionId,
+                  success: true,
+                  mode: "conversation",
+                });
+                // Notify the new session ID
+                const newSession = this.sessionManager.get(newSessionId);
+                const rewindPermMode =
+                  newSession?.process instanceof SdkProcess
+                    ? newSession.process.permissionMode
+                    : undefined;
+                this.send(
+                  ws,
+                  this.buildSessionCreatedMessage({
+                    sessionId: newSessionId,
+                    provider: newSession?.provider ?? "claude",
+                    projectPath: newSession?.projectPath ?? "",
+                    session: newSession,
+                    permissionMode: rewindPermMode,
+                    sourceSessionId: msg.sessionId,
+                  }),
+                );
+                this.sendSessionList(ws);
+              },
+            );
+          } catch (err) {
+            handleError(err);
+          }
+        } else {
+          // Both: rewind files first, then rewind conversation
+          this.sessionManager
+            .rewindFiles(msg.sessionId, msg.targetUuid)
+            .then((result) => {
+              if (!result.canRewind) {
+                this.send(ws, {
+                  type: "rewind_result",
+                  sessionId: msg.sessionId,
+                  success: false,
+                  mode: "both",
+                  error: result.error ?? "Cannot rewind files",
+                });
+                return;
+              }
+              try {
+                this.flushSessionDeltaBatches(msg.sessionId);
+                this.sessionManager.rewindConversation(
+                  msg.sessionId,
+                  msg.targetUuid,
+                  (newSessionId) => {
+                    this.send(ws, {
+                      type: "rewind_result",
+                      sessionId: msg.sessionId,
+                      success: true,
+                      mode: "both",
+                    });
+                    const newSession = this.sessionManager.get(newSessionId);
+                    const rewindPermMode2 =
+                      newSession?.process instanceof SdkProcess
+                        ? newSession.process.permissionMode
+                        : undefined;
+                    this.send(
+                      ws,
+                      this.buildSessionCreatedMessage({
+                        sessionId: newSessionId,
+                        provider: newSession?.provider ?? "claude",
+                        projectPath: newSession?.projectPath ?? "",
+                        session: newSession,
+                        permissionMode: rewindPermMode2,
+                        sourceSessionId: msg.sessionId,
+                      }),
+                    );
+                    this.sendSessionList(ws);
+                  },
+                );
+              } catch (err) {
+                handleError(err);
+              }
+            })
+            .catch(handleError);
+        }
+        break;
+      }
+
+      case "fork": {
+        this.forkCodexSession(ws, msg.sessionId, msg.targetUuid).catch((err) => {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          this.send(ws, {
+            type: "error",
+            sessionId: msg.sessionId,
+            message: errMsg,
+            errorCode: "fork_failed",
+          });
+        });
+        break;
+      }
+
+      case "list_windows": {
+        listWindows()
+          .then((windows) => {
+            this.send(ws, { type: "window_list", windows });
+          })
+          .catch((err) => {
+            this.send(ws, {
+              type: "error",
+              message: `Failed to list windows: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          });
+        break;
+      }
+
+      case "take_screenshot": {
+        // For window mode, verify the window ID is still valid.
+        // The user may have fetched the window list minutes ago and the
+        // window could have been closed since then.
+        const doCapture = async (): Promise<{
+          mode: "fullscreen" | "window";
+          windowId?: number;
+        }> => {
+          if (msg.mode !== "window" || msg.windowId == null) {
+            return { mode: msg.mode };
+          }
+          const current = await listWindows();
+          if (current.some((w) => w.windowId === msg.windowId)) {
+            return { mode: "window", windowId: msg.windowId };
+          }
+          // Window ID is stale — fall back to fullscreen and notify
+          console.warn(
+            `[screenshot] Window ID ${msg.windowId} no longer exists, falling back to fullscreen`,
+          );
+          return { mode: "fullscreen" };
+        };
+        doCapture()
+          .then((opts) => takeScreenshot(opts))
+          .then(async (result) => {
+            try {
+              if (this.galleryStore) {
+                const meta = await this.galleryStore.addImage(
+                  result.filePath,
+                  msg.projectPath,
+                  msg.sessionId,
+                );
+                if (meta) {
+                  const info = this.galleryStore.metaToInfo(meta);
+                  this.send(ws, {
+                    type: "screenshot_result",
+                    ...projectRequestMetadata(msg),
+                    sessionId: msg.sessionId,
+                    success: true,
+                    image: info,
+                  });
+                  this.broadcast({ type: "gallery_new_image", image: info });
+                  return;
+                }
+              }
+              this.send(ws, {
+                type: "screenshot_result",
+                ...projectRequestMetadata(msg),
+                sessionId: msg.sessionId,
+                success: false,
+                error: "Failed to save screenshot to gallery",
+              });
+            } finally {
+              // Always clean up temp file
+              unlink(result.filePath).catch(() => {});
+            }
+          })
+          .catch((err) => {
+            this.send(ws, {
+              type: "screenshot_result",
+              ...projectRequestMetadata(msg),
+              sessionId: msg.sessionId,
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        break;
+      }
+
+      case "backup_prompt_history": {
+        if (!this.promptHistoryBackup) {
+          this.send(ws, {
+            type: "prompt_history_backup_result",
+            success: false,
+            error: "Backup store not available",
+          });
+          break;
+        }
+        const buf = Buffer.from(msg.data, "base64");
+        this.promptHistoryBackup
+          .save(buf, msg.appVersion, msg.dbVersion)
+          .then((meta) => {
+            this.send(ws, {
+              type: "prompt_history_backup_result",
+              success: true,
+              backedUpAt: meta.backedUpAt,
+            });
+          })
+          .catch((err) => {
+            this.send(ws, {
+              type: "prompt_history_backup_result",
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        break;
+      }
+
+      case "restore_prompt_history": {
+        if (!this.promptHistoryBackup) {
+          this.send(ws, {
+            type: "prompt_history_restore_result",
+            success: false,
+            error: "Backup store not available",
+          });
+          break;
+        }
+        this.promptHistoryBackup
+          .load()
+          .then((result) => {
+            if (result) {
+              this.send(ws, {
+                type: "prompt_history_restore_result",
+                success: true,
+                data: result.data.toString("base64"),
+                appVersion: result.meta.appVersion,
+                dbVersion: result.meta.dbVersion,
+                backedUpAt: result.meta.backedUpAt,
+              });
+            } else {
+              this.send(ws, {
+                type: "prompt_history_restore_result",
+                success: false,
+                error: "No backup found",
+              });
+            }
+          })
+          .catch((err) => {
+            this.send(ws, {
+              type: "prompt_history_restore_result",
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        break;
+      }
+
+      case "get_prompt_history_backup_info": {
+        if (!this.promptHistoryBackup) {
+          this.send(ws, { type: "prompt_history_backup_info", exists: false });
+          break;
+        }
+        this.promptHistoryBackup
+          .getMeta()
+          .then((meta) => {
+            if (meta) {
+              this.send(ws, {
+                type: "prompt_history_backup_info",
+                exists: true,
+                ...meta,
+              });
+            } else {
+              this.send(ws, {
+                type: "prompt_history_backup_info",
+                exists: false,
+              });
+            }
+          })
+          .catch(() => {
+            this.send(ws, {
+              type: "prompt_history_backup_info",
+              exists: false,
+            });
+          });
+        break;
+      }
+
+      case "record_prompt_history": {
+        if (!this.promptHistoryStore) {
+          this.send(ws, {
+            type: "prompt_history_mutation_result",
+            success: false,
+            error: "Prompt history store not available",
+          });
+          break;
+        }
+        try {
+          const runtimeSession = msg.sessionId
+            ? this.resolveSession(msg.sessionId)
+            : undefined;
+          const workspace = runtimeSession
+            ? this.workspaceForRuntimeSession(runtimeSession)
+            : undefined;
+          const entry = await this.promptHistoryStore.record({
+            text: msg.text,
+            projectPath: msg.projectPath,
+            projectId: workspace?.projectId ?? msg.projectId,
+            projectName: workspace?.projectName ?? msg.projectName,
+            clientId: msg.clientId,
+            clientName: msg.clientName,
+            sessionId: msg.sessionId,
+            usedAt: msg.usedAt,
+          });
+          this.send(ws, {
+            type: "prompt_history_mutation_result",
+            success: true,
+            bridgeInstanceId: this.promptHistoryStore.bridgeInstanceId,
+            revision: this.promptHistoryStore.revision,
+            entry,
+          });
+          this.broadcastPromptHistoryStatus();
+        } catch (err) {
+          this.send(ws, {
+            type: "prompt_history_mutation_result",
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+
+      case "sync_prompt_history": {
+        if (!this.promptHistoryStore) {
+          this.send(ws, {
+            type: "prompt_history_sync_result",
+            success: false,
+            error: "Prompt history store not available",
+          });
+          break;
+        }
+        try {
+          if (msg.entries?.length) {
+            await this.promptHistoryStore.mergeClientEntries(msg.entries);
+          }
+          this.send(ws, {
+            type: "prompt_history_sync_result",
+            success: true,
+            bridgeInstanceId: this.promptHistoryStore.bridgeInstanceId,
+            revision: this.promptHistoryStore.revision,
+            syncedAt: new Date().toISOString(),
+            fullSnapshot: true,
+            entries: this.promptHistoryStore.list(msg.includeDeleted ?? true),
+          });
+          this.broadcastPromptHistoryStatus();
+        } catch (err) {
+          this.send(ws, {
+            type: "prompt_history_sync_result",
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+
+      case "mutate_prompt_history": {
+        if (!this.promptHistoryStore) {
+          this.send(ws, {
+            type: "prompt_history_mutation_result",
+            success: false,
+            error: "Prompt history store not available",
+          });
+          break;
+        }
+        try {
+          const entry = await this.promptHistoryStore.mutate({
+            id: msg.id,
+            text: msg.text,
+            projectPath: msg.projectPath,
+            projectId: msg.projectId,
+            action: msg.action,
+            isFavorite: msg.isFavorite,
+            updatedAt: msg.updatedAt,
+          });
+          this.send(ws, {
+            type: "prompt_history_mutation_result",
+            success: entry != null,
+            bridgeInstanceId: this.promptHistoryStore.bridgeInstanceId,
+            revision: this.promptHistoryStore.revision,
+            entry: entry ?? undefined,
+            error: entry == null ? "Prompt not found" : undefined,
+          });
+          if (entry) this.broadcastPromptHistoryStatus();
+        } catch (err) {
+          this.send(ws, {
+            type: "prompt_history_mutation_result",
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+
+      case "import_prompt_history_v1": {
+        if (!this.promptHistoryStore) {
+          this.send(ws, {
+            type: "prompt_history_sync_result",
+            success: false,
+            error: "Prompt history store not available",
+          });
+          break;
+        }
+        try {
+          const result = await this.promptHistoryStore.importEntries(
+            msg.entries,
+            msg.clientId,
+            msg.clientName,
+          );
+          this.send(ws, {
+            type: "prompt_history_sync_result",
+            success: true,
+            bridgeInstanceId: this.promptHistoryStore.bridgeInstanceId,
+            revision: this.promptHistoryStore.revision,
+            syncedAt: new Date().toISOString(),
+            fullSnapshot: true,
+            entries: result.entries,
+          });
+          this.broadcastPromptHistoryStatus();
+        } catch (err) {
+          this.send(ws, {
+            type: "prompt_history_sync_result",
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
+
+      case "rename_session": {
+        const name = (msg.name as string | null) || null;
+        await this.handleRenameSession(ws, msg.sessionId, name, msg);
+        break;
+      }
+    }
+  }
+
+  private clearPendingClaudeResumeInputs(ws: WebSocket): void {
+    this.pendingClaudeResumeInputs.get(ws)?.clear();
+    this.pendingClaudeResumeInputs.delete(ws);
+    for (const operation of this.resumeOperations.values()) {
+      operation.waiters.delete(ws);
+    }
+  }
+
+  private resumeOperationKey(
+    provider: Provider,
+    sourceSessionId: string,
+  ): string {
+    return `${provider}:${sourceSessionId}`;
+  }
+
+  private resumeRequestFingerprint(msg: ResumeClientMessage): string {
+    return JSON.stringify({
+      provider: msg.provider ?? "claude",
+      sessionId: msg.sessionId,
+      projectPath: msg.projectPath,
+      permissionMode: msg.permissionMode,
+      executionMode: msg.executionMode,
+      approvalPolicy: msg.approvalPolicy,
+      approvalsReviewer: msg.approvalsReviewer,
+      codexPermissionsMode: msg.codexPermissionsMode,
+      planMode: msg.planMode,
+      sandboxMode: msg.sandboxMode,
+      model: msg.model,
+      effort: msg.effort,
+      maxTurns: msg.maxTurns,
+      maxBudgetUsd: msg.maxBudgetUsd,
+      fallbackModel: msg.fallbackModel,
+      forkSession: msg.forkSession ?? false,
+      persistSession: msg.persistSession,
+      profile: msg.profile,
+      modelReasoningEffort: msg.modelReasoningEffort,
+      serviceTier: msg.serviceTier,
+      networkAccessEnabled: msg.networkAccessEnabled,
+      webSearchMode: msg.webSearchMode,
+      additionalWritableRoots: [...(msg.additionalWritableRoots ?? [])].sort(),
+      resumeRequestId: msg.resumeRequestId,
+    });
+  }
+
+  private clearResumeOperation(key: string, operation: ResumeOperation): void {
+    if (operation.timeout) clearTimeout(operation.timeout);
+    if (this.resumeOperations.get(key) === operation) {
+      this.resumeOperations.delete(key);
+    }
+  }
+
+  private ensurePendingClaudeResume(
+    ws: WebSocket,
+    sourceSessionId: string,
+  ): void {
+    let pendingResumes = this.pendingClaudeResumeInputs.get(ws);
+    if (!pendingResumes) {
+      pendingResumes = new Map();
+      this.pendingClaudeResumeInputs.set(ws, pendingResumes);
+    }
+    if (!pendingResumes.has(sourceSessionId)) {
+      pendingResumes.set(sourceSessionId, []);
+    }
+  }
+
+  private beginResumeOperation(params: {
+    ws: WebSocket;
+    provider: Provider;
+    sourceSessionId: string;
+    projectPath: string;
+    request: ResumeClientMessage;
+  }): { key: string; operationId: string; isOwner: boolean } {
+    const { ws, provider, sourceSessionId, projectPath, request } = params;
+    const key = this.resumeOperationKey(provider, sourceSessionId);
+    const fingerprint = this.resumeRequestFingerprint(request);
+    let operation = this.resumeOperations.get(key);
+    if (
+      operation?.completed &&
+      (!this.sessionManager.get(operation.completed.sessionId) ||
+        Date.now() - operation.completed.completedAt >
+          RESUME_COMPLETED_TTL_MS ||
+        operation.fingerprint !== fingerprint ||
+        request.forkSession === true)
+    ) {
+      this.clearResumeOperation(key, operation);
+      operation = undefined;
+    }
+
+    if (
+      operation &&
+      !operation.completed &&
+      operation.fingerprint !== fingerprint
+    ) {
+      this.sendResumeFailed(ws, {
+        provider,
+        sourceSessionId,
+        projectPath,
+        resumeRequestId: request.resumeRequestId,
+      });
+      this.send(ws, {
+        type: "error",
+        message:
+          "This session is already being restored with different settings. Wait for it to finish, then try again.",
+      });
+      return { key, operationId: operation.id, isOwner: false };
+    }
+
+    this.send(ws, {
+      type: "system",
+      subtype: "session_resume_started",
+      sourceSessionId,
+      provider,
+      projectPath,
+      ...(request.resumeRequestId
+        ? { resumeRequestId: request.resumeRequestId }
+        : {}),
+    });
+
+    if (provider === "claude") {
+      this.ensurePendingClaudeResume(ws, sourceSessionId);
+    }
+
+    if (operation) {
+      if (operation.completed) {
+        this.send(ws, operation.completed.message);
+        this.flushPendingClaudeResumeInputs(
+          ws,
+          sourceSessionId,
+          operation.completed.sessionId,
+        );
+      } else {
+        operation.waiters.add(ws);
+      }
+      return { key, operationId: operation.id, isOwner: false };
+    }
+
+    const operationId = randomUUID();
+    const newOperation: ResumeOperation = {
+      id: operationId,
+      provider,
+      sourceSessionId,
+      projectPath,
+      resumeRequestId: request.resumeRequestId,
+      fingerprint,
+      waiters: new Set([ws]),
+    };
+    const timeout = setTimeout(() => {
+      this.failResumeOperation(
+        key,
+        operationId,
+        "Session restore is taking longer than expected. Please reconnect and try again.",
+      );
+    }, RESUME_OPERATION_TIMEOUT_MS);
+    timeout.unref?.();
+    newOperation.timeout = timeout;
+    this.resumeOperations.set(key, newOperation);
+    return { key, operationId, isOwner: true };
+  }
+
+  private completeResumeOperation(
+    key: string,
+    operationId: string,
+    sessionId: string,
+    message: SystemServerMessage,
+  ): boolean {
+    const operation = this.resumeOperations.get(key);
+    if (!operation || operation.id !== operationId) return false;
+    if (operation.timeout) clearTimeout(operation.timeout);
+    operation.provisionalSessionId = undefined;
+    operation.completed = {
+      sessionId,
+      message,
+      completedAt: Date.now(),
+    };
+    for (const waiter of operation.waiters) {
+      this.send(waiter, message);
+      this.flushPendingClaudeResumeInputs(
+        waiter,
+        operation.sourceSessionId,
+        sessionId,
+      );
+    }
+    operation.waiters.clear();
+    const timeout = setTimeout(() => {
+      this.clearResumeOperation(key, operation);
+    }, RESUME_COMPLETED_TTL_MS);
+    timeout.unref?.();
+    operation.timeout = timeout;
+    this.pruneCompletedResumeOperations();
+    return true;
+  }
+
+  private failResumeOperation(
+    key: string,
+    operationId: string,
+    message: string,
+    errorCode?: string,
+  ): void {
+    const operation = this.resumeOperations.get(key);
+    if (!operation || operation.id !== operationId) return;
+    if (operation.provisionalSessionId) {
+      this.sessionManager.destroy(operation.provisionalSessionId);
+      operation.provisionalSessionId = undefined;
+    }
+    this.clearResumeOperation(key, operation);
+    for (const waiter of operation.waiters) {
+      this.rejectPendingClaudeResumeInputs(
+        waiter,
+        operation.sourceSessionId,
+      );
+      this.sendResumeFailed(waiter, operation);
+      this.send(waiter, {
+        type: "error",
+        message,
+        sessionId: operation.sourceSessionId,
+        ...(operation.resumeRequestId
+          ? { requestId: operation.resumeRequestId }
+          : {}),
+        ...(errorCode ? { errorCode } : {}),
+      });
+    }
+  }
+
+  private attachProvisionalResumeSession(
+    key: string,
+    operationId: string,
+    sessionId: string,
+  ): boolean {
+    const operation = this.resumeOperations.get(key);
+    if (!operation || operation.id !== operationId || operation.completed) {
+      return false;
+    }
+    operation.provisionalSessionId = sessionId;
+    return true;
+  }
+
+  private sendResumeFailed(
+    ws: WebSocket,
+    resume: {
+      provider: Provider;
+      sourceSessionId: string;
+      projectPath: string;
+      resumeRequestId?: string;
+    },
+  ): void {
+    this.send(ws, {
+      type: "system",
+      subtype: "session_resume_failed",
+      provider: resume.provider,
+      sourceSessionId: resume.sourceSessionId,
+      projectPath: resume.projectPath,
+      ...(resume.resumeRequestId
+        ? { resumeRequestId: resume.resumeRequestId }
+        : {}),
+    });
+  }
+
+  private flushPendingClaudeResumeInputs(
+    ws: WebSocket,
+    sourceSessionId: string,
+    sessionId: string,
+  ): void {
+    const pendingResumes = this.pendingClaudeResumeInputs.get(ws);
+    const queuedInputs = pendingResumes?.get(sourceSessionId) ?? [];
+    pendingResumes?.delete(sourceSessionId);
+    for (const input of queuedInputs) {
+      void this.handleClientMessage({ ...input, sessionId }, ws);
+    }
+  }
+
+  private rejectPendingClaudeResumeInputs(
+    ws: WebSocket,
+    sourceSessionId: string,
+  ): void {
+    const pendingResumes = this.pendingClaudeResumeInputs.get(ws);
+    const queuedInputs = pendingResumes?.get(sourceSessionId) ?? [];
+    pendingResumes?.delete(sourceSessionId);
+    for (const input of queuedInputs) {
+      if (!input.clientMessageId) continue;
+      this.send(ws, {
+        type: "input_rejected",
+        sessionId: sourceSessionId,
+        clientMessageId: input.clientMessageId,
+        reason: "Session resume failed",
+      });
+    }
+  }
+
+  private pruneCompletedResumeOperations(): void {
+    const completed = [...this.resumeOperations.entries()]
+      .filter((entry) => entry[1].completed)
+      .sort(
+        (a, b) =>
+          (a[1].completed?.completedAt ?? 0) -
+          (b[1].completed?.completedAt ?? 0),
+      );
+    while (completed.length > 100) {
+      const oldest = completed.shift();
+      if (oldest) this.clearResumeOperation(oldest[0], oldest[1]);
+    }
+  }
+
+  /**
+   * Load the saved session name from CLI storage and set it on the SessionInfo.
+   * Called after SessionManager.create() so that session_created carries the name.
+   */
+  private async loadAndSetSessionName(
+    session: SessionInfo | undefined,
+    provider: string,
+    projectPath: string,
+    cliSessionId?: string,
+  ): Promise<void> {
+    if (!session || !cliSessionId) return;
+    try {
+      if (provider === "claude") {
+        const name = await getClaudeSessionName(projectPath, cliSessionId);
+        if (name) session.name = name;
+      } else if (provider === "codex") {
+        const names = await loadCodexSessionNames();
+        const name = names.get(cliSessionId);
+        if (name) session.name = name;
+      }
+    } catch {
+      // Non-critical: session works without name
+    }
+  }
+
+  /**
+   * Handle rename_session: update in-memory name and persist to CLI storage.
+   *
+   * Supports both running sessions (by bridge session id) and recent sessions
+   * (by provider session id, i.e. claudeSessionId or codex threadId).
+   */
+  private async handleRenameSession(
+    ws: WebSocket,
+    sessionId: string,
+    name: string | null,
+    msg: ClientMessage,
+  ): Promise<void> {
+    // 1. Try running session first
+    const runningSession = this.sessionManager.get(sessionId);
+    if (runningSession) {
+      this.sessionManager.renameSession(sessionId, name);
+
+      // Persist to provider storage
+      if (
+        runningSession.provider === "claude" &&
+        runningSession.claudeSessionId
+      ) {
+        await renameClaudeSession(
+          runningSession.worktreePath ?? runningSession.projectPath,
+          runningSession.claudeSessionId,
+          name,
+        );
+      } else if (
+        runningSession.provider === "codex" &&
+        runningSession.process
+      ) {
+        try {
+          await (
+            runningSession.process as import("./codex-process.js").CodexProcess
+          ).renameThread(name ?? "");
+        } catch (err) {
+          console.warn(`[websocket] Failed to rename Codex thread:`, err);
+        }
+      }
+
+      this.broadcastSessionList();
+      this.send(ws, { type: "rename_result", sessionId, name, success: true });
+      return;
+    }
+
+    // 2. Recent session (not running) — use provider + providerSessionId + projectPath from message
+    const renameMsg = msg as Extract<ClientMessage, { type: "rename_session" }>;
+    const provider = renameMsg.provider;
+    const providerSessionId = renameMsg.providerSessionId;
+    const projectPath = renameMsg.projectPath;
+
+    if (provider === "claude" && providerSessionId && projectPath) {
+      const success = await renameClaudeSession(
+        projectPath,
+        providerSessionId,
+        name,
+      );
+      this.send(ws, { type: "rename_result", sessionId, name, success });
+      return;
+    }
+
+    // For Codex recent sessions, write directly to session_index.jsonl.
+    if (provider === "codex" && providerSessionId) {
+      const success = await renameCodexSession(providerSessionId, name);
+      this.send(ws, { type: "rename_result", sessionId, name, success });
+      return;
+    }
+
+    this.send(ws, { type: "rename_result", sessionId, name, success: false });
+  }
+
+  private resolveSession(
+    sessionId: string | undefined,
+  ): SessionInfo | undefined {
+    if (sessionId) return this.sessionManager.get(sessionId);
+    return this.getFirstSession();
+  }
+
+  private getFirstSession() {
+    const sessions = this.sessionManager.list();
+    if (sessions.length === 0) return undefined;
+    return this.sessionManager.get(sessions[sessions.length - 1].id);
+  }
+
+  private sendSessionList(ws: WebSocket): void {
+    this.pruneDebugEvents();
+    const sessions = this.runtimeSessionsWithWorkspaces();
+    this.send(ws, {
+      type: "session_list",
+      sessions,
+      allowedDirs: this.allowedDirs,
+      claudeModels: this.claudeModels,
+      claudeModelEfforts: this.claudeModelEfforts,
+      codexModels: this.codexModels,
+      codexModelReasoningEfforts: this.codexModelReasoningEfforts,
+      codexModelServiceTiers: this.codexModelServiceTiers,
+      codexProfiles: this.codexProfiles,
+      defaultCodexProfile: this.defaultCodexProfile,
+      codexAutoReviewDisabled: this.codexAutoReviewDisabled,
+      bridgeVersion: getPackageVersion(),
+      protocolVersion: BRIDGE_PROTOCOL_MAX_VERSION,
+      minimumProtocolVersion: BRIDGE_PROTOCOL_MIN_VERSION,
+      protocolCapabilities: [
+        "project_request_correlation_v1",
+        "session_context_v1",
+      ],
+    });
+  }
+
+  private sendPromptHistoryStatus(ws: WebSocket): void {
+    if (!this.promptHistoryStore) return;
+    const entries = this.promptHistoryStore.list(true);
+    const updatedAt = entries.reduce<string | undefined>(
+      (latest, entry) =>
+        !latest || entry.updatedAt > latest ? entry.updatedAt : latest,
+      undefined,
+    );
+    this.send(ws, {
+      type: "prompt_history_status",
+      bridgeInstanceId: this.promptHistoryStore.bridgeInstanceId,
+      revision: this.promptHistoryStore.revision,
+      entryCount: entries.filter((entry) => !entry.deletedAt).length,
+      updatedAt,
+    });
+  }
+
+  /** Broadcast session list to all connected clients. */
+  private broadcastSessionList(): void {
+    this.pruneDebugEvents();
+    const sessions = this.runtimeSessionsWithWorkspaces();
+    this.broadcast({
+      type: "session_list",
+      sessions,
+      allowedDirs: this.allowedDirs,
+      claudeModels: this.claudeModels,
+      claudeModelEfforts: this.claudeModelEfforts,
+      codexModels: this.codexModels,
+      codexModelReasoningEfforts: this.codexModelReasoningEfforts,
+      codexModelServiceTiers: this.codexModelServiceTiers,
+      codexProfiles: this.codexProfiles,
+      defaultCodexProfile: this.defaultCodexProfile,
+      codexAutoReviewDisabled: this.codexAutoReviewDisabled,
+      bridgeVersion: getPackageVersion(),
+      protocolVersion: BRIDGE_PROTOCOL_MAX_VERSION,
+      minimumProtocolVersion: BRIDGE_PROTOCOL_MIN_VERSION,
+      protocolCapabilities: [
+        "project_request_correlation_v1",
+        "session_context_v1",
+      ],
+    });
+  }
+
+  private runtimeSessionsWithWorkspaces(): Array<
+    SessionSummary & { workspace?: ResolvedWorkspace }
+  > {
+    return this.sessionManager
+      .list()
+      .map((summary) => this.runtimeSessionWithWorkspace(summary));
+  }
+
+  private runtimeSessionWithWorkspace(
+    summary: SessionSummary,
+  ): SessionSummary & { workspace?: ResolvedWorkspace } {
+    const session = this.sessionManager.get(summary.id);
+    const workspace = session
+      ? this.workspaceForRuntimeSession(session)
+      : undefined;
+    return workspace ? { ...summary, workspace } : summary;
+  }
+
+  private broadcastPromptHistoryStatus(): void {
+    if (!this.promptHistoryStore) return;
+    const entries = this.promptHistoryStore.list(true);
+    const updatedAt = entries.reduce<string | undefined>(
+      (latest, entry) =>
+        !latest || entry.updatedAt > latest ? entry.updatedAt : latest,
+      undefined,
+    );
+    this.broadcast({
+      type: "prompt_history_status",
+      bridgeInstanceId: this.promptHistoryStore.bridgeInstanceId,
+      revision: this.promptHistoryStore.revision,
+      entryCount: entries.filter((entry) => !entry.deletedAt).length,
+      updatedAt,
+    });
+  }
+
+  private broadcastSessionMessage(
+    sessionId: string,
+    msg: ServerMessage,
+    exclude?: WebSocket,
+  ): void {
+    if (this.shouldBatchDelta(msg, exclude)) {
+      this.trackSessionMessage(sessionId, msg);
+      const chunks = this.splitDeltaText(msg.text);
+      for (const client of this.wss.clients) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        if (!this.shouldSendToClient(client, msg)) continue;
+        this.queueDeltaForClient(client, sessionId, msg.type, chunks);
+      }
+      return;
+    }
+
+    this.flushSessionDeltaBatches(sessionId);
+    this.trackSessionMessage(sessionId, msg);
+    this.broadcastSessionMessageNow(sessionId, msg, exclude);
+  }
+
+  private shouldBatchDelta(
+    msg: ServerMessage,
+    exclude?: WebSocket,
+  ): msg is DeltaServerMessage {
+    if (this.deltaBatchMs === 0 || exclude) return false;
+    return msg.type === "stream_delta" || msg.type === "thinking_delta";
+  }
+
+  private queueDeltaForClient(
+    client: WebSocket,
+    sessionId: string,
+    type: DeltaServerMessage["type"],
+    chunks: DeltaTextChunk[],
+  ): void {
+    for (const chunk of chunks) {
+      let batch = this.deltaBatches.get(client)?.get(sessionId);
+      if (
+        batch &&
+        batch.charCount > 0 &&
+        batch.charCount + chunk.charCount > this.deltaBatchMaxChars
+      ) {
+        this.flushClientDeltaBatch(client, sessionId);
+        batch = undefined;
+      }
+
+      if (!batch) {
+        const clientBatches = this.deltaBatches.get(client) ?? new Map();
+        batch = {
+          messages: [],
+          charCount: 0,
+          timer: setTimeout(() => {
+            this.flushClientDeltaBatch(client, sessionId);
+          }, this.deltaBatchMs),
+        };
+        clientBatches.set(sessionId, batch);
+        this.deltaBatches.set(client, clientBatches);
+      }
+
+      const last = batch.messages.at(-1);
+      if (last?.type === type) {
+        last.text += chunk.text;
+      } else {
+        batch.messages.push({ type, text: chunk.text });
+      }
+      batch.charCount += chunk.charCount;
+
+      if (batch.charCount >= this.deltaBatchMaxChars) {
+        this.flushClientDeltaBatch(client, sessionId);
+      }
+    }
+  }
+
+  private splitDeltaText(text: string): DeltaTextChunk[] {
+    if (text.length === 0) return [{ text, charCount: 0 }];
+
+    const chunks: DeltaTextChunk[] = [];
+    let chars: string[] = [];
+    let charCount = 0;
+    for (const char of text) {
+      chars.push(char);
+      charCount += 1;
+      if (charCount >= this.deltaBatchMaxChars) {
+        chunks.push({ text: chars.join(""), charCount });
+        chars = [];
+        charCount = 0;
+      }
+    }
+    if (chars.length > 0) {
+      chunks.push({ text: chars.join(""), charCount });
+    }
+    return chunks;
+  }
+
+  private flushSessionDeltaBatches(sessionId: string): void {
+    for (const client of Array.from(this.deltaBatches.keys())) {
+      this.flushClientDeltaBatch(client, sessionId);
+    }
+  }
+
+  private flushAllDeltaBatches(): void {
+    for (const [client, batches] of Array.from(this.deltaBatches.entries())) {
+      for (const sessionId of Array.from(batches.keys())) {
+        this.flushClientDeltaBatch(client, sessionId);
+      }
+    }
+  }
+
+  private flushClientDeltaBatch(client: WebSocket, sessionId: string): void {
+    const clientBatches = this.deltaBatches.get(client);
+    const batch = clientBatches?.get(sessionId);
+    if (!batch) return;
+
+    clearTimeout(batch.timer);
+    clientBatches?.delete(sessionId);
+    if (clientBatches?.size === 0) this.deltaBatches.delete(client);
+    if (client.readyState !== WebSocket.OPEN) return;
+
+    for (const msg of batch.messages) {
+      client.send(JSON.stringify({ ...msg, sessionId }));
+    }
+  }
+
+  private discardClientDeltaBatches(client: WebSocket): void {
+    const batches = this.deltaBatches.get(client);
+    if (!batches) return;
+    for (const batch of batches.values()) clearTimeout(batch.timer);
+    this.deltaBatches.delete(client);
+  }
+
+  private destroySession(sessionId: string): void {
+    this.flushSessionDeltaBatches(sessionId);
+    this.pendingSessionWorkspaces.delete(sessionId);
+    this.sessionManager.destroy(sessionId);
+  }
+
+  private trackSessionMessage(sessionId: string, msg: ServerMessage): void {
+    this.maybeSendPushNotification(sessionId, msg);
+    this.recordDebugEvent(sessionId, {
+      direction: "outgoing",
+      channel: "session",
+      type: msg.type,
+      detail: this.summarizeServerMessage(msg),
+    });
+    this.recordingStore?.record(sessionId, "outgoing", msg);
+
+    // Update recording meta with claudeSessionId when it becomes available
+    if (
+      (msg.type === "system" || msg.type === "result") &&
+      "sessionId" in msg &&
+      msg.sessionId
+    ) {
+      const session = this.sessionManager.get(sessionId);
+      if (session) {
+        const workspace = this.workspaceForRuntimeSession(session);
+        this.recordingStore?.saveMeta(sessionId, {
+          bridgeSessionId: sessionId,
+          claudeSessionId: msg.sessionId as string,
+          projectPath: session.projectPath,
+          ...(workspace?.projectId ? { projectId: workspace.projectId } : {}),
+          ...(workspace?.projectName
+            ? { projectName: workspace.projectName }
+            : {}),
+          createdAt: session.createdAt.toISOString(),
+        });
+      }
+    }
+  }
+
+  private broadcastSessionMessageNow(
+    sessionId: string,
+    msg: ServerMessage,
+    exclude?: WebSocket,
+  ): void {
+    for (const client of this.wss.clients) {
+      if (client === exclude) continue;
+      if (client.readyState === WebSocket.OPEN) {
+        const outboundMsg = {
+          ...(msg as unknown as Record<string, unknown>),
+          sessionId,
+        };
+        const compatibleMsg = this.prepareServerMessageForClient(
+          client,
+          outboundMsg,
+        );
+        if (!compatibleMsg) continue;
+        client.send(JSON.stringify(compatibleMsg));
+      }
+    }
+  }
+
+  private async listRecentSessions(
+    msg: Extract<ClientMessage, { type: "list_recent_sessions" }>,
+  ): Promise<{ sessions: unknown[]; hasMore: boolean }> {
+    const primaryProjectIds = new Set(
+      msg.projectPath === undefined
+        ? []
+        : (this.workspaceStore?.listProjects() ?? [])
+            .filter((project) => project.rootPaths[0] === msg.projectPath)
+            .map((project) => project.id),
+    );
+    const workspaceFilterRequested =
+      msg.projectId !== undefined ||
+      msg.workspaceKind !== undefined ||
+      primaryProjectIds.size > 0;
+    if (!workspaceFilterRequested) {
+      const rawResult = await this.listRecentSessionsRaw(msg);
+      const enriched = rawResult.sessions.map((session) =>
+        this.enrichRecentSessionWorkspace(session),
+      );
+      return { sessions: enriched, hasMore: rawResult.hasMore };
+    }
+
+    const matchesWorkspace = (session: unknown): boolean => {
+      const value = session as {
+        projectPath?: unknown;
+        workspace?: Record<string, unknown>;
+      };
+      const workspace = value.workspace;
+      if (msg.projectId && workspace?.projectId !== msg.projectId) return false;
+      if (msg.workspaceKind && workspace?.kind !== msg.workspaceKind) return false;
+      if (msg.projectPath !== undefined) {
+        const matchesPrimaryProject =
+          typeof workspace?.projectId === "string" &&
+          primaryProjectIds.has(workspace.projectId);
+        if (
+          value.projectPath !== msg.projectPath &&
+          !matchesPrimaryProject
+        ) {
+          return false;
+        }
+      }
+      return true;
+    };
+    const offset = msg.offset ?? 0;
+    const limit = msg.limit ?? 20;
+    const requiredMatches = offset + limit + 1;
+    let filtered: unknown[];
+    if (msg.provider === "codex") {
+      filtered = await this.listWorkspaceFilteredCodexSessions(
+        msg,
+        matchesWorkspace,
+        requiredMatches,
+      );
+    } else if (msg.provider === "claude") {
+      filtered = await this.listWorkspaceFilteredIndexedSessions(
+        msg,
+        matchesWorkspace,
+        requiredMatches,
+      );
+    } else {
+      // The filesystem index includes both providers and is also the fallback
+      // for Codex rollouts not returned by app-server. Merge it with one
+      // cursor-preserving app-server scan for the freshest Codex metadata.
+      const [indexed, codex] = await Promise.all([
+        this.listWorkspaceFilteredIndexedSessions(
+          msg,
+          matchesWorkspace,
+          requiredMatches,
+        ),
+        this.listWorkspaceFilteredCodexSessions(
+          { ...msg, provider: "codex" },
+          matchesWorkspace,
+          requiredMatches,
+        ),
+      ]);
+      filtered = mergeRecentSessionPages([...codex, ...indexed]);
+    }
+    return {
+      sessions: filtered.slice(offset, offset + limit),
+      hasMore: filtered.length > offset + limit,
+    };
+  }
+
+  private async listWorkspaceFilteredIndexedSessions(
+    msg: Extract<ClientMessage, { type: "list_recent_sessions" }>,
+    matchesWorkspace: (session: unknown) => boolean,
+    limit: number,
+  ): Promise<unknown[]> {
+    const result = await getAllRecentSessions({
+      limit,
+      offset: 0,
+      // Project identity is authoritative. Do not pre-filter by the current
+      // primary root: assignments may retain an older snapshot or worktree cwd.
+      provider: msg.provider,
+      namedOnly: msg.namedOnly,
+      searchQuery: msg.searchQuery,
+      archivedSessionIds: this.archiveStore.archivedIds(),
+      sessionFilter: (session) =>
+        matchesWorkspace(this.enrichRecentSessionWorkspace(session)),
+    });
+    return result.sessions.map((session) =>
+      this.enrichRecentSessionWorkspace(session),
+    );
+  }
+
+  private async listWorkspaceFilteredCodexSessions(
+    msg: Extract<ClientMessage, { type: "list_recent_sessions" }>,
+    matchesWorkspace: (session: unknown) => boolean,
+    limit: number,
+  ): Promise<unknown[]> {
+    try {
+      return await this.listWorkspaceFilteredCodexThreads(
+        msg,
+        matchesWorkspace,
+        limit,
+      );
+    } catch (err) {
+      console.warn(
+        `[ws] Codex thread/list failed, falling back to rollout scan: ${err}`,
+      );
+      return this.listWorkspaceFilteredIndexedSessions(
+        { ...msg, provider: "codex" },
+        matchesWorkspace,
+        limit,
+      );
+    }
+  }
+
+  private async listWorkspaceFilteredCodexThreads(
+    msg: Extract<ClientMessage, { type: "list_recent_sessions" }>,
+    matchesWorkspace: (session: unknown) => boolean,
+    limit: number,
+  ): Promise<unknown[]> {
+    const activeProcess = this.getActiveCodexProcess();
+    const process =
+      activeProcess ?? (await this.createStandaloneCodexProcess(undefined));
+    const isStandalone = activeProcess === null;
+
+    try {
+      const archivedIds = this.archiveStore.archivedIds();
+      const matchingThreads: CodexThreadSummary[] = [];
+      let cursor: string | null | undefined;
+
+      do {
+        const request: Parameters<CodexProcess["listThreads"]>[0] = {
+          limit: 500,
+          searchTerm: msg.searchQuery,
+          sourceKinds: CODEX_RECENT_THREAD_SOURCE_KINDS,
+        };
+        if (cursor != null) request.cursor = cursor;
+
+        const result = await process.listThreads(request);
+        for (const thread of result.data) {
+          if (archivedIds.has(thread.id)) continue;
+          if (msg.namedOnly && !thread.name) continue;
+          const workspaceProbe = this.enrichRecentSessionWorkspace({
+            provider: "codex",
+            sessionId: thread.id,
+            projectPath: thread.cwd,
+          });
+          if (!matchesWorkspace(workspaceProbe)) continue;
+          matchingThreads.push(thread);
+          if (matchingThreads.length >= limit) break;
+        }
+        cursor = result.nextCursor;
+      } while (matchingThreads.length < limit && cursor != null);
+
+      const indexedById = await getCodexSessionIndexMetadata(
+        matchingThreads.map((thread) => thread.id),
+      );
+      return matchingThreads.map((thread) =>
+        this.enrichRecentSessionWorkspace(
+          codexThreadToRecentSession(thread, indexedById.get(thread.id)),
+        ),
+      );
+    } finally {
+      if (isStandalone) process.stop();
+    }
+  }
+
+  private async listRecentSessionsRaw(
+    msg: Extract<ClientMessage, { type: "list_recent_sessions" }>,
+  ): Promise<{ sessions: unknown[]; hasMore: boolean }> {
+    if (msg.provider === "codex") {
+      return this.listRecentCodexSessions(msg);
+    }
+
+    if (!msg.provider) {
+      return this.listRecentAllProviderSessions(msg);
+    }
+
+    return getAllRecentSessions({
+      limit: msg.limit,
+      offset: msg.offset,
+      projectPath: msg.projectPath,
+      provider: msg.provider,
+      namedOnly: msg.namedOnly,
+      searchQuery: msg.searchQuery,
+      archivedSessionIds: this.archiveStore.archivedIds(),
+    });
+  }
+
+  private enrichRecentSessionWorkspace(session: unknown): unknown {
+    if (!session || typeof session !== "object") return session;
+    const value = session as Record<string, unknown>;
+    const provider = value.provider;
+    const providerSessionId = value.sessionId;
+    const projectPath = value.projectPath;
+    if (
+      (provider !== "claude" && provider !== "codex") ||
+      typeof providerSessionId !== "string" ||
+      typeof projectPath !== "string"
+    ) {
+      return session;
+    }
+    const workspace = this.workspaceStore?.resolveRecentWorkspace(
+      provider,
+      providerSessionId,
+    );
+    return {
+      ...value,
+      workspace: workspace ?? {
+        kind: "unassigned",
+        rootPaths: projectPath ? [projectPath] : [],
+      },
+    };
+  }
+
+  private normalizeWorkspaceRoots(rootPaths: string[]): {
+    roots?: string[];
+    deniedRoot?: string;
+  } {
+    const roots: string[] = [];
+    const seen = new Set<string>();
+    for (const rawPath of rootPaths) {
+      const path = resolvePlatformPath(rawPath, this.platform);
+      if (!this.isPathAllowed(path)) return { deniedRoot: rawPath };
+      if (!seen.has(path)) {
+        seen.add(path);
+        roots.push(path);
+      }
+    }
+    return roots.length > 0 ? { roots } : {};
+  }
+
+  private async persistPendingSessionWorkspace(sessionId: string): Promise<void> {
+    const workspace = this.pendingSessionWorkspaces.get(sessionId);
+    const session = this.sessionManager.get(sessionId);
+    if (!workspace || !session?.claudeSessionId || !this.workspaceStore) return;
+    try {
+      await this.workspaceStore.assignSession(
+        session.provider,
+        session.claudeSessionId,
+        workspace,
+      );
+      this.pendingSessionWorkspaces.delete(sessionId);
+    } catch (error) {
+      console.error("[workspace] Failed to persist session assignment:", error);
+    }
+  }
+
+  private workspaceForRuntimeSession(
+    session: SessionInfo,
+  ): ResolvedWorkspace | undefined {
+    const pending = this.pendingSessionWorkspaces.get(session.id);
+    if (pending) {
+      return { ...pending, rootPaths: [...pending.rootPaths] };
+    }
+    if (!session.claudeSessionId || !this.workspaceStore) return undefined;
+    const assignment = this.workspaceStore.getAssignment(
+      session.provider,
+      session.claudeSessionId,
+    );
+    if (!assignment) return undefined;
+    const project = assignment.projectId
+      ? this.workspaceStore.getProject(assignment.projectId)
+      : undefined;
+    const projectName = project?.name ?? assignment.projectName;
+    return {
+      kind: assignment.kind,
+      ...(assignment.projectId ? { projectId: assignment.projectId } : {}),
+      ...(projectName ? { projectName } : {}),
+      rootPaths: [...assignment.rootPaths],
+    };
+  }
+
+  private attachWorkspaceToRuntimeSession(
+    sessionId: string,
+    workspace: ResolvedWorkspace | undefined,
+  ): void {
+    if (!workspace) return;
+    this.pendingSessionWorkspaces.set(sessionId, workspace);
+    void this.persistPendingSessionWorkspace(sessionId);
+  }
+
+  private projectsMessage(requestId?: string): ServerMessage {
+    return {
+      type: "projects",
+      projects: this.workspaceStore?.listProjects() ?? [],
+      ...(requestId ? { requestId } : {}),
+    };
+  }
+
+  private sendWorkspaceMutationError(
+    ws: WebSocket,
+    requestId: string | undefined,
+    action: string,
+    error: unknown,
+  ): void {
+    this.send(ws, {
+      type: "error",
+      requestId,
+      errorCode: "workspace_write_failed",
+      message: `Failed to ${action}: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+
+  private legacyProjectHistoryProjects(): string[] {
+    return this.projectHistory?.getProjects() ?? [];
+  }
+
+  private listRecentSessionsCoalesced(
+    msg: Extract<ClientMessage, { type: "list_recent_sessions" }>,
+  ): Promise<{ sessions: unknown[]; hasMore: boolean }> {
+    const key = JSON.stringify({
+      limit: msg.limit ?? null,
+      offset: msg.offset ?? null,
+      projectPath: msg.projectPath ?? null,
+      projectId: msg.projectId ?? null,
+      workspaceKind: msg.workspaceKind ?? null,
+      provider: msg.provider ?? null,
+      namedOnly: msg.namedOnly ?? null,
+      searchQuery: msg.searchQuery ?? null,
+    });
+    const existing = this.recentSessionsInFlight.get(key);
+    if (existing) return existing;
+
+    const request = this.listRecentSessions(msg);
+    this.recentSessionsInFlight.set(key, request);
+    const clear = (): void => {
+      if (this.recentSessionsInFlight.get(key) === request) {
+        this.recentSessionsInFlight.delete(key);
+      }
+    };
+    void request.then(clear, clear);
+    return request;
+  }
+
+  private async listRecentAllProviderSessions(
+    msg: Extract<ClientMessage, { type: "list_recent_sessions" }>,
+  ): Promise<{ sessions: unknown[]; hasMore: boolean }> {
+    const limit = msg.limit ?? 20;
+    const offset = msg.offset ?? 0;
+    const sourceLimit = offset + limit;
+
+    const [scanResult, codexResult] = await Promise.all([
+      getAllRecentSessions({
+        limit: sourceLimit,
+        offset: 0,
+        projectPath: msg.projectPath,
+        namedOnly: msg.namedOnly,
+        searchQuery: msg.searchQuery,
+        archivedSessionIds: this.archiveStore.archivedIds(),
+      }),
+      this.listRecentCodexSessions({
+        ...msg,
+        provider: "codex",
+        limit: sourceLimit,
+        offset: 0,
+      }),
+    ]);
+
+    const merged = mergeRecentSessionPages([
+      ...codexResult.sessions,
+      ...scanResult.sessions,
+    ]);
+
+    return {
+      sessions: merged.slice(offset, offset + limit),
+      hasMore:
+        merged.length > offset + limit ||
+        scanResult.hasMore ||
+        codexResult.hasMore,
+    };
+  }
+
+  private async listRecentCodexSessions(
+    msg: Extract<ClientMessage, { type: "list_recent_sessions" }>,
+  ): Promise<{ sessions: unknown[]; hasMore: boolean }> {
+    try {
+      return await this.listRecentCodexThreads(msg);
+    } catch (err) {
+      console.warn(
+        `[ws] Codex thread/list failed, falling back to rollout scan: ${err}`,
+      );
+      return getAllRecentSessions({
+        limit: msg.limit,
+        offset: msg.offset,
+        projectPath: msg.projectPath,
+        provider: "codex",
+        namedOnly: msg.namedOnly,
+        searchQuery: msg.searchQuery,
+        archivedSessionIds: this.archiveStore.archivedIds(),
+      });
+    }
+  }
+
+  private async refreshCodexMetadata(projectPath?: string): Promise<void> {
+    if (this.codexMetadataRequest) {
+      if (projectPath) {
+        return this.codexMetadataRequest.then(() =>
+          this.refreshCodexMetadata(projectPath),
+        );
+      }
+      return this.codexMetadataRequest;
+    }
+    this.codexMetadataRequest = this.loadAndApplyCodexMetadata(projectPath)
+      .catch((err) => {
+        console.warn(`[ws] Failed to load Codex metadata: ${err}`);
+        this.codexProfiles = [];
+        this.defaultCodexProfile = undefined;
+        this.codexAutoReviewPolicyLoaded = false;
+        this.applyFallbackCodexModels();
+        this.broadcastSessionList();
+      })
+      .finally(() => {
+        this.codexMetadataRequest = null;
+      });
+    return this.codexMetadataRequest;
+  }
+
+  private async loadAndApplyCodexMetadata(
+    projectPath?: string,
+  ): Promise<void> {
+    const activeProcess = this.getActiveCodexProcess();
+    const codexProcess =
+      activeProcess ?? (await this.createStandaloneCodexProcess(projectPath));
+    try {
+      const [profileResult, modelResult, requirementsResult] =
+        await Promise.allSettled([
+          codexProcess.readProfileConfig(projectPath),
+          this.readCodexModels(codexProcess),
+          this.readCodexAutoReviewDisabled(codexProcess),
+        ]);
+
+      if (profileResult.status === "fulfilled") {
+        this.codexProfiles = profileResult.value.profiles;
+        this.defaultCodexProfile = profileResult.value.defaultProfile;
+      } else {
+        console.warn(
+          `[ws] Failed to load Codex profiles: ${profileResult.reason}`,
+        );
+        this.codexProfiles = [];
+        this.defaultCodexProfile = undefined;
+      }
+
+      if (modelResult.status === "fulfilled" && modelResult.value.length > 0) {
+        this.applyCodexModels(modelResult.value);
+      } else {
+        if (modelResult.status === "rejected") {
+          console.warn(`[ws] Failed to load Codex models: ${modelResult.reason}`);
+        }
+        this.applyFallbackCodexModels();
+      }
+
+      if (requirementsResult.status === "fulfilled") {
+        this.codexAutoReviewDisabled = requirementsResult.value;
+        this.codexAutoReviewPolicyLoaded = true;
+      } else {
+        console.warn(
+          `[ws] Failed to load Codex config requirements: ${requirementsResult.reason}`,
+        );
+        this.codexAutoReviewPolicyLoaded = false;
+      }
+      this.broadcastSessionList();
+    } finally {
+      if (!activeProcess) codexProcess.stop();
+    }
+  }
+
+  private async refreshClaudeModels(projectPath?: string): Promise<void> {
+    if (this.claudeModelsRequest) return this.claudeModelsRequest;
+    this.claudeModelsRequest = this.loadClaudeModels(projectPath)
+      .then((models) => {
+        if (models.length > 0) {
+          this.applyClaudeModels(models);
+        } else {
+          this.applyFallbackClaudeModels();
+        }
+        this.broadcastSessionList();
+      })
+      .catch((err) => {
+        console.warn(`[ws] Failed to load Claude models: ${err}`);
+        this.applyFallbackClaudeModels();
+        this.broadcastSessionList();
+      })
+      .finally(() => {
+        this.claudeModelsRequest = null;
+      });
+    return this.claudeModelsRequest;
+  }
+
+  private async loadClaudeModels(
+    projectPath?: string,
+  ): Promise<ClaudeModelMetadata[]> {
+    const activeProcess = this.getActiveClaudeProcess();
+    if (activeProcess) {
+      const models = await activeProcess.listAvailableModels();
+      if (models.length > 0) return models;
+    }
+    if (process.env.NODE_ENV === "test") return [];
+    return listAvailableClaudeModels(projectPath);
+  }
+
+  private applyClaudeModels(models: ClaudeModelMetadata[]): void {
+    this.claudeModels = models.map((model) => model.model);
+    this.claudeModelEfforts = Object.fromEntries(
+      models.map((model) => [model.model, model.effortLevels]),
+    );
+  }
+
+  private applyFallbackClaudeModels(): void {
+    this.claudeModels = FALLBACK_CLAUDE_MODELS;
+    this.claudeModelEfforts = { ...FALLBACK_CLAUDE_MODEL_EFFORTS };
+  }
+
+  private async readCodexModels(
+    codexProcess: CodexProcess,
+  ): Promise<CodexModelMetadata[]> {
+    const modelSource = codexProcess as CodexProcess & {
+      listAvailableModelMetadata?: () => Promise<CodexModelMetadata[]>;
+      listAvailableModels?: () => Promise<string[]>;
+    };
+    if (typeof modelSource.listAvailableModelMetadata === "function") {
+      return modelSource.listAvailableModelMetadata();
+    }
+    const models = typeof modelSource.listAvailableModels === "function"
+      ? await modelSource.listAvailableModels()
+      : [];
+    return models.map((model) => ({
+      model,
+      supportedReasoningEfforts: fallbackCodexReasoningEfforts(model),
+      supportedServiceTiers: fallbackCodexServiceTiers(model),
+    }));
+  }
+
+  private async readCodexAutoReviewDisabled(
+    codexProcess: CodexProcess,
+  ): Promise<boolean> {
+    const requirementsSource = codexProcess as CodexProcess & {
+      readConfigRequirements?: () => Promise<{
+        autoReviewDisabled: boolean;
+      }>;
+    };
+    if (typeof requirementsSource.readConfigRequirements !== "function") {
+      return false;
+    }
+    return (await requirementsSource.readConfigRequirements())
+      .autoReviewDisabled;
+  }
+
+  private applyCodexModels(models: CodexModelMetadata[]): void {
+    this.codexModels = models.map((model) => model.model);
+    this.codexModelReasoningEfforts = Object.fromEntries(
+      models.map((model) => [
+        model.model,
+        model.supportedReasoningEfforts.length > 0
+          ? model.supportedReasoningEfforts
+          : fallbackCodexReasoningEfforts(model.model),
+      ]),
+    );
+    this.codexModelServiceTiers = Object.fromEntries(
+      models.map((model) => [
+        model.model,
+        (model.supportedServiceTiers?.length ?? 0) > 0
+          ? model.supportedServiceTiers
+          : fallbackCodexServiceTiers(model.model),
+      ]),
+    );
+  }
+
+  private applyFallbackCodexModels(): void {
+    this.codexModels = FALLBACK_CODEX_MODELS;
+    this.codexModelReasoningEfforts = Object.fromEntries(
+      FALLBACK_CODEX_MODELS.map((model) => [
+        model,
+        fallbackCodexReasoningEfforts(model),
+      ]),
+    );
+    this.codexModelServiceTiers = Object.fromEntries(
+      FALLBACK_CODEX_MODELS.map((model) => [
+        model,
+        fallbackCodexServiceTiers(model),
+      ]),
+    );
+  }
+
+  private async loadCodexProfiles(
+    projectPath?: string,
+  ): Promise<{ profiles: string[]; defaultProfile?: string }> {
+    const process =
+      this.getActiveCodexProcess() ??
+      (await this.createStandaloneCodexProcess(projectPath));
+    const isStandalone = process !== this.getActiveCodexProcess();
+    try {
+      return await process.readProfileConfig(projectPath);
+    } finally {
+      if (isStandalone) {
+        process.stop();
+      }
+    }
+  }
+
+  private async validateCodexProfile(
+    profile: string | undefined,
+    projectPath?: string,
+  ): Promise<boolean> {
+    if (!profile) return true;
+    const snapshot = await this.loadCodexProfiles(projectPath);
+    this.codexProfiles = snapshot.profiles;
+    this.defaultCodexProfile = snapshot.defaultProfile;
+    return snapshot.profiles.includes(profile);
+  }
+
+  private async resolveCodexResumeProfile(
+    requestedProfile: string,
+    threadId: string,
+    projectPath?: string,
+  ): Promise<string | undefined> {
+    const snapshot = await this.loadCodexProfiles(projectPath);
+    this.codexProfiles = snapshot.profiles;
+    this.defaultCodexProfile = snapshot.defaultProfile;
+    if (snapshot.profiles.includes(requestedProfile)) {
+      return requestedProfile;
+    }
+
+    const fallbackProfile =
+      snapshot.defaultProfile &&
+      snapshot.profiles.includes(snapshot.defaultProfile)
+        ? snapshot.defaultProfile
+        : undefined;
+    console.warn(
+      `[ws] Codex profile not found on resume: ${requestedProfile}; ` +
+        (fallbackProfile
+          ? `falling back to default profile: ${fallbackProfile}`
+          : "falling back to Codex config default"),
+    );
+    saveCodexSessionProfile(threadId, fallbackProfile ?? null).catch((err) => {
+      console.warn(`[ws] Failed to update Codex session profile cache: ${err}`);
+    });
+    return fallbackProfile;
+  }
+
+  private getActiveCodexProcess(): CodexProcess | null {
+    // SessionManager retains idle sessions after their process exits.
+    // Skip those entries so auxiliary RPCs can use a healthy process or
+    // create a temporary standalone app-server.
+    for (const summary of this.sessionManager.list()) {
+      if (summary.provider !== "codex") continue;
+      const session = this.sessionManager.get(summary.id);
+      if (session?.provider !== "codex") continue;
+      const process = session.process as CodexProcess;
+      if (process.isRunning) return process;
+    }
+    return null;
+  }
+
+  private withCodexAutoReviewPolicy(
+    options: CodexStartOptions,
+  ): CodexStartOptions {
+    const disableAutoReview = this.codexAutoReviewDisabled;
+    return {
+      ...options,
+      ...(disableAutoReview ? { approvalsReviewer: "user" as const } : {}),
+      ...(disableAutoReview && options.codexPermissionsMode === "autoReview"
+        ? { codexPermissionsMode: "default" as const }
+        : {}),
+      autoReviewDisabledByPolicy: this.codexAutoReviewPolicyLoaded
+        ? disableAutoReview
+        : null,
+    };
+  }
+
+  private getActiveClaudeProcess(): SdkProcess | null {
+    const summary = this.sessionManager
+      .list()
+      .find((session) => session.provider === "claude");
+    if (!summary) return null;
+    const session = this.sessionManager.get(summary.id);
+    return session?.provider === "claude"
+      ? (session.process as SdkProcess)
+      : null;
+  }
+
+  private async listRecentCodexThreads(
+    msg: Extract<ClientMessage, { type: "list_recent_sessions" }>,
+  ): Promise<{ sessions: unknown[]; hasMore: boolean }> {
+    const limit = msg.limit ?? 20;
+    const offset = msg.offset ?? 0;
+    const process =
+      this.getActiveCodexProcess() ??
+      (await this.createStandaloneCodexProcess(msg.projectPath));
+    const isStandalone = process !== this.getActiveCodexProcess();
+
+    try {
+      const archivedIds = this.archiveStore.archivedIds();
+      const visibleThreads: CodexThreadSummary[] = [];
+      let cursor: string | null | undefined;
+      let hasServerMore = false;
+      const targetCount = offset + limit;
+
+      do {
+        const request: Parameters<CodexProcess["listThreads"]>[0] = {
+          limit: Math.max(limit, 1),
+          cwd: msg.projectPath,
+          searchTerm: msg.searchQuery,
+          sourceKinds: CODEX_RECENT_THREAD_SOURCE_KINDS,
+        };
+        if (cursor != null) request.cursor = cursor;
+
+        const result = await process.listThreads(request);
+        for (const thread of result.data) {
+          if (archivedIds.has(thread.id)) continue;
+          if (msg.namedOnly && !thread.name) continue;
+          visibleThreads.push(thread);
+        }
+        cursor = result.nextCursor;
+        hasServerMore = cursor != null;
+      } while (visibleThreads.length < targetCount && cursor != null);
+
+      const pageThreads = visibleThreads.slice(offset, offset + limit);
+      const indexedById = await getCodexSessionIndexMetadata(
+        pageThreads.map((thread) => thread.id),
+      );
+      const sessions = pageThreads.map((thread) =>
+        codexThreadToRecentSession(thread, indexedById.get(thread.id)),
+      );
+      return {
+        sessions,
+        hasMore: hasServerMore || visibleThreads.length > offset + limit,
+      };
+    } finally {
+      if (isStandalone) {
+        process.stop();
+      }
+    }
+  }
+
+  private async createStandaloneCodexProcess(
+    projectPath?: string,
+  ): Promise<CodexProcess> {
+    const proc = new CodexProcess();
+    try {
+      await proc.initializeOnly(projectPath ?? process.cwd());
+      return proc;
+    } catch (err) {
+      proc.stop();
+      throw err;
+    }
+  }
+
+  /** Resolve a user-facing Project label, falling back to the cwd basename. */
+  private projectLabel(sessionId: string): string {
+    const session = this.sessionManager.get(sessionId);
+    if (!session?.projectPath) return "";
+    const workspace = this.workspaceForRuntimeSession(session);
+    if (workspace?.projectName) return workspace.projectName;
+    const parts = session.projectPath.replace(/\/+$/, "").split("/");
+    return parts[parts.length - 1] || "";
+  }
+
+  private beginPushTokenOperation(token: string): number {
+    const generation = ++this.nextPushTokenGeneration;
+    this.pushTokenGeneration.set(token, generation);
+    // Local delivery is disabled synchronously while the relay operation is
+    // pending. The app stays on local fallback until a successful ACK.
+    this.tokenLocales.delete(token);
+    this.tokenPrivacyMode.delete(token);
+    return generation;
+  }
+
+  private enqueuePushTokenOperation(
+    token: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const previous = this.pushTokenOperations.get(token);
+    const pending = (previous?.catch(() => {}) ?? Promise.resolve()).then(
+      operation,
+    );
+    this.pushTokenOperations.set(token, pending);
+    const cleanup = () => {
+      if (this.pushTokenOperations.get(token) === pending) {
+        this.pushTokenOperations.delete(token);
+      }
+    };
+    void pending.then(cleanup, cleanup);
+    return pending;
+  }
+
+  private isCurrentPushTokenOperation(
+    token: string,
+    generation: number,
+  ): boolean {
+    return this.pushTokenGeneration.get(token) === generation;
+  }
+
+  /** Get unique locales from tokens acknowledged by the push relay. */
+  private getRegisteredLocales(): PushLocale[] {
+    const locales = new Set(this.tokenLocales.values());
+    return [...locales];
+  }
+
+  /** Hashes of relay tokens that are currently safe for remote delivery. */
+  private getActivePushTokenHashes(locale: PushLocale): string[] {
+    return [...this.tokenLocales]
+      .filter(([, tokenLocale]) => tokenLocale === locale)
+      .map(([token]) => createHash("sha256").update(token).digest("hex"));
+  }
+
+  /** Whether any registered token has privacy mode enabled (conservative: privacy wins). */
+  private isPrivacyMode(): boolean {
+    for (const privacy of this.tokenPrivacyMode.values()) {
+      if (privacy) return true;
+    }
+    return false;
+  }
+
+  /** Get a display label for push notification title: "name (project)" or just project. */
+  private sessionLabel(sessionId: string): string {
+    const session = this.sessionManager.get(sessionId);
+    const project = this.projectLabel(sessionId);
+    if (session?.name) {
+      return project ? `${session.name} (${project})` : session.name;
+    }
+    return project;
+  }
+
+  private maybeSendPushNotification(
+    sessionId: string,
+    msg: ServerMessage,
+  ): void {
+    if (!this.pushRelay.isConfigured) return;
+    if (this.tokenLocales.size === 0) return;
+
+    const privacy = this.isPrivacyMode();
+    const label = privacy ? "" : this.sessionLabel(sessionId);
+
+    if (msg.type === "permission_request") {
+      const seen =
+        this.notifiedPermissionToolUses.get(sessionId) ?? new Set<string>();
+      if (seen.has(msg.toolUseId)) return;
+      seen.add(msg.toolUseId);
+      this.notifiedPermissionToolUses.set(sessionId, seen);
+
+      const isAskUserQuestion = msg.toolName === "AskUserQuestion";
+      const isExitPlanMode = msg.toolName === "ExitPlanMode";
+      const eventType = isAskUserQuestion
+        ? "ask_user_question"
+        : "approval_required";
+
+      // Extract question text for AskUserQuestion (standard mode only)
+      let questionText: string | undefined;
+      if (!privacy && isAskUserQuestion) {
+        const questions = msg.input?.questions;
+        const firstQuestion =
+          Array.isArray(questions) && questions.length > 0
+            ? (questions[0] as Record<string, unknown>)?.question
+            : undefined;
+        if (typeof firstQuestion === "string" && firstQuestion.length > 0) {
+          questionText = firstQuestion.slice(0, 120);
+        }
+      }
+
+      const data: Record<string, string> = {
+        sessionId,
+        provider: this.sessionManager.get(sessionId)?.provider ?? "claude",
+        toolUseId: msg.toolUseId,
+        toolName: msg.toolName,
+      };
+
+      for (const locale of this.getRegisteredLocales()) {
+        let title: string;
+        let body: string;
+
+        if (isExitPlanMode) {
+          const titleKey = "plan_ready_title";
+          title = label
+            ? `${t(locale, titleKey)} - ${label}`
+            : t(locale, titleKey);
+          body = t(locale, "plan_ready_body");
+        } else if (isAskUserQuestion) {
+          const titleKey = "ask_title";
+          title = label
+            ? `${t(locale, titleKey)} - ${label}`
+            : t(locale, titleKey);
+          body = privacy
+            ? t(locale, "ask_body_private")
+            : (questionText ?? t(locale, "ask_default_body"));
+        } else {
+          const titleKey = "approval_title";
+          title = label
+            ? `${t(locale, titleKey)} - ${label}`
+            : t(locale, titleKey);
+          body = privacy
+            ? t(locale, "approval_body_private")
+            : t(locale, "approval_body", { toolName: msg.toolName });
+        }
+
+        void this.pushRelay
+          .notify({
+            eventType,
+            title,
+            body,
+            locale,
+            tokenHashes: this.getActivePushTokenHashes(locale),
+            data,
+          })
+          .catch((err) => {
+            const detail = err instanceof Error ? err.message : String(err);
+            console.warn(
+              `[ws] Failed to send push notification (${eventType}, ${locale}): ${detail}`,
+            );
+          });
+      }
+      return;
+    }
+
+    if (msg.type !== "result") return;
+    if (msg.subtype === "stopped") return;
+    if (msg.subtype !== "success" && msg.subtype !== "error") return;
+
+    const isSuccess = msg.subtype === "success";
+    const eventType = isSuccess ? "session_completed" : "session_failed";
+
+    const pieces: string[] = [];
+    if (isSuccess) {
+      if (msg.duration != null) pieces.push(`${msg.duration.toFixed(1)}s`);
+      if (msg.cost != null) pieces.push(`$${msg.cost.toFixed(4)}`);
+    }
+    const stats = pieces.length > 0 ? ` (${pieces.join(", ")})` : "";
+
+    const data: Record<string, string> = {
+      sessionId,
+      provider: this.sessionManager.get(sessionId)?.provider ?? "claude",
+      subtype: msg.subtype,
+    };
+    if (msg.stopReason) data.stopReason = msg.stopReason;
+    if (msg.sessionId) data.providerSessionId = msg.sessionId;
+
+    for (const locale of this.getRegisteredLocales()) {
+      let title: string;
+      if (privacy) {
+        title = isSuccess
+          ? t(locale, "task_completed")
+          : t(locale, "error_occurred");
+      } else {
+        title = label
+          ? isSuccess
+            ? `✅ ${label}`
+            : `❌ ${label}`
+          : isSuccess
+            ? t(locale, "task_completed")
+            : t(locale, "error_occurred");
+      }
+
+      let body: string;
+      if (privacy) {
+        const privateBody = isSuccess
+          ? t(locale, "result_success_body_private")
+          : t(locale, "result_error_body_private");
+        body = isSuccess ? `${privateBody}${stats}` : privateBody;
+      } else if (isSuccess) {
+        body = msg.result
+          ? `${msg.result.slice(0, 120)}${stats}`
+          : `${t(locale, "session_completed")}${stats}`;
+      } else {
+        body = msg.error
+          ? msg.error.slice(0, 120)
+          : t(locale, "session_failed");
+      }
+
+      void this.pushRelay
+        .notify({
+          eventType,
+          title,
+          body,
+          locale,
+          tokenHashes: this.getActivePushTokenHashes(locale),
+          data,
+        })
+        .catch((err) => {
+          const detail = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[ws] Failed to send push notification (${eventType}, ${locale}): ${detail}`,
+          );
+        });
+    }
+  }
+
+  private broadcast(msg: Record<string, unknown>): void {
+    for (const client of this.wss.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        const compatibleMsg = this.prepareServerMessageForClient(client, msg);
+        if (!compatibleMsg) continue;
+        client.send(JSON.stringify(compatibleMsg));
+      }
+    }
+  }
+
+  private prepareServerMessageForClient(
+    ws: WebSocket,
+    msg: ServerMessage | Record<string, unknown>,
+  ): ServerMessage | Record<string, unknown> | null {
+    if (!this.shouldSendToClient(ws, msg)) return null;
+    if (!("messages" in msg) || !Array.isArray(msg.messages)) return msg;
+    const messages = msg.messages as unknown[];
+
+    if (msg.type === "history") {
+      return {
+        ...(msg as unknown as Record<string, unknown>),
+        messages: messages.filter(
+          (message) =>
+            isRecord(message) && this.shouldSendToClient(ws, message),
+        ),
+      };
+    }
+    if (msg.type === "history_delta" || msg.type === "history_snapshot") {
+      return {
+        ...(msg as unknown as Record<string, unknown>),
+        messages: messages.filter((entry) => {
+          if (!isRecord(entry) || !isRecord(entry.message)) return true;
+          return this.shouldSendToClient(ws, entry.message);
+        }),
+      };
+    }
+    return msg;
+  }
+
+  private shouldSendToClient(
+    ws: WebSocket,
+    msg: ServerMessage | Record<string, unknown>,
+  ): boolean {
+    const type = typeof msg.type === "string" ? msg.type : "";
+    if (!OPT_IN_SERVER_MESSAGES.has(type)) return true;
+    return (
+      this.clientSupportedServerMessages.get(ws)?.has(type) ?? false
+    );
+  }
+
+  private hasInputConflictSince(session: SessionInfo, baseSeq: number): boolean {
+    const codexResetRevision = session.codexHistoryResetRevision ??
+      session.codexCanonicalHistoryRevision;
+    if (
+      session.provider === "codex" &&
+      typeof codexResetRevision === "number" &&
+      baseSeq < codexResetRevision
+    ) {
+      return true;
+    }
+
+    const delta = this.sessionManager.getHistorySince(session.id, baseSeq);
+    if (!delta) return true;
+    if (delta.kind === "snapshot") return true;
+
+    return delta.entries.some((entry) => {
+      const msg = entry.message;
+      if (msg.type === "user_input" || msg.type === "result") return true;
+      if (msg.type === "system") {
+        const subtype = (msg as Record<string, unknown>).subtype;
+        return (
+          subtype === "session_switched" ||
+          subtype === "session_rewound" ||
+          subtype === "sandbox_restarted" ||
+          subtype === "session_stopped"
+        );
+      }
+      return false;
+    });
+  }
+
+  private sendCodexQueueState(
+    ws: WebSocket,
+    sessionId: string,
+    session: SessionInfo,
+  ): void {
+    const item = session.codexQueuedInput;
+    this.sendConversationQueue(ws, {
+      type: "conversation_queue",
+      sessionId,
+      limit: 1,
+      items: item
+        ? [
+            {
+              itemId: item.itemId,
+              text: item.text,
+              createdAt: item.createdAt,
+              ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
+              ...(item.imageCount ? { imageCount: item.imageCount } : {}),
+              ...(item.skills?.length ? { skills: item.skills } : {}),
+              ...(item.mentions?.length ? { mentions: item.mentions } : {}),
+            },
+          ]
+        : [],
+    } as Record<string, unknown>);
+  }
+
+  private sendCodexGoalState(
+    ws: WebSocket,
+    sessionId: string,
+    session: SessionInfo,
+  ): void {
+    if (session.codexGoal === undefined) return;
+    this.send(ws, {
+      type: "goal_state",
+      sessionId,
+      goal: session.codexGoal,
+    });
+  }
+
+  private sendCachedCommands(
+    ws: WebSocket,
+    sessionId: string,
+    session: SessionInfo,
+  ): void {
+    // Restore command metadata when the original init/supported_commands event
+    // has fallen out of the bounded in-memory history.
+    const cached = this.sessionManager.getCachedCommands(
+      session.provider,
+      session.worktreePath ?? session.projectPath,
+    );
+    if (
+      !cached ||
+      (cached.slashCommands.length === 0 &&
+        cached.skills.length === 0 &&
+        cached.apps.length === 0 &&
+        cached.plugins.length === 0)
+    ) {
+      return;
+    }
+
+    this.send(ws, {
+      type: "system",
+      subtype: "supported_commands",
+      sessionId,
+      slashCommands: cached.slashCommands,
+      skills: cached.skills,
+      ...(cached.skillMetadata ? { skillMetadata: cached.skillMetadata } : {}),
+      apps: cached.apps,
+      ...(cached.appMetadata ? { appMetadata: cached.appMetadata } : {}),
+      plugins: cached.plugins,
+      ...(cached.pluginMetadata ? { pluginMetadata: cached.pluginMetadata } : {}),
+    });
+  }
+
+  private sendConversationQueue(
+    ws: WebSocket,
+    msg:
+      | Extract<ServerMessage, { type: "conversation_queue" }>
+      | Record<string, unknown>,
+  ): void {
+    if (!this.shouldSendToClient(ws, msg)) return;
+    this.send(ws, msg);
+  }
+
+  private send(
+    ws: WebSocket,
+    msg: ServerMessage | Record<string, unknown>,
+  ): void {
+    const compatibleMsg = this.prepareServerMessageForClient(ws, msg);
+    if (!compatibleMsg) return;
+    const sessionId = this.extractSessionIdFromServerMessage(compatibleMsg);
+    if (sessionId && this.debugEvents.has(sessionId)) {
+      this.recordDebugEvent(sessionId, {
+        direction: "outgoing",
+        channel: "ws",
+        type: String(compatibleMsg.type ?? "unknown"),
+        detail: this.summarizeOutboundMessage(compatibleMsg),
+      });
+    }
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(compatibleMsg));
+    }
+  }
+
+  /** Broadcast a gallery_new_image message to all connected clients. */
+  broadcastGalleryNewImage(
+    image: import("./gallery-store.js").GalleryImageInfo,
+  ): void {
+    this.broadcast({ type: "gallery_new_image", image });
+  }
+
+  private collectGitDiff(
+    cwd: string,
+    callback: (result: { diff: string; error?: string }) => void,
+    options?: { staged?: boolean; unstaged?: boolean },
+  ): void {
+    const execOpts = { cwd, maxBuffer: 10 * 1024 * 1024 };
+    const gitArgs = (...args: string[]) => [
+      "-c",
+      "core.quotePath=false",
+      ...args,
+    ];
+    const listUntrackedFiles = () => {
+      const out = execFileSync(
+        "git",
+        gitArgs("ls-files", "-z", "--others", "--exclude-standard"),
+        { cwd, encoding: "utf-8" },
+      );
+      return out.split("\0").filter(Boolean);
+    };
+
+    // Staged only: git diff --cached
+    if (options?.staged) {
+      execFile(
+        "git",
+        gitArgs("diff", "--cached", "--no-color"),
+        execOpts,
+        (err, stdout) => {
+          if (err) {
+            callback({ diff: "", error: err.message });
+            return;
+          }
+          callback({ diff: stdout });
+        },
+      );
+      return;
+    }
+
+    // Unstaged only: git diff (working tree vs index) — original behavior
+    if (options?.unstaged) {
+      // Collect untracked files so they appear in the diff.
+      let untrackedFiles: string[] = [];
+      try {
+        untrackedFiles = listUntrackedFiles();
+      } catch {
+        // Ignore errors: non-git directories are handled by git diff callback.
+      }
+
+      // Temporarily stage untracked files with --intent-to-add.
+      if (untrackedFiles.length > 0) {
+        try {
+          execFileSync(
+            "git",
+            ["add", "--intent-to-add", "--", ...untrackedFiles],
+            {
+              cwd,
+            },
+          );
+        } catch {
+          // Ignore staging errors.
+        }
+      }
+
+      execFile(
+        "git",
+        gitArgs("diff", "--no-color"),
+        execOpts,
+        (err, stdout) => {
+          // Revert intent-to-add for untracked files.
+          if (untrackedFiles.length > 0) {
+            try {
+              execFileSync("git", ["reset", "--", ...untrackedFiles], { cwd });
+            } catch {
+              // Ignore reset errors.
+            }
+          }
+
+          if (err) {
+            callback({ diff: "", error: err.message });
+            return;
+          }
+          callback({ diff: stdout });
+        },
+      );
+      return;
+    }
+
+    // All mode (no options): git diff HEAD — shows both staged and unstaged vs HEAD
+    let untrackedFilesAll: string[] = [];
+    try {
+      untrackedFilesAll = listUntrackedFiles();
+    } catch {
+      // Ignore
+    }
+
+    if (untrackedFilesAll.length > 0) {
+      try {
+        execFileSync(
+          "git",
+          ["add", "--intent-to-add", "--", ...untrackedFilesAll],
+          {
+            cwd,
+          },
+        );
+      } catch {
+        // Ignore
+      }
+    }
+
+    execFile(
+      "git",
+      gitArgs("diff", "HEAD", "--no-color"),
+      execOpts,
+      (err, stdout) => {
+        if (untrackedFilesAll.length > 0) {
+          try {
+            execFileSync("git", ["reset", "--", ...untrackedFilesAll], { cwd });
+          } catch {
+            // Ignore
+          }
+        }
+
+        if (err) {
+          callback({ diff: "", error: err.message });
+          return;
+        }
+        callback({ diff: stdout });
+      },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Image diff helpers
+  // ---------------------------------------------------------------------------
+
+  private static readonly IMAGE_EXTENSIONS = new Set([
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".bmp",
+    ".svg",
+  ]);
+
+  private static readonly FILE_PEEK_IMAGE_EXTENSIONS = new Set([
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".svg",
+  ]);
+
+  // Image diff thresholds (configurable via environment variables)
+  // - Auto-display: images ≤ threshold are sent inline as base64
+  // - Max size: images ≤ max are available for on-demand loading
+  // - Images > max size show text info only
+  private static readonly AUTO_DISPLAY_THRESHOLD = (() => {
+    const kb = parseInt(process.env.DIFF_IMAGE_AUTO_DISPLAY_KB ?? "", 10);
+    return Number.isFinite(kb) && kb > 0 ? kb * 1024 : 1024 * 1024; // default 1 MB
+  })();
+  private static readonly MAX_IMAGE_SIZE = (() => {
+    const mb = parseInt(process.env.DIFF_IMAGE_MAX_SIZE_MB ?? "", 10);
+    return Number.isFinite(mb) && mb > 0 ? mb * 1024 * 1024 : 5 * 1024 * 1024; // default 5 MB
+  })();
+
+  private static mimeTypeForExt(ext: string): string {
+    const map: Record<string, string> = {
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+      ".ico": "image/x-icon",
+      ".bmp": "image/bmp",
+      ".svg": "image/svg+xml",
+    };
+    return map[ext.toLowerCase()] ?? "application/octet-stream";
+  }
+
+  /**
+   * Scan diff text for image file changes and extract base64 data where appropriate.
+   *
+   * Detection strategy:
+   * 1. Binary markers: "Binary files a/<path> and b/<path> differ"
+   * 2. diff --git headers where the file extension is an image type
+   *
+   * For each detected image file:
+   * - Old version: `git show HEAD:<path>` (committed version)
+   * - New version: read from working tree
+   * - Apply size thresholds for auto-display / on-demand / text-only
+   */
+  private async collectImageChanges(
+    cwd: string,
+    diffText: string,
+  ): Promise<ImageChange[]> {
+    // Phase 1: Extract image file entries from diff text (synchronous, CPU only)
+    interface ImageEntry {
+      filePath: string;
+      isNew: boolean;
+      isDeleted: boolean;
+      isSvg: boolean;
+      mimeType: string;
+      ext: string;
+    }
+    const entries: ImageEntry[] = [];
+    const processedPaths = new Set<string>();
+
+    const lines = diffText.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      const gitMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+      if (!gitMatch) continue;
+
+      const filePath = gitMatch[2];
+      const ext = extname(filePath).toLowerCase();
+      if (!BridgeWebSocketServer.IMAGE_EXTENSIONS.has(ext)) continue;
+      if (processedPaths.has(filePath)) continue;
+      processedPaths.add(filePath);
+
+      let isNew = false;
+      let isDeleted = false;
+      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+        if (lines[j].startsWith("diff --git ")) break;
+        if (lines[j].startsWith("new file mode")) isNew = true;
+        if (lines[j].startsWith("deleted file mode")) isDeleted = true;
+      }
+
+      entries.push({
+        filePath,
+        isNew,
+        isDeleted,
+        isSvg: ext === ".svg",
+        mimeType: BridgeWebSocketServer.mimeTypeForExt(ext),
+        ext,
+      });
+    }
+
+    if (entries.length === 0) return [];
+
+    // Phase 2: Read image data asynchronously
+    const execFileAsync = promisify(execFile);
+
+    const changes: ImageChange[] = [];
+    for (const entry of entries) {
+      let oldBuf: Buffer | undefined;
+      let newBuf: Buffer | undefined;
+
+      // Read old image (committed version)
+      if (!entry.isNew) {
+        try {
+          const result = await execFileAsync(
+            "git",
+            ["show", `HEAD:${entry.filePath}`],
+            {
+              cwd,
+              maxBuffer: BridgeWebSocketServer.MAX_IMAGE_SIZE + 1024,
+              encoding: "buffer",
+            },
+          );
+          oldBuf = result.stdout as unknown as Buffer;
+        } catch {
+          // File may not exist in HEAD (e.g. untracked)
+        }
+      }
+
+      // Read new image (working tree)
+      if (!entry.isDeleted) {
+        try {
+          const absPath = resolve(cwd, entry.filePath);
+          if (existsSync(absPath)) {
+            newBuf = await readFile(absPath);
+          }
+        } catch {
+          // Ignore read errors
+        }
+      }
+
+      const oldSize = oldBuf?.length;
+      const newSize = newBuf?.length;
+      const maxSize = Math.max(oldSize ?? 0, newSize ?? 0);
+
+      const autoDisplay =
+        maxSize <= BridgeWebSocketServer.AUTO_DISPLAY_THRESHOLD;
+      const loadable =
+        autoDisplay || maxSize <= BridgeWebSocketServer.MAX_IMAGE_SIZE;
+
+      const change: ImageChange = {
+        filePath: entry.filePath,
+        isNew: entry.isNew,
+        isDeleted: entry.isDeleted,
+        isSvg: entry.isSvg,
+        mimeType: entry.mimeType,
+        loadable,
+        autoDisplay: autoDisplay || undefined,
+      };
+
+      if (oldSize !== undefined) change.oldSize = oldSize;
+      if (newSize !== undefined) change.newSize = newSize;
+
+      // Auto-display images are no longer embedded in the initial response.
+      // They are loaded on-demand when the Flutter widget becomes visible.
+
+      changes.push(change);
+    }
+
+    return changes;
+  }
+
+  /**
+   * Load a single diff image on demand (async I/O for better throughput).
+   */
+  private async loadDiffImageAsync(
+    cwd: string,
+    filePath: string,
+    version: "old" | "new",
+  ): Promise<{ base64?: string; mimeType?: string; error?: string }> {
+    // Path traversal guard: reject paths containing '..' or absolute paths
+    if (filePath.includes("..") || filePath.startsWith("/")) {
+      return { error: "Invalid file path" };
+    }
+
+    const ext = extname(filePath).toLowerCase();
+    if (!BridgeWebSocketServer.IMAGE_EXTENSIONS.has(ext)) {
+      return { error: "Not an image file" };
+    }
+    const mimeType = BridgeWebSocketServer.mimeTypeForExt(ext);
+
+    try {
+      const execFileAsync = promisify(execFile);
+
+      let buf: Buffer;
+      if (version === "old") {
+        const result = await execFileAsync(
+          "git",
+          ["show", `HEAD:${filePath}`],
+          {
+            cwd,
+            maxBuffer: BridgeWebSocketServer.MAX_IMAGE_SIZE + 1024,
+            encoding: "buffer",
+          },
+        );
+        buf = result.stdout as unknown as Buffer;
+      } else {
+        const absPath = resolve(cwd, filePath);
+        // Verify resolved path stays within cwd
+        if (!isPathWithinAllowedDirectory(absPath, cwd, this.platform)) {
+          return { error: "Invalid file path" };
+        }
+        buf = await readFile(absPath);
+      }
+
+      if (buf.length > BridgeWebSocketServer.MAX_IMAGE_SIZE) {
+        return { error: "Image too large" };
+      }
+
+      return { base64: buf.toString("base64"), mimeType };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  private extractSessionIdFromClientMessage(
+    msg: ClientMessage,
+  ): string | undefined {
+    return "sessionId" in msg && typeof msg.sessionId === "string"
+      ? msg.sessionId
+      : undefined;
+  }
+
+  private extractSessionIdFromServerMessage(
+    msg: ServerMessage | Record<string, unknown>,
+  ): string | undefined {
+    if ("sessionId" in msg && typeof msg.sessionId === "string")
+      return msg.sessionId;
+    return undefined;
+  }
+
+  private recordDebugEvent(
+    sessionId: string,
+    event: Omit<DebugTraceEvent, "ts" | "sessionId">,
+  ): void {
+    const events = this.debugEvents.get(sessionId) ?? [];
+    const fullEvent: DebugTraceEvent = {
+      ts: new Date().toISOString(),
+      sessionId,
+      ...event,
+    };
+    events.push(fullEvent);
+    if (events.length > BridgeWebSocketServer.MAX_DEBUG_EVENTS) {
+      events.splice(0, events.length - BridgeWebSocketServer.MAX_DEBUG_EVENTS);
+    }
+    this.debugEvents.set(sessionId, events);
+    this.debugTraceStore.record(fullEvent);
+  }
+
+  private getDebugEvents(sessionId: string, limit: number): DebugTraceEvent[] {
+    const events = this.debugEvents.get(sessionId) ?? [];
+    const capped = Math.max(
+      0,
+      Math.min(limit, BridgeWebSocketServer.MAX_DEBUG_EVENTS),
+    );
+    if (capped === 0) return [];
+    return events.slice(-capped);
+  }
+
+  private buildHistorySummary(history: ServerMessage[]): string[] {
+    const lines = history.map((msg, index) => {
+      const num = String(index + 1).padStart(3, "0");
+      return `${num}. ${this.summarizeServerMessage(msg)}`;
+    });
+    if (lines.length <= BridgeWebSocketServer.MAX_HISTORY_SUMMARY_ITEMS) {
+      return lines;
+    }
+    return lines.slice(-BridgeWebSocketServer.MAX_HISTORY_SUMMARY_ITEMS);
+  }
+
+  private summarizeClientMessage(msg: ClientMessage): string {
+    switch (msg.type) {
+      case "input": {
+        const textPreview = msg.text.replace(/\s+/g, " ").trim().slice(0, 80);
+        const hasImage = msg.imageBase64 != null || msg.imageId != null;
+        return `text=\"${textPreview}\" image=${hasImage} skills=${msg.skills?.length ?? (msg.skill ? 1 : 0)} mentions=${msg.mentions?.length ?? 0}`;
+      }
+      case "push_register":
+        return `platform=${msg.platform} token=${msg.token.slice(0, 8)}...`;
+      case "push_unregister":
+        return `token=${msg.token.slice(0, 8)}...`;
+      case "approve":
+      case "approve_always":
+      case "reject":
+        return `id=${msg.id}`;
+      case "answer":
+        return `toolUseId=${msg.toolUseId}`;
+      case "install_tool_suggestion":
+        return `toolUseId=${msg.toolUseId}`;
+      case "start":
+        return `projectPath=${msg.projectPath} provider=${msg.provider ?? "claude"}`;
+      case "resume_session":
+        return `sessionId=${msg.sessionId} provider=${msg.provider ?? "claude"}`;
+      case "get_debug_bundle":
+        return `traceLimit=${msg.traceLimit ?? BridgeWebSocketServer.MAX_DEBUG_EVENTS} includeDiff=${msg.includeDiff ?? true}`;
+      case "get_usage":
+        return "get_usage";
+      default:
+        return msg.type;
+    }
+  }
+
+  private summarizeServerMessage(msg: ServerMessage): string {
+    switch (msg.type) {
+      case "assistant": {
+        const textChunks: string[] = [];
+        for (const content of msg.message.content) {
+          if (content.type === "text") {
+            textChunks.push(content.text);
+          }
+        }
+        const text = textChunks
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 100);
+        return text ? `assistant: ${text}` : "assistant";
+      }
+      case "tool_result": {
+        const contentPreview = msg.content
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 100);
+        return `${msg.toolName ?? "tool_result"}(${msg.toolUseId}) ${contentPreview}`;
+      }
+      case "permission_request":
+        return `${msg.toolName}(${msg.toolUseId})`;
+      case "result":
+        return `${msg.subtype}${msg.error ? ` error=${msg.error}` : ""}`;
+      case "status":
+        return msg.status;
+      case "error":
+        return msg.message;
+      case "stream_delta":
+      case "thinking_delta":
+        return `${msg.type}(${msg.text.length})`;
+      default:
+        return msg.type;
+    }
+  }
+
+  private summarizeOutboundMessage(
+    msg: ServerMessage | Record<string, unknown>,
+  ): string {
+    if ("type" in msg && typeof msg.type === "string") {
+      return msg.type;
+    }
+    return "message";
+  }
+
+  private pruneDebugEvents(): void {
+    const active = new Set(this.sessionManager.list().map((s) => s.id));
+    for (const sessionId of this.debugEvents.keys()) {
+      if (!active.has(sessionId)) {
+        this.debugEvents.delete(sessionId);
+      }
+    }
+    for (const sessionId of this.notifiedPermissionToolUses.keys()) {
+      if (!active.has(sessionId)) {
+        this.notifiedPermissionToolUses.delete(sessionId);
+      }
+    }
+  }
+
+  private buildReproRecipe(
+    session: SessionInfo,
+    traceLimit: number,
+    includeDiff: boolean,
+  ): Record<string, unknown> {
+    const bridgePort = process.env.BRIDGE_PORT ?? "8765";
+    const wsUrlHint = `ws://localhost:${bridgePort}`;
+    const notes = [
+      "1) Connect with wsUrlHint and send resumeSessionMessage.",
+      "2) Read session_created.sessionId from server response.",
+      "3) Replace <runtime_session_id> in getHistoryMessage/getDebugBundleMessage and send them.",
+      "4) Compare history/debugTrace/diff with the saved bundle snapshot.",
+    ];
+    if (!session.claudeSessionId) {
+      notes.push(
+        "claudeSessionId is not available yet. Use list_recent_sessions to pick the right session id.",
+      );
+    }
+
+    return {
+      wsUrlHint,
+      startBridgeCommand: `BRIDGE_PORT=${bridgePort} npm run bridge`,
+      resumeSessionMessage: this.buildResumeSessionMessage(session),
+      getHistoryMessage: {
+        type: "get_history",
+        sessionId: "<runtime_session_id>",
+      },
+      getDebugBundleMessage: {
+        type: "get_debug_bundle",
+        sessionId: "<runtime_session_id>",
+        traceLimit,
+        includeDiff,
+      },
+      notes,
+    };
+  }
+
+  private buildResumeSessionMessage(
+    session: SessionInfo,
+  ): Record<string, unknown> {
+    const msg: Record<string, unknown> = {
+      type: "resume_session",
+      sessionId: session.claudeSessionId ?? "<session_id_from_recent_sessions>",
+      projectPath: session.projectPath,
+      provider: session.provider,
+    };
+
+    if (session.provider === "codex" && session.codexSettings) {
+      if (session.codexSettings.approvalPolicy !== undefined) {
+        msg.approvalPolicy = session.codexSettings.approvalPolicy;
+      }
+      if (session.codexSettings.approvalsReviewer !== undefined) {
+        msg.approvalsReviewer = session.codexSettings.approvalsReviewer;
+      }
+      if (session.codexSettings.sandboxMode !== undefined) {
+        msg.sandboxMode = session.codexSettings.sandboxMode;
+      }
+      if (session.codexSettings.model !== undefined) {
+        msg.model = session.codexSettings.model;
+      }
+      if (session.codexSettings.modelReasoningEffort !== undefined) {
+        msg.modelReasoningEffort = session.codexSettings.modelReasoningEffort;
+      }
+      if (session.codexSettings.serviceTier !== undefined) {
+        msg.serviceTier = session.codexSettings.serviceTier;
+      }
+      if (session.codexSettings.networkAccessEnabled !== undefined) {
+        msg.networkAccessEnabled = session.codexSettings.networkAccessEnabled;
+      }
+      if (session.codexSettings.webSearchMode !== undefined) {
+        msg.webSearchMode = session.codexSettings.webSearchMode;
+      }
+      if (session.codexSettings.additionalWritableRoots !== undefined) {
+        msg.additionalWritableRoots =
+          session.codexSettings.additionalWritableRoots;
+      }
+    }
+
+    return msg;
+  }
+
+  private buildAgentPrompt(session: SessionInfo): string {
+    return [
+      "Use this ccpocket debug bundle to investigate a chat-screen bug.",
+      `Target provider: ${session.provider}`,
+      `Project path: ${session.projectPath}`,
+      "Required output:",
+      "1) Timeline analysis from historySummary + debugTrace.",
+      "2) Top 1-3 root-cause hypotheses with confidence.",
+      "3) Concrete validation steps and the minimum extra logs needed.",
+    ].join("\n");
+  }
+}

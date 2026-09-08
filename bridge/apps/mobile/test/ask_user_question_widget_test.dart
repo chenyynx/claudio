@@ -1,0 +1,797 @@
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:ccpocket/l10n/app_localizations.dart';
+import 'package:ccpocket/widgets/bubbles/ask_user_question_widget.dart';
+import 'package:ccpocket/theme/app_theme.dart';
+
+Widget _wrap(Widget child) {
+  return MaterialApp(
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    locale: const Locale('en'),
+    theme: AppTheme.darkTheme,
+    home: Scaffold(
+      body: SingleChildScrollView(
+        child: SizedBox(width: double.infinity, child: child),
+      ),
+    ),
+  );
+}
+
+void main() {
+  group('AskUserQuestionWidget - single question', () {
+    testWidgets('shows question text and options', (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-1',
+            input: {
+              'questions': [
+                {
+                  'question': 'Which framework?',
+                  'header': 'Framework',
+                  'options': [
+                    {'label': 'Flutter', 'description': 'Cross-platform'},
+                    {
+                      'label': 'React Native',
+                      'description': 'JavaScript based',
+                    },
+                  ],
+                  'multiSelect': false,
+                },
+              ],
+            },
+            onAnswer: (_, _) {},
+          ),
+        ),
+      );
+
+      expect(find.text('Claude is asking'), findsOneWidget);
+      expect(find.text('Which framework?'), findsOneWidget);
+      expect(find.text('Framework'), findsOneWidget);
+      expect(find.text('Flutter'), findsOneWidget);
+      expect(find.text('Cross-platform'), findsOneWidget);
+      expect(find.text('React Native'), findsOneWidget);
+      expect(find.text('JavaScript based'), findsOneWidget);
+    });
+
+    testWidgets('tapping option sends answer immediately for single question', (
+      tester,
+    ) async {
+      String? answeredId;
+      String? answeredResult;
+
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-2',
+            input: {
+              'questions': [
+                {
+                  'question': 'Pick one',
+                  'header': 'Choice',
+                  'options': [
+                    {
+                      'label': 'Choice A',
+                      'value': 'A',
+                      'description': 'Option A',
+                    },
+                    {'label': 'B', 'description': 'Option B'},
+                  ],
+                  'multiSelect': false,
+                },
+              ],
+            },
+            onAnswer: (id, result) {
+              answeredId = id;
+              answeredResult = result;
+            },
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Choice A'));
+      await tester.pumpAndSettle();
+
+      expect(answeredId, 'test-2');
+      expect(answeredResult, 'A');
+      // Should show "Answered" state
+      expect(find.text('Answered'), findsOneWidget);
+    });
+
+    testWidgets('free text input sends answer', (tester) async {
+      String? answeredResult;
+
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-3',
+            input: {
+              'questions': [
+                {
+                  'question': 'What is your name?',
+                  'header': 'Name',
+                  'options': [
+                    {'label': 'Alice', 'description': ''},
+                    {'label': 'Bob', 'description': ''},
+                  ],
+                  'multiSelect': false,
+                },
+              ],
+            },
+            onAnswer: (_, result) {
+              answeredResult = result;
+            },
+          ),
+        ),
+      );
+
+      // Type custom text and tap Send
+      await tester.enterText(find.byType(TextField), 'Charlie');
+      await tester.pumpAndSettle();
+      final sendButton = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Send'),
+      );
+      expect(sendButton.onPressed, isNotNull);
+      sendButton.onPressed!.call();
+      await tester.pumpAndSettle();
+
+      expect(answeredResult, 'Charlie');
+      expect(find.text('Answered'), findsOneWidget);
+    });
+
+    testWidgets('free text input is configured for multiline entry', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-3b',
+            input: {
+              'questions': [
+                {
+                  'question': 'What is your name?',
+                  'header': 'Name',
+                  'options': [
+                    {'label': 'Alice', 'description': ''},
+                    {'label': 'Bob', 'description': ''},
+                  ],
+                  'multiSelect': false,
+                },
+              ],
+            },
+            onAnswer: (_, _) {},
+          ),
+        ),
+      );
+
+      final input = tester.widget<TextField>(
+        find.byKey(const ValueKey('ask_custom_text_input')),
+      );
+
+      expect(input.minLines, 1);
+      expect(input.maxLines, 3);
+      expect(input.keyboardType, TextInputType.multiline);
+      expect(input.textInputAction, TextInputAction.newline);
+    });
+
+    testWidgets('send button is disabled until text is entered', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-3c',
+            input: {
+              'questions': [
+                {
+                  'question': 'What is your name?',
+                  'header': 'Name',
+                  'options': [
+                    {'label': 'Alice', 'description': ''},
+                    {'label': 'Bob', 'description': ''},
+                  ],
+                  'multiSelect': false,
+                },
+              ],
+            },
+            onAnswer: (toolUseId, result) {},
+          ),
+        ),
+      );
+
+      FilledButton sendButton() => tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Send'),
+      );
+
+      expect(sendButton().onPressed, isNull);
+
+      await tester.enterText(find.byType(TextField), 'x');
+      await tester.pumpAndSettle();
+      expect(sendButton().onPressed, isNotNull);
+
+      await tester.enterText(find.byType(TextField), '   ');
+      await tester.pumpAndSettle();
+      expect(sendButton().onPressed, isNull);
+    });
+
+    testWidgets('approval prompt hides free text input', (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-3d',
+            input: {
+              'questions': [
+                {
+                  'question': 'Allow this request?',
+                  'header': 'Approve app tool call?',
+                  'options': [
+                    {'label': 'Allow', 'description': ''},
+                    {'label': 'Allow for this session', 'description': ''},
+                    {'label': 'Cancel', 'description': ''},
+                  ],
+                  'multiSelect': false,
+                },
+              ],
+            },
+            onAnswer: (_, _) {},
+          ),
+        ),
+      );
+
+      expect(find.byKey(const ValueKey('ask_custom_text_input')), findsNothing);
+      expect(find.text('Other answer...'), findsNothing);
+      expect(find.byType(TextField), findsNothing);
+    });
+
+    testWidgets('bounded area reaches the final option', (tester) async {
+      String? answeredResult;
+
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-overflow',
+            maxHeight: 360,
+            input: {
+              'questions': [
+                {
+                  'question': 'Which onboarding strategy should I implement for the next release, given that first-time users need setup guidance while returning users want shortcuts?',
+                  'header': 'Onboarding',
+                  'options': [
+                    {
+                      'label': 'Guided setup',
+                      'description': 'Connection setup, project selection, permission guidance, first prompt education, and recovery hints shown in sequence before the first chat.',
+                    },
+                    {
+                      'label': 'Progressive disclosure',
+                      'description': 'Minimum setup first, then reveal permissions, prompt tips, workspace switching, and recovery actions as users encounter each feature.',
+                    },
+                    {
+                      'label': 'Power-user shortcuts',
+                      'description': 'Quick connect, recent projects, direct session start, saved machines, and compact troubleshooting entry points for returning users.',
+                    },
+                    {
+                      'label': 'Diagnostic-first flow',
+                      'description': 'Environment checks and remediation steps for Bridge, network, shell path, and permission issues before creating a session.',
+                    },
+                  ],
+                  'multiSelect': false,
+                },
+              ],
+            },
+            onAnswer: (_, result) {
+              answeredResult = result;
+            },
+          ),
+        ),
+      );
+
+      final scrollView = find.byKey(
+        const ValueKey('ask_single_question_scroll_view'),
+      );
+      expect(scrollView, findsOneWidget);
+      expect(tester.getSize(scrollView).height, lessThanOrEqualTo(360));
+
+      await tester.drag(scrollView, const Offset(0, -420));
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(const ValueKey('ask_option_0_Diagnostic-first flow')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(answeredResult, 'Diagnostic-first flow');
+    });
+  });
+
+  group('AskUserQuestionWidget - multiple questions', () {
+    testWidgets('uses page view and shows submit button', (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-4',
+            input: {
+              'questions': [
+                {
+                  'question': 'Color?',
+                  'header': 'Color',
+                  'options': [
+                    {'label': 'Red', 'description': ''},
+                    {'label': 'Blue', 'description': ''},
+                  ],
+                  'multiSelect': false,
+                },
+                {
+                  'question': 'Size?',
+                  'header': 'Size',
+                  'options': [
+                    {'label': 'Small', 'description': ''},
+                    {'label': 'Large', 'description': ''},
+                  ],
+                  'multiSelect': false,
+                },
+              ],
+            },
+            onAnswer: (_, _) {},
+          ),
+        ),
+      );
+
+      expect(find.text('Color?'), findsOneWidget);
+      expect(find.text('Size?'), findsNothing);
+      expect(find.text('Red'), findsOneWidget);
+      expect(find.text('Blue'), findsOneWidget);
+      expect(find.text('Small'), findsNothing);
+      expect(find.text('Large'), findsNothing);
+      expect(find.text('1/3'), findsOneWidget);
+    });
+
+    testWidgets('initial multi-question state does not send immediately', (
+      tester,
+    ) async {
+      bool answered = false;
+
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-5',
+            input: {
+              'questions': [
+                {
+                  'question': 'Color?',
+                  'header': 'Color',
+                  'options': [
+                    {'label': 'Red', 'description': ''},
+                    {'label': 'Blue', 'description': ''},
+                  ],
+                  'multiSelect': false,
+                },
+                {
+                  'question': 'Size?',
+                  'header': 'Size',
+                  'options': [
+                    {'label': 'Small', 'description': ''},
+                    {'label': 'Large', 'description': ''},
+                  ],
+                  'multiSelect': false,
+                },
+              ],
+            },
+            onAnswer: (_, _) => answered = true,
+          ),
+        ),
+      );
+
+      expect(answered, false);
+    });
+
+    testWidgets('custom answer in multi-question uses Next button', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-6',
+            input: {
+              'questions': [
+                {
+                  'question': 'Color?',
+                  'header': 'Color',
+                  'options': [
+                    {'label': 'Red', 'description': ''},
+                    {'label': 'Blue', 'description': ''},
+                  ],
+                  'multiSelect': false,
+                },
+                {
+                  'question': 'Size?',
+                  'header': 'Size',
+                  'options': [
+                    {'label': 'Small', 'description': ''},
+                    {'label': 'Large', 'description': ''},
+                  ],
+                  'multiSelect': false,
+                },
+              ],
+            },
+            onAnswer: (toolUseId, result) {},
+          ),
+        ),
+      );
+
+      final otherAnswerButton = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Other answer...'),
+      );
+      otherAnswerButton.onPressed!.call();
+      await tester.pumpAndSettle();
+
+      FilledButton nextButton() => tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Next'),
+      );
+
+      expect(nextButton().onPressed, isNull);
+
+      await tester.enterText(find.byType(TextField), 'Green');
+      await tester.pumpAndSettle();
+      expect(nextButton().onPressed, isNotNull);
+
+      await tester.tap(find.text('Next'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Size?'), findsOneWidget);
+      expect(find.text('Color?'), findsNothing);
+    });
+
+    testWidgets('long summary stays scrollable inside a bounded parent', (
+      tester,
+    ) async {
+      var answered = false;
+      final longAnswer = List.filled(
+        12,
+        'A detailed answer that must remain reviewable before submission.',
+      ).join(' ');
+
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-long-summary',
+            maxHeight: 360,
+            input: {
+              'questions': [
+                for (var i = 0; i < 3; i++)
+                  {
+                    'question': 'Question ${i + 1}?',
+                    'header': 'Section ${i + 1}',
+                    'options': [
+                      {
+                        'label': 'Answer ${i + 1}',
+                        'value': '$longAnswer ${i + 1}',
+                        'description': '',
+                      },
+                    ],
+                    'multiSelect': false,
+                  },
+              ],
+            },
+            onAnswer: (_, _) => answered = true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      for (var i = 0; i < 3; i++) {
+        await tester.tap(
+          find.byKey(ValueKey('ask_option_${i}_Answer ${i + 1}')),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      final summaryScrollView = find.byKey(
+        const ValueKey('ask_summary_scroll_view'),
+      );
+      expect(summaryScrollView, findsOneWidget);
+      await tester.drag(summaryScrollView, const Offset(0, -1000));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('ask_submit_summary_button')));
+      await tester.pumpAndSettle();
+
+      expect(answered, isTrue);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('AskUserQuestionWidget - multiSelect', () {
+    testWidgets('multi-select allows toggling multiple options', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-7',
+            input: {
+              'questions': [
+                {
+                  'question': 'Pick features',
+                  'header': 'Features',
+                  'options': [
+                    {'label': 'Auth', 'description': 'Authentication'},
+                    {'label': 'DB', 'description': 'Database'},
+                    {'label': 'API', 'description': 'REST API'},
+                  ],
+                  'multiSelect': true,
+                },
+              ],
+            },
+            onAnswer: (_, _) {},
+          ),
+        ),
+      );
+
+      // Select Auth and API
+      await tester.tap(find.text('Auth'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('API'));
+      await tester.pumpAndSettle();
+
+      // Since it's single question, but multiSelect means we need to check
+      // that it doesn't auto-send (multiSelect options stay selected)
+      // For single question with multiSelect, we still use free text send
+      // Actually looking at the code: _isSingleQuestion is true but multiSelect
+      // doesn't auto-send for single question either - it stores in _multiAnswers
+      // The user must use the free text or Submit All Answers
+      // Wait - actually checking the code again: _selectOption for single question
+      // only auto-sends for non-multi. Multi stores in _multiAnswers.
+      // And _isSingleQuestion hides the Submit button.
+      // So user has to type in text field to send. Let's verify checkbox state.
+      expect(
+        find.byIcon(Icons.check_box),
+        findsNWidgets(2),
+      ); // Auth + API selected
+      expect(
+        find.byIcon(Icons.check_box_outline_blank),
+        findsOneWidget,
+      ); // DB unselected
+    });
+
+    testWidgets('submits structured values for a multi-select question', (
+      tester,
+    ) async {
+      String? answeredResult;
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-structured-multi',
+            input: {
+              'questions': [
+                {
+                  'id': 'channels',
+                  'question': 'Pick channels',
+                  'header': 'Channels',
+                  'options': [
+                    {'label': 'Issues', 'value': 'issues', 'description': ''},
+                    {
+                      'label': 'Pull requests',
+                      'value': 'pulls',
+                      'description': '',
+                    },
+                  ],
+                  'multiSelect': true,
+                },
+              ],
+            },
+            onAnswer: (_, result) => answeredResult = result,
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Issues'));
+      await tester.tap(find.text('Pull requests'));
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const ValueKey('ask_submit_multi_single_button')),
+      );
+      await tester.pump();
+
+      expect(jsonDecode(answeredResult!)['answers'], {
+        'channels': ['issues', 'pulls'],
+      });
+    });
+  });
+
+  group('AskUserQuestionWidget - answered state', () {
+    testWidgets('shows answered state after answering', (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          AskUserQuestionWidget(
+            toolUseId: 'test-8',
+            input: {
+              'questions': [
+                {
+                  'question': 'Yes or No?',
+                  'header': 'Confirm',
+                  'options': [
+                    {'label': 'Yes', 'description': ''},
+                    {'label': 'No', 'description': ''},
+                  ],
+                  'multiSelect': false,
+                },
+              ],
+            },
+            onAnswer: (_, _) {},
+          ),
+        ),
+      );
+
+      // Before answering
+      expect(find.text('Claude is asking'), findsOneWidget);
+      expect(find.text('Answered'), findsNothing);
+
+      // Tap Yes
+      await tester.tap(find.text('Yes'));
+      await tester.pumpAndSettle();
+
+      // After answering
+      expect(find.text('Answered'), findsOneWidget);
+      expect(find.text('Claude is asking'), findsNothing);
+    });
+
+    testWidgets('question identity controls whether local state is reset', (
+      tester,
+    ) async {
+      Widget question(String toolUseId, String prompt, String option) => _wrap(
+        AskUserQuestionWidget(
+          toolUseId: toolUseId,
+          input: {
+            'questions': [
+              {
+                'question': prompt,
+                'header': 'Choice',
+                'options': [
+                  {'label': option, 'description': ''},
+                ],
+                'multiSelect': false,
+              },
+            ],
+          },
+          onAnswer: (_, _) {},
+        ),
+      );
+
+      await tester.pumpWidget(question('tool-old', 'Old question?', 'Old'));
+      await tester.tap(find.text('Old'));
+      await tester.pumpAndSettle();
+      expect(find.text('Answered'), findsOneWidget);
+
+      await tester.pumpWidget(
+        question('tool-old', 'Updated old question?', 'Updated'),
+      );
+      await tester.pump();
+      expect(find.text('Answered'), findsOneWidget);
+
+      await tester.pumpWidget(question('tool-new', 'New question?', 'New'));
+      await tester.pump();
+      expect(find.text('Answered'), findsNothing);
+      expect(find.text('New question?'), findsOneWidget);
+    });
+
+    testWidgets('new identity clears page, choices, and custom input', (
+      tester,
+    ) async {
+      Map<String, dynamic> input(String prefix) => {
+        'questions': [
+          {
+            'question': '$prefix first?',
+            'header': 'First',
+            'options': [
+              {'label': '$prefix choice', 'description': ''},
+            ],
+            'multiSelect': true,
+          },
+          {
+            'question': '$prefix second?',
+            'header': 'Second',
+            'options': [
+              {'label': '$prefix next', 'description': ''},
+            ],
+            'multiSelect': false,
+          },
+        ],
+      };
+
+      Widget question(String id, String prefix) => _wrap(
+        AskUserQuestionWidget(
+          toolUseId: id,
+          input: input(prefix),
+          onAnswer: (_, _) {},
+        ),
+      );
+
+      await tester.pumpWidget(question('tool-old', 'Old'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('ask_option_0_Old choice')));
+      await tester.tap(find.widgetWithText(TextButton, 'Other answer...'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('ask_custom_text_input')),
+        'stale custom answer',
+      );
+      await tester.pumpAndSettle();
+
+      await tester.pumpWidget(question('tool-old', 'Old'));
+      await tester.pump();
+      expect(find.text('stale custom answer'), findsOneWidget);
+      expect(find.byIcon(Icons.check_box), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Next'));
+      await tester.pumpAndSettle();
+      expect(find.text('Old second?'), findsOneWidget);
+
+      await tester.pumpWidget(question('tool-new', 'New'));
+      await tester.pump();
+      expect(find.text('New first?'), findsOneWidget);
+      expect(find.text('New second?'), findsNothing);
+      expect(find.text('stale custom answer'), findsNothing);
+      expect(find.byIcon(Icons.check_box), findsNothing);
+      expect(find.text('1/3'), findsOneWidget);
+    });
+  });
+
+  group('AskUserQuestionWidget - malformed input', () {
+    final malformedInputs = <Map<String, dynamic>>[
+      const {},
+      const {'questions': 'not-a-list'},
+      const {
+        'questions': ['not-a-map'],
+      },
+      const {
+        'questions': [
+          {'question': 123},
+        ],
+      },
+      const {
+        'questions': [
+          {'question': 'Pick one', 'header': 123},
+        ],
+      },
+      const {
+        'questions': [
+          {'question': 'Pick one', 'multiSelect': 'false'},
+        ],
+      },
+      const {
+        'questions': [
+          {'question': 'Pick one', 'options': 'not-a-list'},
+        ],
+      },
+      const {
+        'questions': [
+          {
+            'question': 'Pick one',
+            'options': [
+              {'label': 1},
+            ],
+          },
+        ],
+      },
+    ];
+
+    for (var i = 0; i < malformedInputs.length; i++) {
+      testWidgets('case $i does not throw during build', (tester) async {
+        await tester.pumpWidget(
+          _wrap(
+            AskUserQuestionWidget(
+              toolUseId: 'bad-$i',
+              input: malformedInputs[i],
+              onAnswer: (_, _) {},
+            ),
+          ),
+        );
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
+}

@@ -1,0 +1,5184 @@
+import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { rm, writeFile } from "node:fs/promises";
+import type {
+  CodexGoal,
+  CodexGoalStatus,
+  ServerMessage,
+  ProcessStatus,
+} from "./parser.js";
+import {
+  createCodexTransport,
+  buildCodexSpawnSpec,
+  type CodexTransport,
+} from "./codex-transport.js";
+import { codexCliJoinTarget } from "./codex-app-server-config.js";
+import {
+  normalizeCodexServiceTierForClient,
+  normalizeCodexServiceTierForRpc,
+} from "./codex-service-tier.js";
+import { resolvePlatformPath } from "./path-utils.js";
+import type { CodexRateLimitsResponse } from "./usage.js";
+
+export { buildCodexSpawnSpec };
+
+const DEFAULT_CODEX_MODEL = "gpt-5.5";
+const COMPLETION_FETCH_COOLDOWN_MS = 1000;
+const ARCHIVE_RPC_TIMEOUT_MS = 15_000;
+const UNKNOWN_AGENT_ITEM_ID = "__unknown_agent_message__";
+const CODEX_CLI_NOT_FOUND_MESSAGE =
+  "Codex CLI is not installed or not available on PATH on the Bridge machine. Install it with `curl -fsSL https://chatgpt.com/codex/install.sh | sh`, then restart Bridge.";
+
+export interface CodexStartOptions {
+  threadId?: string;
+  profile?: string;
+  additionalWritableRoots?: string[];
+  approvalPolicy?: "never" | "on-request" | "on-failure" | "untrusted";
+  approvalsReviewer?: "user" | "auto_review" | "guardian_subagent";
+  codexPermissionsMode?: "default" | "autoReview" | "fullAccess" | "custom";
+  sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+  model?: string;
+  modelReasoningEffort?: string;
+  serviceTier?: string;
+  networkAccessEnabled?: boolean;
+  webSearchMode?: "disabled" | "cached" | "live";
+  collaborationMode?: "plan" | "default";
+  /**
+   * Managed Browser Use policy cached by Bridge metadata loading.
+   * `null` means app-server must read the policy before starting the thread.
+   */
+  autoReviewDisabledByPolicy?: boolean | null;
+}
+
+export interface CodexProcessEvents {
+  message: [ServerMessage];
+  status: [ProcessStatus];
+  exit: [number | null];
+  input_ready: [];
+}
+
+interface PendingInput {
+  text: string;
+  images?: Array<{
+    base64: string;
+    mimeType: string;
+  }>;
+  skills?: Array<{
+    name: string;
+    path: string;
+  }>;
+  mentions?: Array<{
+    name: string;
+    path: string;
+  }>;
+}
+
+/** Skill metadata returned by the Codex `skills/list` RPC. */
+export interface CodexSkillMetadata {
+  name: string;
+  path: string;
+  description: string;
+  shortDescription?: string;
+  enabled: boolean;
+  scope: string;
+  displayName?: string;
+  defaultPrompt?: string;
+  brandColor?: string;
+}
+
+/** App / connector metadata returned by the Codex `app/list` RPC. */
+export interface CodexAppMetadata {
+  id: string;
+  name: string;
+  description: string;
+  installUrl?: string;
+  isAccessible: boolean;
+  isEnabled: boolean;
+}
+
+/** Plugin metadata returned by the Codex `plugin/list` RPC. */
+export interface CodexPluginMetadata {
+  id: string;
+  name: string;
+  path: string;
+  marketplaceName: string;
+  marketplacePath?: string;
+  installed: boolean;
+  enabled: boolean;
+  displayName?: string;
+  shortDescription?: string;
+  longDescription?: string;
+  defaultPrompt?: string;
+  brandColor?: string;
+  composerIcon?: string;
+  composerIconUrl?: string;
+}
+
+export interface CodexThreadSummary {
+  id: string;
+  preview: string;
+  createdAt: number;
+  updatedAt: number;
+  cwd: string;
+  agentNickname: string | null;
+  agentRole: string | null;
+  gitBranch: string | null;
+  name: string | null;
+}
+
+export type CodexThreadSourceKind =
+  | "cli"
+  | "vscode"
+  | "exec"
+  | "appServer"
+  | "subAgent"
+  | "subAgentReview"
+  | "subAgentCompact"
+  | "subAgentThreadSpawn"
+  | "subAgentOther"
+  | "unknown";
+
+interface PendingApproval {
+  requestId: string | number;
+  toolUseId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  kind: "command" | "file" | "permissions";
+  requestedPermissions?: Record<string, unknown>;
+}
+
+interface PendingUserInputQuestion {
+  id: string;
+  question: string;
+}
+
+interface PendingUserInputRequest {
+  requestId: string | number;
+  toolUseId: string;
+  toolName: string;
+  questions: PendingUserInputQuestion[];
+  input: Record<string, unknown>;
+  kind:
+    | "questions"
+    | "elicitation_form"
+    | "elicitation_url"
+    | "elicitation_approval"
+    | "tool_suggestion";
+}
+
+interface ToolSuggestionApp {
+  id: string;
+  name: string;
+  description?: string;
+  installUrl?: string;
+  category?: string;
+}
+
+interface PendingTurnCompletion {
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+interface RpcSuccess {
+  id: number | string;
+  result: unknown;
+}
+
+interface RpcError {
+  id: number | string;
+  error: {
+    code?: number;
+    message?: string;
+    data?: unknown;
+  };
+}
+
+export class CodexRpcError extends Error {
+  readonly method: string;
+  readonly code: number | undefined;
+  readonly data: unknown;
+
+  constructor(
+    method: string,
+    error: { code?: number; message?: string; data?: unknown },
+  ) {
+    super(error.message ?? `RPC error ${error.code ?? ""}`.trim());
+    this.name = "CodexRpcError";
+    this.method = method;
+    this.code = error.code;
+    this.data = error.data;
+  }
+}
+
+export function isCodexThreadWriterConflict(error: unknown): boolean {
+  return (
+    error instanceof CodexRpcError &&
+    error.code === -32600 &&
+    /\b(active|live local)\s+writer\b/i.test(error.message)
+  );
+}
+
+export function codexErrorMessage(error: unknown): string {
+  if (isCodexThreadWriterConflict(error)) {
+    return "This Codex thread is already open in Codex Desktop or the Codex App. Close it there, then try again.";
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+interface JsonRpcEnvelope {
+  id?: number | string;
+  method?: string;
+  params?: Record<string, unknown>;
+  result?: unknown;
+  error?: {
+    code?: number;
+    message?: string;
+    data?: unknown;
+  };
+}
+
+interface CodexResolvedSettings {
+  model?: string;
+  approvalPolicy?: CodexRpcApprovalPolicy;
+  approvalsReviewer?: string;
+  codexPermissionsMode?: string;
+  sandboxMode?: string;
+  modelReasoningEffort?: string;
+  serviceTier?: string;
+  networkAccessEnabled?: boolean;
+  webSearchMode?: string;
+}
+
+type CodexRpcApprovalPolicy =
+  | NonNullable<CodexStartOptions["approvalPolicy"]>
+  | Record<string, unknown>;
+
+interface CodexConfigPermissions {
+  approvalPolicy: CodexRpcApprovalPolicy;
+  approvalsReviewer: NonNullable<CodexStartOptions["approvalsReviewer"]>;
+  sandboxMode: NonNullable<CodexStartOptions["sandboxMode"]>;
+}
+
+export interface CodexProfileConfig {
+  profiles: string[];
+  defaultProfile?: string;
+}
+
+export interface CodexConfigRequirements {
+  autoReviewDisabled: boolean;
+}
+
+export interface CodexModelMetadata {
+  model: string;
+  supportedReasoningEfforts: string[];
+  defaultReasoningEffort?: string;
+  supportedServiceTiers: string[];
+  defaultServiceTier?: string;
+}
+
+interface CodexModelListResponse {
+  data?: unknown[];
+  nextCursor?: unknown;
+}
+
+function isCodexCliNotFoundError(err: Error): boolean {
+  const code = (err as NodeJS.ErrnoException).code;
+  return (
+    code === "ENOENT" ||
+    /\bspawn codex ENOENT\b/i.test(err.message) ||
+    /codex: command not found/i.test(err.message)
+  );
+}
+
+function codexAppServerStartError(
+  err: Error,
+): Extract<ServerMessage, { type: "error" }> {
+  if (isCodexCliNotFoundError(err)) {
+    return {
+      type: "error",
+      message: CODEX_CLI_NOT_FOUND_MESSAGE,
+      errorCode: "codex_cli_not_found",
+    };
+  }
+
+  return {
+    type: "error",
+    message: `Failed to start codex app-server: ${err.message}`,
+  };
+}
+
+export class CodexProcess extends EventEmitter<CodexProcessEvents> {
+  private transport: CodexTransport | null = null;
+  private _status: ProcessStatus = "starting";
+  private _threadId: string | null = null;
+  private _agentNickname: string | null = null;
+  private _agentRole: string | null = null;
+  private stopped = false;
+  private startModel: string | undefined;
+  private readiness: "pending" | "ready" | "failed" = "pending";
+  private readinessError: unknown;
+  private readinessWaiters = new Set<{
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  }>();
+
+  private inputResolve: ((input: PendingInput) => void) | null = null;
+  private pendingTurnId: string | null = null;
+  private pendingTurnCompletion: PendingTurnCompletion | null = null;
+  private pendingApprovals = new Map<string, PendingApproval>();
+  private pendingUserInputs = new Map<string, PendingUserInputRequest>();
+  private lastTokenUsage: {
+    input?: number;
+    cachedInput?: number;
+    output?: number;
+  } | null = null;
+
+  /** Full skill metadata from the last `skills/list` response. */
+  private _skills: CodexSkillMetadata[] = [];
+  /** Full app metadata from the last `app/list` response. */
+  private _apps: CodexAppMetadata[] = [];
+  /** Full plugin metadata from the last `plugin/list` response. */
+  private _plugins: CodexPluginMetadata[] = [];
+  /** Project path stored for re-fetching skills on `skills/changed`. */
+  private _projectPath: string | null = null;
+  /** Prevent redundant completion fetch storms from repeated change notifications. */
+  private _completionFetchInFlight: Promise<void> | null = null;
+  private _lastCompletionEntitiesSignature: string | null = null;
+  private _completionFetchCooldownUntil = 0;
+  private _launchStartedAt = 0;
+
+  /** Expose skill metadata so session/websocket can access it. */
+  get skills(): CodexSkillMetadata[] {
+    return this._skills;
+  }
+
+  get apps(): CodexAppMetadata[] {
+    return this._apps;
+  }
+
+  private rpcSeq = 1;
+  private pendingRpc = new Map<
+    number,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      method: string;
+    }
+  >();
+
+  /**
+   * App-server responses can contain tens of MiB of inline image data.
+   * Keep incomplete JSONL records as chunks so every transport chunk is
+   * copied at most once instead of repeatedly rebuilding one growing string.
+   */
+  private stdoutLineChunks: string[] = [];
+
+  // Collaboration mode & plan completion state
+  private _approvalPolicy: CodexRpcApprovalPolicy | undefined = undefined;
+  private _approvalsReviewer: string | undefined = undefined;
+  private _codexPermissionsMode: CodexStartOptions["codexPermissionsMode"] | undefined;
+  private _autoReviewDisabledByPolicy = false;
+  private _collaborationMode: "plan" | "default" = "default";
+  private _runtimeModel: string | undefined;
+  private _runtimeModelReasoningEffort:
+    | CodexStartOptions["modelReasoningEffort"]
+    | undefined;
+  private _runtimeServiceTier: string | null | undefined;
+  private lastPlanItemText: string | null = null;
+  /** Last assistant text message — used as `result` in completion notification. */
+  private lastResultText: string | null = null;
+  /** Agent text received as deltas but not yet confirmed by item/completed. */
+  private readonly pendingAgentTextByItemId = new Map<string, string>();
+  /** Agent text confirmed by item/completed during the active turn. */
+  private readonly confirmedAgentTextByItemId = new Map<string, string>();
+  /** Suppresses late item/completed events after synthetic fallbacks. */
+  private readonly syntheticAgentTextByItemId = new Map<string, string>();
+  private pendingPlanCompletion: {
+    toolUseId: string;
+    planText: string;
+  } | null = null;
+  /** Queued plan execution text when inputResolve wasn't ready at approval time. */
+  private _pendingPlanInput: string | null = null;
+  private steerTempPaths: string[] = [];
+  private readonly platform: NodeJS.Platform;
+
+  constructor(platform: NodeJS.Platform = process.platform) {
+    super();
+    this.platform = platform;
+  }
+
+  get status(): ProcessStatus {
+    return this._status;
+  }
+
+  get isWaitingForInput(): boolean {
+    return this.inputResolve !== null;
+  }
+
+  private getMessageModel(): string {
+    return sanitizeCodexModel(this.startModel) ?? "";
+  }
+
+  get sessionId(): string | null {
+    return this._threadId;
+  }
+
+  get agentNickname(): string | null {
+    return this._agentNickname;
+  }
+
+  get agentRole(): string | null {
+    return this._agentRole;
+  }
+
+  get isRunning(): boolean {
+    return this.transport?.isRunning ?? false;
+  }
+
+  get approvalPolicy(): string {
+    return approvalPolicyForClient(this._approvalPolicy);
+  }
+
+  get approvalsReviewer(): string {
+    return normalizeApprovalsReviewerForClient(
+      this._approvalsReviewer as CodexStartOptions["approvalsReviewer"],
+    );
+  }
+
+  get codexPermissionsMode(): CodexStartOptions["codexPermissionsMode"] | undefined {
+    return this._codexPermissionsMode;
+  }
+
+  get model(): string {
+    return (
+      sanitizeCodexModel(this._runtimeModel) ??
+      sanitizeCodexModel(this.startModel) ??
+      DEFAULT_CODEX_MODEL
+    );
+  }
+
+  get modelReasoningEffort():
+    | CodexStartOptions["modelReasoningEffort"]
+    | undefined {
+    return this._runtimeModelReasoningEffort;
+  }
+
+  get serviceTier(): string {
+    return this._runtimeServiceTier ?? "standard";
+  }
+
+  /**
+   * Update Codex model at runtime.
+   * Takes effect on the next `turn/start` RPC call.
+   */
+  setModel(
+    model: string,
+    modelReasoningEffort?: CodexStartOptions["modelReasoningEffort"],
+  ): void {
+    const sanitizedModel = sanitizeCodexModel(model);
+    if (sanitizedModel) {
+      this._runtimeModel = sanitizedModel;
+      this.startModel = sanitizedModel;
+    }
+    const requestedReasoningEffort =
+      modelReasoningEffort ?? this._runtimeModelReasoningEffort;
+    if (requestedReasoningEffort !== undefined) {
+      this._runtimeModelReasoningEffort = normalizeCodexReasoningEffortForModel(
+        this.model,
+        requestedReasoningEffort,
+      );
+    }
+    console.log(
+      `[codex-process] Model changed to: ${this.model}` +
+        (this._runtimeModelReasoningEffort
+          ? ` (${this._runtimeModelReasoningEffort})`
+          : ""),
+    );
+  }
+
+  /** Update Codex speed for the next turn without restarting the thread. */
+  setServiceTier(serviceTier: string): void {
+    this._runtimeServiceTier = normalizeCodexServiceTierForRpc(serviceTier);
+    console.log(`[codex-process] Speed changed to: ${this.serviceTier}`);
+  }
+
+  /**
+   * Update approval policy at runtime.
+   * Takes effect on the next `turn/start` RPC call.
+   */
+  setApprovalPolicy(policy: string): void {
+    this._approvalPolicy = policy as CodexRpcApprovalPolicy;
+    console.log(`[codex-process] Approval policy changed to: ${policy}`);
+  }
+
+  /**
+   * Update where approval requests are reviewed at runtime.
+   * Takes effect on the next `turn/start` RPC call.
+   */
+  setApprovalsReviewer(reviewer: string): void {
+    this._approvalsReviewer = this._autoReviewDisabledByPolicy
+      ? "user"
+      : normalizeApprovalsReviewerForAppServer(
+          reviewer as CodexStartOptions["approvalsReviewer"],
+        );
+    console.log(
+      `[codex-process] Approvals reviewer changed to: ${this.approvalsReviewer}`,
+    );
+  }
+
+  /**
+   * Set collaboration mode ("plan" or "default").
+   * Takes effect on the next `turn/start` RPC call.
+   */
+  setCollaborationMode(mode: "plan" | "default"): void {
+    this._collaborationMode = mode;
+    console.log(`[codex-process] Collaboration mode changed to: ${mode}`);
+  }
+
+  get collaborationMode(): "plan" | "default" {
+    return this._collaborationMode;
+  }
+
+  /**
+   * Rename a thread via the app-server RPC.
+   * Sends thread/name/set which persists to ~/.codex/session_index.jsonl.
+   */
+  async renameThread(name: string): Promise<void> {
+    if (!this._threadId) {
+      throw new Error("No thread ID available for rename");
+    }
+    await this.request("thread/name/set", {
+      threadId: this._threadId,
+      name,
+    });
+  }
+
+  /** Read the persisted goal attached to this Codex thread. */
+  async getGoal(): Promise<CodexGoal | null> {
+    if (!this._threadId) {
+      throw new Error("No thread ID available for goal lookup");
+    }
+    const response = (await this.request("thread/goal/get", {
+      threadId: this._threadId,
+    })) as Record<string, unknown>;
+    return response.goal == null ? null : parseCodexGoal(response.goal);
+  }
+
+  /** Create or update the persisted goal attached to this Codex thread. */
+  async setGoal(update: {
+    objective?: string;
+    status?: CodexGoalStatus;
+  }): Promise<CodexGoal> {
+    if (!this._threadId) {
+      throw new Error("No thread ID available for goal update");
+    }
+    const response = (await this.request("thread/goal/set", {
+      threadId: this._threadId,
+      ...(update.objective !== undefined
+        ? { objective: update.objective.trim() }
+        : {}),
+      ...(update.status !== undefined ? { status: update.status } : {}),
+    })) as Record<string, unknown>;
+    return parseCodexGoal(response.goal);
+  }
+
+  /** Remove the persisted goal attached to this Codex thread. */
+  async clearGoal(): Promise<boolean> {
+    if (!this._threadId) {
+      throw new Error("No thread ID available for goal clear");
+    }
+    const response = (await this.request("thread/goal/clear", {
+      threadId: this._threadId,
+    })) as Record<string, unknown>;
+    if (typeof response.cleared !== "boolean") {
+      throw new Error("thread/goal/clear returned an invalid response");
+    }
+    return response.cleared;
+  }
+
+  /**
+   * Archive a Codex thread via the app-server `thread/archive` RPC.
+   * Accepts an explicit threadId so that historical (non-active) sessions
+   * can be archived without requiring a running process.
+   */
+  async archiveThread(threadId: string): Promise<void> {
+    await this.request("thread/archive", { threadId }, ARCHIVE_RPC_TIMEOUT_MS);
+  }
+
+  async readThread(
+    threadId: string,
+    includeTurns = true,
+  ): Promise<Record<string, unknown>> {
+    const response = (await this.request("thread/read", {
+      threadId,
+      includeTurns,
+    })) as Record<string, unknown>;
+    const thread = response.thread as Record<string, unknown> | undefined;
+    if (!thread) {
+      throw new Error("thread/read returned no thread");
+    }
+    return thread;
+  }
+
+  async rollbackThread(numTurns: number): Promise<Record<string, unknown>> {
+    if (!this._threadId) {
+      throw new Error("No thread ID available for rollback");
+    }
+    return this.rollbackThreadById(this._threadId, numTurns);
+  }
+
+  async rollbackThreadById(
+    threadId: string,
+    numTurns: number,
+  ): Promise<Record<string, unknown>> {
+    const response = (await this.request("thread/rollback", {
+      threadId,
+      numTurns,
+    })) as Record<string, unknown>;
+    const thread = response.thread as Record<string, unknown> | undefined;
+    if (!thread) {
+      throw new Error("thread/rollback returned no thread");
+    }
+    return thread;
+  }
+
+  async forkThread(): Promise<{
+    threadId: string;
+    thread: Record<string, unknown>;
+  }> {
+    if (!this._threadId) {
+      throw new Error("No thread ID available for fork");
+    }
+    const response = (await this.request("thread/fork", {
+      threadId: this._threadId,
+      persistExtendedHistory: true,
+    })) as Record<string, unknown>;
+    const thread = response.thread as Record<string, unknown> | undefined;
+    const threadId = typeof thread?.id === "string" ? thread.id : undefined;
+    if (!thread || !threadId) {
+      throw new Error("thread/fork returned no thread id");
+    }
+    return { threadId, thread };
+  }
+
+  async listThreads(
+    params: {
+      limit?: number;
+      cursor?: string | null;
+      cwd?: string;
+      searchTerm?: string;
+      modelProviders?: string[];
+      sourceKinds?: CodexThreadSourceKind[];
+    } = {},
+  ): Promise<{ data: CodexThreadSummary[]; nextCursor: string | null }> {
+    const result = (await this.request("thread/list", {
+      sortKey: "updated_at",
+      archived: false,
+      ...(params.limit != null ? { limit: params.limit } : {}),
+      ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+      ...(params.modelProviders !== undefined
+        ? { modelProviders: params.modelProviders }
+        : {}),
+      ...(params.sourceKinds !== undefined
+        ? { sourceKinds: params.sourceKinds }
+        : {}),
+      ...(params.cwd ? { cwd: params.cwd } : {}),
+      ...(params.searchTerm ? { searchTerm: params.searchTerm } : {}),
+    })) as { data?: unknown[]; nextCursor?: unknown };
+
+    const data = Array.isArray(result.data)
+      ? result.data.map((entry) => toCodexThreadSummary(entry))
+      : [];
+    return {
+      data,
+      nextCursor:
+        typeof result.nextCursor === "string" ? result.nextCursor : null,
+    };
+  }
+
+  async listAvailableModels(): Promise<string[]> {
+    const models = await this.listAvailableModelMetadata();
+    return models.map((model) => model.model);
+  }
+
+  async listAvailableModelMetadata(): Promise<CodexModelMetadata[]> {
+    const models: CodexModelMetadata[] = [];
+    const seenModels = new Set<string>();
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
+
+    do {
+      const result = (await this.request("model/list", {
+        limit: 100,
+        cursor,
+        includeHidden: false,
+      })) as CodexModelListResponse;
+
+      if (Array.isArray(result.data)) {
+        for (const entry of result.data) {
+          if (!entry || typeof entry !== "object") continue;
+          const raw = entry as Record<string, unknown>;
+          if (raw.hidden === true) continue;
+          const model =
+            typeof raw.model === "string" && raw.model.trim().length > 0
+              ? raw.model.trim()
+              : typeof raw.id === "string" && raw.id.trim().length > 0
+                ? raw.id.trim()
+                : undefined;
+          if (!model || seenModels.has(model)) continue;
+          seenModels.add(model);
+          models.push({
+            model,
+            supportedReasoningEfforts: extractReasoningEfforts(raw),
+            defaultReasoningEffort:
+              typeof raw.defaultReasoningEffort === "string"
+                ? raw.defaultReasoningEffort
+                : typeof raw.default_reasoning_effort === "string"
+                  ? raw.default_reasoning_effort
+                  : undefined,
+            supportedServiceTiers: extractServiceTiers(raw),
+            defaultServiceTier:
+              typeof raw.defaultServiceTier === "string"
+                ? raw.defaultServiceTier
+                : typeof raw.default_service_tier === "string"
+                  ? raw.default_service_tier
+                  : undefined,
+          });
+        }
+      }
+
+      const nextCursor =
+        typeof result.nextCursor === "string" && result.nextCursor.length > 0
+          ? result.nextCursor
+          : null;
+      if (nextCursor && seenCursors.has(nextCursor)) {
+        break;
+      }
+      if (nextCursor) {
+        seenCursors.add(nextCursor);
+      }
+      cursor = nextCursor;
+    } while (cursor);
+
+    return models;
+  }
+
+  start(projectPath: string, options?: CodexStartOptions): void {
+    if (this.transport) {
+      this.stop();
+    }
+
+    this.resetReadiness();
+    this.prepareLaunch(projectPath, options);
+    this.launchAppServer(projectPath, options);
+
+    void this.bootstrap(projectPath, options);
+  }
+
+  async initializeOnly(projectPath: string, timeoutMs?: number): Promise<void> {
+    if (this.transport) {
+      this.stop();
+    }
+    this.resetReadiness();
+    try {
+      this.prepareLaunch(projectPath);
+      this.launchAppServer(projectPath);
+      await this.initializeRpcConnection(timeoutMs);
+      this.setStatus("idle");
+      this.resolveReadiness();
+    } catch (error) {
+      this.rejectReadiness(error);
+      throw error;
+    }
+  }
+
+  async readRateLimits(timeoutMs = 10_000): Promise<CodexRateLimitsResponse> {
+    return (await this.request(
+      "account/rateLimits/read",
+      undefined,
+      timeoutMs,
+    )) as CodexRateLimitsResponse;
+  }
+
+  waitUntilReady(): Promise<void> {
+    if (this.readiness === "ready") return Promise.resolve();
+    if (this.readiness === "failed") {
+      return Promise.reject(this.readinessError);
+    }
+    return new Promise((resolve, reject) => {
+      this.readinessWaiters.add({ resolve, reject });
+    });
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.rejectReadiness(new Error("codex app-server stopped"));
+
+    if (this.inputResolve) {
+      this.inputResolve({ text: "" });
+      this.inputResolve = null;
+    }
+
+    this.pendingApprovals.clear();
+    this.pendingUserInputs.clear();
+    this.cleanupSteerTempPaths();
+    this.rejectAllPending(new Error("stopped"));
+
+    if (this.transport) {
+      this.transport.stop();
+      this.transport = null;
+    }
+
+    this.setStatus("idle");
+    console.log("[codex-process] Stopped");
+  }
+
+  private prepareLaunch(
+    projectPath: string,
+    options?: CodexStartOptions,
+  ): void {
+    this.stopped = false;
+    this._threadId = null;
+    this._agentNickname = null;
+    this._agentRole = null;
+    this.pendingTurnId = null;
+    this.pendingTurnCompletion = null;
+    this.pendingApprovals.clear();
+    this.pendingUserInputs.clear();
+    this.cleanupSteerTempPaths();
+    this.lastTokenUsage = null;
+    this.startModel = sanitizeCodexModel(options?.model);
+    this._runtimeModel = undefined;
+    this._runtimeModelReasoningEffort = normalizeCodexReasoningEffortForModel(
+      this.startModel,
+      options?.modelReasoningEffort,
+    );
+    this._runtimeServiceTier =
+      options?.serviceTier === undefined
+        ? undefined
+        : normalizeCodexServiceTierForRpc(options.serviceTier);
+    this._approvalPolicy = options?.approvalPolicy;
+    this._approvalsReviewer =
+      options?.approvalsReviewer === undefined
+        ? undefined
+        : normalizeApprovalsReviewerForAppServer(options.approvalsReviewer);
+    this._codexPermissionsMode = options?.codexPermissionsMode;
+    this._autoReviewDisabledByPolicy =
+      options?.autoReviewDisabledByPolicy === true;
+    this._collaborationMode = options?.collaborationMode ?? "default";
+    this.lastPlanItemText = null;
+    this.lastResultText = null;
+    this._skills = [];
+    this._apps = [];
+    this._plugins = [];
+    this._lastCompletionEntitiesSignature = null;
+    this._launchStartedAt = Date.now();
+    this.pendingAgentTextByItemId.clear();
+    this.confirmedAgentTextByItemId.clear();
+    this.syntheticAgentTextByItemId.clear();
+    this.pendingPlanCompletion = null;
+    this._pendingPlanInput = null;
+    this._projectPath = projectPath;
+    this.stdoutLineChunks = [];
+  }
+
+  private launchAppServer(
+    projectPath: string,
+    options?: CodexStartOptions,
+  ): void {
+    const sandboxLog = options?.sandboxMode ?? "config";
+    const approvalLog = options?.approvalPolicy ?? "config";
+    const reviewerLog = options?.approvalsReviewer ?? "config";
+    console.log(
+      `[codex-process] Starting app-server (cwd: ${projectPath}, sandbox: ${sandboxLog}, approval: ${approvalLog}, reviewer: ${reviewerLog}, model: ${options?.model ?? "default"}, collaboration: ${this._collaborationMode})`,
+    );
+
+    const transport = createCodexTransport(projectPath, this.platform);
+    this.transport = transport;
+
+    transport.on("data", (chunk: string) => {
+      this.handleStdoutChunk(chunk);
+    });
+
+    transport.on("log", (chunk: string) => {
+      const line = chunk.trim();
+      if (line) {
+        console.log(`[codex-process] stderr: ${line}`);
+      }
+    });
+
+    transport.on("error", (err) => {
+      if (this.stopped) return;
+      console.error("[codex-process] app-server process error:", err);
+      this.emitMessage(codexAppServerStartError(err));
+      this.setStatus("idle");
+      this.emit("exit", 1);
+    });
+
+    transport.on("exit", (code) => {
+      const exitCode = code ?? 0;
+      this.transport = null;
+      this.rejectAllPending(new Error("codex app-server exited"));
+      if (!this.stopped && exitCode !== 0) {
+        this.emitMessage({
+          type: "error",
+          message: `codex app-server exited with code ${exitCode}`,
+        });
+      }
+      this.setStatus("idle");
+      this.emit("exit", code);
+    });
+
+    transport.start(projectPath);
+  }
+
+  interrupt(): void {
+    if (!this._threadId || !this.pendingTurnId) return;
+
+    void this.request("turn/interrupt", {
+      threadId: this._threadId,
+      turnId: this.pendingTurnId,
+    }).catch((err) => {
+      if (!this.stopped) {
+        console.warn(
+          `[codex-process] turn/interrupt failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    });
+  }
+
+  sendInput(text: string): void {
+    if (!this.inputResolve) {
+      console.error("[codex-process] No pending input resolver for sendInput");
+      return;
+    }
+    const resolve = this.inputResolve;
+    this.inputResolve = null;
+    resolve({ text });
+  }
+
+  sendInputWithImages(
+    text: string,
+    images: Array<{ base64: string; mimeType: string }>,
+  ): void {
+    if (!this.inputResolve) {
+      console.error(
+        "[codex-process] No pending input resolver for sendInputWithImages",
+      );
+      return;
+    }
+    const resolve = this.inputResolve;
+    this.inputResolve = null;
+    resolve({ text, images });
+  }
+
+  sendInputWithSkill(
+    text: string,
+    skill: { name: string; path: string },
+  ): void {
+    this.sendInputStructured(text, { skills: [skill] });
+  }
+
+  sendInputStructured(
+    text: string,
+    options?: {
+      images?: Array<{ base64: string; mimeType: string }>;
+      skills?: Array<{ name: string; path: string }>;
+      mentions?: Array<{ name: string; path: string }>;
+    },
+  ): void {
+    if (!this.inputResolve) {
+      console.error(
+        "[codex-process] No pending input resolver for sendInputStructured",
+      );
+      return;
+    }
+    const resolve = this.inputResolve;
+    this.inputResolve = null;
+    resolve({
+      text,
+      images: options?.images,
+      skills: options?.skills,
+      mentions: options?.mentions,
+    });
+  }
+
+  async steerInputStructured(
+    text: string,
+    options?: {
+      images?: Array<{ base64: string; mimeType: string }>;
+      skills?: Array<{ name: string; path: string }>;
+      mentions?: Array<{ name: string; path: string }>;
+    },
+  ): Promise<void> {
+    if (!this._threadId || !this.pendingTurnId) {
+      throw new Error("No active Codex turn to steer");
+    }
+
+    const expectedTurnId = this.pendingTurnId;
+    const { input, tempPaths } = await this.toRpcInput({
+      text,
+      images: options?.images,
+      skills: options?.skills,
+      mentions: options?.mentions,
+    });
+    this.steerTempPaths.push(...tempPaths);
+    try {
+      if (!input) {
+        throw new Error("No Codex input to steer");
+      }
+      await this.request("turn/steer", {
+        threadId: this._threadId,
+        input,
+        expectedTurnId,
+      });
+    } catch (err) {
+      this.steerTempPaths = this.steerTempPaths.filter(
+        (path) => !tempPaths.includes(path),
+      );
+      await Promise.all(
+        tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
+      );
+      throw err;
+    }
+  }
+
+  approve(toolUseId?: string): boolean {
+    // Check if this is a plan completion approval
+    if (
+      this.pendingPlanCompletion &&
+      toolUseId === this.pendingPlanCompletion.toolUseId
+    ) {
+      this.handlePlanApproved();
+      return true;
+    }
+
+    const pending = this.resolvePendingApproval(toolUseId);
+    if (!pending) {
+      // Fallback: McpElicitation lives in pendingUserInputs
+      if (this.approveUserInput(toolUseId, "Accept")) return true;
+      console.log(
+        "[codex-process] approve() called but no pending permission requests",
+      );
+      return false;
+    }
+
+    this.pendingApprovals.delete(pending.toolUseId);
+    this.respondToServerRequest(
+      pending.requestId,
+      buildApprovalResponse(pending, "accept"),
+    );
+    this.emitToolResult(pending.toolUseId, "Approved", "approved");
+
+    if (this.pendingApprovals.size === 0) {
+      this.setStatus("running");
+    }
+    return true;
+  }
+
+  approveAlways(toolUseId?: string): boolean {
+    const pending = this.resolvePendingApproval(toolUseId);
+    if (!pending) {
+      // Fallback: McpElicitation lives in pendingUserInputs
+      if (this.approveUserInput(toolUseId, "Allow for this session")) {
+        return true;
+      }
+      console.log(
+        "[codex-process] approveAlways() called but no pending permission requests",
+      );
+      return false;
+    }
+
+    this.pendingApprovals.delete(pending.toolUseId);
+    this.respondToServerRequest(
+      pending.requestId,
+      buildApprovalResponse(pending, "acceptForSession"),
+    );
+    this.emitToolResult(
+      pending.toolUseId,
+      "Approved (always)",
+      "approved_for_session",
+    );
+
+    if (this.pendingApprovals.size === 0) {
+      this.setStatus("running");
+    }
+    return true;
+  }
+
+  reject(toolUseId?: string, _message?: string): boolean {
+    // Check if this is a plan completion rejection
+    if (
+      this.pendingPlanCompletion &&
+      toolUseId === this.pendingPlanCompletion.toolUseId
+    ) {
+      this.handlePlanRejected(_message);
+      return true;
+    }
+
+    const pending = this.resolvePendingApproval(toolUseId);
+    if (!pending) {
+      // Fallback: McpElicitation lives in pendingUserInputs
+      if (this.rejectUserInput(toolUseId, "Decline")) return true;
+      console.log(
+        "[codex-process] reject() called but no pending permission requests",
+      );
+      return false;
+    }
+
+    this.pendingApprovals.delete(pending.toolUseId);
+    this.respondToServerRequest(
+      pending.requestId,
+      buildApprovalResponse(pending, resolveApprovalRejectDecision(pending)),
+    );
+    this.emitToolResult(pending.toolUseId, "Rejected", "rejected");
+
+    if (this.pendingApprovals.size === 0) {
+      this.setStatus("running");
+    }
+    return true;
+  }
+
+  answer(toolUseId: string, result: string): boolean {
+    const pending = this.resolvePendingUserInput(toolUseId);
+    if (!pending) {
+      console.log(
+        "[codex-process] answer() called but no pending AskUserQuestion",
+      );
+      return false;
+    }
+
+    this.pendingUserInputs.delete(pending.toolUseId);
+    this.respondToServerRequest(
+      pending.requestId,
+      buildUserInputResponse(pending, result),
+    );
+
+    this.emitToolResult(pending.toolUseId, "Answered", "answered");
+
+    if (this.pendingApprovals.size === 0 && this.pendingUserInputs.size === 0) {
+      this.setStatus("running");
+    }
+    return true;
+  }
+
+  /**
+   * Install a plugin or begin connector authentication proposed by Codex.
+   * The elicitation remains pending while external app authentication is
+   * required, and is accepted only after installation is complete.
+   */
+  async installToolSuggestion(toolUseId: string): Promise<void> {
+    const pending = this.resolvePendingUserInput(toolUseId);
+    if (!pending || pending.kind !== "tool_suggestion") {
+      throw new Error("No pending tool suggestion found");
+    }
+
+    const currentState = pending.input.installState;
+    if (currentState === "installing") return;
+    if (currentState === "needs_auth") return;
+
+    const meta = asRecord(pending.input._meta) ?? {};
+    const toolType = stringValue(meta.tool_type) ?? "";
+    const suggestType = stringValue(meta.suggest_type) ?? "";
+    if (suggestType !== "install") {
+      this.updateToolSuggestion(pending, {
+        installState: "failed",
+        installError: `Unsupported suggestion action: ${suggestType || "unknown"}`,
+      });
+      return;
+    }
+
+    if (toolType === "connector") {
+      const installUrl = stringValue(meta.install_url);
+      if (!installUrl) {
+        this.updateToolSuggestion(pending, {
+          installState: "failed",
+          installError: "This connector did not provide an installation URL.",
+        });
+        return;
+      }
+      this.updateToolSuggestion(pending, { installState: "needs_auth" });
+      return;
+    }
+
+    if (toolType !== "plugin") {
+      this.updateToolSuggestion(pending, {
+        installState: "failed",
+        installError: `Unsupported tool type: ${toolType || "unknown"}`,
+      });
+      return;
+    }
+
+    const toolId = stringValue(meta.tool_id) ?? "";
+    const remotePluginId = stringValue(meta.remote_plugin_id);
+    const separator = toolId.lastIndexOf("@");
+    const fallbackPluginName =
+      separator > 0 ? toolId.slice(0, separator) : toolId;
+    const remoteMarketplaceName =
+      separator > 0 ? toolId.slice(separator + 1) : "openai-curated-remote";
+    const pluginName = remotePluginId ?? fallbackPluginName;
+    if (!pluginName) {
+      this.updateToolSuggestion(pending, {
+        installState: "failed",
+        installError: "This plugin did not provide an installation identifier.",
+      });
+      return;
+    }
+
+    this.updateToolSuggestion(pending, {
+      installState: "installing",
+      installError: null,
+    });
+
+    try {
+      const result = (await this.request("plugin/install", {
+        remoteMarketplaceName,
+        pluginName,
+      })) as Record<string, unknown>;
+
+      // The user may reject the suggestion while installation is in flight.
+      if (this.pendingUserInputs.get(toolUseId) !== pending) return;
+
+      const appsNeedingAuth = normalizeToolSuggestionApps(
+        result.appsNeedingAuth,
+      );
+      if (appsNeedingAuth.length > 0) {
+        this.updateToolSuggestion(pending, {
+          installState: "needs_auth",
+          appsNeedingAuth,
+        });
+        return;
+      }
+
+      this.resolveToolSuggestion(pending, "Installed");
+    } catch (err) {
+      if (this.pendingUserInputs.get(toolUseId) !== pending) return;
+      this.updateToolSuggestion(pending, {
+        installState: "failed",
+        installError: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  getPendingPermission(
+    toolUseId?: string,
+  ):
+    | { toolUseId: string; toolName: string; input: Record<string, unknown> }
+    | undefined {
+    // Check plan completion first
+    if (this.pendingPlanCompletion) {
+      if (!toolUseId || toolUseId === this.pendingPlanCompletion.toolUseId) {
+        return {
+          toolUseId: this.pendingPlanCompletion.toolUseId,
+          toolName: "ExitPlanMode",
+          input: { plan: this.pendingPlanCompletion.planText },
+        };
+      }
+    }
+
+    const pending = this.resolvePendingApproval(toolUseId);
+    if (pending) {
+      return {
+        toolUseId: pending.toolUseId,
+        toolName: pending.toolName,
+        input: { ...pending.input },
+      };
+    }
+
+    const pendingAsk = this.resolvePendingUserInput(toolUseId);
+    if (!pendingAsk) return undefined;
+    return {
+      toolUseId: pendingAsk.toolUseId,
+      toolName: pendingAsk.toolName,
+      input: { ...pendingAsk.input },
+    };
+  }
+
+  /** Emit a synthetic tool_result so history replay can match it to a permission_request. */
+  private emitToolResult(
+    toolUseId: string,
+    content: string,
+    permissionOutcome?:
+      | "approved"
+      | "approved_for_session"
+      | "rejected"
+      | "answered",
+  ): void {
+    this.emitMessage({
+      type: "tool_result",
+      toolUseId,
+      content,
+      ...(permissionOutcome ? { permissionOutcome } : {}),
+    });
+  }
+
+  private resolvePendingApproval(
+    toolUseId?: string,
+  ): PendingApproval | undefined {
+    if (toolUseId) return this.pendingApprovals.get(toolUseId);
+    const first = this.pendingApprovals.values().next();
+    return first.done ? undefined : first.value;
+  }
+
+  private resolvePendingUserInput(
+    toolUseId?: string,
+  ): PendingUserInputRequest | undefined {
+    if (toolUseId) return this.pendingUserInputs.get(toolUseId);
+    const first = this.pendingUserInputs.values().next();
+    return first.done ? undefined : first.value;
+  }
+
+  /**
+   * Approve a pending user-input request (McpElicitation fallback).
+   * Called when approve()/approveAlways() cannot find a pendingApproval —
+   * McpElicitation lives in pendingUserInputs but the app routes it through
+   * the permission (approve/reject) path.
+   */
+  private approveUserInput(
+    toolUseId: string | undefined,
+    result: string,
+  ): boolean {
+    const pending = this.resolvePendingUserInput(toolUseId);
+    if (!pending) return false;
+
+    if (pending.kind === "tool_suggestion") {
+      if (pending.input.installState === "needs_auth") {
+        this.resolveToolSuggestion(pending, "Installed");
+      } else {
+        void this.installToolSuggestion(pending.toolUseId);
+      }
+      return true;
+    }
+
+    this.pendingUserInputs.delete(pending.toolUseId);
+    this.respondToServerRequest(
+      pending.requestId,
+      buildUserInputResponse(pending, result),
+    );
+    this.emitToolResult(
+      pending.toolUseId,
+      "Approved",
+      result === "Allow for this session"
+        ? "approved_for_session"
+        : "approved",
+    );
+
+    if (this.pendingApprovals.size === 0 && this.pendingUserInputs.size === 0) {
+      this.setStatus("running");
+    }
+    return true;
+  }
+
+  private updateToolSuggestion(
+    pending: PendingUserInputRequest,
+    changes: Record<string, unknown>,
+  ): void {
+    pending.input = { ...pending.input, ...changes };
+    this.emitMessage({
+      type: "permission_request",
+      toolUseId: pending.toolUseId,
+      toolName: "ToolSuggestion",
+      input: { ...pending.input },
+    });
+  }
+
+  private resolveToolSuggestion(
+    pending: PendingUserInputRequest,
+    toolResult: string,
+  ): void {
+    this.pendingUserInputs.delete(pending.toolUseId);
+    this.respondToServerRequest(pending.requestId, {
+      action: "accept",
+      content: null,
+      _meta: null,
+    });
+    this.emitMessage({
+      type: "permission_resolved",
+      toolUseId: pending.toolUseId,
+    });
+    this.emitToolResult(pending.toolUseId, toolResult);
+    if (this.pendingApprovals.size === 0 && this.pendingUserInputs.size === 0) {
+      this.setStatus("running");
+    }
+  }
+
+  /**
+   * Reject a pending user-input request (McpElicitation fallback).
+   */
+  private rejectUserInput(
+    toolUseId: string | undefined,
+    result: string,
+  ): boolean {
+    const pending = this.resolvePendingUserInput(toolUseId);
+    if (!pending) return false;
+
+    this.pendingUserInputs.delete(pending.toolUseId);
+    this.respondToServerRequest(
+      pending.requestId,
+      buildUserInputResponse(
+        pending,
+        resolveUserInputRejectResult(pending, result),
+      ),
+    );
+    this.emitToolResult(pending.toolUseId, "Rejected", "rejected");
+
+    if (this.pendingApprovals.size === 0 && this.pendingUserInputs.size === 0) {
+      this.setStatus("running");
+    }
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plan completion handlers (native collaboration_mode)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Plan approved → switch to Default mode and auto-start execution.
+   */
+  private handlePlanApproved(): void {
+    const planText = this.pendingPlanCompletion?.planText ?? "";
+    const resolvedToolUseId = this.pendingPlanCompletion?.toolUseId;
+    this.pendingPlanCompletion = null;
+    this._collaborationMode = "default";
+    console.log("[codex-process] Plan approved, switching to Default mode");
+
+    // Emit synthetic tool_result so history replay knows this approval is resolved
+    if (resolvedToolUseId) {
+      this.emitToolResult(resolvedToolUseId, "Plan approved");
+    }
+
+    // Resolve inputResolve to start the next turn (Default mode) automatically
+    if (this.inputResolve) {
+      const resolve = this.inputResolve;
+      this.inputResolve = null;
+      resolve({ text: `Execute the following plan:\n\n${planText}` });
+    } else {
+      // inputResolve may not be ready yet if approval comes before the next
+      // input loop iteration.  Queue the text so sendInput() can pick it up.
+      console.warn(
+        "[codex-process] Plan approved but inputResolve not ready, queuing as pending input",
+      );
+      this._pendingPlanInput = `Execute the following plan:\n\n${planText}`;
+    }
+  }
+
+  /**
+   * Plan rejected → stay in Plan mode and re-plan with feedback.
+   */
+  private handlePlanRejected(feedback?: string): void {
+    const resolvedToolUseId = this.pendingPlanCompletion?.toolUseId;
+    this.pendingPlanCompletion = null;
+    console.log("[codex-process] Plan rejected, continuing in Plan mode");
+    // Stay in Plan mode
+
+    // Emit synthetic tool_result so history replay knows this approval is resolved
+    if (resolvedToolUseId) {
+      this.emitToolResult(resolvedToolUseId, "Plan rejected");
+    }
+
+    if (feedback) {
+      if (this.inputResolve) {
+        const resolve = this.inputResolve;
+        this.inputResolve = null;
+        resolve({ text: feedback });
+      } else {
+        console.warn(
+          "[codex-process] Plan rejected but inputResolve not ready, queuing feedback",
+        );
+        this._pendingPlanInput = feedback;
+      }
+    } else {
+      this.setStatus("idle");
+    }
+  }
+
+  private async bootstrap(
+    projectPath: string,
+    options?: CodexStartOptions,
+  ): Promise<void> {
+    try {
+      await this.initializeRpcConnection();
+
+      const autoReviewDisabled =
+        options?.autoReviewDisabledByPolicy === null
+          ? (await this.readConfigRequirements()).autoReviewDisabled
+          : options?.autoReviewDisabledByPolicy === true;
+      this._autoReviewDisabledByPolicy = autoReviewDisabled;
+      const effectiveCodexPermissionsMode =
+        autoReviewDisabled && options?.codexPermissionsMode === "autoReview"
+          ? "default"
+          : options?.codexPermissionsMode;
+      // thread/resume preserves the thread's prior permission overrides when
+      // these fields are omitted. Custom mode and named profiles mean the
+      // current config.toml should win, so resolve it and pass the effective
+      // values explicitly on resume.
+      const configResumePermissions =
+        options?.threadId &&
+        (effectiveCodexPermissionsMode === "custom" || options.profile)
+          ? await this.readConfigPermissions(projectPath, options.profile)
+          : undefined;
+      const effectiveApprovalsReviewer = autoReviewDisabled
+        ? "user"
+        : (configResumePermissions?.approvalsReviewer ??
+          options?.approvalsReviewer);
+      if (autoReviewDisabled) {
+        console.warn(
+          "[codex-process] Auto-review disabled by managed Browser Use policy",
+        );
+      }
+      this._approvalsReviewer =
+        effectiveApprovalsReviewer === undefined
+          ? undefined
+          : normalizeApprovalsReviewerForAppServer(
+              effectiveApprovalsReviewer,
+            );
+      this._codexPermissionsMode = effectiveCodexPermissionsMode;
+
+      const configuredApprovalPolicy =
+        configResumePermissions?.approvalPolicy ?? options?.approvalPolicy;
+      const requestedApprovalPolicy = configuredApprovalPolicy
+        ? normalizeApprovalPolicyForRpc(configuredApprovalPolicy)
+        : undefined;
+      const requestedApprovalsReviewer =
+        effectiveApprovalsReviewer === undefined
+          ? undefined
+          : normalizeApprovalsReviewerForAppServer(
+              effectiveApprovalsReviewer,
+            );
+      const requestedClientApprovalsReviewer =
+        normalizeApprovalsReviewerForClient(effectiveApprovalsReviewer);
+      const configuredSandboxMode =
+        configResumePermissions?.sandboxMode ?? options?.sandboxMode;
+      const requestedSandboxMode = configuredSandboxMode
+        ? normalizeSandboxMode(configuredSandboxMode)
+        : undefined;
+
+      const threadParams: Record<string, unknown> = {
+        cwd: projectPath,
+        experimentalRawEvents: false,
+        persistExtendedHistory: true,
+      };
+      if (requestedApprovalPolicy) {
+        threadParams.approvalPolicy = requestedApprovalPolicy;
+      }
+      if (requestedApprovalsReviewer) {
+        threadParams.approvalsReviewer = requestedApprovalsReviewer;
+      }
+      if (requestedSandboxMode) {
+        threadParams.sandbox = requestedSandboxMode;
+      }
+      const threadConfig: Record<string, unknown> = {};
+      const requestedModel = sanitizeCodexModel(options?.model);
+      const requestedReasoningEffort = normalizeCodexReasoningEffortForModel(
+        requestedModel,
+        options?.modelReasoningEffort,
+      );
+      if (requestedModel) threadParams.model = requestedModel;
+      if (options?.serviceTier !== undefined) {
+        threadParams.serviceTier = normalizeCodexServiceTierForRpc(
+          options.serviceTier,
+        );
+      }
+      if (requestedReasoningEffort) {
+        // app-server applies reasoning effort on thread start via config overrides,
+        // not the top-level thread/start payload.
+        threadConfig.model_reasoning_effort = requestedReasoningEffort;
+      }
+      if (options?.networkAccessEnabled !== undefined) {
+        threadParams.sandboxPolicy = {
+          type: normalizeSandboxMode(options?.sandboxMode ?? "workspace-write"),
+          networkAccess: options.networkAccessEnabled,
+        };
+      }
+      if (options?.webSearchMode) {
+        threadParams.webSearchMode = options.webSearchMode;
+      }
+
+      const method = options?.threadId ? "thread/resume" : "thread/start";
+      if (options?.threadId) {
+        threadParams.threadId = options.threadId;
+      } else {
+        threadParams.experimentalRawEvents = false;
+      }
+      threadParams.persistExtendedHistory = true;
+      if (options?.profile) {
+        threadConfig.profile = options.profile;
+      }
+      const writableRoots = await this.resolveWritableRootsConfig(
+        projectPath,
+        options?.additionalWritableRoots,
+      );
+      if (writableRoots) {
+        threadConfig.sandbox_workspace_write = {
+          writable_roots: writableRoots,
+        };
+      }
+      if (Object.keys(threadConfig).length > 0) {
+        threadParams.config = {
+          ...(threadParams.config as Record<string, unknown> | undefined),
+          ...threadConfig,
+        };
+      }
+
+      const response = (await this.request(method, threadParams)) as Record<
+        string,
+        unknown
+      >;
+      const thread = response.thread as Record<string, unknown> | undefined;
+      const threadId =
+        typeof thread?.id === "string" ? thread.id : options?.threadId;
+      if (!threadId) {
+        throw new Error(`${method} returned no thread id`);
+      }
+
+      // Capture the resolved model name from thread response
+      if (typeof thread?.model === "string" && thread.model) {
+        this.startModel = thread.model;
+      }
+      const resolvedSettings =
+        extractResolvedSettingsFromThreadResponse(response);
+      const activeApprovalPolicy =
+        resolvedSettings.approvalPolicy ?? requestedApprovalPolicy;
+      const resolvedApprovalsReviewer = autoReviewDisabled
+        ? "user"
+        : resolvedSettings.approvalsReviewer;
+      if (resolvedSettings.model) {
+        this.startModel = resolvedSettings.model;
+      }
+      if (activeApprovalPolicy) {
+        this._approvalPolicy = activeApprovalPolicy;
+      }
+      if (resolvedApprovalsReviewer) {
+        this._approvalsReviewer = normalizeApprovalsReviewerForAppServer(
+          resolvedApprovalsReviewer as CodexStartOptions["approvalsReviewer"],
+        );
+      }
+
+      this._threadId = threadId;
+      this._agentNickname = stringOrNull(thread?.agentNickname);
+      this._agentRole = stringOrNull(thread?.agentRole);
+      const cliJoin = codexCliJoinTarget(threadId);
+      this.emitMessage({
+        type: "system",
+        subtype: "init",
+        sessionId: threadId,
+        provider: "codex",
+        ...(sanitizeCodexModel(this.startModel)
+          ? { model: sanitizeCodexModel(this.startModel) }
+          : {}),
+        ...(activeApprovalPolicy
+          ? {
+              approvalPolicy: approvalPolicyForClient(activeApprovalPolicy),
+            }
+          : {}),
+        ...(resolvedApprovalsReviewer ?? effectiveApprovalsReviewer
+          ? {
+              approvalsReviewer: resolvedApprovalsReviewer
+                ? normalizeApprovalsReviewerForClient(
+                    resolvedApprovalsReviewer as CodexStartOptions[
+                      "approvalsReviewer"
+                    ],
+                  )
+                : requestedClientApprovalsReviewer,
+            }
+          : {}),
+        ...(resolvedSettings.sandboxMode ?? options?.sandboxMode
+          ? { sandboxMode: resolvedSettings.sandboxMode ?? requestedSandboxMode }
+          : {}),
+        ...(effectiveCodexPermissionsMode
+          ? { codexPermissionsMode: effectiveCodexPermissionsMode }
+          : {}),
+        ...(resolvedSettings.modelReasoningEffort
+          ? { modelReasoningEffort: resolvedSettings.modelReasoningEffort }
+          : requestedReasoningEffort
+            ? { modelReasoningEffort: requestedReasoningEffort }
+          : {}),
+        serviceTier: normalizeCodexServiceTierForClient(
+          resolvedSettings.serviceTier ?? options?.serviceTier,
+        ),
+        ...(resolvedSettings.networkAccessEnabled !== undefined
+          ? { networkAccessEnabled: resolvedSettings.networkAccessEnabled }
+          : {}),
+        ...(resolvedSettings.webSearchMode
+          ? { webSearchMode: resolvedSettings.webSearchMode }
+          : {}),
+        ...(options?.additionalWritableRoots?.length
+          ? { additionalWritableRoots: options.additionalWritableRoots }
+          : {}),
+        ...(cliJoin ? { codexCliJoin: cliJoin } : {}),
+      });
+      this.setStatus("idle");
+      this.resolveReadiness();
+
+      // Fetch completion entities in background (non-blocking).
+      this._projectPath = projectPath;
+      setTimeout(() => {
+        if (!this.stopped) {
+          void this.fetchCompletionEntities(projectPath);
+        }
+      }, 25);
+
+      await this.runInputLoop(options);
+    } catch (err) {
+      this.rejectReadiness(err);
+      if (!this.stopped) {
+        const message = codexErrorMessage(err);
+        console.error("[codex-process] bootstrap error:", err);
+        this.emitMessage({ type: "error", message: `Codex error: ${message}` });
+        this.emitMessage({
+          type: "result",
+          subtype: "error",
+          error: message,
+          sessionId: this._threadId ?? undefined,
+        });
+      }
+      this.setStatus("idle");
+      this.emit("exit", 1);
+    }
+  }
+
+  private async resolveWritableRootsConfig(
+    projectPath: string,
+    additionalWritableRoots?: string[],
+  ): Promise<string[] | undefined> {
+    const normalizedAdditional = normalizeWritableRoots(
+      additionalWritableRoots ?? [],
+      this.platform,
+    );
+    if (normalizedAdditional.length === 0) return undefined;
+
+    const response = (await this.request("config/read", {
+      includeLayers: false,
+      cwd: projectPath,
+    })) as unknown;
+    const configuredRoots = extractWritableRootsFromConfigRead(response);
+    return normalizeWritableRoots(
+      [...configuredRoots, ...normalizedAdditional],
+      this.platform,
+    );
+  }
+
+  private async readConfigPermissions(
+    projectPath: string,
+    profile?: string,
+  ): Promise<CodexConfigPermissions> {
+    const projectLookupPaths = resolveConfigProjectLookupPaths(projectPath);
+    const response = await this.request("config/read", {
+      includeLayers: false,
+      cwd: projectPath,
+    });
+    return extractPermissionsFromConfigRead(
+      response,
+      projectLookupPaths,
+      this.platform,
+      profile,
+    );
+  }
+
+  private async initializeRpcConnection(timeoutMs?: number): Promise<void> {
+    await this.request(
+      "initialize",
+      {
+        clientInfo: {
+          name: "ccpocket_bridge",
+          version: "1.0.0",
+          title: "ccpocket bridge",
+        },
+        capabilities: {
+          experimentalApi: true,
+        },
+      },
+      timeoutMs,
+    );
+    this.notify("initialized", {});
+  }
+
+  async readProfileConfig(
+    cwd?: string,
+  ): Promise<CodexProfileConfig> {
+    const response = (await this.request("config/read", {
+      includeLayers: false,
+      ...(cwd ? { cwd } : {}),
+    })) as {
+      config?: {
+        profile?: unknown;
+        profiles?: Record<string, unknown>;
+      };
+    };
+    const config = response.config;
+    const profiles = config?.profiles;
+    return {
+      profiles: profiles ? Object.keys(profiles).sort() : [],
+      defaultProfile:
+        typeof config?.profile === "string" && config.profile.trim().length > 0
+          ? config.profile.trim()
+          : undefined,
+    };
+  }
+
+  async readConfigRequirements(): Promise<CodexConfigRequirements> {
+    try {
+      const response = (await this.request(
+        "configRequirements/read",
+      )) as Record<string, unknown>;
+      const requirements = asRecord(response.requirements);
+      const browserUse = asRecord(
+        requirements?.browserUse ?? requirements?.browser_use,
+      );
+      return {
+        autoReviewDisabled:
+          (browserUse?.disableAutoReview ??
+            browserUse?.disable_auto_review) === true,
+      };
+    } catch (err) {
+      if (err instanceof CodexRpcError && err.code === -32601) {
+        return { autoReviewDisabled: false };
+      }
+      throw err;
+    }
+  }
+
+  private async fetchCompletionEntities(projectPath: string): Promise<void> {
+    if (this._completionFetchInFlight) {
+      return this._completionFetchInFlight;
+    }
+    this._completionFetchInFlight = this._fetchCompletionEntitiesInternal(
+      projectPath,
+    );
+    try {
+      await this._completionFetchInFlight;
+    } finally {
+      this._completionFetchInFlight = null;
+      // Notifications emitted while fetching are usually echoes of our own
+      // skills/list or app/list RPCs. Replaying them here can re-arm a tight
+      // app/list -> app/list/updated feedback loop.
+      this._completionFetchCooldownUntil =
+        Date.now() + COMPLETION_FETCH_COOLDOWN_MS;
+    }
+  }
+
+  private scheduleCompletionFetchFromNotification(): void {
+    if (!this._projectPath || this.stopped) return;
+    if (Date.now() < this._completionFetchCooldownUntil) return;
+    void this.fetchCompletionEntities(this._projectPath);
+  }
+
+  private async _fetchCompletionEntitiesInternal(
+    projectPath: string,
+  ): Promise<void> {
+    const TIMEOUT_MS = 10_000;
+    try {
+      interface SkillRaw {
+        name: string;
+        path: string;
+        description: string;
+        shortDescription?: string | null;
+        enabled: boolean;
+        scope: string;
+        interface?: {
+          displayName?: string | null;
+          shortDescription?: string | null;
+          defaultPrompt?: string | null;
+          brandColor?: string | null;
+        } | null;
+      }
+      interface AppRaw {
+        id: string;
+        name: string;
+        description: string;
+        installUrl?: string | null;
+        isAccessible?: boolean | null;
+        isEnabled?: boolean | null;
+      }
+      interface PluginRaw {
+        id: string;
+        name: string;
+        installed: boolean;
+        enabled: boolean;
+        interface?: {
+          displayName?: unknown;
+          shortDescription?: unknown;
+          longDescription?: unknown;
+          defaultPrompt?: unknown;
+          brandColor?: unknown;
+          composerIcon?: unknown;
+          composerIconUrl?: unknown;
+        } | null;
+      }
+      interface PluginMarketplaceRaw {
+        name: string;
+        path?: string | null;
+        plugins: PluginRaw[];
+      }
+      const requestOrNull = <T>(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<T | null> =>
+        Promise.race([
+          this.request(method, params).catch((err) => {
+            console.log(
+              `[codex-process] ${method} failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+            );
+            return null;
+          }),
+          new Promise<null>((resolve) =>
+            setTimeout(() => resolve(null), TIMEOUT_MS),
+          ),
+        ]) as Promise<T | null>;
+      const optionalString = (value: unknown): string | undefined =>
+        typeof value === "string" ? value : undefined;
+      const optionalFirstString = (value: unknown): string | undefined => {
+        if (typeof value === "string") return value;
+        if (!Array.isArray(value)) return undefined;
+        return value.find((entry): entry is string => typeof entry === "string");
+      };
+
+      const skillsRequest = requestOrNull<{
+        data?: Array<{ cwd: string; skills: SkillRaw[] }>;
+      }>("skills/list", { cwds: [projectPath] });
+      const appsRequest = requestOrNull<{ data?: AppRaw[] }>("app/list", {
+        cursor: null,
+        limit: 100,
+        threadId: this._threadId ?? undefined,
+        forceRefetch: false,
+      });
+      const pluginsRequest = requestOrNull<{
+        marketplaces?: PluginMarketplaceRaw[];
+      }>("plugin/list", { cwds: [projectPath] });
+      let skillsReady = false;
+
+      await Promise.all([
+        skillsRequest.then((skillsResult) => {
+          if (this.stopped || skillsResult === null) return;
+          const skillMetadata: CodexSkillMetadata[] = [];
+          for (const entry of skillsResult.data ?? []) {
+            for (const skill of entry.skills) {
+              if (!skill.enabled) continue;
+              skillMetadata.push({
+                name: skill.name,
+                path: skill.path,
+                description: skill.description,
+                shortDescription:
+                  skill.shortDescription ??
+                  skill.interface?.shortDescription ??
+                  undefined,
+                enabled: skill.enabled,
+                scope: skill.scope,
+                displayName: skill.interface?.displayName ?? undefined,
+                defaultPrompt: skill.interface?.defaultPrompt ?? undefined,
+                brandColor: skill.interface?.brandColor ?? undefined,
+              });
+            }
+          }
+          this._skills = skillMetadata;
+          skillsReady = true;
+          const elapsedMs =
+            this._launchStartedAt > 0
+              ? Date.now() - this._launchStartedAt
+              : undefined;
+          console.log(
+            `[codex-process] completion skills ready: ${skillMetadata.length} skills${elapsedMs === undefined ? "" : ` (${elapsedMs}ms since start)`}`,
+          );
+          this.emitCompletionEntitiesSnapshot("skills");
+        }),
+        appsRequest.then((appsResult) => {
+          if (this.stopped || appsResult === null) return;
+          this._apps = (appsResult.data ?? [])
+            .filter(
+              (app) =>
+                (app.isAccessible ?? true) && (app.isEnabled ?? true),
+            )
+            .map((app) => ({
+              id: app.id,
+              name: app.name,
+              description: app.description,
+              installUrl: app.installUrl ?? undefined,
+              isAccessible: app.isAccessible ?? true,
+              isEnabled: app.isEnabled ?? true,
+            }));
+          if (skillsReady) this.emitCompletionEntitiesSnapshot("apps");
+        }),
+        pluginsRequest.then((pluginsResult) => {
+          if (this.stopped || pluginsResult === null) return;
+          const pluginMetadata: CodexPluginMetadata[] = [];
+          for (const marketplace of pluginsResult.marketplaces ?? []) {
+            for (const plugin of marketplace.plugins ?? []) {
+              if (!plugin.installed || !plugin.enabled) continue;
+              pluginMetadata.push({
+                id: plugin.id,
+                name: plugin.name,
+                path: `plugin://${plugin.id}`,
+                marketplaceName: marketplace.name,
+                marketplacePath: marketplace.path ?? undefined,
+                installed: plugin.installed,
+                enabled: plugin.enabled,
+                displayName: optionalString(plugin.interface?.displayName),
+                shortDescription: optionalString(
+                  plugin.interface?.shortDescription,
+                ),
+                longDescription: optionalString(
+                  plugin.interface?.longDescription,
+                ),
+                defaultPrompt: optionalFirstString(
+                  plugin.interface?.defaultPrompt,
+                ),
+                brandColor: optionalString(plugin.interface?.brandColor),
+                composerIcon: optionalString(plugin.interface?.composerIcon),
+                composerIconUrl: optionalString(
+                  plugin.interface?.composerIconUrl,
+                ),
+              });
+            }
+          }
+          this._plugins = pluginMetadata;
+          if (skillsReady) this.emitCompletionEntitiesSnapshot("plugins");
+        }),
+      ]);
+    } catch (err) {
+      console.log(
+        `[codex-process] completion entity fetch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private emitCompletionEntitiesSnapshot(
+    source: "skills" | "apps" | "plugins",
+  ): void {
+    if (this.stopped) return;
+    const skills = this._skills.map((skill) => skill.name);
+    const apps = this._apps.map((app) => app.id);
+    const plugins = this._plugins.map((plugin) => plugin.name);
+    const signature = JSON.stringify({
+      skills,
+      skillMetadata: this._skills,
+      apps,
+      appMetadata: this._apps,
+      plugins,
+      pluginMetadata: this._plugins,
+    });
+    if (signature === this._lastCompletionEntitiesSignature) return;
+    this._lastCompletionEntitiesSignature = signature;
+    console.log(
+      `[codex-process] completion entities updated (${source}): ${skills.length} skills, ${apps.length} apps, ${plugins.length} plugins`,
+    );
+    this.emitMessage({
+      type: "system",
+      subtype: "supported_commands",
+      skills,
+      skillMetadata: this._skills,
+      apps,
+      appMetadata: this._apps,
+      plugins,
+      pluginMetadata: this._plugins,
+    });
+  }
+
+  private async runInputLoop(options?: CodexStartOptions): Promise<void> {
+    while (!this.stopped) {
+      const pendingInput = await new Promise<PendingInput>((resolve) => {
+        this.inputResolve = resolve;
+        // If plan approval arrived before inputResolve was ready, drain it now.
+        if (this._pendingPlanInput) {
+          const text = this._pendingPlanInput;
+          this._pendingPlanInput = null;
+          this.inputResolve = null;
+          resolve({ text });
+          return;
+        }
+        this.emit("input_ready");
+      });
+      if (this.stopped || !pendingInput.text) break;
+      if (!this._threadId) {
+        this.emitMessage({
+          type: "error",
+          message: "Codex thread is not initialized",
+        });
+        continue;
+      }
+
+      const { input, tempPaths } = await this.toRpcInput(pendingInput);
+      if (!input) {
+        continue;
+      }
+
+      this.setStatus("running");
+      this.lastTokenUsage = null;
+
+      const completion = await new Promise<void>((resolve, reject) => {
+        this.pendingTurnCompletion = { resolve, reject };
+
+        const params: Record<string, unknown> = {
+          threadId: this._threadId,
+          input,
+        };
+        if (this._approvalPolicy) {
+          params.approvalPolicy = normalizeApprovalPolicyForRpc(
+            this._approvalPolicy,
+          );
+        }
+        if (this._approvalsReviewer) {
+          params.approvalsReviewer = normalizeApprovalsReviewerForAppServer(
+            this._approvalsReviewer as CodexStartOptions["approvalsReviewer"],
+          );
+        }
+        const requestedModel =
+          sanitizeCodexModel(this._runtimeModel) ??
+          sanitizeCodexModel(options?.model);
+        const requestedReasoningEffort =
+          this._runtimeModelReasoningEffort ??
+          normalizeCodexReasoningEffortForModel(
+            requestedModel,
+            options?.modelReasoningEffort,
+          );
+        if (requestedModel) params.model = requestedModel;
+        if (requestedReasoningEffort) {
+          params.effort = requestedReasoningEffort;
+        }
+        if (this._runtimeServiceTier !== undefined) {
+          params.serviceTier = this._runtimeServiceTier;
+        }
+
+        // Always send collaborationMode so the server switches modes correctly.
+        // Omitting it causes the server to persist the previous turn's mode.
+        const modeSettings: Record<string, unknown> = {
+          model:
+            requestedModel
+            || sanitizeCodexModel(this.startModel)
+            || DEFAULT_CODEX_MODEL,
+        };
+        if (requestedReasoningEffort) {
+          modeSettings.reasoning_effort = requestedReasoningEffort;
+        }
+        params.collaborationMode = {
+          mode: this._collaborationMode,
+          settings: modeSettings,
+        };
+
+        console.log(
+          `[codex-process] turn/start: approval=${params.approvalPolicy}, collaboration=${this._collaborationMode}`,
+        );
+        void this.request("turn/start", params)
+          .then((result) => {
+            const turn = (result as Record<string, unknown>).turn as
+              | Record<string, unknown>
+              | undefined;
+            if (typeof turn?.id === "string") {
+              this.pendingTurnId = turn.id;
+            }
+          })
+          .catch((err) => {
+            this.pendingTurnCompletion = null;
+            reject(err instanceof Error ? err : new Error(String(err)));
+          });
+      }).catch((err) => {
+        if (!this.stopped) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.emitMessage({ type: "error", message });
+          this.emitMessage({
+            type: "result",
+            subtype: "error",
+            error: message,
+            sessionId: this._threadId ?? undefined,
+          });
+          this.setStatus("idle");
+        }
+      });
+
+      await Promise.all(
+        tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
+      );
+      void completion;
+    }
+  }
+
+  private handleStdoutChunk(chunk: string): void {
+    let lineStart = 0;
+
+    while (lineStart < chunk.length) {
+      const newlineIndex = chunk.indexOf("\n", lineStart);
+      if (newlineIndex < 0) {
+        this.stdoutLineChunks.push(chunk.slice(lineStart));
+        return;
+      }
+
+      const lineFragment = chunk.slice(lineStart, newlineIndex);
+      const line =
+        this.stdoutLineChunks.length === 0
+          ? lineFragment.trim()
+          : this.completeStdoutLine(lineFragment);
+      lineStart = newlineIndex + 1;
+      if (!line) continue;
+
+      try {
+        const envelope = JSON.parse(line) as JsonRpcEnvelope;
+        this.handleRpcEnvelope(envelope);
+      } catch (err) {
+        console.warn(
+          `[codex-process] failed to parse app-server JSON line: ${line.slice(0, 200)}`,
+        );
+        if (!this.stopped) {
+          this.emitMessage({
+            type: "error",
+            message: `Failed to parse codex app-server output: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+      }
+    }
+  }
+
+  private completeStdoutLine(finalChunk: string): string {
+    this.stdoutLineChunks.push(finalChunk);
+    const line = this.stdoutLineChunks.join("").trim();
+    this.stdoutLineChunks = [];
+    return line;
+  }
+
+  private handleRpcEnvelope(envelope: JsonRpcEnvelope): void {
+    if (
+      envelope.id != null &&
+      envelope.method &&
+      envelope.result === undefined &&
+      envelope.error === undefined
+    ) {
+      this.handleServerRequest(
+        envelope.id,
+        envelope.method,
+        envelope.params ?? {},
+      );
+      return;
+    }
+
+    if (
+      envelope.id != null &&
+      (envelope.result !== undefined || envelope.error)
+    ) {
+      this.handleRpcResponse(envelope as RpcSuccess | RpcError);
+      return;
+    }
+
+    if (envelope.method) {
+      this.handleNotification(envelope.method, envelope.params ?? {});
+    }
+  }
+
+  private handleRpcResponse(envelope: RpcSuccess | RpcError): void {
+    if (typeof envelope.id !== "number") {
+      return;
+    }
+    const pending = this.pendingRpc.get(envelope.id);
+    if (!pending) return;
+    this.pendingRpc.delete(envelope.id);
+
+    if ("error" in envelope && envelope.error) {
+      pending.reject(new CodexRpcError(pending.method, envelope.error));
+      return;
+    }
+
+    pending.resolve((envelope as RpcSuccess).result);
+  }
+
+  private handleServerRequest(
+    id: number | string,
+    method: string,
+    params: Record<string, unknown>,
+  ): void {
+    switch (method) {
+      case "item/commandExecution/requestApproval": {
+        const toolUseId = this.extractToolUseId(params, id);
+        const input: Record<string, unknown> = {
+          ...(typeof params.command === "string"
+            ? { command: params.command }
+            : {}),
+          ...(typeof params.cwd === "string" ? { cwd: params.cwd } : {}),
+          ...(params.commandActions
+            ? { commandActions: params.commandActions }
+            : {}),
+          ...(params.networkApprovalContext
+            ? { networkApprovalContext: params.networkApprovalContext }
+            : {}),
+          ...(params.additionalPermissions
+            ? { additionalPermissions: params.additionalPermissions }
+            : {}),
+          ...(params.skillMetadata
+            ? { skillMetadata: params.skillMetadata }
+            : {}),
+          ...(params.proposedExecpolicyAmendment
+            ? {
+                proposedExecpolicyAmendment: params.proposedExecpolicyAmendment,
+              }
+            : {}),
+          ...(params.proposedNetworkPolicyAmendments
+            ? {
+                proposedNetworkPolicyAmendments:
+                  params.proposedNetworkPolicyAmendments,
+              }
+            : {}),
+          ...(params.availableDecisions
+            ? { availableDecisions: params.availableDecisions }
+            : {}),
+          ...(typeof params.reason === "string"
+            ? { reason: params.reason }
+            : {}),
+        };
+
+        this.pendingApprovals.set(toolUseId, {
+          requestId: id,
+          toolUseId,
+          toolName: "Bash",
+          input,
+          kind: "command",
+        });
+        this.emitMessage({
+          type: "permission_request",
+          toolUseId,
+          toolName: "Bash",
+          input,
+        });
+        this.setStatus("waiting_approval");
+        break;
+      }
+
+      case "item/fileChange/requestApproval": {
+        const toolUseId = this.extractToolUseId(params, id);
+        const input: Record<string, unknown> = {
+          ...(Array.isArray(params.changes) ? { changes: params.changes } : {}),
+          ...(typeof params.grantRoot === "string"
+            ? { grantRoot: params.grantRoot }
+            : {}),
+          ...(typeof params.reason === "string"
+            ? { reason: params.reason }
+            : {}),
+        };
+
+        this.pendingApprovals.set(toolUseId, {
+          requestId: id,
+          toolUseId,
+          toolName: "FileChange",
+          input,
+          kind: "file",
+        });
+        this.emitMessage({
+          type: "permission_request",
+          toolUseId,
+          toolName: "FileChange",
+          input,
+        });
+        this.setStatus("waiting_approval");
+        break;
+      }
+
+      case "item/tool/requestUserInput": {
+        const toolUseId = this.extractToolUseId(params, id);
+        const questions = normalizeUserInputQuestions(params.questions);
+        const input: Record<string, unknown> = {
+          questions: questions.map((q) => ({
+            id: q.id,
+            question: q.question,
+            header: q.header,
+            options: q.options,
+            multiSelect: false,
+            isOther: q.isOther,
+            isSecret: q.isSecret,
+          })),
+        };
+
+        this.pendingUserInputs.set(toolUseId, {
+          requestId: id,
+          toolUseId,
+          toolName: "AskUserQuestion",
+          questions: questions.map((q) => ({
+            id: q.id,
+            question: q.question,
+          })),
+          input,
+          kind: "questions",
+        });
+        this.emitMessage({
+          type: "permission_request",
+          toolUseId,
+          toolName: "AskUserQuestion",
+          input,
+        });
+        this.setStatus("waiting_approval");
+        break;
+      }
+
+      case "item/permissions/requestApproval": {
+        const toolUseId = this.extractToolUseId(params, id);
+        const requestedPermissions = asRecord(params.permissions) ?? {};
+        const input: Record<string, unknown> = {
+          permissions: requestedPermissions,
+          ...(typeof params.reason === "string"
+            ? { reason: params.reason }
+            : {}),
+        };
+
+        this.pendingApprovals.set(toolUseId, {
+          requestId: id,
+          toolUseId,
+          toolName: "Permissions",
+          input,
+          kind: "permissions",
+          requestedPermissions,
+        });
+        this.emitMessage({
+          type: "permission_request",
+          toolUseId,
+          toolName: "Permissions",
+          input,
+        });
+        this.setStatus("waiting_approval");
+        break;
+      }
+
+      case "mcpServer/elicitation/request": {
+        const toolUseId = this.extractToolUseId(params, id);
+        const elicitation = createElicitationInput(params);
+        const toolName =
+          elicitation.kind === "tool_suggestion"
+            ? "ToolSuggestion"
+            : "McpElicitation";
+        this.pendingUserInputs.set(toolUseId, {
+          requestId: id,
+          toolUseId,
+          toolName,
+          questions: elicitation.questions,
+          input: elicitation.input,
+          kind: elicitation.kind,
+        });
+        this.emitMessage({
+          type: "permission_request",
+          toolUseId,
+          toolName,
+          input: elicitation.input,
+        });
+        this.setStatus("waiting_approval");
+        break;
+      }
+
+      case "currentTime/read": {
+        this.respondToServerRequest(id, {
+          currentTimeAt: Math.floor(Date.now() / 1000),
+        });
+        break;
+      }
+
+      default: {
+        console.warn(`[codex-process] unsupported server request: ${method}`);
+        this.respondToServerRequestError(
+          id,
+          -32601,
+          `Unsupported server request: ${method}`,
+        );
+        break;
+      }
+    }
+  }
+
+  private handleNotification(
+    method: string,
+    params: Record<string, unknown>,
+  ): void {
+    if (this.isForeignThreadNotification(method, params)) return;
+
+    switch (method) {
+      case "thread/started": {
+        const thread = params.thread as Record<string, unknown> | undefined;
+        if (typeof thread?.id === "string") {
+          this._threadId = thread.id;
+        }
+        this._agentNickname = stringOrNull(thread?.agentNickname);
+        this._agentRole = stringOrNull(thread?.agentRole);
+        break;
+      }
+
+      case "turn/started": {
+        const turn = params.turn as Record<string, unknown> | undefined;
+        if (typeof turn?.id === "string") {
+          this.pendingTurnId = turn.id;
+        }
+        this.lastResultText = null;
+        this.pendingAgentTextByItemId.clear();
+        this.confirmedAgentTextByItemId.clear();
+        this.syntheticAgentTextByItemId.clear();
+        this.setStatus("running");
+        break;
+      }
+
+      case "turn/completed": {
+        this.handleTurnCompleted(
+          params.turn as Record<string, unknown> | undefined,
+        );
+        break;
+      }
+
+      case "thread/name/updated": {
+        // Name change notification — handled by session manager
+        break;
+      }
+
+      case "thread/goal/updated": {
+        try {
+          this.emitMessage({
+            type: "goal_state",
+            goal: parseCodexGoal(params.goal),
+          });
+        } catch (err) {
+          console.warn(
+            `[codex-process] Ignoring invalid goal notification: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        break;
+      }
+
+      case "thread/goal/cleared": {
+        this.emitMessage({ type: "goal_state", goal: null });
+        break;
+      }
+
+      case "thread/tokenUsage/updated": {
+        const usage = params.usage as Record<string, unknown> | undefined;
+        if (usage) {
+          this.lastTokenUsage = {
+            input: numberOrUndefined(usage.inputTokens ?? usage.input_tokens),
+            cachedInput: numberOrUndefined(
+              usage.cachedInputTokens ?? usage.cached_input_tokens,
+            ),
+            output: numberOrUndefined(
+              usage.outputTokens ?? usage.output_tokens,
+            ),
+          };
+        }
+        break;
+      }
+
+      case "item/started": {
+        this.processItemStarted(
+          params.item as Record<string, unknown> | undefined,
+        );
+        break;
+      }
+
+      case "item/completed": {
+        this.processItemCompleted(
+          params.item as Record<string, unknown> | undefined,
+        );
+        break;
+      }
+
+      case "item/agentMessage/delta": {
+        const delta =
+          typeof params.delta === "string"
+            ? params.delta
+            : typeof params.textDelta === "string"
+              ? params.textDelta
+              : "";
+        if (delta) {
+          const itemId = stringOrNull(params.itemId) ?? UNKNOWN_AGENT_ITEM_ID;
+          this.pendingAgentTextByItemId.set(
+            itemId,
+            (this.pendingAgentTextByItemId.get(itemId) ?? "") + delta,
+          );
+          this.emitMessage({ type: "stream_delta", text: delta });
+        }
+        break;
+      }
+
+      case "item/reasoning/summaryTextDelta":
+      case "item/reasoning/textDelta": {
+        const delta =
+          typeof params.delta === "string"
+            ? params.delta
+            : typeof params.textDelta === "string"
+              ? params.textDelta
+              : "";
+        if (delta) {
+          this.emitMessage({ type: "thinking_delta", text: delta });
+        }
+        break;
+      }
+
+      case "item/plan/delta": {
+        const delta = typeof params.delta === "string" ? params.delta : "";
+        if (delta) {
+          this.emitMessage({ type: "thinking_delta", text: delta });
+        }
+        break;
+      }
+
+      case "skills/changed": {
+        // Re-fetch skills/apps when Codex notifies us of changes
+        this.scheduleCompletionFetchFromNotification();
+        break;
+      }
+
+      case "app/list/updated": {
+        this.scheduleCompletionFetchFromNotification();
+        break;
+      }
+
+      case "turn/plan/updated": {
+        // Default mode's update_plan tool output. Keep it structured so clients
+        // can render it with the same checklist UI used for Claude TodoWrite.
+        const input = buildPlanUpdateToolUseInput(params);
+        if (!input) break;
+        this.emitMessage({
+          type: "assistant",
+          message: {
+            id: randomUUID(),
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: `update_plan_${randomUUID()}`,
+                name: "UpdatePlan",
+                input,
+              },
+            ],
+            model: this.getMessageModel(),
+          },
+        });
+        break;
+      }
+
+      case "serverRequest/resolved": {
+        this.handleServerRequestResolved(params);
+        break;
+      }
+
+      case "warning": {
+        const message = stringValue(params.message);
+        if (message) {
+          this.emitMessage({
+            type: "error",
+            errorCode: "codex_warning",
+            message,
+          });
+        }
+        break;
+      }
+
+      case "guardianWarning": {
+        const message = stringValue(params.message);
+        if (!message) break;
+        const approval = parseGuardianApproval(message);
+        if (
+          approval?.risk === "low" &&
+          isLowRiskAllowDecision(approval.reason)
+        ) {
+          console.debug(
+            "[codex-process] suppressed informational guardian approval notification",
+          );
+          break;
+        }
+        if (
+          approval &&
+          (approval.risk === "medium" || approval.risk === "high")
+        ) {
+          this.emitMessage({
+            type: "guardian_approval",
+            risk: approval.risk,
+            reason: approval.reason,
+            ...(approval.authorization
+              ? { authorization: approval.authorization }
+              : {}),
+          });
+          break;
+        }
+        this.emitMessage({
+          type: "error",
+          errorCode: "codex_warning",
+          message,
+        });
+        break;
+      }
+
+      case "configWarning":
+      case "deprecationNotice": {
+        const summary = stringValue(params.summary);
+        const details = stringValue(params.details);
+        if (summary || details) {
+          this.emitMessage({
+            type: "error",
+            errorCode: "codex_warning",
+            message: [summary, details].filter(Boolean).join("\n"),
+          });
+        }
+        break;
+      }
+
+      case "error": {
+        const error = asRecord(params.error);
+        const message = stringValue(error?.message) ?? "Codex runtime error";
+        if (params.willRetry === true) {
+          console.warn(`[codex-process] Codex will retry: ${message}`);
+          break;
+        }
+        this.emitMessage({
+          type: "error",
+          errorCode: "codex_runtime_error",
+          message,
+        });
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
+  private isForeignThreadNotification(
+    method: string,
+    params: Record<string, unknown>,
+  ): boolean {
+    if (!isThreadScopedNotification(method)) return false;
+    const threadId = notificationThreadId(params);
+    if (!threadId) return false;
+
+    // Thread binding comes from the thread/start or thread/resume response.
+    // In shared app-server modes, early notifications can belong to another
+    // client, so explicit-thread notifications are ignored until this process
+    // has its own authoritative thread id.
+    if (!this._threadId) return true;
+    return threadId !== this._threadId;
+  }
+
+  private handleTurnCompleted(turn: Record<string, unknown> | undefined): void {
+    const status = String(turn?.status ?? "completed");
+    if (status === "completed") {
+      this.prepareTurnCompletionAgentSummary(turn);
+    }
+    this.finalizePendingAgentText();
+    this.confirmedAgentTextByItemId.clear();
+
+    const usage = this.lastTokenUsage;
+    this.lastTokenUsage = null;
+
+    if (status === "failed") {
+      const errorObj = turn?.error as Record<string, unknown> | undefined;
+      const message =
+        typeof errorObj?.message === "string"
+          ? errorObj.message
+          : "Turn failed";
+      this.emitMessage({
+        type: "result",
+        subtype: "error",
+        error: message,
+        sessionId: this._threadId ?? undefined,
+      });
+    } else if (status === "interrupted") {
+      this.emitMessage({
+        type: "result",
+        subtype: "interrupted",
+        sessionId: this._threadId ?? undefined,
+      });
+    } else {
+      this.emitMessage({
+        type: "result",
+        subtype: "success",
+        sessionId: this._threadId ?? undefined,
+        ...(this.lastResultText ? { result: this.lastResultText } : {}),
+        ...(usage?.input != null ? { inputTokens: usage.input } : {}),
+        ...(usage?.cachedInput != null
+          ? { cachedInputTokens: usage.cachedInput }
+          : {}),
+        ...(usage?.output != null ? { outputTokens: usage.output } : {}),
+      });
+    }
+
+    this.pendingTurnId = null;
+
+    // Plan mode: emit synthetic plan approval and wait for user decision
+    if (this._collaborationMode === "plan" && this.lastPlanItemText) {
+      const toolUseId = `plan_${randomUUID()}`;
+      this.pendingPlanCompletion = {
+        toolUseId,
+        planText: this.lastPlanItemText,
+      };
+      this.lastPlanItemText = null;
+
+      this.emitMessage({
+        type: "permission_request",
+        toolUseId,
+        toolName: "ExitPlanMode",
+        input: { plan: this.pendingPlanCompletion.planText },
+      });
+      this.setStatus("waiting_approval");
+      // Do NOT set idle — waiting for plan approval
+    } else {
+      this.lastPlanItemText = null;
+      if (
+        this.pendingApprovals.size === 0 &&
+        this.pendingUserInputs.size === 0
+      ) {
+        this.setStatus("idle");
+      }
+    }
+
+    if (this.pendingTurnCompletion) {
+      this.pendingTurnCompletion.resolve();
+      this.pendingTurnCompletion = null;
+    }
+    this.cleanupSteerTempPaths();
+  }
+
+  private prepareTurnCompletionAgentSummary(
+    turn: Record<string, unknown> | undefined,
+  ): void {
+    if (turn?.itemsView !== "summary" || !Array.isArray(turn.items)) return;
+
+    const summaryItem = [...turn.items]
+      .reverse()
+      .find(
+        (item): item is Record<string, unknown> =>
+          typeof item === "object" &&
+          item !== null &&
+          normalizeItemType((item as Record<string, unknown>).type) ===
+            "agentmessage" &&
+          Boolean(extractAgentText(item as Record<string, unknown>)?.trim()),
+      );
+    if (!summaryItem) return;
+
+    const itemId =
+      typeof summaryItem.id === "string"
+        ? summaryItem.id
+        : UNKNOWN_AGENT_ITEM_ID;
+    const summaryText = extractAgentText(summaryItem);
+    if (!summaryText?.trim()) return;
+
+    const confirmedText = this.confirmedAgentTextByItemId.get(itemId);
+    if (confirmedText !== undefined) {
+      this.pendingAgentTextByItemId.delete(itemId);
+      this.lastResultText = confirmedText;
+      return;
+    }
+
+    if (
+      itemId !== UNKNOWN_AGENT_ITEM_ID &&
+      !this.pendingAgentTextByItemId.has(itemId)
+    ) {
+      const unknownText = this.pendingAgentTextByItemId.get(
+        UNKNOWN_AGENT_ITEM_ID,
+      );
+      if (
+        unknownText &&
+        (summaryText.startsWith(unknownText) ||
+          unknownText.startsWith(summaryText))
+      ) {
+        this.pendingAgentTextByItemId.delete(UNKNOWN_AGENT_ITEM_ID);
+      }
+    }
+    this.pendingAgentTextByItemId.set(itemId, summaryText);
+  }
+
+  private finalizePendingAgentText(): void {
+    const pendingItems = [...this.pendingAgentTextByItemId.entries()];
+    this.pendingAgentTextByItemId.clear();
+    for (const [pendingItemId, text] of pendingItems) {
+      if (!text.trim()) continue;
+      const itemId =
+        pendingItemId === UNKNOWN_AGENT_ITEM_ID ? randomUUID() : pendingItemId;
+      this.lastResultText = text;
+      this.syntheticAgentTextByItemId.set(itemId, text);
+      this.emitMessage({
+        type: "assistant",
+        message: {
+          id: itemId,
+          role: "assistant",
+          content: [{ type: "text", text }],
+          model: this.getMessageModel(),
+        },
+      });
+    }
+  }
+
+  private cleanupSteerTempPaths(): void {
+    const tempPaths = this.steerTempPaths.splice(0);
+    void Promise.all(
+      tempPaths.map((path) => rm(path, { force: true }).catch(() => {})),
+    );
+  }
+
+  private processItemStarted(item: Record<string, unknown> | undefined): void {
+    if (!item || typeof item !== "object") return;
+    const itemId = typeof item.id === "string" ? item.id : randomUUID();
+    const itemType = normalizeItemType(item.type);
+
+    switch (itemType) {
+      case "commandexecution": {
+        this.emitMessage({
+          type: "assistant",
+          message: {
+            id: itemId,
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: itemId,
+                name: "Bash",
+                input: commandExecutionToolUseInput(item),
+              },
+            ],
+            model: this.getMessageModel(),
+          },
+        });
+        break;
+      }
+
+      case "filechange": {
+        this.emitMessage({
+          type: "assistant",
+          message: {
+            id: itemId,
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: itemId,
+                name: "FileChange",
+                input: {
+                  changes: Array.isArray(item.changes) ? item.changes : [],
+                },
+              },
+            ],
+            model: this.getMessageModel(),
+          },
+        });
+        break;
+      }
+
+      case "dynamictoolcall": {
+        const tool = typeof item.tool === "string" ? item.tool : "DynamicTool";
+        this.emitMessage({
+          type: "assistant",
+          message: {
+            id: itemId,
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: itemId,
+                name: tool,
+                input: toToolUseInput(item.arguments),
+              },
+            ],
+            model: this.getMessageModel(),
+          },
+        });
+        break;
+      }
+
+      case "imagegeneration": {
+        this.emitMessage({
+          type: "assistant",
+          message: {
+            id: itemId,
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: itemId,
+                name: "ImageGeneration",
+                input: toImageGenerationToolInput(item),
+              },
+            ],
+            model: this.getMessageModel(),
+          },
+        });
+        break;
+      }
+
+      case "collabagenttoolcall": {
+        const tool = typeof item.tool === "string" ? item.tool : "subagent";
+        const toolName = "SubAgent";
+        const input: Record<string, unknown> = {
+          tool,
+          ...(typeof item.prompt === "string" ? { prompt: item.prompt } : {}),
+          ...(typeof item.senderThreadId === "string"
+            ? { senderThreadId: item.senderThreadId }
+            : {}),
+          ...(Array.isArray(item.receiverThreadIds)
+            ? { receiverThreadIds: item.receiverThreadIds }
+            : {}),
+          ...(typeof item.model === "string" ? { model: item.model } : {}),
+          ...(typeof item.reasoningEffort === "string"
+            ? { reasoningEffort: item.reasoningEffort }
+            : {}),
+          ...(item.agentsStates ? { agentsStates: item.agentsStates } : {}),
+        };
+        this.emitMessage({
+          type: "assistant",
+          message: {
+            id: itemId,
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: itemId,
+                name: toolName,
+                input,
+              },
+            ],
+            model: this.getMessageModel(),
+          },
+        });
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
+  private processItemCompleted(
+    item: Record<string, unknown> | undefined,
+  ): void {
+    if (!item || typeof item !== "object") return;
+    const itemId = typeof item.id === "string" ? item.id : randomUUID();
+    const itemType = normalizeItemType(item.type);
+
+    switch (itemType) {
+      case "agentmessage": {
+        const completedText = extractAgentText(item);
+        const hasCompletedText = completedText?.trim().length > 0;
+        const directPendingText = this.pendingAgentTextByItemId.get(itemId);
+        const unknownPendingText =
+          directPendingText === undefined
+            ? this.pendingAgentTextByItemId.get(UNKNOWN_AGENT_ITEM_ID)
+            : undefined;
+        const usedUnknownPendingText =
+          !hasCompletedText && directPendingText === undefined;
+        const matchedUnknownPendingText =
+          hasCompletedText &&
+          Boolean(
+            unknownPendingText &&
+              (completedText?.startsWith(unknownPendingText) ||
+                unknownPendingText.startsWith(completedText ?? "")),
+          );
+        const pendingText = usedUnknownPendingText
+          ? (unknownPendingText ?? "")
+          : (directPendingText ?? "");
+        const text = hasCompletedText ? completedText : pendingText;
+        this.pendingAgentTextByItemId.delete(itemId);
+        if (usedUnknownPendingText || matchedUnknownPendingText) {
+          this.pendingAgentTextByItemId.delete(UNKNOWN_AGENT_ITEM_ID);
+        }
+        if (!text.trim()) return;
+        if (this.pendingTurnId === null) {
+          const syntheticText = this.syntheticAgentTextByItemId.get(itemId);
+          if (syntheticText === text) {
+            this.syntheticAgentTextByItemId.delete(itemId);
+            return;
+          }
+          const syntheticEntry = [
+            ...this.syntheticAgentTextByItemId.entries(),
+          ].find(([, candidate]) => candidate === text);
+          if (syntheticEntry) {
+            this.syntheticAgentTextByItemId.delete(syntheticEntry[0]);
+            return;
+          }
+        }
+        this.syntheticAgentTextByItemId.delete(itemId);
+        this.confirmedAgentTextByItemId.set(itemId, text);
+        this.lastResultText = text;
+        this.emitMessage({
+          type: "assistant",
+          message: {
+            id: itemId,
+            role: "assistant",
+            content: [{ type: "text", text }],
+            model: this.getMessageModel(),
+          },
+        });
+        break;
+      }
+
+      case "user":
+      case "usermessage":
+      case "userinput": {
+        const text = extractUserText(item);
+        if (!text) return;
+        this.emitMessage({
+          type: "user_input",
+          text,
+          userMessageUuid: itemId,
+          ...(typeof item.timestamp === "string"
+            ? { timestamp: item.timestamp }
+            : {}),
+        } as ServerMessage);
+        break;
+      }
+
+      case "reasoning": {
+        const text = extractReasoningText(item);
+        if (text) {
+          this.emitMessage({ type: "thinking_delta", text });
+        }
+        break;
+      }
+
+      case "commandexecution": {
+        const output =
+          typeof item.aggregatedOutput === "string"
+            ? item.aggregatedOutput
+            : typeof item.output === "string"
+              ? item.output
+              : "";
+        const exitCode = numberOrUndefined(item.exitCode ?? item.exit_code);
+        this.emitMessage({
+          type: "tool_result",
+          toolUseId: itemId,
+          content: output || `exit code: ${exitCode ?? "unknown"}`,
+          toolName: "Bash",
+        });
+        break;
+      }
+
+      case "filechange": {
+        const content = formatFileChangesWithDiff(item.changes);
+        this.emitMessage({
+          type: "tool_result",
+          toolUseId: itemId,
+          content,
+          toolName: "FileChange",
+        });
+        break;
+      }
+
+      case "mcptoolcall": {
+        const server = typeof item.server === "string" ? item.server : "mcp";
+        const tool = typeof item.tool === "string" ? item.tool : "unknown";
+        const toolName = `mcp:${server}/${tool}`;
+        const result = item.result ?? item.error ?? "MCP call completed";
+        const normalized = normalizeMcpToolResult(result);
+        this.emitMessage({
+          type: "assistant",
+          message: {
+            id: itemId,
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: itemId,
+                name: toolName,
+                input: (item.arguments as Record<string, unknown>) ?? {},
+              },
+            ],
+            model: this.getMessageModel(),
+          },
+        });
+        this.emitMessage({
+          type: "tool_result",
+          toolUseId: itemId,
+          content: normalized.content,
+          toolName,
+          ...(normalized.rawContentBlocks.length > 0
+            ? { rawContentBlocks: normalized.rawContentBlocks }
+            : {}),
+        });
+        break;
+      }
+
+      case "dynamictoolcall": {
+        const tool = typeof item.tool === "string" ? item.tool : "DynamicTool";
+        const content = formatDynamicToolResult(item);
+        this.emitMessage({
+          type: "tool_result",
+          toolUseId: itemId,
+          content,
+          toolName: tool,
+        });
+        break;
+      }
+
+      case "imagegeneration": {
+        const normalized = formatImageGenerationResult(item);
+        this.emitMessage({
+          type: "tool_result",
+          toolUseId: itemId,
+          content: normalized.content,
+          toolName: "ImageGeneration",
+          ...(normalized.rawContentBlocks.length > 0
+            ? { rawContentBlocks: normalized.rawContentBlocks }
+            : {}),
+        });
+        break;
+      }
+
+      case "websearch": {
+        const query = typeof item.query === "string" ? item.query : "";
+        this.emitMessage({
+          type: "assistant",
+          message: {
+            id: itemId,
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: itemId,
+                name: "WebSearch",
+                input: { query },
+              },
+            ],
+            model: this.getMessageModel(),
+          },
+        });
+        this.emitMessage({
+          type: "tool_result",
+          toolUseId: itemId,
+          content: query ? `Web search: ${query}` : "Web search completed",
+          toolName: "WebSearch",
+        });
+        break;
+      }
+
+      case "collabagenttoolcall": {
+        const tool = typeof item.tool === "string" ? item.tool : "subagent";
+        const status =
+          typeof item.status === "string" ? item.status : "completed";
+        const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+          ? item.receiverThreadIds.map((entry) => String(entry))
+          : [];
+        const content = [
+          `tool: ${tool}`,
+          `status: ${status}`,
+          ...(receiverThreadIds.length > 0
+            ? [`agents: ${receiverThreadIds.join(", ")}`]
+            : []),
+        ].join("\n");
+        this.emitMessage({
+          type: "tool_result",
+          toolUseId: itemId,
+          content,
+          toolName: "SubAgent",
+        });
+        break;
+      }
+
+      case "plan": {
+        // Plan item completed — save text for plan approval emission in handleTurnCompleted()
+        const planText = typeof item.text === "string" ? item.text : "";
+        this.lastPlanItemText = planText;
+        break;
+      }
+
+      case "exitedreviewmode": {
+        const text = typeof item.review === "string" ? item.review : "";
+        if (!text) break;
+        this.lastResultText = text;
+        this.emitMessage({
+          type: "assistant",
+          message: {
+            id: itemId,
+            role: "assistant",
+            content: [{ type: "text", text }],
+            model: this.getMessageModel(),
+          },
+        });
+        break;
+      }
+
+      case "error": {
+        const message =
+          typeof item.message === "string" ? item.message : "Codex item error";
+        this.emitMessage({ type: "error", message });
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
+  private async toRpcInput(pendingInput: PendingInput): Promise<{
+    input: Array<Record<string, unknown>> | null;
+    tempPaths: string[];
+  }> {
+    const input: Array<Record<string, unknown>> = [];
+    const tempPaths: string[] = [];
+
+    // Prepend structured input items before the free-form text body.
+    for (const skill of pendingInput.skills ?? []) {
+      input.push({
+        type: "skill",
+        name: skill.name,
+        path: skill.path,
+      });
+    }
+    for (const mention of pendingInput.mentions ?? []) {
+      input.push({
+        type: "mention",
+        name: mention.name,
+        path: mention.path,
+      });
+    }
+    input.push({ type: "text", text: pendingInput.text });
+
+    if (!pendingInput.images || pendingInput.images.length === 0) {
+      return { input, tempPaths };
+    }
+
+    for (const image of pendingInput.images) {
+      const ext = extensionFromMime(image.mimeType);
+      if (!ext) {
+        this.emitMessage({
+          type: "error",
+          message: `Unsupported image mime type for Codex: ${image.mimeType}`,
+        });
+        continue;
+      }
+
+      let buffer: Buffer;
+      try {
+        buffer = Buffer.from(image.base64, "base64");
+      } catch {
+        this.emitMessage({
+          type: "error",
+          message: "Invalid base64 image data for Codex input",
+        });
+        continue;
+      }
+
+      const tempPath = join(
+        tmpdir(),
+        `ccpocket-codex-image-${randomUUID()}.${ext}`,
+      );
+      await writeFile(tempPath, buffer);
+      tempPaths.push(tempPath);
+      input.push({ type: "localImage", path: tempPath });
+    }
+
+    return { input, tempPaths };
+  }
+
+  private request(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<unknown> {
+    const id = this.rpcSeq++;
+    const envelope =
+      params === undefined ? { id, method } : { id, method, params };
+
+    return new Promise<unknown>((resolve, reject) => {
+      let timeout: NodeJS.Timeout | undefined;
+      const clearRequestTimeout = () => {
+        if (timeout) clearTimeout(timeout);
+      };
+      this.pendingRpc.set(id, {
+        resolve: (value) => {
+          clearRequestTimeout();
+          resolve(value);
+        },
+        reject: (error) => {
+          clearRequestTimeout();
+          reject(error);
+        },
+        method,
+      });
+      if (timeoutMs != null) {
+        timeout = setTimeout(() => {
+          if (!this.pendingRpc.delete(id)) return;
+          reject(new Error(`Codex RPC ${method} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
+      try {
+        this.writeEnvelope(envelope);
+      } catch (err) {
+        this.pendingRpc.delete(id);
+        clearRequestTimeout();
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
+  private notify(method: string, params: Record<string, unknown>): void {
+    this.writeEnvelope({ method, params });
+  }
+
+  private respondToServerRequest(
+    id: number | string,
+    result: Record<string, unknown>,
+  ): void {
+    try {
+      this.writeEnvelope({ id, result });
+    } catch (err) {
+      if (!this.stopped) {
+        console.warn(
+          `[codex-process] failed to respond to server request: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  private respondToServerRequestError(
+    id: number | string,
+    code: number,
+    message: string,
+  ): void {
+    try {
+      this.writeEnvelope({ id, error: { code, message } });
+    } catch (err) {
+      if (!this.stopped) {
+        console.warn(
+          `[codex-process] failed to reject server request: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  private writeEnvelope(envelope: Record<string, unknown>): void {
+    if (!this.transport || !this.transport.isRunning) {
+      throw new Error("codex app-server is not running");
+    }
+    this.transport.write(envelope);
+  }
+
+  private rejectAllPending(error: Error): void {
+    for (const pending of this.pendingRpc.values()) {
+      pending.reject(error);
+    }
+    this.pendingRpc.clear();
+
+    if (this.pendingTurnCompletion) {
+      this.pendingTurnCompletion.reject(error);
+      this.pendingTurnCompletion = null;
+    }
+  }
+
+  private resetReadiness(): void {
+    this.rejectReadiness(new Error("codex app-server restarted"));
+    this.readiness = "pending";
+    this.readinessError = undefined;
+  }
+
+  private resolveReadiness(): void {
+    if (this.readiness !== "pending") return;
+    this.readiness = "ready";
+    for (const waiter of this.readinessWaiters) waiter.resolve();
+    this.readinessWaiters.clear();
+  }
+
+  private rejectReadiness(error: unknown): void {
+    this.readiness = "failed";
+    this.readinessError = error;
+    for (const waiter of this.readinessWaiters) waiter.reject(error);
+    this.readinessWaiters.clear();
+  }
+
+  private setStatus(status: ProcessStatus): void {
+    if (this._status !== status) {
+      this._status = status;
+      this.emit("status", status);
+      this.emitMessage({ type: "status", status });
+    }
+  }
+
+  private emitMessage(msg: ServerMessage): void {
+    this.emit("message", msg);
+  }
+
+  private extractToolUseId(
+    params: Record<string, unknown>,
+    requestId: number | string,
+  ): string {
+    if (typeof params.approvalId === "string") return params.approvalId;
+    if (typeof params.elicitationId === "string") return params.elicitationId;
+    if (typeof params.itemId === "string") return params.itemId;
+    if (typeof requestId === "string") return requestId;
+    return `approval-${requestId}`;
+  }
+
+  private handleServerRequestResolved(params: Record<string, unknown>): void {
+    const requestId = params.requestId;
+    if (requestId === undefined || requestId === null) return;
+
+    const approval = [...this.pendingApprovals.values()].find(
+      (entry) => entry.requestId === requestId,
+    );
+    if (approval) {
+      this.pendingApprovals.delete(approval.toolUseId);
+      this.emitMessage({
+        type: "permission_resolved",
+        toolUseId: approval.toolUseId,
+      });
+    }
+
+    const inputRequest = [...this.pendingUserInputs.values()].find(
+      (entry) => entry.requestId === requestId,
+    );
+    if (inputRequest) {
+      this.pendingUserInputs.delete(inputRequest.toolUseId);
+      this.emitMessage({
+        type: "permission_resolved",
+        toolUseId: inputRequest.toolUseId,
+      });
+    }
+
+    if (
+      !this.pendingPlanCompletion &&
+      this.pendingApprovals.size === 0 &&
+      this.pendingUserInputs.size === 0
+    ) {
+      this.setStatus(this.pendingTurnId ? "running" : "idle");
+    }
+  }
+}
+
+function buildApprovalResponse(
+  pending: PendingApproval,
+  decision: "accept" | "acceptForSession" | "decline" | "cancel",
+): Record<string, unknown> {
+  if (pending.kind === "permissions") {
+    return {
+      scope: decision === "acceptForSession" ? "session" : "turn",
+      permissions:
+        decision === "decline" ? {} : (pending.requestedPermissions ?? {}),
+    };
+  }
+
+  return {
+    decision,
+  };
+}
+
+function resolveApprovalRejectDecision(
+  pending: PendingApproval,
+): "decline" | "cancel" {
+  const availableDecisions = pending.input.availableDecisions;
+  if (!Array.isArray(availableDecisions)) return "decline";
+  const decisions = new Set(
+    availableDecisions.filter(
+      (entry): entry is string => typeof entry === "string",
+    ),
+  );
+  if (decisions.has("cancel") && !decisions.has("decline")) {
+    return "cancel";
+  }
+  return "decline";
+}
+
+function buildUserInputResponse(
+  pending: PendingUserInputRequest,
+  rawResult: string,
+): Record<string, unknown> {
+  if (pending.kind === "questions") {
+    return {
+      answers: buildUserInputAnswers(pending.questions, rawResult),
+    };
+  }
+
+  return buildElicitationResponse(pending, rawResult);
+}
+
+function resolveUserInputRejectResult(
+  pending: PendingUserInputRequest,
+  fallback: string,
+): string {
+  if (pending.kind !== "elicitation_approval") return fallback;
+  const availableDecisions = pending.input.availableDecisions;
+  if (!Array.isArray(availableDecisions)) return fallback;
+  const decisions = new Set(
+    availableDecisions.filter(
+      (entry): entry is string => typeof entry === "string",
+    ),
+  );
+  if (decisions.has("cancel") && !decisions.has("decline")) {
+    return "Cancel";
+  }
+  return fallback;
+}
+
+function extractWritableRootsFromConfigRead(response: unknown): string[] {
+  if (!response || typeof response !== "object") return [];
+  const config = (response as Record<string, unknown>).config;
+  if (!config || typeof config !== "object") return [];
+  const workspaceWrite = (config as Record<string, unknown>)
+    .sandbox_workspace_write;
+  if (!workspaceWrite || typeof workspaceWrite !== "object") return [];
+  const writableRoots = (workspaceWrite as Record<string, unknown>)
+    .writable_roots;
+  if (!Array.isArray(writableRoots)) return [];
+  return writableRoots.filter(
+    (root): root is string => typeof root === "string",
+  );
+}
+
+function extractPermissionsFromConfigRead(
+  response: unknown,
+  projectLookupPaths: readonly string[],
+  platform: NodeJS.Platform,
+  profile?: string,
+): CodexConfigPermissions {
+  const config = asRecord(asRecord(response)?.config);
+  const profiles = asRecord(config?.profiles);
+  const configuredDefaultProfile =
+    typeof config?.profile === "string" && config.profile.trim()
+      ? config.profile.trim()
+      : undefined;
+  const requestedProfile = profile?.trim() || undefined;
+  const selectedProfile = requestedProfile ?? configuredDefaultProfile;
+  const profileConfig = selectedProfile
+    ? asRecord(profiles?.[selectedProfile])
+    : undefined;
+  const configuredValue = (key: string): unknown =>
+    profileConfig?.[key] ?? config?.[key];
+  const projectTrust = findProjectTrust(config, projectLookupPaths, platform);
+  return {
+    approvalPolicy:
+      parseConfigApprovalPolicy(configuredValue("approval_policy")) ??
+      (projectTrust === "untrusted" ? "untrusted" : "on-request"),
+    approvalsReviewer:
+      parseConfigApprovalsReviewer(configuredValue("approvals_reviewer")) ??
+      "user",
+    sandboxMode:
+      parseConfigSandboxMode(configuredValue("sandbox_mode")) ??
+      (projectTrust !== undefined && platform !== "win32"
+        ? "workspace-write"
+        : "read-only"),
+  };
+}
+
+function findProjectTrust(
+  config: Record<string, unknown> | undefined,
+  projectLookupPaths: readonly string[],
+  platform: NodeJS.Platform,
+): "trusted" | "untrusted" | undefined {
+  const projects = asRecord(config?.projects);
+  if (!projects) return undefined;
+  const projectEntries = Object.entries(projects);
+  for (const lookupPath of projectLookupPaths) {
+    const normalizedLookupPath = normalizeConfigPath(lookupPath, platform);
+    for (const [configuredPath, rawProject] of projectEntries) {
+      if (normalizeConfigPath(configuredPath, platform) !== normalizedLookupPath) {
+        continue;
+      }
+      const trustLevel = asRecord(rawProject)?.trust_level;
+      if (trustLevel === "trusted" || trustLevel === "untrusted") {
+        return trustLevel;
+      }
+    }
+  }
+  return undefined;
+}
+
+function resolveConfigProjectLookupPaths(projectPath: string): string[] {
+  const lookupPaths = new Set<string>();
+  let canonicalPath: string;
+  try {
+    canonicalPath = realpathSync(projectPath);
+    lookupPaths.add(canonicalPath);
+    lookupPaths.add(projectPath);
+  } catch {
+    return [projectPath];
+  }
+
+  let candidate = canonicalPath;
+  while (true) {
+    try {
+      statSync(join(candidate, ".git"));
+      lookupPaths.add(candidate);
+      break;
+    } catch {
+      const parent = dirname(candidate);
+      if (parent === candidate) break;
+      candidate = parent;
+    }
+  }
+  return [...lookupPaths];
+}
+
+function normalizeConfigPath(
+  value: string,
+  platform: NodeJS.Platform,
+): string {
+  const normalized = resolvePlatformPath(value, platform);
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function parseConfigApprovalPolicy(
+  value: unknown,
+): CodexConfigPermissions["approvalPolicy"] | undefined {
+  switch (value) {
+    case "never":
+    case "on-request":
+    case "on-failure":
+    case "untrusted":
+      return value;
+    default:
+      return isGranularApprovalPolicy(value) ? { ...value } : undefined;
+  }
+}
+
+function isGranularApprovalPolicy(
+  value: unknown,
+): value is Record<string, unknown> {
+  const granular = asRecord(asRecord(value)?.granular);
+  return (
+    granular !== undefined &&
+    typeof granular.sandbox_approval === "boolean" &&
+    typeof granular.rules === "boolean" &&
+    typeof granular.mcp_elicitations === "boolean" &&
+    (granular.skill_approval === undefined ||
+      typeof granular.skill_approval === "boolean") &&
+    (granular.request_permissions === undefined ||
+      typeof granular.request_permissions === "boolean")
+  );
+}
+
+function parseConfigApprovalsReviewer(
+  value: unknown,
+): CodexConfigPermissions["approvalsReviewer"] | undefined {
+  switch (value) {
+    case "user":
+    case "auto_review":
+    case "guardian_subagent":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parseConfigSandboxMode(
+  value: unknown,
+): CodexConfigPermissions["sandboxMode"] | undefined {
+  switch (value) {
+    case "read-only":
+    case "workspace-write":
+    case "danger-full-access":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeWritableRoots(
+  roots: string[],
+  platform: NodeJS.Platform,
+): string[] {
+  const normalized = new Map<string, string>();
+  for (const root of roots) {
+    const trimmed = root.trim();
+    if (!trimmed) continue;
+    const resolved = resolvePlatformPath(trimmed, platform);
+    const key = platform === "win32" ? resolved.toLowerCase() : resolved;
+    if (!normalized.has(key)) {
+      normalized.set(key, resolved);
+    }
+  }
+  return [...normalized.values()];
+}
+
+function normalizeApprovalPolicy(
+  value: CodexStartOptions["approvalPolicy"],
+): NonNullable<CodexStartOptions["approvalPolicy"]> {
+  switch (value) {
+    case "on-request":
+      return "on-request";
+    case "on-failure":
+      return "on-failure";
+    case "untrusted":
+      return "untrusted";
+    case "never":
+    default:
+      return "never";
+  }
+}
+
+function normalizeApprovalPolicyForRpc(
+  value: CodexRpcApprovalPolicy,
+): CodexRpcApprovalPolicy {
+  return typeof value === "string" ? normalizeApprovalPolicy(value) : value;
+}
+
+function approvalPolicyForClient(
+  value: CodexRpcApprovalPolicy | undefined,
+): NonNullable<CodexStartOptions["approvalPolicy"]> {
+  // Mobile's legacy mode model cannot represent granular policies. They still
+  // request approval conditionally, so on-request is the closest UI projection.
+  return typeof value === "string"
+    ? (value as NonNullable<CodexStartOptions["approvalPolicy"]>)
+    : "on-request";
+}
+
+function normalizeApprovalsReviewerForAppServer(
+  value: CodexStartOptions["approvalsReviewer"],
+): string {
+  switch (value) {
+    case "auto_review":
+    case "guardian_subagent":
+      return "guardian_subagent";
+    case "user":
+    default:
+      return "user";
+  }
+}
+
+function normalizeApprovalsReviewerForClient(
+  value: CodexStartOptions["approvalsReviewer"],
+): string {
+  switch (value) {
+    case "auto_review":
+    case "guardian_subagent":
+      return "auto_review";
+    case "user":
+    default:
+      return "user";
+  }
+}
+
+function normalizeSandboxMode(value: CodexStartOptions["sandboxMode"]): string {
+  switch (value) {
+    case "read-only":
+      return "read-only";
+    case "danger-full-access":
+      return "danger-full-access";
+    case "workspace-write":
+    default:
+      return "workspace-write";
+  }
+}
+
+export function normalizeCodexReasoningEffortForModel(
+  model: unknown,
+  value: CodexStartOptions["modelReasoningEffort"],
+): CodexStartOptions["modelReasoningEffort"] {
+  if (
+    sanitizeCodexModel(model) === "gpt-6-astra" &&
+    (value === "none" || value === "minimal")
+  ) {
+    return "low";
+  }
+  return value;
+}
+
+function extractReasoningEfforts(raw: Record<string, unknown>): string[] {
+  const values =
+    Array.isArray(raw.supportedReasoningEfforts)
+      ? raw.supportedReasoningEfforts
+    : Array.isArray(raw.supported_reasoning_levels)
+      ? raw.supported_reasoning_levels
+    : [];
+  const seen = new Set<string>();
+  const efforts: string[] = [];
+  for (const value of values) {
+    const effort =
+      typeof value === "string"
+        ? value
+        : value && typeof value === "object"
+          ? ((value as Record<string, unknown>).reasoningEffort ??
+            (value as Record<string, unknown>).effort)
+          : undefined;
+    if (typeof effort !== "string") continue;
+    const normalized = effort.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    efforts.push(normalized);
+  }
+  return efforts;
+}
+
+function extractServiceTiers(raw: Record<string, unknown>): string[] {
+  // Recent app-server versions expose the user-facing Fast option as
+  // `additionalSpeedTiers: ["fast"]`, while the lower-level service tier is
+  // advertised as `{ id: "priority", name: "Fast" }`. Merge both shapes and
+  // normalize them to the value accepted by `service_tier` in config/RPCs.
+  const values = [
+    ...(Array.isArray(raw.additionalSpeedTiers)
+      ? raw.additionalSpeedTiers
+      : []),
+    ...(Array.isArray(raw.serviceTiers) ? raw.serviceTiers : []),
+  ];
+  const seen = new Set<string>();
+  const tiers: string[] = [];
+  for (const value of values) {
+    const metadata =
+      value && typeof value === "object"
+        ? (value as Record<string, unknown>)
+        : undefined;
+    const rawTier = typeof value === "string" ? value : metadata?.id;
+    const rawName = metadata?.name;
+    const tier =
+      rawTier === "priority" ||
+      (typeof rawName === "string" && rawName.toLowerCase() === "fast")
+        ? "fast"
+        : rawTier;
+    if (typeof tier !== "string") continue;
+    const normalized = tier.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    tiers.push(normalized);
+  }
+  return tiers;
+}
+
+function sanitizeCodexModel(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized === "codex") return undefined;
+  return normalized;
+}
+
+function extractResolvedSettingsFromThreadResponse(
+  response: Record<string, unknown>,
+): CodexResolvedSettings {
+  const thread = response.thread as Record<string, unknown> | undefined;
+  const sandbox = response.sandbox as Record<string, unknown> | undefined;
+  const collaborationMode = response.collaborationMode as
+    | Record<string, unknown>
+    | undefined;
+  const collaborationSettings = collaborationMode?.settings as
+    | Record<string, unknown>
+    | undefined;
+
+  return {
+    model: sanitizeCodexModel(response.model)
+      ?? sanitizeCodexModel(thread?.model),
+    approvalPolicy:
+      parseConfigApprovalPolicy(response.approvalPolicy),
+    approvalsReviewer:
+      typeof response.approvalsReviewer === "string"
+        ? response.approvalsReviewer
+        : undefined,
+    sandboxMode: normalizeSandboxModeFromRpc(sandbox?.type),
+    modelReasoningEffort:
+      typeof response.reasoningEffort === "string"
+        ? response.reasoningEffort
+        : typeof collaborationSettings?.reasoning_effort === "string"
+          ? collaborationSettings.reasoning_effort
+        : undefined,
+    serviceTier:
+      typeof response.serviceTier === "string"
+        ? response.serviceTier
+        : undefined,
+    networkAccessEnabled:
+      typeof sandbox?.networkAccess === "boolean"
+        ? sandbox.networkAccess
+        : undefined,
+    webSearchMode:
+      typeof response.webSearchMode === "string"
+        ? response.webSearchMode
+        : undefined,
+  };
+}
+
+function normalizeSandboxModeFromRpc(value: unknown): string | undefined {
+  switch (value) {
+    case "dangerFullAccess":
+      return "danger-full-access";
+    case "workspaceWrite":
+      return "workspace-write";
+    case "readOnly":
+      return "read-only";
+    default:
+      return typeof value === "string" && value.length > 0 ? value : undefined;
+  }
+}
+
+function normalizeItemType(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw.replace(/[_\s-]/g, "").toLowerCase();
+}
+
+function isThreadScopedNotification(method: string): boolean {
+  return (
+    method.startsWith("thread/") ||
+    method.startsWith("turn/") ||
+    method.startsWith("item/") ||
+    method === "serverRequest/resolved"
+  );
+}
+
+function notificationThreadId(params: Record<string, unknown>): string | null {
+  if (typeof params.threadId === "string") return params.threadId;
+
+  const thread = params.thread;
+  if (thread && typeof thread === "object") {
+    const id = (thread as Record<string, unknown>).id;
+    if (typeof id === "string") return id;
+  }
+
+  const turn = params.turn;
+  if (turn && typeof turn === "object") {
+    const id = (turn as Record<string, unknown>).threadId;
+    if (typeof id === "string") return id;
+  }
+
+  return null;
+}
+
+const CODEX_GOAL_STATUSES = new Set<CodexGoalStatus>([
+  "active",
+  "paused",
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete",
+]);
+
+/** Validate the app-server ThreadGoal payload at the process boundary. */
+export function parseCodexGoal(value: unknown): CodexGoal {
+  if (!value || typeof value !== "object") {
+    throw new Error("Goal payload is missing");
+  }
+  const goal = value as Record<string, unknown>;
+  const status = goal.status as CodexGoalStatus;
+  const requiredNumbers = [
+    "tokensUsed",
+    "timeUsedSeconds",
+    "createdAt",
+    "updatedAt",
+  ] as const;
+  if (
+    typeof goal.threadId !== "string" ||
+    typeof goal.objective !== "string" ||
+    !CODEX_GOAL_STATUSES.has(status) ||
+    requiredNumbers.some(
+      (field) =>
+        typeof goal[field] !== "number" ||
+        !Number.isFinite(goal[field] as number),
+    ) ||
+    (goal.tokenBudget !== null &&
+      (typeof goal.tokenBudget !== "number" ||
+        !Number.isFinite(goal.tokenBudget)))
+  ) {
+    throw new Error("Goal payload has an invalid shape");
+  }
+  return {
+    threadId: goal.threadId,
+    objective: goal.objective,
+    status,
+    tokenBudget: goal.tokenBudget as number | null,
+    tokensUsed: goal.tokensUsed as number,
+    timeUsedSeconds: goal.timeUsedSeconds as number,
+    createdAt: goal.createdAt as number,
+    updatedAt: goal.updatedAt as number,
+  };
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function summarizeFileChanges(changes: unknown): string {
+  if (!Array.isArray(changes) || changes.length === 0) {
+    return "No file changes";
+  }
+
+  return changes
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return "changed";
+      const record = entry as Record<string, unknown>;
+      const kind = typeof record.kind === "string" ? record.kind : "changed";
+      const path = typeof record.path === "string" ? record.path : "(unknown)";
+      return `${kind}: ${path}`;
+    })
+    .join("\n");
+}
+
+function toToolUseInput(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (Array.isArray(value)) {
+    return { items: value };
+  }
+  if (value === undefined || value === null) {
+    return {};
+  }
+  return { value };
+}
+
+function commandExecutionToolUseInput(
+  item: Record<string, unknown>,
+): Record<string, unknown> {
+  const command =
+    typeof item.command === "string"
+      ? item.command
+      : Array.isArray(item.command)
+        ? item.command.map((part) => String(part)).join(" ")
+        : "";
+  const pluginId = stringOrNull(item.pluginId ?? item.plugin_id);
+  const scriptPath = stringOrNull(item.scriptPath ?? item.script_path);
+  return {
+    command,
+    ...(pluginId ? { pluginId } : {}),
+    ...(scriptPath ? { scriptPath } : {}),
+  };
+}
+
+function toImageGenerationToolInput(
+  item: Record<string, unknown>,
+): Record<string, unknown> {
+  const input: Record<string, unknown> = {};
+  const status = typeof item.status === "string" ? item.status : undefined;
+  const revisedPrompt = readStringField(item, "revisedPrompt", "revised_prompt");
+  if (status) input.status = status;
+  if (revisedPrompt) input.revisedPrompt = revisedPrompt;
+  return input;
+}
+
+function formatDynamicToolResult(item: Record<string, unknown>): string {
+  const status = typeof item.status === "string" ? item.status : "completed";
+  const success = typeof item.success === "boolean" ? item.success : null;
+  const contentItems = Array.isArray(item.contentItems)
+    ? item.contentItems
+    : null;
+  const parts = [
+    `status: ${status}`,
+    ...(success != null ? [`success: ${success}`] : []),
+  ];
+
+  if (contentItems && contentItems.length > 0) {
+    for (const entry of contentItems) {
+      if (!entry || typeof entry !== "object") continue;
+      const record = entry as Record<string, unknown>;
+      const type = typeof record.type === "string" ? record.type : "item";
+      if (type === "inputText" && typeof record.text === "string") {
+        parts.push(record.text);
+        continue;
+      }
+      if (type === "inputImage" && typeof record.imageUrl === "string") {
+        parts.push(`image: ${record.imageUrl}`);
+        continue;
+      }
+      parts.push(JSON.stringify(record));
+    }
+  }
+
+  return parts.join("\n");
+}
+
+function formatImageGenerationResult(item: Record<string, unknown>): {
+  content: string;
+  rawContentBlocks: Array<Record<string, unknown>>;
+} {
+  const status = typeof item.status === "string" ? item.status : "completed";
+  const revisedPrompt = readStringField(item, "revisedPrompt", "revised_prompt");
+  const savedPath = readStringField(item, "savedPath", "saved_path");
+  const result = typeof item.result === "string" ? item.result.trim() : "";
+  const parts = [`status: ${status}`];
+
+  if (revisedPrompt) parts.push(`revisedPrompt: ${revisedPrompt}`);
+  if (savedPath) {
+    parts.push(`savedPath: ${savedPath}`);
+    return { content: parts.join("\n"), rawContentBlocks: [] };
+  }
+
+  const rawContentBlocks: Array<Record<string, unknown>> = [];
+  if (result) {
+    const base64 = stripImageDataUrlPrefix(result);
+    rawContentBlocks.push({
+      type: "image",
+      source: {
+        type: "base64",
+        data: base64,
+        media_type: "image/png",
+      },
+    });
+    parts.push("Generated 1 image");
+  }
+
+  return { content: parts.join("\n"), rawContentBlocks };
+}
+
+function readStringField(
+  record: Record<string, unknown>,
+  camelName: string,
+  snakeName: string,
+): string | undefined {
+  const camelValue = record[camelName];
+  if (typeof camelValue === "string" && camelValue.trim().length > 0) {
+    return camelValue;
+  }
+  const snakeValue = record[snakeName];
+  if (typeof snakeValue === "string" && snakeValue.trim().length > 0) {
+    return snakeValue;
+  }
+  return undefined;
+}
+
+function stripImageDataUrlPrefix(value: string): string {
+  const match = value.match(/^data:image\/[a-z0-9.+-]+;base64,(.*)$/i);
+  return match ? match[1] : value;
+}
+
+function normalizeMcpToolResult(result: unknown): {
+  content: string;
+  rawContentBlocks: Array<Record<string, unknown>>;
+} {
+  if (typeof result === "string") {
+    return { content: result, rawContentBlocks: [] };
+  }
+
+  const record =
+    result && typeof result === "object" && !Array.isArray(result)
+      ? (result as Record<string, unknown>)
+      : null;
+  const contentItems = Array.isArray(record?.content) ? record.content : null;
+  if (!contentItems) {
+    return {
+      content: result == null ? "MCP call completed" : JSON.stringify(result),
+      rawContentBlocks: [],
+    };
+  }
+
+  const textParts: string[] = [];
+  const rawContentBlocks: Array<Record<string, unknown>> = [];
+
+  for (const entry of contentItems) {
+    if (!entry || typeof entry !== "object") continue;
+    const item = entry as Record<string, unknown>;
+    const type = typeof item.type === "string" ? item.type : "";
+
+    if (type === "text" && typeof item.text === "string") {
+      textParts.push(item.text);
+      rawContentBlocks.push({ type: "text", text: item.text });
+      continue;
+    }
+
+    if (type === "image" && typeof item.data === "string") {
+      const mimeType =
+        typeof item.mimeType === "string"
+          ? item.mimeType
+          : typeof item.mediaType === "string"
+            ? item.mediaType
+            : typeof item.media_type === "string"
+              ? item.media_type
+              : "image/png";
+      rawContentBlocks.push({
+        type: "image",
+        source: {
+          type: "base64",
+          data: item.data,
+          media_type: mimeType,
+        },
+      });
+      continue;
+    }
+
+    rawContentBlocks.push(item);
+    textParts.push(JSON.stringify(item));
+  }
+
+  const content = textParts.join("\n").trim();
+  if (content.length > 0) {
+    return { content, rawContentBlocks };
+  }
+
+  const imageCount = rawContentBlocks.filter(
+    (entry) => entry.type === "image",
+  ).length;
+  if (imageCount > 0) {
+    return {
+      content:
+        imageCount === 1
+          ? "Generated 1 image"
+          : `Generated ${imageCount} images`,
+      rawContentBlocks,
+    };
+  }
+
+  return {
+    content: result == null ? "MCP call completed" : JSON.stringify(result),
+    rawContentBlocks,
+  };
+}
+
+function toCodexThreadSummary(entry: unknown): CodexThreadSummary {
+  const record =
+    entry && typeof entry === "object"
+      ? (entry as Record<string, unknown>)
+      : {};
+  const gitInfo =
+    record.gitInfo && typeof record.gitInfo === "object"
+      ? (record.gitInfo as Record<string, unknown>)
+      : {};
+  return {
+    id: typeof record.id === "string" ? record.id : "",
+    preview: typeof record.preview === "string" ? record.preview : "",
+    createdAt: numberOrUndefined(record.createdAt) ?? 0,
+    updatedAt: numberOrUndefined(record.updatedAt) ?? 0,
+    cwd: typeof record.cwd === "string" ? record.cwd : "",
+    agentNickname: stringOrNull(record.agentNickname),
+    agentRole: stringOrNull(record.agentRole),
+    gitBranch: stringOrNull(gitInfo.branch),
+    name: stringOrNull(record.name),
+  };
+}
+
+/**
+ * Format file changes including unified diff content for display in chat.
+ * Falls back to `kind: path` summary when no diff is available.
+ */
+function formatFileChangesWithDiff(changes: unknown): string {
+  if (!Array.isArray(changes) || changes.length === 0) {
+    return "No file changes";
+  }
+
+  return changes
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return "changed";
+      const record = entry as Record<string, unknown>;
+      const kind = typeof record.kind === "string" ? record.kind : "changed";
+      const path = typeof record.path === "string" ? record.path : "(unknown)";
+      const diff = typeof record.diff === "string" ? record.diff.trim() : "";
+
+      if (diff) {
+        // If diff already has unified headers, use as-is; otherwise add them
+        if (diff.startsWith("---") || diff.startsWith("@@")) {
+          return `--- a/${path}\n+++ b/${path}\n${diff}`;
+        }
+        return diff;
+      }
+      return `${kind}: ${path}`;
+    })
+    .join("\n\n");
+}
+
+function extractAgentText(item: Record<string, unknown>): string {
+  if (typeof item.text === "string") return item.text;
+
+  const parts = item.content;
+  if (Array.isArray(parts)) {
+    const text = parts
+      .filter((part) => part && typeof part === "object")
+      .map((part) => {
+        const record = part as Record<string, unknown>;
+        if (record.type === "text" && typeof record.text === "string") {
+          return record.text;
+        }
+        return "";
+      })
+      .filter((part) => part.length > 0)
+      .join("\n");
+    if (text) return text;
+  }
+
+  return "";
+}
+
+function extractUserText(item: Record<string, unknown>): string {
+  if (typeof item.text === "string") return item.text;
+  if (typeof item.message === "string") return item.message;
+  return extractAgentText(item);
+}
+
+function extractReasoningText(item: Record<string, unknown>): string {
+  if (typeof item.text === "string") return item.text;
+
+  const summary = item.summary;
+  if (Array.isArray(summary)) {
+    const text = summary
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return "";
+        const record = entry as Record<string, unknown>;
+        return typeof record.text === "string" ? record.text : "";
+      })
+      .filter((part) => part.length > 0)
+      .join("\n");
+    if (text) return text;
+  }
+
+  return "";
+}
+
+function normalizeUserInputQuestions(raw: unknown): Array<{
+  id: string;
+  question: string;
+  header: string;
+  options: Array<{ label: string; description: string }>;
+  isOther: boolean;
+  isSecret: boolean;
+}> {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (entry): entry is Record<string, unknown> =>
+        !!entry && typeof entry === "object",
+    )
+    .map((entry, index) => {
+      const id =
+        typeof entry.id === "string" ? entry.id : `question_${index + 1}`;
+      const question = typeof entry.question === "string" ? entry.question : "";
+      const header =
+        typeof entry.header === "string"
+          ? entry.header
+          : `Question ${index + 1}`;
+      const optionsRaw = Array.isArray(entry.options) ? entry.options : [];
+      const options = optionsRaw
+        .filter(
+          (option): option is Record<string, unknown> =>
+            !!option && typeof option === "object",
+        )
+        .map((option) => ({
+          label: typeof option.label === "string" ? option.label : "",
+          description:
+            typeof option.description === "string" ? option.description : "",
+        }))
+        .filter((option) => option.label.length > 0);
+      return {
+        id,
+        question,
+        header,
+        options,
+        isOther: Boolean(entry.isOther),
+        isSecret: Boolean(entry.isSecret),
+      };
+    })
+    .filter((question) => question.question.length > 0);
+}
+
+function buildUserInputAnswers(
+  questions: PendingUserInputQuestion[],
+  rawResult: string,
+): Record<string, { answers: string[] }> {
+  const parsed = parseResultObject(rawResult);
+  const answerMap: Record<string, { answers: string[] }> = {};
+
+  for (const question of questions) {
+    const candidate =
+      parsed.byId[question.id] ?? parsed.byQuestion[question.question];
+    const answers = normalizeAnswerValues(candidate);
+    if (answers.length > 0) {
+      answerMap[question.id] = { answers };
+    }
+  }
+
+  if (Object.keys(answerMap).length === 0 && questions.length > 0) {
+    answerMap[questions[0].id] = { answers: normalizeAnswerValues(rawResult) };
+  }
+
+  return answerMap;
+}
+
+function parseResultObject(rawResult: string): {
+  byId: Record<string, unknown>;
+  byQuestion: Record<string, unknown>;
+} {
+  try {
+    const parsed = JSON.parse(rawResult) as Record<string, unknown>;
+    const byId: Record<string, unknown> = {};
+    const byQuestion: Record<string, unknown> = {};
+
+    if (parsed && typeof parsed === "object") {
+      const answers = parsed.answers;
+      if (answers && typeof answers === "object" && !Array.isArray(answers)) {
+        for (const [key, value] of Object.entries(
+          answers as Record<string, unknown>,
+        )) {
+          byId[key] = value;
+          byQuestion[key] = value;
+        }
+      }
+    }
+
+    return { byId, byQuestion };
+  } catch {
+    return { byId: {}, byQuestion: {} };
+  }
+}
+
+interface GuardianApproval {
+  risk: "low" | "medium" | "high";
+  reason: string;
+  authorization?: string;
+}
+
+function parseGuardianApproval(message: string): GuardianApproval | null {
+  const match = message
+    .trim()
+    .match(
+      /^automatic approval review approved\s*\(([^)]*)\)\s*:\s*([\s\S]+)$/i,
+    );
+  if (!match) return null;
+
+  const metadata = new Map<string, string>();
+  for (const field of match[1].split(",")) {
+    const separator = field.indexOf(":");
+    if (separator === -1) continue;
+    metadata.set(
+      field.slice(0, separator).trim().toLowerCase(),
+      field.slice(separator + 1).trim(),
+    );
+  }
+
+  const risk = metadata.get("risk")?.toLowerCase();
+  const reason = match[2].trim();
+  if (!reason || (risk !== "low" && risk !== "medium" && risk !== "high")) {
+    return null;
+  }
+  const authorization = metadata.get("authorization");
+  return {
+    risk,
+    reason,
+    ...(authorization ? { authorization } : {}),
+  };
+}
+
+function isLowRiskAllowDecision(reason: string): boolean {
+  const normalized = reason.trim().replace(/\s+/g, " ");
+  return /^auto-review returned a low[- ]risk allow decision\.?$/i.test(
+    normalized,
+  );
+}
+
+function normalizeAnswerValues(value: unknown): string[] {
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    return normalized ? [normalized] : [];
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry).trim())
+      .filter((entry) => entry.length > 0);
+  }
+
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (Array.isArray(record.answers)) {
+      return record.answers
+        .map((entry) => String(entry).trim())
+        .filter((entry) => entry.length > 0);
+    }
+  }
+
+  if (value == null) return [];
+  const normalized = String(value).trim();
+  return normalized ? [normalized] : [];
+}
+
+function buildElicitationResponse(
+  pending: PendingUserInputRequest,
+  rawResult: string,
+): Record<string, unknown> {
+  if (pending.kind === "tool_suggestion") {
+    return {
+      action: parseElicitationAction(rawResult),
+      content: null,
+      _meta: null,
+    };
+  }
+
+  if (pending.kind === "elicitation_url") {
+    const action = parseElicitationAction(rawResult);
+    return {
+      action,
+      content: null,
+      _meta: null,
+    };
+  }
+
+  if (pending.kind === "elicitation_approval") {
+    return buildApprovalElicitationResponse(pending, rawResult);
+  }
+
+  const parsed = parseResultObject(rawResult);
+  const content: Record<string, unknown> = {};
+  const schema = asRecord(pending.input.requestedSchema);
+  const properties = asRecord(schema?.properties) ?? {};
+
+  for (const question of pending.questions) {
+    const candidate =
+      parsed.byId[question.id] ?? parsed.byQuestion[question.question];
+    const value = coerceElicitationValue(candidate, asRecord(properties[question.id]));
+    if (value !== undefined) {
+      content[question.id] = value;
+    }
+  }
+
+  if (Object.keys(content).length === 0 && pending.questions.length === 1) {
+    const questionId = pending.questions[0].id;
+    const value = coerceElicitationValue(
+      rawResult,
+      asRecord(properties[questionId]),
+    );
+    if (value !== undefined) {
+      content[questionId] = value;
+    }
+  }
+
+  return {
+    action: "accept",
+    content: Object.keys(content).length > 0 ? content : null,
+    _meta: null,
+  };
+}
+
+function coerceElicitationValue(
+  value: unknown,
+  field: Record<string, unknown> | undefined,
+): unknown {
+  if (value == null) return undefined;
+  const type = stringValue(field?.type) ?? "string";
+
+  if (type === "array") {
+    if (Array.isArray(value)) {
+      const entries = value.map((entry) => String(entry));
+      return entries.length > 0 ? entries : undefined;
+    }
+    if (typeof value === "string") {
+      return value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+    }
+    return [String(value)];
+  }
+
+  const scalar = Array.isArray(value) ? value[0] : value;
+  if (scalar == null) return undefined;
+  if (typeof scalar === "string" && scalar.trim().length === 0) {
+    return undefined;
+  }
+  if (type === "boolean") {
+    if (typeof scalar === "boolean") return scalar;
+    if (String(scalar).toLowerCase() === "true") return true;
+    if (String(scalar).toLowerCase() === "false") return false;
+    return undefined;
+  }
+  if (type === "number" || type === "integer") {
+    const number = typeof scalar === "number" ? scalar : Number(scalar);
+    if (!Number.isFinite(number)) return undefined;
+    if (type === "integer" && !Number.isInteger(number)) return undefined;
+    return number;
+  }
+  return String(scalar);
+}
+
+function buildApprovalElicitationResponse(
+  pending: PendingUserInputRequest,
+  rawResult: string,
+): Record<string, unknown> {
+  const selection = resolveApprovalElicitationSelection(pending, rawResult);
+  const normalized = selection.trim().toLowerCase();
+
+  if (
+    normalized === "cancel" ||
+    normalized.includes("cancel")
+  ) {
+    return {
+      action: "cancel",
+      content: null,
+      _meta: null,
+    };
+  }
+
+  if (
+    normalized === "deny" ||
+    normalized === "decline" ||
+    normalized.includes("decline") ||
+    normalized.includes("deny")
+  ) {
+    return {
+      action: "decline",
+      content: null,
+      _meta: null,
+    };
+  }
+
+  let meta: Record<string, unknown> | null = null;
+  if (
+    normalized === "approve this session" ||
+    normalized === "allow for this session"
+  ) {
+    meta = { persist: "session" };
+  } else if (
+    normalized === "always allow" ||
+    normalized === "allow and don't ask me again"
+  ) {
+    meta = { persist: "always" };
+  }
+
+  return {
+    action: "accept",
+    content: null,
+    _meta: meta,
+  };
+}
+
+function parseElicitationAction(
+  rawResult: string,
+): "accept" | "decline" | "cancel" {
+  const normalized = rawResult.trim().toLowerCase();
+  if (normalized.includes("cancel")) return "cancel";
+  if (normalized.includes("decline") || normalized.includes("deny"))
+    return "decline";
+
+  try {
+    const parsed = JSON.parse(rawResult) as Record<string, unknown>;
+    const answers = parsed.answers;
+    if (answers && typeof answers === "object" && !Array.isArray(answers)) {
+      const first = Object.values(answers as Record<string, unknown>)[0];
+      const answer = normalizeAnswerValues(first).join(" ").toLowerCase();
+      if (answer.includes("cancel")) return "cancel";
+      if (answer.includes("decline") || answer.includes("deny"))
+        return "decline";
+    }
+  } catch {
+    // Fall through to accept.
+  }
+
+  return "accept";
+}
+
+function createElicitationInput(params: Record<string, unknown>): {
+  input: Record<string, unknown>;
+  questions: PendingUserInputQuestion[];
+  kind: PendingUserInputRequest["kind"];
+} {
+  const serverName =
+    typeof params.serverName === "string" ? params.serverName : "MCP";
+  const message =
+    typeof params.message === "string" ? params.message : "Provide input";
+
+  if (params.mode === "url") {
+    const url = typeof params.url === "string" ? params.url : "";
+    const question = url ? `${message}\n${url}` : message;
+    return {
+      kind: "elicitation_url",
+      questions: [{ id: "elicitation_action", question }],
+      input: {
+        mode: "url",
+        serverName,
+        url,
+        message,
+        questions: [
+          {
+            id: "elicitation_action",
+            header: serverName,
+            question,
+            options: [
+              { label: "Accept", description: "Continue with this request" },
+              { label: "Decline", description: "Reject this request" },
+              { label: "Cancel", description: "Cancel without accepting" },
+            ],
+            multiSelect: false,
+            isOther: false,
+            isSecret: false,
+          },
+        ],
+      },
+    };
+  }
+
+  const schema = asRecord(params.requestedSchema);
+  const elicitationMeta = asRecord(params._meta);
+  if (isToolSuggestionElicitation(serverName, elicitationMeta)) {
+    const toolName = stringValue(elicitationMeta?.tool_name) ?? "Tool";
+    return {
+      kind: "tool_suggestion",
+      questions: [],
+      input: {
+        mode: "form",
+        serverName,
+        message,
+        _meta: elicitationMeta ?? null,
+        toolType: stringValue(elicitationMeta?.tool_type),
+        suggestType: stringValue(elicitationMeta?.suggest_type),
+        suggestReason: stringValue(elicitationMeta?.suggest_reason) ?? message,
+        toolId: stringValue(elicitationMeta?.tool_id),
+        toolName,
+        installUrl: stringValue(elicitationMeta?.install_url),
+        remotePluginId: stringValue(elicitationMeta?.remote_plugin_id),
+        appConnectorIds: Array.isArray(elicitationMeta?.app_connector_ids)
+          ? elicitationMeta.app_connector_ids.filter(
+              (entry): entry is string => typeof entry === "string",
+            )
+          : [],
+        installState: "idle",
+        appsNeedingAuth: [],
+      },
+    };
+  }
+  if (isApprovalActionElicitation(schema, serverName, elicitationMeta)) {
+    const questionId = "approval";
+    const isToolApproval = isToolApprovalElicitation(elicitationMeta);
+    return {
+      kind: "elicitation_approval",
+      questions: [{ id: questionId, question: message }],
+      input: {
+        mode: "form",
+        serverName,
+        message,
+        _meta: elicitationMeta ?? null,
+        availableDecisions:
+          buildApprovalActionElicitationAvailableDecisions(
+            elicitationMeta,
+            isToolApproval,
+          ),
+        questions: [
+          {
+            id: questionId,
+            header: "Approve app tool call?",
+            question: message,
+            options: buildApprovalActionElicitationOptions(
+              elicitationMeta,
+              isToolApproval,
+            ),
+            multiSelect: false,
+            isOther: false,
+            isSecret: false,
+          },
+        ],
+      },
+    };
+  }
+  const properties = asRecord(schema?.properties) ?? {};
+  const requiredFields = new Set(
+    Array.isArray(schema?.required)
+      ? schema!.required!.map((entry) => String(entry))
+      : [],
+  );
+
+  const questions = Object.entries(properties)
+    .filter(([, value]) => value && typeof value === "object")
+    .map(([key, value]) => {
+      const field = value as Record<string, unknown>;
+      const title = typeof field.title === "string" ? field.title : key;
+      const description =
+        typeof field.description === "string" ? field.description : message;
+      const type = typeof field.type === "string" ? field.type : "";
+      const options = buildElicitationFieldOptions(field, description);
+
+      return {
+        id: key,
+        question: requiredFields.has(key) ? `${title} (required)` : title,
+        header: serverName,
+        options,
+        required: requiredFields.has(key),
+        multiSelect: type === "array",
+        isOther: options.length === 0,
+        isSecret: false,
+      };
+    });
+
+  const normalizedQuestions =
+    questions.length > 0
+      ? questions
+      : [
+          {
+            id: "value",
+            question: message,
+            header: serverName,
+            options: [] as Array<{
+              label: string;
+              value: string;
+              description: string;
+            }>,
+            required: true,
+            multiSelect: false,
+            isOther: true,
+            isSecret: false,
+          },
+        ];
+
+  return {
+    kind: "elicitation_form",
+    questions: normalizedQuestions.map((question) => ({
+      id: question.id,
+      question: question.question,
+      required: question.required,
+    })),
+    input: {
+      mode: "form",
+      serverName,
+      message,
+      _meta: elicitationMeta ?? null,
+      requestedSchema: schema,
+      questions: normalizedQuestions.map((question) => ({
+        id: question.id,
+        header: question.header,
+        question: question.question,
+        options: question.options,
+        required: question.required,
+        multiSelect: question.multiSelect,
+        isOther: question.isOther,
+        isSecret: question.isSecret,
+      })),
+    },
+  };
+}
+
+function buildElicitationFieldOptions(
+  field: Record<string, unknown>,
+  description: string,
+): Array<{ label: string; value: string; description: string }> {
+  const type = stringValue(field.type);
+  const source = type === "array" ? asRecord(field.items) ?? {} : field;
+  const rawOptions = Array.isArray(source.oneOf)
+    ? source.oneOf
+    : Array.isArray(source.anyOf)
+      ? source.anyOf
+      : null;
+  if (rawOptions) {
+    return rawOptions.flatMap((entry, index) => {
+      const option = asRecord(entry);
+      const value = stringValue(option?.const);
+      if (!value) return [];
+      return [
+        {
+          label: stringValue(option?.title) ?? value,
+          value,
+          description: index === 0 ? description : "",
+        },
+      ];
+    });
+  }
+
+  if (Array.isArray(source.enum)) {
+    return source.enum.map((entry, index) => {
+      const value = String(entry);
+      return {
+        label: value,
+        value,
+        description: index === 0 ? description : "",
+      };
+    });
+  }
+
+  if (type === "boolean") {
+    return [
+      { label: "true", value: "true", description },
+      { label: "false", value: "false", description: "" },
+    ];
+  }
+  return [];
+}
+
+function isApprovalActionElicitation(
+  schema: Record<string, unknown> | undefined,
+  serverName: string,
+  meta: Record<string, unknown> | undefined,
+): boolean {
+  return (
+    isEmptyObjectSchema(schema) &&
+    !isToolSuggestionElicitation(serverName, meta)
+  );
+}
+
+function isEmptyObjectSchema(
+  schema: Record<string, unknown> | undefined,
+): boolean {
+  if (!schema) return false;
+  if (schema.type !== "object") return false;
+  const properties = asRecord(schema.properties);
+  return properties != null && Object.keys(properties).length === 0;
+}
+
+function isToolApprovalElicitation(
+  meta: Record<string, unknown> | undefined,
+): boolean {
+  return meta?.codex_approval_kind === "mcp_tool_call";
+}
+
+function isToolSuggestionElicitation(
+  serverName: string,
+  meta: Record<string, unknown> | undefined,
+): boolean {
+  return (
+    serverName === "codex_apps" &&
+    meta?.codex_approval_kind === "tool_suggestion"
+  );
+}
+
+function buildApprovalActionElicitationOptions(
+  meta: Record<string, unknown> | undefined,
+  isToolApproval: boolean,
+): Array<{ label: string; description: string }> {
+  const persistModes = extractPersistModes(meta);
+  const options = [
+    {
+      label: "Allow",
+      description: isToolApproval
+        ? "Run the tool and continue."
+        : "Allow this request and continue.",
+    },
+  ];
+  if (persistModes.has("session")) {
+    options.push({
+      label: "Allow for this session",
+      description: isToolApproval
+        ? "Run the tool and remember this choice for this session."
+        : "Allow this request and remember this choice for this session.",
+    });
+  }
+  if (persistModes.has("always")) {
+    options.push({
+      label: "Always allow",
+      description: isToolApproval
+        ? "Run the tool and remember this choice for future tool calls."
+        : "Allow this request and remember this choice for future requests.",
+    });
+  }
+  if (!isToolApproval) {
+    options.push({
+      label: "Deny",
+      description: "Decline this request and continue.",
+    });
+  }
+  options.push(
+    isToolApproval
+      ? {
+          label: "Cancel",
+          description: "Cancel this tool call.",
+        }
+      : {
+          label: "Cancel",
+          description: "Cancel this request.",
+        },
+  );
+  return options;
+}
+
+function buildApprovalActionElicitationAvailableDecisions(
+  meta: Record<string, unknown> | undefined,
+  isToolApproval: boolean,
+): string[] {
+  const persistModes = extractPersistModes(meta);
+  return [
+    "accept",
+    ...(persistModes.has("session") ? ["acceptForSession"] : []),
+    isToolApproval ? "cancel" : "decline",
+  ];
+}
+
+function extractPersistModes(
+  meta: Record<string, unknown> | undefined,
+): Set<"session" | "always"> {
+  const persist = meta?.persist;
+  const modes = new Set<"session" | "always">();
+
+  if (typeof persist === "string") {
+    if (persist === "session" || persist === "always") {
+      modes.add(persist);
+    }
+    return modes;
+  }
+
+  if (Array.isArray(persist)) {
+    for (const entry of persist) {
+      if (entry === "session" || entry === "always") {
+        modes.add(entry);
+      }
+    }
+  }
+
+  return modes;
+}
+
+function resolveApprovalElicitationSelection(
+  pending: PendingUserInputRequest,
+  rawResult: string,
+): string {
+  const parsed = parseResultObject(rawResult);
+
+  for (const question of pending.questions) {
+    const candidate =
+      parsed.byId[question.id] ?? parsed.byQuestion[question.question];
+    const answers = normalizeAnswerValues(candidate);
+    if (answers.length > 0) return answers[0];
+  }
+
+  const directAnswers = normalizeAnswerValues(rawResult);
+  if (directAnswers.length > 0) return directAnswers[0];
+
+  return rawResult;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function normalizeToolSuggestionApps(value: unknown): ToolSuggestionApp[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const app = asRecord(entry);
+    const id = stringValue(app?.id);
+    const name = stringValue(app?.name);
+    if (!id || !name) return [];
+    const description = stringValue(app?.description);
+    const installUrl = stringValue(app?.installUrl);
+    const category = stringValue(app?.category);
+    return [
+      {
+        id,
+        name,
+        ...(description ? { description } : {}),
+        ...(installUrl ? { installUrl } : {}),
+        ...(category ? { category } : {}),
+      },
+    ];
+  });
+}
+
+function buildPlanUpdateToolUseInput(
+  params: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const stepsRaw = params.plan;
+  if (!Array.isArray(stepsRaw) || stepsRaw.length === 0) return null;
+
+  const explanation =
+    typeof params.explanation === "string" ? params.explanation.trim() : "";
+  const todos = stepsRaw
+    .filter(
+      (entry): entry is Record<string, unknown> =>
+        !!entry && typeof entry === "object",
+    )
+    .map((entry, index) => {
+      const content =
+        typeof entry.step === "string" ? entry.step : `Step ${index + 1}`;
+      const status = normalizePlanStatus(entry.status);
+      return { content, status, activeForm: "" };
+    });
+
+  if (todos.length === 0) return null;
+  return {
+    title: "Plan update",
+    ...(explanation ? { explanation } : {}),
+    todos,
+  };
+}
+
+function normalizePlanStatus(raw: unknown): string {
+  switch (raw) {
+    case "inProgress":
+      return "in_progress";
+    case "completed":
+      return "completed";
+    case "pending":
+    default:
+      return "pending";
+  }
+}
+
+function extensionFromMime(mimeType: string): string | null {
+  switch (mimeType) {
+    case "image/png":
+      return "png";
+    case "image/jpeg":
+      return "jpg";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    default:
+      return null;
+  }
+}

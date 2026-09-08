@@ -1,0 +1,961 @@
+import 'dart:async';
+import 'dart:convert';
+
+import '../mock/mock_scenarios.dart';
+import '../models/messages.dart';
+import '../utils/media_file_types.dart';
+import 'bridge_service.dart';
+
+class MockBridgeService extends BridgeService {
+  final _mockMessageController = StreamController<ServerMessage>.broadcast();
+  final _fileListController = StreamController<List<String>>.broadcast();
+  final List<Timer> _timers = [];
+  String? mockHttpBaseUrl;
+
+  /// Optional real file fixtures for screenshot and media playback previews.
+  Map<String, FileContentMessage> mockFileContents = const {};
+
+  /// Original diff text split by file for stateful stage/unstage tracking.
+  String? _mockDiff;
+  final Set<String> _stagedFiles = {};
+  CodexGoal? _mockGoal;
+
+  /// Set mock diff data for projectPath-mode GitScreen previews.
+  set mockDiff(String value) {
+    _mockDiff = value;
+    _stagedFiles.clear();
+  }
+
+  set mockGoal(CodexGoal? value) => _mockGoal = value;
+
+  @override
+  Stream<ServerMessage> get messages => _mockMessageController.stream;
+
+  @override
+  String? get httpBaseUrl => mockHttpBaseUrl;
+
+  @override
+  bool get isConnected => true;
+
+  @override
+  Stream<BridgeConnectionState> get connectionStatus =>
+      Stream.value(BridgeConnectionState.connected);
+
+  @override
+  Stream<FileContentMessage> get fileContent => _mockMessageController.stream
+      .where((m) => m is FileContentMessage)
+      .cast<FileContentMessage>();
+
+  @override
+  Stream<DiffResultMessage> get diffResults => _mockMessageController.stream
+      .where((m) => m is DiffResultMessage)
+      .cast<DiffResultMessage>();
+
+  // Git Operations streams
+  @override
+  Stream<GitStageResultMessage> get gitStageResults => _mockMessageController
+      .stream
+      .where((m) => m is GitStageResultMessage)
+      .cast<GitStageResultMessage>();
+
+  @override
+  Stream<GitUnstageResultMessage> get gitUnstageResults =>
+      _mockMessageController.stream
+          .where((m) => m is GitUnstageResultMessage)
+          .cast<GitUnstageResultMessage>();
+
+  @override
+  Stream<GitUnstageHunksResultMessage> get gitUnstageHunksResults =>
+      _mockMessageController.stream
+          .where((m) => m is GitUnstageHunksResultMessage)
+          .cast<GitUnstageHunksResultMessage>();
+
+  @override
+  Stream<GitCommitResultMessage> get gitCommitResults => _mockMessageController
+      .stream
+      .where((m) => m is GitCommitResultMessage)
+      .cast<GitCommitResultMessage>();
+
+  @override
+  Stream<GitPushResultMessage> get gitPushResults => _mockMessageController
+      .stream
+      .where((m) => m is GitPushResultMessage)
+      .cast<GitPushResultMessage>();
+
+  @override
+  Stream<GitBranchesResultMessage> get gitBranchesResults =>
+      _mockMessageController.stream
+          .where((m) => m is GitBranchesResultMessage)
+          .cast<GitBranchesResultMessage>();
+
+  @override
+  Stream<GitCreateBranchResultMessage> get gitCreateBranchResults =>
+      _mockMessageController.stream
+          .where((m) => m is GitCreateBranchResultMessage)
+          .cast<GitCreateBranchResultMessage>();
+
+  @override
+  Stream<GitCheckoutBranchResultMessage> get gitCheckoutBranchResults =>
+      _mockMessageController.stream
+          .where((m) => m is GitCheckoutBranchResultMessage)
+          .cast<GitCheckoutBranchResultMessage>();
+
+  @override
+  Stream<GitRevertFileResultMessage> get gitRevertFileResults =>
+      _mockMessageController.stream
+          .where((m) => m is GitRevertFileResultMessage)
+          .cast<GitRevertFileResultMessage>();
+
+  @override
+  Stream<GitRevertHunksResultMessage> get gitRevertHunksResults =>
+      _mockMessageController.stream
+          .where((m) => m is GitRevertHunksResultMessage)
+          .cast<GitRevertHunksResultMessage>();
+
+  @override
+  Stream<GitFetchResultMessage> get gitFetchResults => _mockMessageController
+      .stream
+      .where((m) => m is GitFetchResultMessage)
+      .cast<GitFetchResultMessage>();
+
+  @override
+  Stream<GitPullResultMessage> get gitPullResults => _mockMessageController
+      .stream
+      .where((m) => m is GitPullResultMessage)
+      .cast<GitPullResultMessage>();
+
+  @override
+  Stream<GitRemoteStatusResultMessage> get gitRemoteStatusResults =>
+      _mockMessageController.stream
+          .where((m) => m is GitRemoteStatusResultMessage)
+          .cast<GitRemoteStatusResultMessage>();
+
+  @override
+  void send(ClientMessage message) {
+    final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+    final type = json['type'] as String;
+
+    switch (type) {
+      case 'get_goal':
+        _scheduleMessage(
+          Duration.zero,
+          GoalStateMessage(
+            sessionId: json['sessionId'] as String?,
+            goal: _mockGoal,
+          ),
+        );
+      case 'set_goal':
+        final current = _mockGoal;
+        final objective =
+            json['objective'] as String? ?? current?.objective ?? '';
+        final status = CodexThreadGoalStatus.fromString(
+          json['status'] as String? ?? current?.status.value ?? 'active',
+        );
+        _mockGoal = CodexGoal(
+          threadId: current?.threadId ?? 'mock-thread-goal',
+          objective: objective,
+          status: status,
+          tokenBudget: current?.tokenBudget,
+          tokensUsed: current?.tokensUsed ?? 0,
+          timeUsedSeconds: current?.timeUsedSeconds ?? 0,
+          createdAt: current?.createdAt ?? 1,
+          updatedAt: (current?.updatedAt ?? 1) + 1,
+        );
+        _scheduleMessage(
+          Duration.zero,
+          GoalStateMessage(
+            sessionId: json['sessionId'] as String?,
+            goal: _mockGoal,
+          ),
+        );
+      case 'clear_goal':
+        _mockGoal = null;
+        _scheduleMessage(
+          Duration.zero,
+          GoalStateMessage(sessionId: json['sessionId'] as String?, goal: null),
+        );
+      case 'approve':
+        // Simulate tool execution result after approval
+        _scheduleMessage(
+          const Duration(milliseconds: 300),
+          const StatusMessage(status: ProcessStatus.running),
+        );
+        _scheduleMessage(
+          const Duration(milliseconds: 800),
+          ToolResultMessage(
+            toolUseId: json['id'] as String? ?? '',
+            content: 'Tool executed successfully (mock)',
+          ),
+        );
+        _scheduleMessage(
+          const Duration(milliseconds: 1200),
+          AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'mock-post-approve',
+              role: 'assistant',
+              content: [
+                const TextContent(
+                  text: 'The tool has been executed successfully.',
+                ),
+              ],
+              model: 'mock',
+            ),
+          ),
+        );
+        _scheduleMessage(
+          const Duration(milliseconds: 1500),
+          const StatusMessage(status: ProcessStatus.idle),
+        );
+      case 'reject':
+        _scheduleMessage(
+          const Duration(milliseconds: 300),
+          const StatusMessage(status: ProcessStatus.idle),
+        );
+        _scheduleMessage(
+          const Duration(milliseconds: 500),
+          AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'mock-post-reject',
+              role: 'assistant',
+              content: [
+                const TextContent(
+                  text: 'Understood. I will not execute that tool.',
+                ),
+              ],
+              model: 'mock',
+            ),
+          ),
+        );
+      case 'answer':
+        final result = json['result'] as String? ?? '';
+        _scheduleMessage(
+          const Duration(milliseconds: 500),
+          AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'mock-post-answer',
+              role: 'assistant',
+              content: [
+                TextContent(
+                  text:
+                      'Thank you for your answer: "$result". '
+                      'I will proceed accordingly.',
+                ),
+              ],
+              model: 'mock',
+            ),
+          ),
+        );
+      case 'input':
+        final text = json['text'] as String? ?? '';
+        _scheduleMessage(
+          const Duration(milliseconds: 300),
+          const StatusMessage(status: ProcessStatus.running),
+        );
+        _playStreamingScenario(
+          'You said: "$text". This is a mock response echoing your input.',
+          startDelay: const Duration(milliseconds: 500),
+        );
+      case 'read_file':
+      case 'read_media_file':
+        final filePath = json['filePath'] as String? ?? '';
+        final image = _mockImageFile(filePath);
+        final media = _mockMediaFile(filePath);
+        _scheduleMessage(
+          const Duration(milliseconds: 400),
+          mockFileContents[filePath] ??
+              image ??
+              media ??
+              FileContentMessage(
+                filePath: filePath,
+                kind: 'text',
+                content: _mockFileContent(filePath),
+                language: _mockFileLanguage(filePath),
+                totalLines: _mockFileContent(filePath).split('\n').length,
+              ),
+        );
+      // ---- Git Operations (mock, stateful) ----
+      case 'get_diff':
+        final stagedParam = json['staged'] as bool?;
+        // null (all mode) → return full diff; true → staged only; false → unstaged only
+        final filtered = stagedParam == null
+            ? (_mockDiff ?? '')
+            : _filterDiffByStageState(stagedParam);
+        _scheduleMessage(
+          const Duration(milliseconds: 300),
+          DiffResultMessage(diff: filtered),
+        );
+      case 'git_stage':
+        final files = (json['files'] as List?)?.cast<String>() ?? [];
+        _stagedFiles.addAll(files);
+        // Also extract file paths from hunks
+        final hunks = json['hunks'] as List?;
+        if (hunks != null) {
+          for (final h in hunks) {
+            final file = (h as Map<String, dynamic>)['file'] as String?;
+            if (file != null) _stagedFiles.add(file);
+          }
+        }
+        _scheduleMessage(
+          const Duration(milliseconds: 200),
+          const GitStageResultMessage(success: true),
+        );
+      case 'git_unstage':
+        final files = (json['files'] as List?)?.cast<String>() ?? [];
+        _stagedFiles.removeAll(files);
+        _scheduleMessage(
+          const Duration(milliseconds: 200),
+          const GitUnstageResultMessage(success: true),
+        );
+      case 'git_unstage_hunks':
+        _scheduleMessage(
+          const Duration(milliseconds: 200),
+          const GitUnstageHunksResultMessage(success: true),
+        );
+      case 'git_commit':
+        _scheduleMessage(
+          const Duration(milliseconds: 500),
+          GitCommitResultMessage(
+            success: true,
+            commitHash: 'abc1234',
+            message: json['message'] as String? ?? 'mock commit',
+          ),
+        );
+      case 'git_push':
+        _scheduleMessage(
+          const Duration(milliseconds: 600),
+          const GitPushResultMessage(success: true),
+        );
+      case 'git_branches':
+        _scheduleMessage(
+          const Duration(milliseconds: 200),
+          const GitBranchesResultMessage(
+            current: 'feat/mock',
+            branches: ['main', 'feat/mock', 'feat/login', 'fix/bug-123'],
+            remoteStatusByBranch: {
+              'main': GitBranchRemoteStatus(
+                ahead: 0,
+                behind: 0,
+                hasUpstream: true,
+              ),
+              'feat/mock': GitBranchRemoteStatus(
+                ahead: 2,
+                behind: 1,
+                hasUpstream: true,
+              ),
+              'feat/login': GitBranchRemoteStatus(
+                ahead: 0,
+                behind: 3,
+                hasUpstream: true,
+              ),
+              'fix/bug-123': GitBranchRemoteStatus(
+                ahead: 0,
+                behind: 0,
+                hasUpstream: false,
+              ),
+            },
+          ),
+        );
+      case 'git_create_branch':
+        _scheduleMessage(
+          const Duration(milliseconds: 300),
+          const GitCreateBranchResultMessage(success: true),
+        );
+      case 'git_checkout_branch':
+        _scheduleMessage(
+          const Duration(milliseconds: 300),
+          const GitCheckoutBranchResultMessage(success: true),
+        );
+      case 'git_revert_file':
+        // In mock, "revert" removes the file from the diff
+        // (simulated by clearing the mock diff for those files, but for simplicity
+        //  we just return success and let the diff refresh handle it)
+        _scheduleMessage(
+          const Duration(milliseconds: 200),
+          const GitRevertFileResultMessage(success: true),
+        );
+      case 'git_revert_hunks':
+        _scheduleMessage(
+          const Duration(milliseconds: 200),
+          const GitRevertHunksResultMessage(success: true),
+        );
+      case 'git_fetch':
+        _scheduleMessage(
+          const Duration(milliseconds: 200),
+          const GitFetchResultMessage(success: true),
+        );
+      case 'git_remote_status':
+        _scheduleMessage(
+          const Duration(milliseconds: 100),
+          const GitRemoteStatusResultMessage(
+            ahead: 0,
+            behind: 0,
+            branch: 'feat/mock',
+            hasUpstream: false,
+          ),
+        );
+      case 'git_pull':
+        _scheduleMessage(
+          const Duration(milliseconds: 500),
+          const GitPullResultMessage(
+            success: true,
+            message: 'Already up to date.',
+          ),
+        );
+      case 'git_status':
+        final hasChanges = (_mockDiff ?? '').trim().isNotEmpty;
+        final includeRemote = json['includeRemote'] as bool? ?? false;
+        _scheduleMessage(
+          const Duration(milliseconds: 100),
+          GitStatusResultMessage(
+            sessionId: json['sessionId'] as String?,
+            projectPath: json['projectPath'] as String? ?? '',
+            hasUncommittedChanges: hasChanges,
+            stagedCount: _stagedFiles.length,
+            unstagedCount: hasChanges ? 1 : 0,
+            untrackedCount: 0,
+            remoteStatusIncluded: includeRemote,
+          ),
+        );
+      case 'refresh_branch':
+        // No-op for mock (session branch refresh)
+        break;
+      default:
+        break;
+    }
+  }
+
+  @override
+  Stream<List<String>> get fileList => _fileListController.stream;
+
+  @override
+  Stream<List<SessionInfo>> get sessionList => const Stream.empty();
+
+  @override
+  void requestFileList(String projectPath) {
+    if (!_fileListController.isClosed) {
+      _fileListController.add(_mockProjectFiles);
+    }
+  }
+
+  @override
+  void requestDirectoryListing(
+    String path, {
+    String? requestId,
+    bool includeHidden = false,
+  }) {
+    if (_mockMessageController.isClosed) return;
+    _mockMessageController.add(
+      DirectoryListingMessage(
+        path: path,
+        directories: const [],
+        requestId: requestId,
+      ),
+    );
+  }
+
+  @override
+  void interrupt(String sessionId) {
+    // Simulate interrupt: stop running and go idle
+    _scheduleMessage(
+      const Duration(milliseconds: 200),
+      const StatusMessage(status: ProcessStatus.idle),
+    );
+  }
+
+  @override
+  void requestSessionList() {
+    // No-op for mock
+  }
+
+  @override
+  void requestSessionHistory(String sessionId) {
+    // No-op for mock — history is empty
+  }
+
+  @override
+  Stream<ServerMessage> messagesForSession(String sessionId) => messages;
+
+  @override
+  void stopSession(String sessionId) {
+    _scheduleMessage(
+      const Duration(milliseconds: 200),
+      const ResultMessage(subtype: 'stopped'),
+    );
+    _scheduleMessage(
+      const Duration(milliseconds: 300),
+      const StatusMessage(status: ProcessStatus.idle),
+    );
+  }
+
+  /// Load a list of messages as history (instant, no animation delay).
+  void loadHistory(List<ServerMessage> messages) {
+    _mockMessageController.add(HistoryMessage(messages: messages));
+  }
+
+  /// Play a scenario: emit each step's message after its delay.
+  void playScenario(MockScenario scenario) {
+    if (scenario.streamingText != null) {
+      // Find the delay of the last step to start streaming after it
+      final lastStepDelay = scenario.steps.isNotEmpty
+          ? scenario.steps.last.delay
+          : Duration.zero;
+      for (final step in scenario.steps) {
+        _scheduleMessage(step.delay, step.message);
+      }
+      _playStreamingScenario(
+        scenario.streamingText!,
+        startDelay: lastStepDelay + const Duration(milliseconds: 300),
+        chunkSize: scenario.streamingChunkSize,
+        chunkDelay: scenario.streamingChunkDelay,
+      );
+    } else {
+      for (final step in scenario.steps) {
+        _scheduleMessage(step.delay, step.message);
+      }
+    }
+  }
+
+  void _playStreamingScenario(
+    String text, {
+    Duration startDelay = Duration.zero,
+    int chunkSize = 1,
+    Duration chunkDelay = const Duration(milliseconds: 20),
+  }) {
+    assert(chunkSize > 0);
+    var chunkIndex = 0;
+    for (var start = 0; start < text.length; start += chunkSize) {
+      final end = (start + chunkSize).clamp(0, text.length);
+      _scheduleMessage(
+        startDelay + chunkDelay * chunkIndex,
+        StreamDeltaMessage(text: text.substring(start, end)),
+      );
+      chunkIndex++;
+    }
+    // Final assistant message after streaming completes
+    _scheduleMessage(
+      startDelay + chunkDelay * chunkIndex + const Duration(milliseconds: 100),
+      AssistantServerMessage(
+        message: AssistantMessage(
+          id: 'mock-stream-final',
+          role: 'assistant',
+          content: [TextContent(text: text)],
+          model: 'mock',
+        ),
+      ),
+    );
+    _scheduleMessage(
+      startDelay + chunkDelay * chunkIndex + const Duration(milliseconds: 200),
+      const StatusMessage(status: ProcessStatus.idle),
+    );
+  }
+
+  void _scheduleMessage(Duration delay, ServerMessage message) {
+    final timer = Timer(delay, () {
+      if (!_mockMessageController.isClosed) {
+        _mockMessageController.add(message);
+      }
+    });
+    _timers.add(timer);
+  }
+
+  static String _mockFileContent(String filePath) {
+    // Path-specific content for File Peek mock scenario
+    final knownFiles = _knownMockFiles;
+    final match = knownFiles[filePath];
+    if (match != null) return match;
+
+    // Fallback: extension-based generic content
+    final ext = filePath.split('.').lastOrNull?.toLowerCase();
+    return switch (ext) {
+      'dart' => _genericDart(filePath),
+      'md' => _genericMarkdown(filePath),
+      'yaml' || 'yml' => _genericYaml(filePath),
+      'json' => _genericJson(filePath),
+      'ts' || 'tsx' => _genericTypeScript(filePath),
+      _ => 'File content for: $filePath\n\nThis is a mock file preview.',
+    };
+  }
+
+  static FileContentMessage? _mockImageFile(String filePath) {
+    final ext = filePath.split('.').lastOrNull?.toLowerCase();
+    final mimeType = switch (ext) {
+      'png' => 'image/png',
+      'jpg' || 'jpeg' => 'image/jpeg',
+      'gif' => 'image/gif',
+      'webp' => 'image/webp',
+      'svg' => 'image/svg+xml',
+      _ => null,
+    };
+    if (mimeType == null) return null;
+
+    final base64 = ext == 'svg'
+        ? base64Encode(utf8.encode(_mockSvgImage))
+        : _mockPngBase64;
+    return FileContentMessage(
+      filePath: filePath,
+      kind: 'image',
+      content: '',
+      base64: base64,
+      mimeType: mimeType,
+      sizeBytes: base64Decode(base64).length,
+    );
+  }
+
+  static FileContentMessage? _mockMediaFile(String filePath) {
+    final media = mediaFileTypeForPath(filePath);
+    if (media == null) return null;
+    return FileContentMessage(
+      filePath: filePath,
+      kind: media.kind.name,
+      content: '',
+      mediaUrl: '/api/media/mock-media-token',
+      mimeType: media.mimeType,
+      sizeBytes: 4 * 1024 * 1024,
+    );
+  }
+
+  static const String _mockPngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGA'
+      'WjR9awAAAABJRU5ErkJggg==';
+
+  static const String _mockSvgImage = '''
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">
+  <rect width="320" height="180" rx="18" fill="#1f6feb"/>
+  <circle cx="246" cy="58" r="32" fill="#79c0ff"/>
+  <path d="M42 134h236L204 76l-52 42-32-26z" fill="#f0f6fc"/>
+</svg>
+''';
+
+  // --- Path-specific mock contents (matched by exact path) ---
+
+  static final Map<String, String> _knownMockFiles = {
+    'lib/main.dart': '''import 'package:flutter/material.dart';
+import 'features/session_list/session_list_screen.dart';
+
+void main() {
+  runApp(const MyApp(title: "Hello"));
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key, required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: title,
+      theme: ThemeData(
+        colorSchemeSeed: Colors.blue,
+        useMaterial3: true,
+        brightness: Brightness.dark,
+      ),
+      home: const SessionListScreen(),
+    );
+  }
+}''',
+    'pubspec.yaml': '''name: ccpocket
+description: Claude Code / Codex mobile client
+publish_to: 'none'
+version: 2.4.0+82
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  web_socket_channel: ^3.0.1
+  flutter_bloc: ^9.1.0
+  shared_preferences: ^2.3.0
+  flutter_markdown: ^0.7.7
+  url_launcher: ^6.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0''',
+    'packages/bridge/src/index.ts':
+        '''import { startServer } from "./websocket.js";
+
+const PORT = Number(process.env.BRIDGE_PORT ?? 8765);
+const HOST = process.env.BRIDGE_HOST ?? "0.0.0.0";
+const API_KEY = process.env.BRIDGE_API_KEY;
+
+async function main() {
+  console.log(`Starting Bridge Server on \${HOST}:\${PORT}`);
+  if (API_KEY) {
+    console.log("API key authentication enabled");
+  }
+
+  const server = await startServer({ port: PORT, host: HOST, apiKey: API_KEY });
+
+  process.on("SIGINT", () => {
+    console.log("Shutting down...");
+    server.close();
+    process.exit(0);
+  });
+}
+
+main().catch((err) => {
+  console.error("Failed to start:", err);
+  process.exit(1);
+});''',
+    'README.md': '''# CC Pocket
+
+Claude Code / Codex mobile client for iOS and Android.
+
+## Features
+
+- **Real-time streaming** of agent responses
+- **Approval flow** for tool execution
+- **Diff viewer** with syntax highlighting
+- **File Peek** — tap file paths to preview contents
+- **Multi-session** management
+- **Tailscale** remote access support
+
+## Quick Start
+
+```bash
+# 1. Start Bridge Server
+npm run bridge
+
+# 2. Run the app
+cd apps/mobile && flutter run
+```
+
+## Architecture
+
+```
+Flutter App <─ WebSocket ─> Bridge Server <─ SDK ─> Claude Code CLI
+```
+
+> Bridge Server must be running on the same machine as Claude Code.
+
+## License
+
+MIT''',
+    'package.json': '''{
+  "name": "ccpocket",
+  "version": "2.4.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "bridge": "tsx packages/bridge/src/index.ts",
+    "bridge:build": "tsc -p packages/bridge/tsconfig.json",
+    "dev": "bash scripts/dev-restart.sh"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "@anthropic-ai/sdk": "^0.39.0"
+  }
+}''',
+    'docs/architecture.md': '''# Architecture
+
+## Overview
+
+CC Pocket uses a **Bridge Server** pattern to connect the mobile app
+to Claude Code / Codex CLIs running on a desktop machine.
+
+## Components
+
+### Bridge Server (`packages/bridge/`)
+
+TypeScript WebSocket server that:
+- Manages multiple concurrent sessions
+- Spawns Claude Code / Codex CLI processes via SDK
+- Streams responses back to the mobile client
+- Handles file operations (read, diff)
+
+### Mobile App (`apps/mobile/`)
+
+Flutter app that:
+- Connects to Bridge Server via WebSocket
+- Renders streaming assistant messages as Markdown
+- Provides approval/rejection flow for tool execution
+- Displays git diffs with syntax highlighting
+
+## Data Flow
+
+```
+User Input ─> WebSocket ─> Bridge Server ─> Claude SDK ─> Claude Code CLI
+                                                              │
+User <── Rendered UI <── Stream Parser <── WebSocket <────────┘
+```
+
+## Security
+
+- Optional API key authentication
+- Path allowlist (`BRIDGE_ALLOWED_DIRS`)
+- Read-only file access from mobile client''',
+    'docs/design/session-preview.html': '''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session orchestration</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; padding: 28px; background: #0c111b; color: #edf3fa; }
+    main { max-width: 720px; margin: auto; }
+    .eyebrow { color: #69d8c8; font-weight: 800; letter-spacing: .12em; }
+    h1 { margin: 8px 0 12px; font-size: clamp(32px, 8vw, 56px); line-height: 1.05; }
+    p { color: #a9b5c5; line-height: 1.7; }
+    .flow { display: grid; gap: 12px; margin-top: 28px; }
+    .node { padding: 16px; border: 1px solid #2a3748; border-radius: 14px; background: #131b28; }
+    .children { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    @media (max-width: 520px) { .children { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">CCPOCKET DESIGN</div>
+    <h1>Subsession orchestration</h1>
+    <p>Keep the user in one parent session while an orchestrator delegates implementation, testing, and review.</p>
+    <div class="flow">
+      <div class="node"><strong>Parent session</strong><br>Planning and orchestration</div>
+      <div class="children">
+        <div class="node">Implementation</div>
+        <div class="node">Testing</div>
+        <div class="node">Review</div>
+      </div>
+    </div>
+  </main>
+</body>
+</html>''',
+    'test/widget_test.dart': '''import 'package:flutter_test/flutter_test.dart';
+import 'package:ccpocket/main.dart';
+
+void main() {
+  group('MyApp', () {
+    testWidgets('renders with title', (tester) async {
+      await tester.pumpWidget(const MyApp(title: 'Test'));
+      expect(find.text('Test'), findsOneWidget);
+    });
+
+    testWidgets('navigates to session list', (tester) async {
+      await tester.pumpWidget(const MyApp(title: 'CC Pocket'));
+      expect(find.byType(SessionListScreen), findsOneWidget);
+    });
+  });
+}''',
+  };
+
+  // --- Extension-based fallback content ---
+
+  static String _genericDart(String filePath) {
+    final name = filePath.split('/').last.replaceAll('.dart', '');
+    return "// $filePath\n\nclass ${_toPascalCase(name)} {\n  // TODO: implementation\n}";
+  }
+
+  static String _genericMarkdown(String filePath) {
+    final name = filePath.split('/').last;
+    return '# $name\n\nDocumentation for `$filePath`.';
+  }
+
+  static String _genericYaml(String filePath) =>
+      '# $filePath\n# Configuration file';
+
+  static String _genericJson(String filePath) =>
+      '{\n  "_comment": "$filePath"\n}';
+
+  static String _genericTypeScript(String filePath) =>
+      '// $filePath\n\nexport {};';
+
+  static String _toPascalCase(String input) => input
+      .split(RegExp(r'[_\-]'))
+      .map((w) => w.isEmpty ? '' : '${w[0].toUpperCase()}${w.substring(1)}')
+      .join();
+
+  static String? _mockFileLanguage(String filePath) {
+    final ext = filePath.split('.').lastOrNull?.toLowerCase();
+    return switch (ext) {
+      'dart' => 'dart',
+      'ts' || 'tsx' => 'typescript',
+      'js' || 'jsx' => 'javascript',
+      'py' => 'python',
+      'yaml' || 'yml' => 'yaml',
+      'json' => 'json',
+      'md' => 'markdown',
+      'html' => 'html',
+      'css' => 'css',
+      _ => null,
+    };
+  }
+
+  /// Split _mockDiff into per-file sections and filter by stage state.
+  /// When [staged] is true, return only staged files' diffs.
+  /// When [staged] is false, return only unstaged files' diffs.
+  String _filterDiffByStageState(bool staged) {
+    final fullDiff = _mockDiff ?? '';
+    if (fullDiff.isEmpty || _stagedFiles.isEmpty) {
+      return staged ? '' : fullDiff;
+    }
+
+    // Split diff into per-file blocks (each starting with "diff --git")
+    final blocks = <String>[];
+    final filePaths = <String>[];
+    final lines = fullDiff.split('\n');
+    var currentBlock = StringBuffer();
+    String? currentFile;
+
+    for (final line in lines) {
+      if (line.startsWith('diff --git ')) {
+        // Save previous block
+        if (currentFile != null) {
+          blocks.add(currentBlock.toString());
+          filePaths.add(currentFile);
+        }
+        currentBlock = StringBuffer();
+        // Extract file path: "diff --git a/path b/path" → "path"
+        final match = RegExp(r'diff --git a/(.+) b/').firstMatch(line);
+        currentFile = match?.group(1) ?? '';
+      }
+      currentBlock.writeln(line);
+    }
+    // Save last block
+    if (currentFile != null) {
+      blocks.add(currentBlock.toString());
+      filePaths.add(currentFile);
+    }
+
+    // Filter: staged view shows staged files, unstaged view shows the rest
+    final filtered = StringBuffer();
+    for (var i = 0; i < blocks.length; i++) {
+      final isStaged = _stagedFiles.contains(filePaths[i]);
+      if (staged == isStaged) {
+        filtered.write(blocks[i]);
+      }
+    }
+    return filtered.toString().trimRight();
+  }
+
+  @override
+  void dispose() {
+    for (final timer in _timers) {
+      timer.cancel();
+    }
+    _timers.clear();
+    _mockMessageController.close();
+    _fileListController.close();
+    super.dispose();
+  }
+}
+
+const _mockProjectFiles = [
+  'README.md',
+  'package.json',
+  'pubspec.yaml',
+  'docs/architecture.md',
+  'docs/design/session-preview.html',
+  'docs/images/install-banner.png',
+  'docs/images/install-qr-app-store.png',
+  'docs/images/release-card-v1.86.1-en.png',
+  'outputs/generated-video.mp4',
+  'outputs/generated-audio.wav',
+  'apps/mobile/lib/main.dart',
+  'apps/mobile/test/widget_test.dart',
+  'packages/bridge/src/index.ts',
+];

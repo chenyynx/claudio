@@ -1,0 +1,367 @@
+{
+  "generatedAt": "2026-04-20T09:27:19.070Z",
+  "results": [
+    {
+      "transcript": {
+        "effort": "high",
+        "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+        "startedAt": "2026-04-20T09:27:15.229Z",
+        "stdout": [],
+        "stderr": [],
+        "requests": [
+          {
+            "id": 1,
+            "method": "initialize",
+            "params": {
+              "clientInfo": {
+                "name": "ccpocket_effort_probe",
+                "version": "1.0.0"
+              },
+              "capabilities": {
+                "experimentalApi": true
+              }
+            }
+          },
+          {
+            "id": 2,
+            "method": "thread/start",
+            "params": {
+              "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+              "approvalPolicy": "on-request",
+              "sandbox": "workspace-write",
+              "effort": "high",
+              "model": "gpt-5.4",
+              "experimentalRawEvents": false,
+              "persistExtendedHistory": true
+            }
+          }
+        ],
+        "responses": [
+          {
+            "id": 1,
+            "result": {
+              "userAgent": "ccpocket_effort_probe/0.121.0 (Mac OS 26.3.0; arm64) ghostty/1.3.1 (ccpocket_effort_probe; 1.0.0)",
+              "codexHome": "/Users/k9i-mini/.codex",
+              "platformFamily": "unix",
+              "platformOs": "macos"
+            }
+          },
+          {
+            "id": 2,
+            "result": {
+              "thread": {
+                "id": "019daa37-2a8b-7bc2-843b-be5449bd3537",
+                "forkedFromId": null,
+                "preview": "",
+                "ephemeral": false,
+                "modelProvider": "openai",
+                "createdAt": 1776677235,
+                "updatedAt": 1776677235,
+                "status": {
+                  "type": "idle"
+                },
+                "path": "/Users/k9i-mini/.codex/sessions/2026/04/20/rollout-2026-04-20T18-27-15-019daa37-2a8b-7bc2-843b-be5449bd3537.jsonl",
+                "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+                "cliVersion": "0.121.0",
+                "source": "vscode",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": null,
+                "turns": []
+              },
+              "model": "gpt-5.4",
+              "modelProvider": "openai",
+              "serviceTier": "fast",
+              "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+              "instructionSources": [],
+              "approvalPolicy": "on-request",
+              "approvalsReviewer": "user",
+              "sandbox": {
+                "type": "workspaceWrite",
+                "writableRoots": [
+                  "/Users/k9i-mini/.codex/memories"
+                ],
+                "readOnlyAccess": {
+                  "type": "fullAccess"
+                },
+                "networkAccess": false,
+                "excludeTmpdirEnvVar": false,
+                "excludeSlashTmp": false
+              },
+              "reasoningEffort": null
+            }
+          }
+        ],
+        "notifications": [
+          {
+            "method": "thread/started",
+            "params": {
+              "thread": {
+                "id": "019daa37-2a8b-7bc2-843b-be5449bd3537",
+                "forkedFromId": null,
+                "preview": "",
+                "ephemeral": false,
+                "modelProvider": "openai",
+                "createdAt": 1776677235,
+                "updatedAt": 1776677235,
+                "status": {
+                  "type": "idle"
+                },
+                "path": "/Users/k9i-mini/.codex/sessions/2026/04/20/rollout-2026-04-20T18-27-15-019daa37-2a8b-7bc2-843b-be5449bd3537.jsonl",
+                "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+                "cliVersion": "0.121.0",
+                "source": "vscode",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": null,
+                "turns": []
+              }
+            }
+          },
+          {
+            "method": "mcpServer/startupStatus/updated",
+            "params": {
+              "name": "codex_apps",
+              "status": "starting",
+              "error": null
+            }
+          },
+          {
+            "method": "mcpServer/startupStatus/updated",
+            "params": {
+              "name": "codex_apps",
+              "status": "ready",
+              "error": null
+            }
+          }
+        ]
+      },
+      "threadStart": {
+        "thread": {
+          "id": "019daa37-2a8b-7bc2-843b-be5449bd3537",
+          "forkedFromId": null,
+          "preview": "",
+          "ephemeral": false,
+          "modelProvider": "openai",
+          "createdAt": 1776677235,
+          "updatedAt": 1776677235,
+          "status": {
+            "type": "idle"
+          },
+          "path": "/Users/k9i-mini/.codex/sessions/2026/04/20/rollout-2026-04-20T18-27-15-019daa37-2a8b-7bc2-843b-be5449bd3537.jsonl",
+          "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+          "cliVersion": "0.121.0",
+          "source": "vscode",
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": null,
+          "turns": []
+        },
+        "model": "gpt-5.4",
+        "modelProvider": "openai",
+        "serviceTier": "fast",
+        "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+        "instructionSources": [],
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "user",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": [
+            "/Users/k9i-mini/.codex/memories"
+          ],
+          "readOnlyAccess": {
+            "type": "fullAccess"
+          },
+          "networkAccess": false,
+          "excludeTmpdirEnvVar": false,
+          "excludeSlashTmp": false
+        },
+        "reasoningEffort": null
+      }
+    },
+    {
+      "transcript": {
+        "effort": "xhigh",
+        "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+        "startedAt": "2026-04-20T09:27:17.156Z",
+        "stdout": [],
+        "stderr": [],
+        "requests": [
+          {
+            "id": 1,
+            "method": "initialize",
+            "params": {
+              "clientInfo": {
+                "name": "ccpocket_effort_probe",
+                "version": "1.0.0"
+              },
+              "capabilities": {
+                "experimentalApi": true
+              }
+            }
+          },
+          {
+            "id": 2,
+            "method": "thread/start",
+            "params": {
+              "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+              "approvalPolicy": "on-request",
+              "sandbox": "workspace-write",
+              "effort": "xhigh",
+              "model": "gpt-5.4",
+              "experimentalRawEvents": false,
+              "persistExtendedHistory": true
+            }
+          }
+        ],
+        "responses": [
+          {
+            "id": 1,
+            "result": {
+              "userAgent": "ccpocket_effort_probe/0.121.0 (Mac OS 26.3.0; arm64) ghostty/1.3.1 (ccpocket_effort_probe; 1.0.0)",
+              "codexHome": "/Users/k9i-mini/.codex",
+              "platformFamily": "unix",
+              "platformOs": "macos"
+            }
+          },
+          {
+            "id": 2,
+            "result": {
+              "thread": {
+                "id": "019daa37-31f8-7cc0-88a2-00d75cab4f1c",
+                "forkedFromId": null,
+                "preview": "",
+                "ephemeral": false,
+                "modelProvider": "openai",
+                "createdAt": 1776677237,
+                "updatedAt": 1776677237,
+                "status": {
+                  "type": "idle"
+                },
+                "path": "/Users/k9i-mini/.codex/sessions/2026/04/20/rollout-2026-04-20T18-27-17-019daa37-31f8-7cc0-88a2-00d75cab4f1c.jsonl",
+                "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+                "cliVersion": "0.121.0",
+                "source": "vscode",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": null,
+                "turns": []
+              },
+              "model": "gpt-5.4",
+              "modelProvider": "openai",
+              "serviceTier": "fast",
+              "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+              "instructionSources": [],
+              "approvalPolicy": "on-request",
+              "approvalsReviewer": "user",
+              "sandbox": {
+                "type": "workspaceWrite",
+                "writableRoots": [
+                  "/Users/k9i-mini/.codex/memories"
+                ],
+                "readOnlyAccess": {
+                  "type": "fullAccess"
+                },
+                "networkAccess": false,
+                "excludeTmpdirEnvVar": false,
+                "excludeSlashTmp": false
+              },
+              "reasoningEffort": null
+            }
+          }
+        ],
+        "notifications": [
+          {
+            "method": "thread/started",
+            "params": {
+              "thread": {
+                "id": "019daa37-31f8-7cc0-88a2-00d75cab4f1c",
+                "forkedFromId": null,
+                "preview": "",
+                "ephemeral": false,
+                "modelProvider": "openai",
+                "createdAt": 1776677237,
+                "updatedAt": 1776677237,
+                "status": {
+                  "type": "idle"
+                },
+                "path": "/Users/k9i-mini/.codex/sessions/2026/04/20/rollout-2026-04-20T18-27-17-019daa37-31f8-7cc0-88a2-00d75cab4f1c.jsonl",
+                "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+                "cliVersion": "0.121.0",
+                "source": "vscode",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": null,
+                "turns": []
+              }
+            }
+          },
+          {
+            "method": "mcpServer/startupStatus/updated",
+            "params": {
+              "name": "codex_apps",
+              "status": "starting",
+              "error": null
+            }
+          },
+          {
+            "method": "mcpServer/startupStatus/updated",
+            "params": {
+              "name": "codex_apps",
+              "status": "ready",
+              "error": null
+            }
+          }
+        ]
+      },
+      "threadStart": {
+        "thread": {
+          "id": "019daa37-31f8-7cc0-88a2-00d75cab4f1c",
+          "forkedFromId": null,
+          "preview": "",
+          "ephemeral": false,
+          "modelProvider": "openai",
+          "createdAt": 1776677237,
+          "updatedAt": 1776677237,
+          "status": {
+            "type": "idle"
+          },
+          "path": "/Users/k9i-mini/.codex/sessions/2026/04/20/rollout-2026-04-20T18-27-17-019daa37-31f8-7cc0-88a2-00d75cab4f1c.jsonl",
+          "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+          "cliVersion": "0.121.0",
+          "source": "vscode",
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": null,
+          "turns": []
+        },
+        "model": "gpt-5.4",
+        "modelProvider": "openai",
+        "serviceTier": "fast",
+        "cwd": "/Users/k9i-mini/Workspace/ccpocket/tmp/verification/issue54-path",
+        "instructionSources": [],
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "user",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": [
+            "/Users/k9i-mini/.codex/memories"
+          ],
+          "readOnlyAccess": {
+            "type": "fullAccess"
+          },
+          "networkAccess": false,
+          "excludeTmpdirEnvVar": false,
+          "excludeSlashTmp": false
+        },
+        "reasoningEffort": null
+      }
+    }
+  ]
+}
