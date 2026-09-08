@@ -586,12 +586,24 @@ enum RemoteToolCatalog {
     }
 
     /// Official `_otherSummary`: description → prompt → skill → first 3 keys.
+    /// [pp 2026-09-09] MCP tools (`mcp__<server>__<tool>`) never fall through
+    /// to the key-list fallback — a key list like "branches, nextThoughtNeeded,
+    /// thought" reads as garbage on the card. Without a descriptive arg the
+    /// title is the tool short name (`<server>·<tool>`).
     private static func otherSummary(_ name: String, _ args: [String: Any]) -> String {
         if let s = stringArg(args, keys: ["description", "prompt", "skill", "query"]) { return s }
+        if name.hasPrefix("mcp__") { return mcpShortName(name) }
         let keys = args.keys.sorted().prefix(3)
             .map { displaySafe($0) }
             .joined(separator: ", ")
         return keys.isEmpty ? displaySafe(name) : keys
+    }
+
+    /// `mcp__sequential-thinking__sequentialthinking` → `sequential-thinking·sequentialthinking`
+    private static func mcpShortName(_ name: String) -> String {
+        let parts = name.components(separatedBy: "__")
+        guard parts.count >= 3 else { return displaySafe(name) }
+        return "\(displaySafe(parts[1]))·\(displaySafe(parts[2]))"
     }
 
     /// [pp 2026-09-08] 展示文案里的下划线统一显示为连字符——仅元数据

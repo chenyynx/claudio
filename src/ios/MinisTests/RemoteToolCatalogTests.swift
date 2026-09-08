@@ -103,14 +103,38 @@ final class RemoteToolCatalogTests: XCTestCase {
         XCTAssertEqual(action, "用哪个方案？")
     }
 
-    func testMcpToolFallsBackToOtherSummary() {
+    func testMcpToolWithoutDescriptiveArgUsesShortName() {
+        // [pp 2026-09-09] Key-list fallback produced card titles like
+        // "branches, nextThoughtNeeded, thought" for MCP tools — replaced
+        // by the tool short name.
         let kind = RemoteToolCatalog.blockKind(
             for: "mcp__change-title__change_title",
             args: ["title": "重构登录模块"])
         guard case .memoryTool(let action) = kind else {
             return XCTFail("expected memoryTool")
         }
-        XCTAssertEqual(action, "title")
+        // displaySafe 转下划线 → tool 段 "change_title" 显示为 "change-title"
+        XCTAssertEqual(action, "change-title·change-title")
+    }
+
+    func testMcpToolWithDescriptionStillUsesDescription() {
+        let kind = RemoteToolCatalog.blockKind(
+            for: "mcp__x__y", args: ["description": "Fetches issues"])
+        guard case .memoryTool(let action) = kind else {
+            return XCTFail("expected memoryTool")
+        }
+        XCTAssertEqual(action, "Fetches issues")
+    }
+
+    func testMcpShortNameMalformedNameFallsBackToRaw() {
+        // Fewer than 3 segments (mcp__<x>) can't split — keep the raw name.
+        let kind = RemoteToolCatalog.blockKind(
+            for: "mcp__onlyserver", args: [:])
+        guard case .memoryTool(let action) = kind else {
+            return XCTFail("expected memoryTool")
+        }
+        // displaySafe 转下划线 → "mcp__onlyserver" 显示为 "mcp--onlyserver"
+        XCTAssertEqual(action, "mcp--onlyserver")
     }
 
     func testSummaryTruncation() {

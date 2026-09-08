@@ -766,8 +766,12 @@ struct ToolLiveSheet: View {
                 fileDiffContent(isStreaming: true)
             case .fileReadTool: fileEditorContent(block.content)
             case .memoryTool:
-                let content = memoryWriteContentFromArgs() ?? block.content
-                memoryEditorContent(content, action: memoryActionName(), isStreaming: true)
+                if usesMemoryEditor {
+                    let content = memoryWriteContentFromArgs() ?? block.content
+                    memoryEditorContent(content, action: memoryActionName(), isStreaming: true)
+                } else {
+                    textContent
+                }
             default: textContent
             }
         } else if let snap = currentSnapshot {
@@ -800,8 +804,12 @@ struct ToolLiveSheet: View {
                     fileEditorContent(block.content)
                 }
             case .memoryTool:
-                let content = memoryWriteContentFromArgs() ?? block.content
-                memoryEditorContent(content, action: memoryActionName(), resultText: block.content)
+                if usesMemoryEditor {
+                    let content = memoryWriteContentFromArgs() ?? block.content
+                    memoryEditorContent(content, action: memoryActionName(), resultText: block.content)
+                } else {
+                    textContent
+                }
             default:
                 textContent
             }
@@ -830,9 +838,12 @@ struct ToolLiveSheet: View {
                 fileDiffContent()
             } else if case .fileReadTool = block.kind, let text = item.snapshot.text, !text.isEmpty {
                 fileEditorContent(text)
-            } else if case .memoryTool = block.kind {
+            } else if case .memoryTool = block.kind, usesMemoryEditor {
                 let content = memoryWriteContentFromArgs() ?? item.snapshot.text ?? block.content
                 memoryEditorContent(content, action: memoryActionName(), resultText: block.content)
+            } else if case .memoryTool = block.kind {
+                // Remote MCP tool — generic text view (same rule as liveContent).
+                textContent
             } else if case .browserTool = block.kind, let text = item.snapshot.text, !text.isEmpty {
                 browserTextResultContent(text)
             } else if let text = item.snapshot.text, !text.isEmpty {
@@ -1314,6 +1325,23 @@ struct ToolLiveSheet: View {
     private func memoryActionName() -> String {
         if case .memoryTool(let action) = block.kind { return action }
         return "memory"
+    }
+
+    /// [pp 2026-09-09] Only local memory tools render the pink memory editor.
+    /// Remote MCP tools (mcp__*) also map to .memoryTool, but their args have
+    /// no `content` field and their result is plain text/JSON — the memory
+    /// editor renders that as an empty body with a stray JSON receipt. Route
+    /// them to the generic text view instead.
+    private var usesMemoryEditor: Bool {
+        guard case .memoryTool = block.kind else { return false }
+        if let argsJson = block.toolInputArgs,
+           let data = argsJson.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           obj["content"] is String {
+            return true
+        }
+        let action = memoryActionName()
+        return action == "memory_write" || action == "memory_get"
     }
 
     // MARK: - Browser Helper Methods
