@@ -975,7 +975,6 @@ extension AIChatViewModel {
             if addedCount > 0 {
                 self.scrollToBottomSignal.send()
             }
-            self.scrollToBottomSignal.send()
         }
     }
 
