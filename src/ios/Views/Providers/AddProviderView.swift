@@ -169,6 +169,13 @@ struct AddProviderView: View {
     // 返回键回添加页、表单状态保留，改完字段再保存走同 id 更新（可修改）。
     @State private var pushSelectModels = false
     @State private var savedApiKeyInstanceId: String?
+
+    /// [Fix 2026-09-09 入口区分] 入口语义：
+    /// - 欢迎页 onboarding（ContentView，传 true）：保存 → push 选模型页
+    ///   （可返回修改，第二次保存同 id 更新）
+    /// - 设置页日常添加/编辑（ProviderInstancesView，默认 false）：保持官方
+    ///   行为——保存即 dismiss 返回（官方 OpenMinis 无"自动接选模型"步骤）
+    var pushesModelSelectionOnSave: Bool = false
     @State private var pendingOAuthDone = false
     @State private var oauthMaskedToken: String?
     // [T-kimi-oauth] Present the device-code login sheet (user code +
@@ -959,7 +966,12 @@ struct AddProviderView: View {
             savedApiKeyInstanceId = instance.id
         }
         isSaving = false
-        pushSelectModels = true
+        if pushesModelSelectionOnSave {
+            pushSelectModels = true
+        } else {
+            // 设置页入口：官方行为，保存即返回（不自动接选模型）
+            dismiss()
+        }
     }
 
     private func saveOAuthInstance() {

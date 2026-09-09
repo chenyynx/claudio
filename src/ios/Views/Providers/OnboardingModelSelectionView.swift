@@ -177,13 +177,21 @@ struct OnboardingModelSelectionView: View {
     }
 
     private func createGroupAndDismiss() {
-        let group = ModelGroup(
-            name: "Default Models",
-            memberEntryIds: selectedModelEntryIds,
-            strategy: .fallback
-        )
-        store.addGroup(group)
-        if store.defaultPrimaryGroupId == nil {
+        // [Fix 2026-09-09] 防二次分组：本页建组语义只属于首次 onboarding
+        // （默认组不存在）。已配置用户（返回修改后重新选模型 / 其他再入）
+        // 把新选模型并入现有默认组，不新建组。
+        if let existingId = store.defaultPrimaryGroupId,
+           let existing = store.modelGroups.first(where: { $0.id == existingId }) {
+            var updated = existing
+            updated.memberEntryIds = Array(Set(existing.memberEntryIds).union(selectedModelEntryIds))
+            store.updateGroup(updated)
+        } else {
+            let group = ModelGroup(
+                name: "Default Models",
+                memberEntryIds: selectedModelEntryIds,
+                strategy: .fallback
+            )
+            store.addGroup(group)
             store.defaultPrimaryGroupId = group.id
         }
         if let finish = onFinished {
