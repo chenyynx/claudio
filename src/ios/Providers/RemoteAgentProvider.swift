@@ -32,7 +32,7 @@ final class RemoteAgentProvider: AgentProvider {
     private let observedPathsLock = NSLock()
     private var observedFilePathsStorage: Set<String> = []
     /// Fired on the stream task whenever the observed set grows. VM merges
-    /// these into the render suffix set (AIChatViewModel.rebuildRemoteFileSuffixes).
+    /// these into the render suffix set（RemoteAgentSessionState.mergeObservedFilePaths）.
     var onFilePathsObserved: ((Set<String>) -> Void)?
 
     /// Snapshot of paths observed from file-tool arguments so far.
@@ -119,7 +119,7 @@ final class RemoteAgentProvider: AgentProvider {
     /// no store retention, no identity persistence.
     let chatSessionID: String?
     /// 本 turn 用户带上的附件候选（vm 注入，发送时消费）。
-    var pendingRemotePayloads: [AIChatViewModel.RemotePayload] = []
+    var pendingRemotePayloads: [RemotePayload] = []
     /// Legacy per-instance mapping migration is opt-in from the load path.
     let allowLegacyMappingFallback: Bool
 

@@ -419,13 +419,13 @@ extension AIChatViewModel {
             // mis-parse the trailing closure against a no-arg overload
             // (the original crash: "missing argument label 'resultType:'").
             let wasRemoteCompacting: Bool = await MainActor.run { () -> Bool in
-                remoteCompacting
+                remote.compacting
             }
             if wasRemoteCompacting, case .remoteCompactingStarted = event {
                 // still compacting — keep the flag (handled below)
             } else if wasRemoteCompacting {
                 await MainActor.run {
-                    remoteCompacting = false
+                    remote.compacting = false
                     // The Bridge offers no compaction-end event — the
                     // next ordinary stream event means compaction is
                     // done. Flip the loading row (left in place, same
@@ -441,8 +441,8 @@ extension AIChatViewModel {
             switch event {
             case .remoteCompactingStarted:
                 await MainActor.run {
-                    guard !remoteCompacting else { return }
-                    remoteCompacting = true
+                    guard !remote.compacting else { return }
+                    remote.compacting = true
                     // Mirror the local compaction presentation: a
                     // systemInfo row in the message list ("Compacting
                     // conversation..." — same text/icon as
@@ -459,7 +459,7 @@ extension AIChatViewModel {
                 // [M3] Surface the Bridge permission request; the dialog
                 // answers via respondToPermission (approve/reject/always).
                 await MainActor.run {
-                    pendingPermission = RemotePermissionRequest(id: id, toolName: toolName, input: input)
+                    remote.pendingPermission = RemotePermissionRequest(id: id, toolName: toolName, input: input)
                 }
 
             case .remoteFileAttached(let toolUseId, let file):
