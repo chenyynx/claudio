@@ -1608,7 +1608,6 @@
 				E5F2A000B /* RemoteFileUpload.swift */,
 				E5FA0008 /* RemoteFileDownload.swift */,
 				E5PK0002 /* RemoteProjectFileIndex.swift */,
-				RA570002 /* RemoteAgentSessionState.swift */,
 				E5PK0004 /* RemoteFileContent.swift */,
 				E5F2A0011 /* RemoteModelCatalog.swift */,
 				E5F2A0007 /* RemoteSkillRegistry.swift */,
@@ -2106,6 +2105,7 @@
 			isa = PBXGroup;
 			children = (
 				E53000011 /* AIChatViewModel.swift */,
+				RA570002 /* RemoteAgentSessionState.swift */,
 				E5VMA0011 /* AIChatViewModel+Attachments.swift */,
 				E5VMA0012 /* AIChatViewModel+SlashCommands.swift */,
 				E5VMA0013 /* AIChatViewModel+MentionMenu.swift */,
