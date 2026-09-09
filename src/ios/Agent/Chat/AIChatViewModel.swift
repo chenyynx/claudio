@@ -6164,7 +6164,14 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 // `agentMessage(fromServer:)`) can never match — Bug D
                 // root cause. Local providers' protocol-extension default
                 // returns nil, so this no-ops for them.
-                let turnBridgeSeq = provider.lastBridgeSeq
+                // [排查 2026-09-10 正文重复] Inject the ASSISTANT message's
+                // own seq — lastBridgeSeq at stream end is the `result`
+                // message's seq, which history replay never re-derives
+                // (result → engine conversion drops it) → the live row became
+                // a permanent orphan `bridge-{resultSeq}` while calibration
+                // inserted the real `bridge-{assistantSeq}` row = every
+                // assistant body/thinking/cards rendered twice.
+                let turnBridgeSeq = provider.lastAssistantBridgeSeq
                 if let persistedId = await persistAgentMessage(assistantMessage, tokenUsage: turnUsage, thoughtSignatures: sigMap, streamInterruptCount: interruptCount, modelEntryId: activeEntryId, bridgeSeq: turnBridgeSeq),
                    assistantAgentIdx < agentHistory.count {
                     agentHistory[assistantAgentIdx].dbMessageId = persistedId

@@ -194,6 +194,48 @@ final class RemoteHistoryBackfillTests: XCTestCase {
                        "同 toolUseId 的 toolResult 回放行必须被阻断（防双份）")
     }
 
+    func test_seqSpaceReset_afterBridgeResume_fullReshuffle() {
+        // [排查 2026-09-10 正文重复·根因] bridge-{seq} 的 seq 是
+        // per-bridge-session 计数——resume spawn 新 bridge 会话后从 seq=1
+        // 重新计数，DB 旧空间 bridge-1..10 与新空间 bridge-1..3 同 id 不同
+        // 内容 → 内容串台/正文卡片思考全双份（pp 真机实锤）。
+        // 信号：DB max seq(10) > history max seq(3)（trim 场景方向相反）。
+        // 期望：非 user 行全部换血到新空间。
+        let history = [
+            makeHistoryRaw(id: "bridge-1", role: .assistant), // 新空间 seq=1，内容 A
+            makeHistoryRaw(id: "bridge-2", role: .user),      // 新空间 seq=2
+            makeHistoryRaw(id: "bridge-3", role: .assistant), // 新空间 seq=3
+        ]
+        let db = [
+            makeDBRow(id: "UUID-USER", role: .user, sortOrder: 1),
+            makeDBRow(id: "bridge-1", role: .assistant, sortOrder: 2), // 旧空间内容 B
+            makeDBRow(id: "bridge-2", role: .assistant, sortOrder: 3), // 旧空间
+            makeDBRow(id: "bridge-10", role: .assistant, sortOrder: 4), // 旧空间尾巴
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: db)
+        // 旧空间 bridge 行全删（换血）
+        XCTAssertEqual(Set(plan.deleteIds), ["bridge-1", "bridge-2", "bridge-10"])
+        // 新空间行全插（UUID user 行保留 + 回放 user 行防双份挡不住——文本不同）
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-1", "bridge-2", "bridge-3"])
+    }
+
+    func test_trimWindow_noFalseReset() {
+        // R1 场景回归保护：trim 窗口内 DB 1..N、history 尾窗 (N-99)..N →
+        // history max = N ≥ DB max → 不触发重置，老行照常保留。
+        let history = [
+            makeHistoryRaw(id: "bridge-99", role: .assistant),
+            makeHistoryRaw(id: "bridge-100", role: .assistant),
+        ]
+        let db = [
+            makeDBRow(id: "bridge-1", role: .assistant, sortOrder: 1),
+            makeDBRow(id: "bridge-98", role: .assistant, sortOrder: 2),
+            makeDBRow(id: "bridge-99", role: .assistant, sortOrder: 3),
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: db)
+        XCTAssertTrue(plan.deleteIds.isEmpty, "trim 窗口不得误判为 seq 重置")
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-100"])
+    }
+
     func test_userRowWithDifferentText_stillInserts() {
         // 不同文本的 user 回放行照常插入（DB 空的首次恢复场景）。
         let history = [

@@ -53,16 +53,50 @@ enum RemoteHistorySyncCore {
     ///     assistant/tool_result 行 id = `bridge-{seq}`）
     ///   - dbRows: 本地 DB 现有行（`ChatStore.loadMessages` 原样输出，按
     ///     sort_order 升序）
-    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage]) -> RemoteHistoryReplacePlan {
+    ///   - nonEngineSeqs: bridge history 中存在但**不转换**为 engine 消息的
+    ///     seq 集合（result/status 等类型）。落在这些 seq 上的 DB 行必然是
+    ///     错绑残留（live 曾把 result 的 seq 错注入 assistant 行）→ 删。
+    ///     仅此集合内的 bridge 行可删——trim 窗口外的老行（seq 不在本次
+    ///     history）依旧只增不删（R1 规则）。
+    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage], nonEngineSeqs: Set<Int> = []) -> RemoteHistoryReplacePlan {
         let dbIds = Set(dbRows.map { $0.id })
 
-        // 删除：仅 live 落库的非 user UUID 行（id 非 "bridge-" 前缀）。
-        // bridge-{seq} 行只增不删——bridge 端 trimHistory 只保留尾部 100 条，
-        // 老的 seq 不在本次 history 集里，删了就是永久吞消息（R1 审查实锤）。
+        // 删除③（seq 空间重置检测，优先级最高）：bridge-{seq} 的 seq 是
+        // **per-bridge-session** 计数——resume/重启会 spawn 新 bridge 会话
+        // （官方语义，注释见 CCPocketClient.reconnectNow），新会话从 seq=1
+        // 重新计数。此时 DB 里旧空间的 bridge-1..N 与新空间的 bridge-1..M
+        // 同 id 不同内容 → id 命中 keep 旧行 = 内容串台/重复渲染（pp 真机
+        // 实锤：正文/卡片/思考块全部双份）。信号：DB 的 bridge 最大 seq >
+        // 本次 history 最大 seq（trim 场景方向相反：DB ≤ history 且单调
+        // 增长）。重置 → 非 user 行全部换血到新空间（user 行 UUID 无前缀，
+        // 由防双份两键挡回放重复）。
+        func bridgeSeq(_ id: String) -> Int? {
+            guard id.hasPrefix("bridge-") else { return nil }
+            return Int(id.split(separator: "-").last ?? "")
+        }
+        let dbBridgeSeqs = dbRows.compactMap { $0.role != .user ? bridgeSeq($0.id) : nil }
+        let historySeqs = historyRaws.compactMap { bridgeSeq($0.id) }
+        let seqSpaceReset: Bool
+        if let dbMax = dbBridgeSeqs.max(), let histMax = historySeqs.max() {
+            seqSpaceReset = dbMax > histMax
+        } else {
+            seqSpaceReset = false
+        }
+
+        // 删除①：live 落库的非 user UUID 行（id 非 "bridge-" 前缀）。
+        // 删除②：错绑残留行——id=bridge-{seq} 但该 seq 的 wire 消息是
+        //         result/status（不进 engine/historyRaws），此行内容与回放
+        //         行重复且永远无法被 id 命中（排查 2026-09-10 实锤）。
+        // 删除③：seq 空间重置 → 全部非 user bridge 行换血（见上）。
+        // bridge-{seq} 行其余情况只增不删——trim 窗口外的老 seq 不在本次
+        // history 集里，删了就是永久吞消息（R1 审查实锤）。
         let deleteIds = dbRows
             .filter { row in
                 guard row.role != .user else { return false }
-                return !row.id.hasPrefix("bridge-")
+                if seqSpaceReset { return true }
+                if !row.id.hasPrefix("bridge-") { return true }
+                guard let seq = bridgeSeq(row.id) else { return false }
+                return nonEngineSeqs.contains(seq)
             }
             .map { $0.id }
 

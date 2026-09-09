@@ -252,6 +252,17 @@ protocol AgentProvider {
     /// (per dev-rules 1 段) so we mirror the seq onto our own row.id instead.
     var lastBridgeSeq: Int? { get }
 
+    /// [排查 2026-09-10 正文重复] Seq of the LAST `assistant` wire message
+    /// observed this turn. `lastBridgeSeq` at stream end is the `result`
+    /// message's seq — injecting THAT into the final assistant row produced
+    /// `bridge-{resultSeq}`, which the history replay never re-derives
+    /// (result messages don't convert to engine messages) → the row is a
+    /// permanent orphan AND the real `bridge-{assistantSeq}` row gets
+    /// inserted by calibration → every assistant body/thinking/cards rendered
+    /// TWICE. The assistant row must be stamped with the assistant message's
+    /// OWN seq. Local providers: nil (extension default).
+    var lastAssistantBridgeSeq: Int? { get }
+
     /// Provider-specific streaming implementation. Receives a thinking level
     /// that has already been clamped to the model's effective max by the
     /// protocol extension — implementations should NOT re-clamp.
@@ -276,6 +287,7 @@ extension AgentProvider {
     /// calls then fall back to `msg.rawMessageId()`'s UUID branch,
     /// preserving the previous (single-source) behavior.
     var lastBridgeSeq: Int? { nil }
+    var lastAssistantBridgeSeq: Int? { nil }
 
     func streamAgentMessage(
         messages: [AgentMessage],

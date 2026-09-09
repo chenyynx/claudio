@@ -97,8 +97,13 @@ final class RemoteAgentProvider: AgentProvider {
     /// contexts in Swift 6, see Bug经验库 「acb6234 编译失败: 去 @MainActor
     /// 必查 3 件套」).
     private var _lastBridgeSeq: Int? = nil
+    private var _lastAssistantBridgeSeq: Int? = nil
     private let seqLock = NSLock()
     var lastBridgeSeq: Int? { seqLock.withLock { _lastBridgeSeq } }
+    /// [排查 2026-09-10 正文重复] The `assistant` wire message's own seq —
+    /// NOT `lastBridgeSeq` (which at stream end is the `result` message's
+    /// seq, a value the history replay never re-derives).
+    var lastAssistantBridgeSeq: Int? { seqLock.withLock { _lastAssistantBridgeSeq } }
 
     /// Whether a `.text` content block is currently open. The engine's
     /// stream consumer only accumulates `textDelta` into a block once
@@ -469,6 +474,12 @@ final class RemoteAgentProvider: AgentProvider {
             }
 
         case "assistant":
+            // [排查 2026-09-10 正文重复] Stamp the assistant wire message's
+            // own seq — the final assistant row must derive `bridge-{seq}`
+            // from THIS value, not from `lastBridgeSeq` (result's seq).
+            if let seq = message.historySeq {
+                seqLock.withLock { _lastAssistantBridgeSeq = seq }
+            }
             if case .assistant(let m) = message.message, let content = m.content {
                 for block in content {
                     switch block.type {

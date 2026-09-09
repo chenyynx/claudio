@@ -101,7 +101,23 @@ final class RemoteHistoryBackfill {
 
         // === 5. 校准计划 + 单事务落库 ===
         let dbRows = await ChatStore.shared.loadMessages(sessionId: sessionId)
-        let plan = RemoteHistorySyncCore.planReplace(historyRaws: historyRaws, dbRows: dbRows)
+        // nonEngineSeqs：wire history 里存在但不转 engine 的 seq（result/
+        // status 等）——落这些 seq 的 DB 行必是错绑残留（旧 live 把 result
+        // 的 seq 错注入 assistant 行）→ planReplace 判定删除。
+        let nonEngineSeqs = Set(wireMessages.compactMap { msg -> Int? in
+            guard let seq = msg.historySeq else { return nil }
+            switch msg.type {
+            case "assistant", "user_input", "tool_result":
+                return nil
+            default:
+                return seq
+            }
+        })
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: historyRaws,
+            dbRows: dbRows,
+            nonEngineSeqs: nonEngineSeqs
+        )
         if !plan.inserts.isEmpty || !plan.deleteIds.isEmpty {
             await ChatStore.shared.replaceRemoteHistory(
                 sessionId: sessionId,
