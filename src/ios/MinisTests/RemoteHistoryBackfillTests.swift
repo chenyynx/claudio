@@ -124,6 +124,25 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         XCTAssertEqual(db[0].errorInfo, "stall")
     }
 
+    func test_oldBridgeRowsBeyondTrimWindow_kept() {
+        // [R1 对抗审查] bridge 端 MAX_HISTORY_PER_SESSION=100（session.ts:186
+        // trimHistory）——get_history 只返回尾部 100 条。DB 里更老的
+        // bridge-{seq} 行不在 history 集，必须保留（bridge 是增量真相，
+        // 本地是累积缓存；按"不在集即删"的教条处理 = 长会话老消息被吞）。
+        let history = [
+            makeHistoryRaw(id: "bridge-198", role: .user),
+            makeHistoryRaw(id: "bridge-199", role: .assistant),
+        ]
+        let db = [
+            makeDBRow(id: "bridge-1", role: .assistant, sortOrder: 1),   // 老消息，trim 窗口外
+            makeDBRow(id: "bridge-50", role: .assistant, sortOrder: 2),  // 老消息
+            makeDBRow(id: "UUID-LIVE", role: .assistant, sortOrder: 3),  // live UUID 行 → 应删
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: db)
+        XCTAssertEqual(Set(plan.deleteIds), ["UUID-LIVE"], "只有 UUID 行删除，老 bridge 行永不删")
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-198", "bridge-199"])
+    }
+
     func test_historyOutOfOrder_stillIdBased() {
         // id 集合校准对 history 乱序不敏感（顺序由 finalOrder renumber 兜）。
         let history = [

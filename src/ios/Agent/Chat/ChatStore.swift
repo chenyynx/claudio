@@ -2966,29 +2966,21 @@ actor ChatStore {
             sqlite3_finalize(stmt)
         }
 
-        // 3. Renumber the final sequence. Rows present in bridge history get
-        //    1..N in history order; user rows absent from history (legacy /
-        //    old-bridge data) keep their sort_order and are numbered ABOVE so
-        //    nothing collides.
+        // 3. Renumber the final sequence.
+        //    [R1 对抗审查] bridge 端 trimHistory 只保留尾部 100 条
+        //    （session.ts:186）——DB 里更老的 bridge-{seq} 行不在 finalOrder
+        //    里且必须保留（只增不删）。最终顺序 = [不在 finalOrder 的保留行
+        //    （老 bridge 行 + 孤儿 user 行，按现有 sort_order 排前）] +
+        //    [finalOrder 按 history 序排后]，统一 renumber 1..M，无序号冲突。
         let finalIds = Set(finalOrder.map { $0.id })
+        let currentRows = loadMessages(sessionId: sessionId)
+        let retainedOutsideFinal = currentRows
+            .filter { !finalIds.contains($0.id) }
+            .sorted { $0.sortOrder < $1.sortOrder }
+        let fullFinalSequence = retainedOutsideFinal + finalOrder
         var nextOrder = 1
         let renumberSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
-        for row in finalOrder {
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, renumberSQL, -1, &stmt, nil) == SQLITE_OK {
-                sqlite3_bind_int64(stmt, 1, Int64(nextOrder))
-                sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(stmt, 3, (row.id as NSString).utf8String, -1, nil)
-                _ = sqlite3_step(stmt)
-            }
-            sqlite3_finalize(stmt)
-            nextOrder += 1
-        }
-        // Orphan kept user rows: number above the renumbered block.
-        let orphanUserRows = loadMessages(sessionId: sessionId).filter {
-            $0.role == .user && !finalIds.contains($0.id)
-        }
-        for row in orphanUserRows {
+        for row in fullFinalSequence {
             var stmt: OpaquePointer?
             if sqlite3_prepare_v2(db, renumberSQL, -1, &stmt, nil) == SQLITE_OK {
                 sqlite3_bind_int64(stmt, 1, Int64(nextOrder))

@@ -4178,10 +4178,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         }
     }
 
-    /// 单轮轮询：非活跃会话跳过（vm 缓存仍活但不在前台——回前台时
-    /// onAppear→loadSession→sync 校准兜底），result 落地则收尾。
+    /// 单轮轮询：无条件跑 sync + result 检测（[R2 对抗审查] 若按活跃会话
+    /// gate 跳过整轮，切走期间 result 落地永远检测不到 → isProcessing 卡死
+    /// 在 true，回前台发送键仍是停止键）。UI 刷新仍只在活跃会话执行；切走
+    /// 期间轮询的流量成本可接受（bridge 在用户本机，result 落地即停）。
     private func pollRemoteTurnProgress() async {
-        guard Self.activeSessionId == sessionId else { return }
         guard await isRemoteSession() else {
             endRemoteTurnWatchdog()
             return
@@ -4192,6 +4193,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             return
         }
         let capturedSid = sessionId ?? ""
+        let isActive = Self.activeSessionId == sessionId
         let outcome = await RemoteHistoryBackfill.shared.syncIfNeeded(
             sessionId: capturedSid,
             buildRawMessage: { [weak self] agentMsg in
@@ -4204,9 +4206,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             await MainActor.run {
                 self.logger.info("[RemoteWatchdog] result landed — ending watchdog")
                 self.endRemoteTurnWatchdog()
-                if outcome.changed { self.loadSession() }
+                if outcome.changed && isActive { self.loadSession() }
             }
-        } else if outcome.changed {
+        } else if outcome.changed && isActive {
             await MainActor.run {
                 // 增量小（1-3 条/轮），loadSession 全量重建后 CollectionView
                 // diff 只动尾部；isLoadingSession 的 spinner 只在 messages

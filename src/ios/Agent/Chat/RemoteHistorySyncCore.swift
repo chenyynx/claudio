@@ -13,8 +13,14 @@
 // 保留规则：
 // - user 行全保留（live 落库的用户消息，含附件 XML 解析结果等本地增强；
 //   bridge 端 user_input 的图片等价信息少于本地行，换血反而丢数据）
-// - 非 user 行以 bridge-{seq} id 集为基准：id 命中 → 保留（原行不动，
-//   errorInfo/tokenUsage 等本地增强字段自然保留）；未命中 → 删除或插入
+// - 非 user 行分两类：
+//   · UUID 行（live 落库，id 非 "bridge-" 前缀）→ 删除，其内容已由
+//     bridge-{seq} 行承载（同内容换血）
+//   · bridge-{seq} 行 → 只增不删。⚠️ bridge 端 MAX_HISTORY_PER_SESSION=100
+//     （session.ts:186 trimHistory），get_history 只返回尾部 100 条——
+//     更早的 bridge-{seq} 行不在本次 history 集里，若按"不在集即删"的
+//     教条 replaceEntries 处理，长会话的 assistant/tool_result 历史会被
+//     永久吞掉（对抗审查 R1 实锤）。bridge 是增量的真相，本地是累积缓存。
 //
 // 纯函数：无 actor / DB / UI 依赖，可单测（RemoteHistoryBackfillTests）。
 
@@ -42,13 +48,16 @@ enum RemoteHistorySyncCore {
     ///   - dbRows: 本地 DB 现有行（`ChatStore.loadMessages` 原样输出，按
     ///     sort_order 升序）
     static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage]) -> RemoteHistoryReplacePlan {
-        let historyIds = Set(historyRaws.map { $0.id })
         let dbIds = Set(dbRows.map { $0.id })
 
-        // 删除：DB 中非 user 且不在 history id 集的行。
-        // （live 落库的 assistant/toolResult UUID 行、以及任何历史残留）
+        // 删除：仅 live 落库的非 user UUID 行（id 非 "bridge-" 前缀）。
+        // bridge-{seq} 行只增不删——bridge 端 trimHistory 只保留尾部 100 条，
+        // 老的 seq 不在本次 history 集里，删了就是永久吞消息（R1 审查实锤）。
         let deleteIds = dbRows
-            .filter { $0.role != .user && !historyIds.contains($0.id) }
+            .filter { row in
+                guard row.role != .user else { return false }
+                return !row.id.hasPrefix("bridge-")
+            }
             .map { $0.id }
 
         // 插入：history 中 DB 还没有的行（按 history 原序）。

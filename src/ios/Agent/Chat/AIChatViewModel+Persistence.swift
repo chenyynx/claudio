@@ -844,10 +844,12 @@ extension AIChatViewModel {
         // 无效——旧管线在这里的行为本来就是半吊子（读 remote 表判重、写主表）。
         // 本期明确：校准只服务本机远端会话；iCloud 场景的恢复由 CloudSync 负责。
         guard remoteDeviceId == nil else { return }
+        // [R2 对抗审查] flag=true 必须在 sessionId guard 之后——反过来的话
+        // sessionId 为 nil 的早退会把 flag 永久卡在 true，后续校准全部静默跳过。
+        guard let capturedSessionId = sessionId else { return }
         let instances = ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
         guard instances.count == 1, let instance = instances.first else { return }
         remoteBackfillInFlight = true
-        guard let capturedSessionId = sessionId else { return }
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             let clearFlag: @MainActor () -> Void = {
