@@ -5,8 +5,23 @@ struct OnboardingModelSelectionView: View {
     @ObservedObject private var store = ProviderConfigStore.shared
     @Environment(\.dismiss) private var dismiss
 
+    /// [Fix 2026-09-09] push 模式（AddProviderView 保存后推入）传 false：
+    /// 左上角由系统返回键承担"回添加页改配置"，不再显示 Skip。
+    /// sheet 独立入口（欢迎页卡片"补第②步"）保持默认 true。
+    var showsSkipButton: Bool = true
+    /// [Fix 2026-09-09] 选完模型建组后的收尾。push 模式由调用方传 sheet
+    /// 的 dismiss（关整个流程）；sheet 独立入口传 nil → 走环境 dismiss。
+    var onFinished: (() -> Void)? = nil
+
     @State private var selectedModelEntryIds: [String] = []
     @State private var searchText: String = ""
+    // [Fix 2026-09-09] 页面自治拉取状态。此前本页只读 store、从不拉取：
+    // AddProviderView 保存时的 fire-and-forget 拉取一旦失败/悬挂（网络、key、
+    // baseURL 问题），entries 恒空 → 本页永远显示假 "Loading models..."，
+    // 无错误态无重试（官方同款缺陷）。
+    @State private var isFetching = false
+    @State private var fetchError: String? = nil
+    @State private var loadAttempted = false
 
     /// All visible model entries across all enabled LOCAL instances.
     /// [Fix 2026-09-09] 远端 agent 不进本地选模型流程 —— 它有独立入口
@@ -24,10 +39,35 @@ struct OnboardingModelSelectionView: View {
                     HStack {
                         Spacer()
                         VStack(spacing: 8) {
-                            ProgressView()
-                            Text("Loading models...")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            if isFetching {
+                                ProgressView()
+                                Text("Loading models...")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else if let err = fetchError {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .font(.title3)
+                                    .foregroundStyle(.orange)
+                                Text(err)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                                Button("Retry") {
+                                    loadAttempted = false
+                                    Task { await loadModelsIfNeeded() }
+                                }
+                                .buttonStyle(.bordered)
+                            } else {
+                                Text("No models found for this provider. Check the base URL and API key, then retry.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                                Button("Retry") {
+                                    loadAttempted = false
+                                    Task { await loadModelsIfNeeded() }
+                                }
+                                .buttonStyle(.bordered)
+                            }
                         }
                         Spacer()
                     }
@@ -35,7 +75,7 @@ struct OnboardingModelSelectionView: View {
                 } header: {
                     Text("Models")
                 } footer: {
-                    Text("Fetching model list from your provider…")
+                    Text(isFetching ? "Fetching model list from your provider…" : "Tap retry to fetch again, or Skip to configure later.")
                 }
             } else {
                 // Group entries by provider instance
@@ -59,12 +99,15 @@ struct OnboardingModelSelectionView: View {
 
             }
         }
+        .task { await loadModelsIfNeeded() }
         .searchable(text: $searchText, prompt: "Filter models")
         .navigationTitle("Select Models")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button("Skip") { dismiss() }
+            if showsSkipButton {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Skip") { dismiss() }
+                }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Next") { createGroupAndDismiss() }
@@ -104,6 +147,35 @@ struct OnboardingModelSelectionView: View {
         }
     }
 
+    /// [Fix 2026-09-09] 进入页面时对 entries 为空的本地实例主动拉一次
+    /// （fetchModelsWithFallback，与 ProviderInstanceDetailView.refreshModels
+    /// 同款调用 + 同款 replaceEntries 写回）。逐实例串行避免并发打 API；
+    /// 全部失败时聚合首条错误到错误态。remoteAgent 实例不进本流程（隔离）。
+    private func loadModelsIfNeeded() async {
+        guard !loadAttempted, allEntries.isEmpty else { return }
+        loadAttempted = true
+        let targets = store.instances.filter { inst in
+            inst.isEnabled && inst.providerType != .remoteAgent
+                && store.visibleEntries(for: inst.id).isEmpty
+        }
+        guard !targets.isEmpty else { return }
+        isFetching = true
+        fetchError = nil
+        var firstError: String?
+        for inst in targets {
+            do {
+                let result = try await ProviderConfigStore.fetchModelsWithFallback(inst, forceRefresh: true)
+                store.replaceEntries(for: inst.id, models: result.models)
+            } catch {
+                if firstError == nil { firstError = error.localizedDescription }
+            }
+        }
+        isFetching = false
+        if allEntries.isEmpty, let err = firstError {
+            fetchError = err
+        }
+    }
+
     private func createGroupAndDismiss() {
         let group = ModelGroup(
             name: "Default Models",
@@ -114,6 +186,10 @@ struct OnboardingModelSelectionView: View {
         if store.defaultPrimaryGroupId == nil {
             store.defaultPrimaryGroupId = group.id
         }
-        dismiss()
+        if let finish = onFinished {
+            finish()
+        } else {
+            dismiss()
+        }
     }
 }

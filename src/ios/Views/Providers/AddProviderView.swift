@@ -165,6 +165,10 @@ struct AddProviderView: View {
     @State private var isSaving = false
     @State private var errorMessage: String?
     @State private var pendingInstanceId = UUID().uuidString
+    // [Fix 2026-09-09] 保存成功后 push 选模型页（替代 dismiss）：左上角系统
+    // 返回键回添加页、表单状态保留，改完字段再保存走同 id 更新（可修改）。
+    @State private var pushSelectModels = false
+    @State private var savedApiKeyInstanceId: String?
     @State private var pendingOAuthDone = false
     @State private var oauthMaskedToken: String?
     // [T-kimi-oauth] Present the device-code login sheet (user code +
@@ -275,6 +279,17 @@ struct AddProviderView: View {
             steppedContent
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.88), value: currentStep)
+        .background(
+            // [Fix 2026-09-09] 保存成功后 push 选模型页：左上角系统返回键回
+            // 添加页（表单状态保留，可修改后重新保存），替代原"保存即关闭"。
+            NavigationLink(isActive: $pushSelectModels) {
+                OnboardingModelSelectionView(
+                    showsSkipButton: false,
+                    onFinished: { dismiss() }
+                )
+            } label: { EmptyView() }
+            .hidden()
+        )
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -909,7 +924,16 @@ struct AddProviderView: View {
 
         isSaving = true
         let base = trimmedBase.isEmpty ? nil : trimmedBase
+        // [Fix 2026-09-09] 返回修改场景：同 id 重建实例（字段/key 全部按当前
+        // 输入覆盖），否则新建。必须先定 id 再写 keychain —— id 变了 key 会
+        // 落到孤儿条目上，实例读不到。
+        var instanceId = UUID().uuidString
+        if let saved = savedApiKeyInstanceId, store.instance(for: saved) != nil {
+            instanceId = saved
+        }
+        let isUpdate = (savedApiKeyInstanceId != nil && instanceId == savedApiKeyInstanceId)
         let instance = ProviderInstance(
+            id: instanceId,
             label: trimmedLabel.isEmpty ? defaultLabel(for: effectiveType) : trimmedLabel,
             providerType: effectiveType,
             credentialType: .apiKey,
@@ -928,9 +952,14 @@ struct AddProviderView: View {
                 instanceID: instance.id
             )
         }
-        store.addInstance(instance)
+        if isUpdate {
+            store.updateInstance(instance)
+        } else {
+            store.addInstance(instance)
+            savedApiKeyInstanceId = instance.id
+        }
         isSaving = false
-        dismiss()
+        pushSelectModels = true
     }
 
     private func saveOAuthInstance() {
