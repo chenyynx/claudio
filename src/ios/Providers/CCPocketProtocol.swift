@@ -368,6 +368,13 @@ enum CCPocketProtocol {
         // "会话窗断裂"根因）。tool_result 的 raw 形态走既有
         // toolUseId/content 字段，无需额外字段。
         let rawRole: String?
+        // Wire 上的 `content` 是多态字段：tool_result 消息里是字符串（工具
+        // 输出），past_history 的磁盘 raw 消息里是块数组（{role, content} 的
+        // Claude API 格式）。两个形态共用同一个 wire key，但 ServerMessage
+        // 的 CodingKeys 不能给两个 case 指定同一个 raw value（编译错
+        // "raw value for enum case is not unique"，CI 34398320242）——
+        // 也没有办法让合成的 decodeIfPresent 对同一个 key 按类型分流。
+        // 解法：手写 init(from:) 从 key "content" 解码并按形态分流（见下）。
         let rawContentBlocks: [AssistantContentBlock]?
 
         private enum CodingKeys: String, CodingKey {
@@ -385,7 +392,81 @@ enum CCPocketProtocol {
             case skills, skillMetadata, claudeModels, claudeModelEfforts
             case codexModels, codexModelReasoningEfforts, codexModelServiceTiers, codexProfiles
             case defaultCodexProfile, allowedDirs
-            case rawRole = "role", rawContentBlocks = "content"
+            // [C-5.5 修复] rawRole 映射 wire key "role"（磁盘 raw 消息）。
+            // rawContentBlocks 不能在这里声明——"content" 已被上面的
+            // case content 占用（raw value 冲突），改为 init(from:) 里
+            // 手动解码（见下）。
+            case rawRole = "role"
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            type = try c.decodeIfPresent(String.self, forKey: .type)
+            status = try c.decodeIfPresent(String.self, forKey: .status)
+            subtype = try c.decodeIfPresent(String.self, forKey: .subtype)
+            model = try c.decodeIfPresent(String.self, forKey: .model)
+            provider = try c.decodeIfPresent(String.self, forKey: .provider)
+            projectPath = try c.decodeIfPresent(String.self, forKey: .projectPath)
+            sessionId = try c.decodeIfPresent(String.self, forKey: .sessionId)
+            claudeSessionId = try c.decodeIfPresent(String.self, forKey: .claudeSessionId)
+            permissionMode = try c.decodeIfPresent(String.self, forKey: .permissionMode)
+            message = try c.decodeIfPresent(MessagePayload.self, forKey: .message)
+            text = try c.decodeIfPresent(String.self, forKey: .text)
+            toolUseId = try c.decodeIfPresent(String.self, forKey: .toolUseId)
+            toolName = try c.decodeIfPresent(String.self, forKey: .toolName)
+            permissionOutcome = try c.decodeIfPresent(String.self, forKey: .permissionOutcome)
+            input = try c.decodeIfPresent([String: JSONValue].self, forKey: .input)
+            result = try c.decodeIfPresent(String.self, forKey: .result)
+            error = try c.decodeIfPresent(String.self, forKey: .error)
+            stopReason = try c.decodeIfPresent(String.self, forKey: .stopReason)
+            inputTokens = try c.decodeIfPresent(Int.self, forKey: .inputTokens)
+            outputTokens = try c.decodeIfPresent(Int.self, forKey: .outputTokens)
+            cacheCreationInputTokens = try c.decodeIfPresent(Int.self, forKey: .cacheCreationInputTokens)
+            cachedInputTokens = try c.decodeIfPresent(Int.self, forKey: .cachedInputTokens)
+            cost = try c.decodeIfPresent(Double.self, forKey: .cost)
+            duration = try c.decodeIfPresent(Double.self, forKey: .duration)
+            toolCalls = try c.decodeIfPresent(Int.self, forKey: .toolCalls)
+            fromSeq = try c.decodeIfPresent(Int.self, forKey: .fromSeq)
+            toSeq = try c.decodeIfPresent(Int.self, forKey: .toSeq)
+            reason = try c.decodeIfPresent(String.self, forKey: .reason)
+            entries = try c.decodeIfPresent([HistoryEntry].self, forKey: .entries)
+            sessions = try c.decodeIfPresent([ServerSession].self, forKey: .sessions)
+            hasMore = try c.decodeIfPresent(Bool.self, forKey: .hasMore)
+            sourceSessionId = try c.decodeIfPresent(String.self, forKey: .sourceSessionId)
+            resumeRequestId = try c.decodeIfPresent(String.self, forKey: .resumeRequestId)
+            acceptedSeq = try c.decodeIfPresent(Int.self, forKey: .acceptedSeq)
+            queued = try c.decodeIfPresent(Bool.self, forKey: .queued)
+            historySeq = try c.decodeIfPresent(Int.self, forKey: .historySeq)
+            errorCode = try c.decodeIfPresent(String.self, forKey: .errorCode)
+            requestId = try c.decodeIfPresent(String.self, forKey: .requestId)
+            userMessageUuid = try c.decodeIfPresent(String.self, forKey: .userMessageUuid)
+            clientMessageId = try c.decodeIfPresent(String.self, forKey: .clientMessageId)
+            baseSeq = try c.decodeIfPresent(Int.self, forKey: .baseSeq)
+            skills = try c.decodeIfPresent([String].self, forKey: .skills)
+            skillMetadata = try c.decodeIfPresent([[String: JSONValue]].self, forKey: .skillMetadata)
+            claudeModels = try c.decodeIfPresent([String].self, forKey: .claudeModels)
+            claudeModelEfforts = try c.decodeIfPresent([String: [String]].self, forKey: .claudeModelEfforts)
+            codexModels = try c.decodeIfPresent([String].self, forKey: .codexModels)
+            codexModelReasoningEfforts = try c.decodeIfPresent([String: [String]].self, forKey: .codexModelReasoningEfforts)
+            codexModelServiceTiers = try c.decodeIfPresent([String: [String]].self, forKey: .codexModelServiceTiers)
+            codexProfiles = try c.decodeIfPresent([String].self, forKey: .codexProfiles)
+            defaultCodexProfile = try c.decodeIfPresent(String.self, forKey: .defaultCodexProfile)
+            allowedDirs = try c.decodeIfPresent([String].self, forKey: .allowedDirs)
+            messages = try c.decodeIfPresent([ServerMessage].self, forKey: .messages)
+            pastMessages = try c.decodeIfPresent([ServerMessage].self, forKey: .pastMessages)
+            rawRole = try c.decodeIfPresent(String.self, forKey: .rawRole)
+
+            // [C-5.5] wire `content` 多态分流：字符串 = tool_result 工具输出
+            // （既有语义），数组 = past_history 磁盘 raw 消息的内容块。
+            // 直接对 .content 解码 [AssistantContentBlock] 会在 tool_result
+            // 消息上抛 typeMismatch 炸掉整条消息——所以先试探字符串。
+            if let s = try? c.decodeIfPresent(String.self, forKey: .content) {
+                content = s
+                rawContentBlocks = nil
+            } else {
+                content = nil
+                rawContentBlocks = try? c.decodeIfPresent([AssistantContentBlock].self, forKey: .content)
+            }
         }
 
         // history / past_history payload — bridge sends TWO sequential
