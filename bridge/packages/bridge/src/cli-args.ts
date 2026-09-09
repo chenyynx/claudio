@@ -7,12 +7,14 @@ const VALUE_FLAGS = new Set([
   "codex-shared-app-server-url",
   "codex-app-server-port",
   "codex-app-server-url",
+  "gateway-port",
 ]);
 
 const BOOLEAN_FLAGS = new Set([
   "json",
   "uninstall",
   "no-mdns",
+  "gateway-enabled",
 ]);
 
 export interface ParsedCliArgs {

@@ -136,6 +136,7 @@ if (parsed.helpRequested) {
   );
   const codexAppServerPort = parseFlag(parsed, "codex-app-server-port");
   const codexAppServerUrl = parseFlag(parsed, "codex-app-server-url");
+  const gatewayPort = parseFlag(parsed, "gateway-port");
 
   if (port !== undefined) process.env.BRIDGE_PORT = port;
   if (host) process.env.BRIDGE_HOST = host;
@@ -153,6 +154,9 @@ if (parsed.helpRequested) {
     process.env.BRIDGE_CODEX_APP_SERVER_URL = codexAppServerUrl;
   }
   if (hasFlag(parsed, "no-mdns")) process.env.BRIDGE_DISABLE_MDNS = "1";
+  // [doris P0 Step7] gateway flags → env (consumed by index.ts)
+  if (gatewayPort !== undefined) process.env.GATEWAY_PORT = gatewayPort;
+  if (hasFlag(parsed, "gateway-enabled")) process.env.GATEWAY_ENABLED = "1";
 
   startServer().catch((err) => {
     console.error(`[bridge] Failed to start: ${startupErrorMessage(err)}`);

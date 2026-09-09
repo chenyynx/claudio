@@ -2,6 +2,11 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setupProxy } from "./proxy.js";
+import { request as undiciRequest } from "undici";
+// [doris P0 Step7] LLM gateway module (loopback-only, opt-in via env)
+import { GatewayServer } from "./gateway/server.js";
+import { ConfigStore } from "./gateway/config-store.js";
+import { DecisionLedger } from "./gateway/decision-ledger.js";
 import { BridgeWebSocketServer } from "./websocket.js";
 import { ImageStore } from "./image-store.js";
 import { MediaStore } from "./media-store.js";
@@ -23,6 +28,14 @@ import {
   PromptHistoryStore,
 } from "./prompt-history-store.js";
 import { parseAllowedDirectories } from "./path-utils.js";
+
+function parseGatewayPort(raw: string | undefined): number {
+  const port = raw === undefined ? 8767 : Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`invalid GATEWAY_PORT: ${raw}`);
+  }
+  return port;
+}
 import { parseBridgePort } from "./bridge-port.js";
 import { listenForStartup } from "./server-listen.js";
 
@@ -285,12 +298,29 @@ export async function startServer() {
     promptHistoryStore,
   });
 
+  // [doris P0 Step7] LLM gateway (127.0.0.1 only). Off unless GATEWAY_ENABLED=1 —
+  // deploying this code changes nothing until the env switch is applied.
+  let gateway: GatewayServer | null = null;
+  if (process.env.GATEWAY_ENABLED === "1") {
+    const gatewayStore = new ConfigStore();
+    await gatewayStore.migrateFromPm2Env(process.env);
+    gateway = new GatewayServer({
+      store: gatewayStore,
+      ledger: new DecisionLedger(),
+      http: undiciRequest,
+      listen: listenForStartup,
+      port: parseGatewayPort(process.env.GATEWAY_PORT),
+    });
+    await gateway.start();
+  }
+
   let shuttingDown = false;
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log("\n[bridge] Shutting down gracefully...");
     mdns?.stop();
+    if (gateway) await gateway.close(); // drain in-flight LLM streams first
     wsServer?.close();
     await uploadStore.dispose();
     httpServer.close();
@@ -308,6 +338,11 @@ export async function startServer() {
   console.log(
     `[bridge] Ready. Listening on http://${HOST}:${PORT} (HTTP + WebSocket)`,
   );
+  if (gateway) {
+    console.log(
+      `[bridge] LLM gateway on http://127.0.0.1:${parseGatewayPort(process.env.GATEWAY_PORT)} (loopback only)`,
+    );
+  }
   mdns?.start(PORT, API_KEY);
   printStartupInfo(PORT, HOST, API_KEY);
 
