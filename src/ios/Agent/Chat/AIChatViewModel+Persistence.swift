@@ -1268,11 +1268,12 @@ extension AIChatViewModel {
             return sid
         }
         let model = selectedModel
-        // [Fix 2026-09-09 v1.14.10 方案B] 入口意图决定 source：远端 entry →
-        // "remoteBridge"（isRemoteSession 第三重判定 + loadSession 分流依赖）。
-        let intentEntry = pendingIntentEntryId.flatMap { ProviderConfigStore.shared.entry(for: $0) }
-        let intentIsRemote = intentEntry.flatMap { ProviderConfigStore.shared.instance(for: $0.providerInstanceId) }?.providerType == .remoteAgent
-        let session = await ChatStore.shared.createSession(modelId: model.id, source: intentIsRemote ? "remoteBridge" : sessionSource)
+        // [Fix 2026-09-09 v1.14.10 第6轮审查] source 不按 intent 写：用户在
+        // draft 页切模型时 picker 先触发本函数（intent 还是旧入口的）再写新
+        // binding —— intent 定 source 会与最终 binding 劈叉（本地会话误挂
+        // remoteBridge）。远端判定靠 Tier 0a 的 binding（第一重，持久化跨
+        // 杀后台）即可；source 第三重仅旧数据兜底，新会话无需。
+        let session = await ChatStore.shared.createSession(modelId: model.id, source: sessionSource)
         sessionId = session.id
         Self.activeSessionId = session.id
         // [T-memory-enabled-new-session-bug] Sync the @Published memoryEnabled
