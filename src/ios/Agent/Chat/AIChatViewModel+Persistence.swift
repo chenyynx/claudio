@@ -1485,9 +1485,16 @@ extension AIChatViewModel {
         // Tier 0 — explicit group from long-press FAB.
         let overrideGroupId = initialGroupId
         // Tier 1 — default group (current behaviour).
+        // [Fix 2026-09-09 v1.14.16 审查3] 本地会话默认解析不得落到远端 entry
+        // （绝对隔离：远端只能经 Claude tab/Tier 0a 进入）。建组/编辑 picker
+        // 已 filter remoteAgent、组内理论无远端成员，此处为 legacy 脏数据兜底；
+        // 消费点校验而非改共享 resolve（远端 fallback 链共用 resolve 不受影响）。
         if let groupId = overrideGroupId ?? store.defaultPrimaryGroupId,
            let group = store.group(for: groupId),
-           let entryId = ModelGroupRouter.resolve(group: group, sessionId: sessionId, store: store) {
+           let entryId = ModelGroupRouter.resolve(group: group, sessionId: sessionId, store: store),
+           store.entry(for: entryId)
+               .flatMap({ store.instance(for: $0.providerInstanceId) })?
+               .providerType != .remoteAgent {
             let primarySource = SessionModelSource.group(groupId: groupId, resolvedEntryId: entryId)
 
             // Resolve sub source
@@ -1586,7 +1593,10 @@ extension AIChatViewModel {
             if candidates.isEmpty { continue }
             if let usable = candidates.first(where: { entry in
                 guard let inst = store.instance(for: entry.providerInstanceId) else { return false }
-                return inst.isEnabled && inst.hasAnyCredential
+                // [Fix v1.14.16 审查3] 远端 entry 不参与本地会话 last-used 解析
+                // （绝对隔离；private helper 仅 createInitialBinding 调用）
+                return inst.providerType != .remoteAgent
+                    && inst.isEnabled && inst.hasAnyCredential
             }) {
                 logger.info("[NewSessionDefault] last-used scan: sourceSession=\(session.id.prefix(8)) modelId=\(mid) → entry=\(usable.id.prefix(8)) provider=\(usable.providerInstanceId.prefix(8)) (scanned=\(scanned))")
                 return usable
@@ -1613,7 +1623,10 @@ extension AIChatViewModel {
     private static func resolveLatestProviderTextEntry(store: ProviderConfigStore) -> ModelEntry? {
         // Walk providers newest-first.
         for instance in store.instances.reversed() {
-            guard instance.isEnabled, instance.hasAnyCredential else {
+            // [Fix v1.14.16 审查3] 远端实例不参与本地会话 latest-provider 解析
+            // （绝对隔离；private helper 仅 createInitialBinding 调用）
+            guard instance.providerType != .remoteAgent,
+                  instance.isEnabled, instance.hasAnyCredential else {
                 logger.info("[NewSessionDefault] latest-provider scan: skip instance=\(instance.label) (enabled=\(instance.isEnabled) hasCredential=\(instance.hasAnyCredential))")
                 continue
             }
