@@ -6171,8 +6171,20 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 // a permanent orphan `bridge-{resultSeq}` while calibration
                 // inserted the real `bridge-{assistantSeq}` row = every
                 // assistant body/thinking/cards rendered twice.
-                let turnBridgeSeq = provider.lastAssistantBridgeSeq
-                if let persistedId = await persistAgentMessage(assistantMessage, tokenUsage: turnUsage, thoughtSignatures: sigMap, streamInterruptCount: interruptCount, modelEntryId: activeEntryId, bridgeSeq: turnBridgeSeq),
+                // [退役 2026-09-10 v1.14.20] seq 注入随"大一统行"一并退役：
+                // 远端一个 turn 只 persist 一行（全部 text+toolUse+toolResult
+                // +reasoning 合并，6052 no-tool 分支），而 bridge 回放是每条
+                // wire 消息一行（bridge-{各自 seq}）。给大一统行注入
+                // bridge-{最后 assistant 的 seq} 后，校准 keep 集命中它 →
+                // 其余逐轮回放行照插 → 同一 turn 内容渲染两遍（工具/正文/
+                // 思考全双份，多轮工具会话 100% 触发——pp 真机实锤）。
+                // 回归 UUID → planReplace 删除①命中（非 user UUID 行删）→
+                // 回放逐轮行全量插入 → 恢复后渲染与 bridge 粒度一致。
+                // live 流式路径（textDelta/thinkingDelta 逐字上屏）不受影响
+                // ——本处只影响杀后台重进后的恢复数据形态。
+                // 代价（已知限制，多为换血场景既有语义）：errorInfo/工具卡片
+                // 增强/Token Usage 随大一统行删除（回放行为官方形态）。
+                if let persistedId = await persistAgentMessage(assistantMessage, tokenUsage: turnUsage, thoughtSignatures: sigMap, streamInterruptCount: interruptCount, modelEntryId: activeEntryId),
                    assistantAgentIdx < agentHistory.count {
                     agentHistory[assistantAgentIdx].dbMessageId = persistedId
                     // [Fix 2026-09-10 v1.14.18] bumpRemoteWatermark 已随水位机制

@@ -257,15 +257,15 @@ protocol AgentProvider {
     /// (per dev-rules 1 段) so we mirror the seq onto our own row.id instead.
     var lastBridgeSeq: Int? { get }
 
-    /// [排查 2026-09-10 正文重复] Seq of the LAST `assistant` wire message
-    /// observed this turn. `lastBridgeSeq` at stream end is the `result`
-    /// message's seq — injecting THAT into the final assistant row produced
-    /// `bridge-{resultSeq}`, which the history replay never re-derives
-    /// (result messages don't convert to engine messages) → the row is a
-    /// permanent orphan AND the real `bridge-{assistantSeq}` row gets
-    /// inserted by calibration → every assistant body/thinking/cards rendered
-    /// TWICE. The assistant row must be stamped with the assistant message's
-    /// OWN seq. Local providers: nil (extension default).
+    /// [诊断打点 2026-09-10 → 退役 v1.14.20] Seq of the LAST `assistant`
+    /// wire message observed this turn. `lastBridgeSeq` at stream end is the
+    /// `result` message's seq.
+    /// 历史语义：曾把该值注入 live 最终 assistant 行（bridge-{assistantSeq}）
+    /// 修"result seq 错绑孤儿行"——但远端一个 turn 只 persist 一行（全部
+    /// text+toolUse+toolResult+reasoning 合并），bridge 回放是逐 wire 消息
+    /// 一行，两套粒度共存 = 校准 keep 大一统行 + 插入其余逐轮回放行 =
+    /// 同 turn 内容渲染两遍（多轮工具会话 100% 触发）。v1.14.20 起 live
+    /// 落库回归 UUID（删除①换血），该属性仅存诊断打点。Local: nil.
     var lastAssistantBridgeSeq: Int? { get }
 
     /// Provider-specific streaming implementation. Receives a thinking level

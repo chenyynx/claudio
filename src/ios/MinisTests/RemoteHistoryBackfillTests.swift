@@ -343,6 +343,69 @@ final class RemoteHistoryBackfillTests: XCTestCase {
                           "无 bridgeSeq 必须每次新 UUID（live-stream 路径）")
     }
 
+    func test_liveUnifiedRow_noBridgeSeq_calibratedOut() {
+        // [v1.14.20 大一统行退役] 远端 live 一个 turn 只 persist 一行（全部
+        // text+toolUse+toolResult+reasoning 合并），且【不再注入 bridgeSeq】
+        // → id=UUID → planReplace 删除①命中 → 回放逐轮行全量插入。
+        // 反例（退役前）：注入 bridge-{lastAssistantSeq} → keep 命中 → 同
+        // turn 内容渲染两遍（多轮工具会话 100% 触发，pp 真机实锤）。
+        let liveUnified = makeDBRow(id: "UUID-UNIFIED", role: .assistant, sortOrder: 2)
+        let db = [
+            makeDBRow(id: "UUID-USER", role: .user, sortOrder: 1),
+            liveUnified,
+        ]
+        let history = [
+            makeHistoryRaw(id: "bridge-1", role: .assistant), // thinking+toolUse 轮
+            makeHistoryRaw(id: "bridge-2", role: .user),      // toolResult 轮
+            makeHistoryRaw(id: "bridge-3", role: .assistant), // 最终正文轮
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: db)
+        XCTAssertEqual(Set(plan.deleteIds), ["UUID-UNIFIED"],
+                       "大一统 live 行（UUID）必须被删，绝不进 keep 集")
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-1", "bridge-2", "bridge-3"],
+                       "回放逐轮行全量插入，恢复后渲染与 bridge 粒度一致（无双份）")
+    }
+
+    func test_pastRows_neverDeleted() {
+        // [对抗审查 R4 实锤 2026-09-10] past-{index} 行（C-5.5 磁盘历史回放）
+        // 无 bridge- 前缀——旧删除①会把它当 live UUID 行删掉且不回插
+        // （dbIds 命中插入跳过）→ 磁盘历史每次校准净丢失。修后 past 行与
+        // bridge-{seq} 行同享只增不删。
+        let history = [
+            makeHistoryRaw(id: "past-0", role: .assistant),
+            makeHistoryRaw(id: "bridge-1", role: .assistant),
+        ]
+        let db = [
+            makeDBRow(id: "past-0", role: .assistant, sortOrder: 1),
+            makeDBRow(id: "bridge-1", role: .assistant, sortOrder: 2),
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: db)
+        XCTAssertTrue(plan.isEmpty,
+                      "past 行已在 DB → 删除①不得命中，回放 id 命中不重插 = 稳定态")
+    }
+
+    func test_pastRows_surviveForceFullReshuffle() {
+        // [对抗审查 R4 追加] bridgeId 切换（seq 空间重置）换血的靶子是旧
+        // bridge 空间的 bridge-{seq}/UUID 行——past 行不属于任何 seq 空间，
+        // 必须跨换血保留，否则磁盘历史净删。
+        let history = [
+            makeHistoryRaw(id: "past-0", role: .assistant),
+            makeHistoryRaw(id: "bridge-1", role: .assistant),
+        ]
+        let db = [
+            makeDBRow(id: "past-0", role: .assistant, sortOrder: 1),
+            makeDBRow(id: "bridge-1", role: .assistant, sortOrder: 2), // 旧空间
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: history, dbRows: db,
+            nonEngineSeqs: [], forceFullReshuffle: true
+        )
+        XCTAssertEqual(Set(plan.deleteIds), ["bridge-1"],
+                       "换血只删旧空间 bridge 行，past 行保留")
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-1"],
+                       "新空间 bridge 行插入，past 行 id 命中不重插")
+    }
+
     func test_toolResultReplay_injectsBridgeSeq() {
         // agentMessage(fromServer:) 的 tool_result 分支必须注入 historySeq ——
         // 漏注入 = UUID id = 每次校准全量重插（v1.14.18 修复的根因 3）。

@@ -100,9 +100,12 @@ final class RemoteAgentProvider: AgentProvider {
     private var _lastAssistantBridgeSeq: Int? = nil
     private let seqLock = NSLock()
     var lastBridgeSeq: Int? { seqLock.withLock { _lastBridgeSeq } }
-    /// [排查 2026-09-10 正文重复] The `assistant` wire message's own seq —
+    /// [诊断打点 2026-09-10] The `assistant` wire message's own seq —
     /// NOT `lastBridgeSeq` (which at stream end is the `result` message's
     /// seq, a value the history replay never re-derives).
+    /// [退役 2026-09-10 v1.14.20] 消费方已移除：远端 live 落库不再注入
+    /// seq（大一统行回归 UUID，由校准删除①换血为回放逐轮行）。属性保留
+    /// 作 seq 观测锚点，如复发先 grep 本属性确认无新消费方。
     var lastAssistantBridgeSeq: Int? { seqLock.withLock { _lastAssistantBridgeSeq } }
 
     /// Whether a `.text` content block is currently open. The engine's

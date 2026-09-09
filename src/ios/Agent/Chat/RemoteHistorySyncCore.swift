@@ -87,7 +87,14 @@ enum RemoteHistorySyncCore {
             return false
         }()
 
-        // 删除①：live 落库的非 user UUID 行（id 非 "bridge-" 前缀）。
+        // 删除①：live 落库的非 user UUID 行（id 非 "bridge-"/"past-" 前缀）。
+        // [对抗审查 R4 实锤 2026-09-10] past-{index} 行（C-5.5 磁盘历史回放）
+        // 同样无 bridge- 前缀——旧规则会把它们当 live UUID 行删掉且不回插
+        // （插入按 keptIds 去重，past 行保留在 keptIds → 命中跳过）→ 磁盘
+        // 历史每次校准净丢失。past 行是回放产物，身份稳定（磁盘
+        // append-only），必须与 bridge-{seq} 行同享"只增不删"，由 id 集
+        // 去重。大一统行退役（v1.14.20）后 live 落库恒为 UUID，删除①的
+        // 靶子只有真 UUID 行。
         // 删除②：错绑残留行——id=bridge-{seq} 但该 seq 的 wire 消息是
         //         result/status（不进 engine/historyRaws），此行内容与回放
         //         行重复且永远无法被 id 命中（排查 2026-09-10 实锤）。
@@ -97,6 +104,12 @@ enum RemoteHistorySyncCore {
         let deleteIds = dbRows
             .filter { row in
                 guard row.role != .user else { return false }
+                // [对抗审查 R4 追加] past-{index} 行是磁盘历史回放（claude
+                // 会话 append-only，序列跨 bridge 会话稳定）——seq 空间重置
+                // 换血的靶子是旧 bridge 空间的 bridge-{seq}/UUID 行，past 行
+                // 不属于任何 seq 空间，换血时必须保留（删了不回插：dbIds
+                // 快照命中插入跳过 → 净删 = 磁盘历史丢失）。
+                if row.id.hasPrefix("past-") { return false }
                 if seqSpaceReset { return true }
                 if !row.id.hasPrefix("bridge-") { return true }
                 guard let seq = bridgeSeq(row.id) else { return false }
@@ -105,6 +118,11 @@ enum RemoteHistorySyncCore {
             .map { $0.id }
 
         // 插入：history 中 DB 还没有的行（按 history 原序）。
+        // [对抗审查 R4 模拟实锤 2026-09-10] 基准必须用"删除后存活的 id 集"
+        // 而非删除前快照——seq 空间重置/bridgeId 切换场景：旧空间 bridge-1
+        // 行被删、新空间 bridge-1 行（同 id 不同内容）若按删除前 dbIds 判定
+        // 会被跳过 → 换血后内容丢失（test_seqSpaceReset 的期望与之矛盾，
+        // 测试步骤挂起从未执行所以一直没暴露）。keptIds = dbIds − deleteIds。
         // [排查 2026-09-10] user 行防双份（live UUID 行与回放 bridge-{seq}
         // 行并存 = 同一消息渲染两次 + UUID 行按旧 sort_order 进保留区错位）。
         // 换血方向选"保本地删回放"——本地行带 mediaRef/解析产物。两类键：
@@ -122,8 +140,10 @@ enum RemoteHistorySyncCore {
                 break
             }
         }
+        let deleteIdSet = Set(deleteIds)
+        let keptIds = dbIds.subtracting(deleteIdSet)
         let inserts = historyRaws.filter { raw in
-            if dbIds.contains(raw.id) { return false }
+            if keptIds.contains(raw.id) { return false }
             if raw.role == .user {
                 switch raw.parts.first {
                 case .toolResult(let tr):
