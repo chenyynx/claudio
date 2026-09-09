@@ -966,10 +966,12 @@ struct AddProviderView: View {
             savedApiKeyInstanceId = instance.id
         }
         isSaving = false
-        if pushesModelSelectionOnSave {
+        // [Fix 2026-09-09 v1.14.15 审查1] push 选模型页仅限 onboarding（无组
+        // 状态）——已有默认组的用户添加新供应商后走官方行为（保存即返回），
+        // 选模型页对其置灰中，push 过去是死路；改模型/加模型进 Model Groups。
+        if pushesModelSelectionOnSave && store.modelGroups.isEmpty {
             pushSelectModels = true
         } else {
-            // 设置页入口：官方行为，保存即返回（不自动接选模型）
             dismiss()
         }
     }
