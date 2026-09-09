@@ -2088,7 +2088,7 @@ actor ChatStore {
     func upsertRemoteSessionRow(id: String, modelId: String) {
         invalidateSessionListCache()
         let now = Date().timeIntervalSince1970
-        let memEnabled = ((UserDefaults.standard.object(forKey: "memory.global.enabled") as? Bool) ?? true) ? 1 : 0
+        let memEnabled: Int32 = ((UserDefaults.standard.object(forKey: "memory.global.enabled") as? Bool) ?? true) ? 1 : 0
         let sql = """
             INSERT INTO sessions (id, title, model_id, created_at, updated_at, source, memory_enabled)
             VALUES (?, NULL, ?, ?, ?, 'remoteBridge', ?)
