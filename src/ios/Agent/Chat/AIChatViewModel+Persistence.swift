@@ -936,16 +936,29 @@ extension AIChatViewModel {
     /// | B 上对 iCloud 来的远端 session 发消息 | .remoteAgt  | true         | remoteBridge      | true   |
     func isRemoteSession() async -> Bool {
         // 第一重：model binding.provider == .remoteAgent（用户明确选了远端）
-        if isBoundToRemoteAgentGroup() { return true }
+        if isBoundToRemoteAgentGroup() {
+            logger.info("[RemoteGate] hit tier1 (binding)")
+            return true
+        }
         // 第二重：lastAgentProviderIsRemote（当前 vm 上次发消息用的是远端 provider）
-        if lastAgentProviderIsRemote { return true }
+        if lastAgentProviderIsRemote {
+            logger.info("[RemoteGate] hit tier2 (lastProvider)")
+            return true
+        }
         // 第三重：session.source == "remoteBridge"（DB schema 标记，兜底旧版本/未绑定）
         if let sid = sessionId {
-            if let session = try? await ChatStore.shared.getSession(sid),
-               session.source == "remoteBridge" {
-                return true
+            if let session = try? await ChatStore.shared.getSession(sid) {
+                logger.info("[RemoteGate] tier3 source=\(session.source ?? "nil") sid=\(sid.prefix(8))")
+                if session.source == "remoteBridge" {
+                    return true
+                }
+            } else {
+                logger.warning("[RemoteGate] tier3 getSession nil sid=\(sid.prefix(8))")
             }
         }
+        // 全 false = 校准管线不会调度（杀后台重进后消息不跟进/内容不补的
+        // 第一断点，2026-09-10 pp 真机实锤：bridge 日志零 get_history）。
+        logger.warning("[RemoteGate] ALL tiers false sid=\(sessionId?.prefix(8) ?? "nil") binding=\(isBoundToRemoteAgentGroup()) lastProvider=\(lastAgentProviderIsRemote)")
         return false
     }
 
