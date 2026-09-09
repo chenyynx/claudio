@@ -937,16 +937,27 @@ extension AIChatViewModel {
             logger.info("[HistoryBackfill] applyBackfillResult=appended count=\(msgs.count) \(String(format: "%.0f", elapsed))ms")
             // [Fix 2026-09-08 重复渲染] 增量追加前做内容指纹去重。
             // 活体消息（UUID id）和回填消息（bridge 派生 id）的 id 永远
-            // 不同 → 仅靠 id 判重防不住杀重进的重复追加。加文本指纹：
-            // 取每条消息首个 text block 的前 80 字符 + role 作为指纹。
-            var existingFingerprints = Set(self.messages.map { msg -> String in
-                let text = msg.blocks.first(where: { $0.kind == .text })?.content ?? ""
-                return "\(String(describing: msg.role)):\(String(text.prefix(80)))"
-            })
+            // 不同 → 仅靠 id 判重防不住杀重进的重复追加。
+            // [Fix 2026-09-09 v1.14.14 R1] 指纹结构化：旧版只取首 text block
+            // 前80字 → thinking-only / tool 消息指纹全为空串互相撞车（回放误
+            // skip = 思考不完整；该挡没挡 = 重复）。改为 blocks 全量参与：
+            // kind + 内容前80，三段¦连接（prefix(3) 防超长消息指纹爆炸）。
+            func contentFingerprint(_ m: ChatMessage) -> String {
+                let parts = m.blocks.prefix(3).map { b -> String in
+                    let c: String
+                    if b.kind == .thinking || b.kind == .text {
+                        c = String(b.content.prefix(80))
+                    } else {
+                        c = b.toolUseId ?? String(b.content.prefix(80))
+                    }
+                    return "\(b.kind)|\(c)"
+                }
+                return "\(String(describing: m.role))#" + parts.joined(separator: "¦")
+            }
+            var existingFingerprints = Set(self.messages.map { contentFingerprint($0) })
             var addedCount = 0
             for m in msgs {
-                let text = m.blocks.first(where: { $0.kind == .text })?.content ?? ""
-                let fingerprint = "\(String(describing: m.role)):\(String(text.prefix(80)))"
+                let fingerprint = contentFingerprint(m)
                 if !self.messages.contains(where: { $0.id == m.id }),
                    !existingFingerprints.contains(fingerprint) {
                     self.messages.append(m)
@@ -1453,6 +1464,15 @@ extension AIChatViewModel {
             )
             store.setBinding(binding, for: sessionId)
             Task { await ChatStore.shared.updateSessionModelId(sessionId, modelId: entry.model.id) }
+            // [Fix 2026-09-09 v1.14.14 R5] 远端 intent → source 落库：与
+            // binding 同点写入（同一真相位），loadSession 分流/第三重判定恢复。
+            if let inst = store.instance(for: entry.providerInstanceId),
+               inst.providerType == .remoteAgent {
+                // [审查1修复] 不用 Task fire-and-forget：发完消息立刻杀后台时
+                // Task 可能未跑 → source 没落库 → 重进走本地路径（R5 复活）。
+                // createInitialBinding 是 async，直接 await 串行（无成本）。
+                await ChatStore.shared.updateSessionSource(sessionId, source: "remoteBridge")
+            }
             NotificationCenter.default.post(
                 name: .sessionModelBindingChanged,
                 object: nil,
