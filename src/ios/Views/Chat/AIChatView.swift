@@ -194,6 +194,17 @@ struct AIChatView: View {
         )
     }
 
+    /// [Fix 2026-09-09 v1.14.10] 与 ContentView 的 entrySeparator 成对
+    /// （draft id 编码：__new__<UUID>__entry__<entryId>）。
+    private static let entrySeparator = "__entry__"
+
+    /// [Fix 2026-09-09 v1.14.10] 从 draft id 提取入口意图 entryId。
+    private static func extractEntryId(from id: String) -> String? {
+        guard let range = id.range(of: entrySeparator) else { return nil }
+        let entryId = String(id[range.upperBound...])
+        return entryId.isEmpty ? nil : entryId
+    }
+
     init(sessionId: String? = nil, draftId: String? = nil, remoteDeviceId: String? = nil, initialGroupId: String? = nil) {
         self.sessionId = sessionId
         self.draftId = draftId
@@ -1283,6 +1294,14 @@ struct AIChatView: View {
             AppLogger(category: "InputBarLayout").info("inputBarHeight re-arm seed on appear (was \(inputBarHeight))")
             vm.sessionId = sessionId
             vm.draftId = draftId
+            // [Fix 2026-09-09 v1.14.10 方案B] 从 draft id 提取入口意图
+            // （makeNewSessionId(entryId:) 编码），ensureSession 一次建对。
+            if let draftId, let entryId = Self.extractEntryId(from: draftId) {
+                vm.pendingIntentEntryId = entryId
+                if let entry = ProviderConfigStore.shared.entry(for: entryId) {
+                    vm.selectedModel = entry.model
+                }
+            }
             vm.remoteDeviceId = remoteDeviceId
             vm.initialGroupId = initialGroupId
             // Snapshot total session count once so the New-Chat onboarding
