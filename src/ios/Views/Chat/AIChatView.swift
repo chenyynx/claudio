@@ -888,13 +888,13 @@ struct AIChatView: View {
         // [Claudio 2026-09-06] 远端 agent 工具输出文件全屏预览（FilePreviewPanel）。
         // 监听 vm.pendingAssistantPreview → 设本地 @State → 触发 fullScreenCover。
         // fullScreenCover 自带 onDismiss 清本地 state，再清 vm 字段避免重复触发。
-        .onChange(of: vm.pendingAssistantPreview) { newValue in
+        .onChange(of: vm.remote.pendingAssistantPreview) { newValue in
             if let url = newValue {
                 previewingAssistantFile = url
             }
         }
         .fullScreenCover(item: $previewingAssistantFile, onDismiss: {
-            vm.pendingAssistantPreview = nil
+            vm.remote.pendingAssistantPreview = nil
         }) { fileURL in
             FilePreviewPanel(fileURL: fileURL)
         }

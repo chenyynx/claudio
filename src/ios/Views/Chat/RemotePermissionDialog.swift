@@ -10,8 +10,31 @@ struct RemotePermissionDialogModifier: ViewModifier {
     @ObservedObject var vm: AIChatViewModel
 
     func body(content: Content) -> some View {
+        // [隔离架构铁律 2026-09-09] sheet 的 item 迁到 RemoteAgentSessionState
+        // （vm.remote.pendingPermission）。跨 ObservableObject 取 $ 投影不可行，
+        // 且 ViewModifier 自身的 body 不会因 remote.objectWillChange 重算 ——
+        // 必须由一个以 @ObservedObject 持有 remote 的子 View 承载 sheet，
+        // 常驻观察（remote 随 VM 永在，无 nil-gate 重挂载；本地会话从不写入
+        // → sheet 永不触发）。
         content
-            .sheet(item: $vm.pendingPermission) { request in
+            .background(
+                RemotePermissionSheetHost(vm: vm, remote: vm.remote)
+            )
+    }
+}
+
+/// Sheet 承载容器：@ObservedObject 观察 remote，保证 pendingPermission 变化
+/// 时本 View 重算、sheet(item:) 正常弹出/关闭。
+private struct RemotePermissionSheetHost: View {
+    @ObservedObject var vm: AIChatViewModel
+    @ObservedObject var remote: RemoteAgentSessionState
+
+    var body: some View {
+        Color.clear
+            .sheet(item: Binding(
+                get: { remote.pendingPermission },
+                set: { remote.pendingPermission = $0 }
+            )) { request in
                 RemotePermissionDialogContent(request: request, vm: vm)
                     .presentationDetents([.medium, .large])
                     .interactiveDismissDisabled()

@@ -182,6 +182,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     init() {
         logger.info("🔄SESSION [vm=\(self.vmInstanceId)] init — new AIChatViewModel created")
 
+        // [隔离架构铁律 2026-09-09] remote.objectWillChange 转发 —— 观察 vm 的
+        // 视图（onChange / sheet 绑定）能响应 remote 字段变化；本地会话从不
+        // 写 remote → 永不触发 → 零开销。
+        remoteStateCancellable = remote.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+
         // [Fix 2026-09-06] One-shot migration of the old Caches-based
         // attachment dir. Pre-Step-5 chips still reference paths under
         // Caches/InputAttachments, but iOS may have already reaped those
@@ -709,12 +715,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     private(set) var lastAgentProviderIsRemote = false
 
     // MARK: 远端附件候选（Claude Code via bridge）
-    enum RemotePayload {
-        case inlineImage(data: Data, mimeType: String)
-        case uploadFile(fileURL: URL, fileName: String)
-    }
-    @Published var pendingRemotePayloads: [RemotePayload] = []
-    static let kRemoteInlineMimeTypes: Set<String> = ["image/png", "image/jpeg", "image/gif", "image/webp"]
+    // [隔离架构铁律 2026-09-09] 附件候选队列已迁 remote.pendingPayloads
+    // （RemoteAgentSessionState）；收集/flush/交接全程经 remote 门面。
 
     /// [T-ios-group-pause-badge-restamp] Set only while a load / pre-warm is
     /// flipping `canResume` because the persisted tail STILL looks interrupted —
@@ -932,7 +934,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// stay untouched. The remote flag is display-only and never blocks
     /// input (the Bridge queues input while the SDK process is busy).
     /// Cleared on the next ordinary stream event (no end event on wire).
-    @Published var remoteCompacting = false
+    /// [隔离架构铁律 2026-09-09] remoteCompacting 已迁 remote.compacting。
     /// When true, shows a prompt asking user to compact before sending.
     @Published var showCompactBeforeSendPrompt = false
     /// [T-chat-auto-compact-opt-in] Global (cross-session) opt-in: when the
@@ -1176,44 +1178,20 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     // Tool snapshots
     @Published var toolSnapshots: [ToolSnapshotItem] = []
 
-    /// [M3] Latest Bridge `permission_request` awaiting an answer, or nil.
-    /// Drives the RemotePermissionDialog (non-bypass permission modes).
-    @Published var pendingPermission: RemotePermissionRequest?
+    // MARK: - 远端 agent 会话状态门面（隔离架构铁律 2026-09-09）
 
-    /// [Claudio 2026-09-06] 远端 agent 工具输出文件已下载到本地后，UI 层
-    /// 监听这个字段弹 FilePreviewPanel 全屏面板。**仅远端 agent 用**——
-    /// 本地 agent 走 OpenMinis 现有 minis:// 链接 / chip 路径。
-    @Published var pendingAssistantPreview: URL?
+    /// 远端 agent 会话的 UI 状态 + 动作（独立模块 RemoteAgentSessionState）。
+    /// 常驻非 nil：本地会话从不写入（写侧 gate = as? RemoteAgentProvider 分支），
+    /// 字段恒空 = 读侧零行为。objectWillChange 转发进 vm（见 init），视图经
+    /// vm 观察、挂载结构无条件变化。下方旧 @Published 字段随 S4 逐个退役。
+    let remote = RemoteAgentSessionState()
+    private var remoteStateCancellable: AnyCancellable?
 
-    /// [Claudio 2026-09-06] 远端 agent 正文文件路径点击后的预览内容，
-    /// AIChatView 监听这个字段弹 RemoteFilePeekSheet 全屏面板。与
-    /// pendingAssistantPreview 分工明确：那个走「已下载本地文件」语义，
-    /// 这个走「按需读内容不落盘」语义。
-    @Published var pendingRemoteFilePeek: RemoteFilePeekItem?
-
-    /// [Claudio 2026-09-06] 当前活跃远端 agent provider 的弱引用。为
-    /// file peek 提供 client/projectPath 通路（RemoteFileContentFetcher
-    /// 构造需要）。runAgentLoop 构建 RemoteAgentProvider 后设置。
-    private weak var lastRemoteAgentProvider: RemoteAgentProvider?
-
-    /// [Claudio 2026-09-06] 远端 agent 项目文件后缀集快照（ccpocket
-    /// file_peek 守门机制）。nil = 本地 agent / 无文件索引 = 正文路径
-    /// 不可点击。session_created 后由 refreshRemoteFileIndex 拉取填
-    /// 充，updateBridge 读到后透传给 SelectableMarkdownView。
-    @Published var remoteFileSuffixes: Set<String>?
-    // [Plan B3 2026-09-07] list_files suffixes + tool-observed path merge cache.
-    private var remoteIndexSuffixes: Set<String> = []
-    private var remoteObservedFilePaths: Set<String> = []
-
-    /// [Plan B3 2026-09-07] list_files suffixes UNION tool-observed path
-    /// forms. nil = local agent / no remote data (renderer: zero behavior).
-    private func rebuildRemoteFileSuffixes() {
-        var merged = remoteIndexSuffixes
-        for path in remoteObservedFilePaths {
-            merged.formUnion(RemoteProjectFileIndex.observedPathForms(path))
-        }
-        remoteFileSuffixes = merged.isEmpty ? nil : merged
-    }
+    // [隔离架构铁律 2026-09-09] 以下远端成员已整体迁至
+    // Agent/Chat/RemoteAgentSessionState.swift（常驻 remote 门面，见上）：
+    // pendingPermission / pendingAssistantPreview / pendingRemoteFilePeek /
+    // lastRemoteAgentProvider→remote.activeProvider / remoteFileSuffixes
+    // （+私有合成源）→remote.fileSuffixes。S3/S4 原子迁移，无双写期。
 
     // Attachments
     @Published var attachments: [InputAttachment] = []
@@ -2326,7 +2304,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // (it only deletes cacheURLs), so the race is gone at the root.
         // Image-inlining still uses the original cacheURL bytes (read before
         // cleanup), matching the previous behaviour bit-for-bit.
-        pendingRemotePayloads = []
+        remote.pendingPayloads = []
         #if DEBUG
         logger.info("🔑DRAFT [vm=\(self.vmInstanceId)] send() text=\(text.count)ch attachments=\(pendingAttachments.count) isProcessing=\(self.isProcessing) sessionId=\(self.sessionId ?? "nil") draftId=\(self.draftId ?? "nil") inputText='\(String(self.inputText.prefix(30)))'")
         #else
@@ -2556,9 +2534,23 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             var attachmentMetas: [AttachmentMeta] = []
             var userParts: [AgentContentPart] = []
             // [B-plan] Built per-iteration below and flushed to
-            // self.pendingRemotePayloads AFTER the cleanup step. See the
+            // remote.pendingPayloads AFTER the cleanup step. See the
             // comment on the B-plan block inside the for loop for the race
             // this avoids (sync cleanup vs async remote upload).
+            // [隔离架构铁律 2026-09-09] 收集侧 gate：仅本轮可能走远端时
+            // 收集（lastAgentProviderIsRemote 沿用上一回合判定，与新会话
+            // 首回合 isBoundToRemoteAgentGroup 兜底）——本地回合零收集，
+            // 顺手清掉全链路隔离审查 ⚠️ 项③（共享循环无 gate）。
+            let collectingForRemote = lastAgentProviderIsRemote
+                || (sessionId != nil && {
+                    guard let sid = sessionId,
+                          let binding = ProviderConfigStore.shared.binding(for: sid) else { return false }
+                    if case .directEntry(let entryId, _) = binding.primarySource,
+                       let entry = ProviderConfigStore.shared.entry(for: entryId),
+                       let inst = ProviderConfigStore.shared.instance(for: entry.providerInstanceId),
+                       inst.providerType == ProviderType.remoteAgent { return true }
+                    return false
+                }())
             var pendingRemotePayloadsLocal: [RemotePayload] = []
 
             // User attachments always take priority over history images — see
@@ -2637,12 +2629,14 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 case "webp": mime = "image/webp"
                 default: mime = "image/jpeg"
                 }
-                if attachment.kind == .image,
-                   Self.kRemoteInlineMimeTypes.contains(mime),
-                   let data = try? Data(contentsOf: attachment.cacheURL) {
-                    pendingRemotePayloadsLocal.append(.inlineImage(data: data, mimeType: mime))
-                } else {
-                    pendingRemotePayloadsLocal.append(.uploadFile(fileURL: destURL, fileName: attachment.fileName))
+                if collectingForRemote {
+                    if attachment.kind == .image,
+                       RemoteAgentSessionState.kRemoteInlineMimeTypes.contains(mime),
+                       let data = try? Data(contentsOf: attachment.cacheURL) {
+                        pendingRemotePayloadsLocal.append(.inlineImage(data: data, mimeType: mime))
+                    } else {
+                        pendingRemotePayloadsLocal.append(.uploadFile(fileURL: destURL, fileName: attachment.fileName))
+                    }
                 }
 
                 // [T-ios-attachment-oom-bg-kill] Only IMAGES need the bytes in
@@ -2724,9 +2718,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // uploadsDir paths so they're immune to the cleanup we just did;
             // inlineImage entries carry their Data snapshot, which is also
             // independent of the (now-deleted) source cacheURLs.
-            let localPayloads = pendingRemotePayloadsLocal
+            let localPayloads = collectingForRemote ? pendingRemotePayloadsLocal : []
             await MainActor.run {
-                self.pendingRemotePayloads = localPayloads
+                self.remote.pendingPayloads = localPayloads
             }
 
             // Update ChatMessage with structured attachment metadata for UI display
@@ -4931,30 +4925,20 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         var provider = await makeAgentProvider(for: entry)
         lastAgentProviderIsRemote = provider.isRemoteAgent
         if let remoteProvider = provider as? RemoteAgentProvider {
-            remoteProvider.pendingRemotePayloads = pendingRemotePayloads
-            pendingRemotePayloads = []
-            // [Claudio 2026-09-06] 远端 agent 文件索引:session 启动后拉
-            // list_files 建后缀集(RemoteProjectFileIndex 单例),让正文
-            // 里的反引号路径 + 裸路径命中真实文件时可点击(cppocket
-            // file_peek 守门机制)。fire-and-forget,失败退化为不可点击。
-            // 对齐 ccpocket file_peek_sheet.dart 加载 fileList 的时机。
-            //
-            // 同时存 provider 弱引用,给 handleRemoteFilePeekTap 提供
-            // client + projectPath 通路(payload 不带 projectPath,需
-            // 在 vm 层从当前 provider 补)。
-            lastRemoteAgentProvider = remoteProvider
+            // [隔离架构铁律 2026-09-09] 远端接线全部走 remote 门面（写侧 gate
+            // = 本 if 分支）。附件候选交接：本地回合 gate 后恒空数组，交接
+            // 语义与迁移前一致。
+            remoteProvider.pendingRemotePayloads = remote.pendingPayloads
+            remote.pendingPayloads = []
+            remote.activeProvider = remoteProvider
             // [Plan B3] Tool-observed paths augment the list_files suffix set.
             remoteProvider.onFilePathsObserved = { [weak self] paths in
                 Task { @MainActor in
-                    guard let self else { return }
-                    self.remoteObservedFilePaths.formUnion(paths)
-                    self.rebuildRemoteFileSuffixes()
+                    self?.remote.mergeObservedFilePaths(paths)
                 }
             }
             Task { @MainActor in
-                let entry = await remoteProvider.refreshFileIndex()
-                self.remoteIndexSuffixes = entry?.suffixSet ?? []
-                self.rebuildRemoteFileSuffixes()
+                await self.remote.refreshIndexSuffixes(from: remoteProvider)
             }
         }
 
@@ -6784,144 +6768,33 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         messages.append(msg)
     }
 
-    /// [M3] Answer the pending Bridge permission request. `allow` approves
-    /// once, `always` approves for the whole session (official approve /
-    /// approve_always / reject — ApprovalBar). Resolves the live client via
-    /// RemoteAgentStore like every other remote action.
-    func respondToPermission(_ request: RemotePermissionRequest, allow: Bool, always: Bool = false) {
-        guard let entry = resolveCurrentEntry() else {
-            pendingPermission = nil
-            return
-        }
-        let chatID = sessionId
-        guard let client = RemoteAgentStore.shared.existingClient(
-            instanceID: entry.providerInstanceId,
-            chatSessionID: chatID
-        ) else {
-            pendingPermission = nil
-            return
-        }
-        let kind = always ? "approve_always" : (allow ? "approve" : "reject")
-        Task {
-            await client.sendPermissionResponse(kind: kind, id: request.id)
-            await MainActor.run {
-                if pendingPermission?.id == request.id {
-                    pendingPermission = nil
-                }
-            }
-        }
-    }
+    // [隔离架构铁律 2026-09-09] respondToPermission / findAssistantBlock /
+    // downloadAssistantBlockFile / requestPreviewAssistantBlock 已整体迁至
+    // RemoteAgentSessionState（S3，参数化不持有 VM）。View 调用点经 vm.remote
+    // 透传 sessionId/messages/resolveCurrentEntry。
 
-    // MARK: - 远端 agent 工具输出文件下载 (Claudio 2026-09-06)
-
-    /// 在所有 messages 树里按 id 找 AssistantBlock（含流式块，已 commit/未 commit 都搜）。
-    /// 工具块的 id 在转 AssistantBlock 时生成 UUID 持久。
-    private func findAssistantBlock(byId blockId: UUID) -> AssistantBlock? {
-        for msg in messages {
-            for block in msg.blocks {
-                if block.id == blockId { return block }
-            }
-        }
-        return nil
-    }
-
-    /// 卡片点 idle / failed：调 prepare_file_download → HTTP GET → 落 sandbox
-    /// → 设 block.outputFileLocalPath + .ready → 自动设 pendingAssistantPreview。
-    /// 状态机推进：idle → preparing → ready(.localPath) / failed(.code, .message)。
-    /// 失败时设 outputFileDownloadState = .failed，UI 显示"点击重试"。
+    /// 转发 stub：View 调用点不变（vm.downloadAssistantBlockFile(...)），
+    /// 实现已迁 remote 门面 —— 参数透传，无逻辑。
     func downloadAssistantBlockFile(blockId: UUID) {
-        guard let entry = resolveCurrentEntry() else { return }
-        let chatID = sessionId
-        guard let client = RemoteAgentStore.shared.existingClient(
-            instanceID: entry.providerInstanceId,
-            chatSessionID: chatID
-        ) else { return }
-        guard let block = findAssistantBlock(byId: blockId) else { return }
-        guard let absPath = block.outputFileRemotePath else { return }
-        // 已经在 .preparing / .downloading → 不重入
-        switch block.outputFileDownloadState {
-        case .preparing, .downloading:
-            return
-        default:
-            break
-        }
-        let projectPath = RemoteAgentConnection.load(
-            instanceID: entry.providerInstanceId
-        )?.projectPath ?? ""
-        guard !projectPath.isEmpty else {
-            block.outputFileDownloadState = .failed(
-                errorCode: "file_download_not_allowed",
-                message: "No projectPath configured for this instance"
-            )
-            return
-        }
-        let suggestedName = (absPath as NSString).lastPathComponent
-        let suggestedMime = block.outputFileMimeType
-        let sizeHint = block.outputFileSizeBytes
-
-        block.outputFileDownloadState = .preparing
-
-        Task { [weak block] in
-            do {
-                let result = try await RemoteFileDownload.download(
-                    client: client,
-                    projectPath: projectPath,
-                    absFilePath: absPath,
-                    suggestedFileName: suggestedName,
-                    suggestedMimeType: suggestedMime
-                )
-                await MainActor.run {
-                    guard let block else { return }
-                    block.outputFileLocalPath = result.localPath
-                    if sizeHint == 0 { block.outputFileSizeBytes = result.sizeBytes }
-                    if block.outputFileMimeType == nil {
-                        block.outputFileMimeType = result.mimeType
-                    }
-                    block.outputFileDownloadState = .ready(localPath: result.localPath)
-                    // 自动弹预览面板（pp 决策：下载完成 = 立即预览）
-                    pendingAssistantPreview = URL(fileURLWithPath: result.localPath)
-                    AppLogger(category: "FileDownload").info(
-                        "[FileDownload] ready block=\(block.id.uuidString.prefix(8)) bytes=\(result.sizeBytes)"
-                    )
-                }
-            } catch let err as RemoteDownloadError {
-                await MainActor.run {
-                    guard let block else { return }
-                    block.outputFileDownloadState = .failed(
-                        errorCode: err.code,
-                        message: err.message
-                    )
-                    AppLogger(category: "FileDownload").warning(
-                        "[FileDownload] failed block=\(block.id.uuidString.prefix(8)) code=\(err.code) msg=\(err.message)"
-                    )
-                }
-            } catch {
-                await MainActor.run {
-                    guard let block else { return }
-                    block.outputFileDownloadState = .failed(
-                        errorCode: "file_download_failed",
-                        message: error.localizedDescription
-                    )
-                }
-            }
-        }
+        remote.downloadAssistantBlockFile(
+            blockId: blockId,
+            sessionId: sessionId,
+            resolveEntry: { [weak self] in self?.resolveCurrentEntry() },
+            messages: messages
+        )
     }
 
-    /// 卡片点 .ready：直接弹预览面板（不重复下载）。
-    /// ready 状态已有 outputFileLocalPath，转 URL 设 pendingAssistantPreview。
     func requestPreviewAssistantBlock(blockId: UUID) {
-        guard let block = findAssistantBlock(byId: blockId) else { return }
-        guard case .ready(let localPath) = block.outputFileDownloadState else { return }
-        pendingAssistantPreview = URL(fileURLWithPath: localPath)
+        remote.requestPreviewAssistantBlock(blockId: blockId, messages: messages)
     }
 
-}
-
-/// [M3] A Bridge `permission_request` awaiting the user's answer.
-struct RemotePermissionRequest: Identifiable {
-    let id: String          // toolUseId
-    let toolName: String
-    let input: [String: Any]
+    func respondToPermission(_ request: RemotePermissionRequest, allow: Bool, always: Bool = false) {
+        remote.respondToPermission(
+            request, allow: allow, always: always,
+            sessionId: sessionId,
+            resolveEntry: { [weak self] in self?.resolveCurrentEntry() }
+        )
+    }
 }
 
 enum LLMProviderError: LocalizedError {
@@ -6937,31 +6810,11 @@ enum LLMProviderError: LocalizedError {
 // MARK: - Remote File Peek（远端 agent 正文文件路径点击预览）
 
 extension AIChatViewModel {
-    /// [Claudio 2026-09-06] 处理远端 agent 正文文件路径点击
-    /// （SelectableMarkdownView 里 .link = minis-file-peek:// URL 被
-    /// shouldInteractWith 拦截后,MarkdownFilePeekRouter 发通知,AIChatView
-    /// 监听通知调这个方法）。
-    ///
-    /// 对齐 ccpocket file_peek_sheet.dart openFilePeek:按路径调
-    /// read_file / read_media_file,成功后弹 sheet。claudio 端把
-    /// fetch 结果包装成 RemoteFilePeekItem 赋给 pendingRemoteFilePeek,
-    /// AIChatView 监听弹 RemoteFilePeekSheet。失败 → transientNotice
-    /// 提示,不弹面板。
+    /// [Claudio 2026-09-06] 处理远端 agent 正文文件路径点击。
+    /// [隔离架构铁律 2026-09-09] 实现已迁 RemoteAgentSessionState
+    /// （handleRemoteFilePeekTap，gate = remote.activeProvider 非nil），
+    /// 此处保留薄转发（AIChatView 通知监听点调用签名不变）。
     func handleRemoteFilePeekTap(filePath: String) {
-        guard lastAgentProviderIsRemote,
-              let provider = lastRemoteAgentProvider else {
-            return
-        }
-        // 空路径 / 文件索引没命中过的路径直接忽略
-        guard !filePath.isEmpty else { return }
-        let fetcher = provider.makeFilePeekFetcher(filePath: filePath)
-        let projectPath = provider.projectPath
-        // fetch 在 RemoteFilePeekSheet 内部 .task 里执行(对齐 ccpocket
-        // file_peek_sheet 自己在 initState 发请求 + 渲染 loading)。
-        pendingRemoteFilePeek = RemoteFilePeekItem(
-            filePath: filePath,
-            projectPath: projectPath,
-            fetcher: { try await fetcher.fetch() }
-        )
+        remote.handleRemoteFilePeekTap(filePath: filePath)
     }
 }

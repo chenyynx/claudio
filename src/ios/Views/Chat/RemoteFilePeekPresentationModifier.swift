@@ -32,13 +32,13 @@ struct RemoteFilePeekPresentationModifier: ViewModifier {
                       !filePath.isEmpty else { return }
                 vm.handleRemoteFilePeekTap(filePath: filePath)
             }
-            .onChange(of: vm.pendingRemoteFilePeek) { newValue in
+            .onChange(of: vm.remote.pendingRemoteFilePeek) { newValue in
                 if let item = newValue {
                     previewingRemoteFilePeek = item
                 }
             }
             .fullScreenCover(item: $previewingRemoteFilePeek, onDismiss: {
-                vm.pendingRemoteFilePeek = nil
+                vm.remote.pendingRemoteFilePeek = nil
             }) { item in
                 RemoteFilePeekSheet(item: item)
             }
