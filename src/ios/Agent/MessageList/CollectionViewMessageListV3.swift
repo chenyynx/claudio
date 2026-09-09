@@ -1468,7 +1468,7 @@ extension CollectionViewMessageListV3 {
             // 传给 SelectableMarkdownView。始终刷新（而非按消息条件），因为
             // loadSession 拉 list_files 后 remoteFileSuffixes 从 nil → set 时
             // 要触发所有 message 的重渲染。
-            bridge.filePathSuffixes = vm.remoteFileSuffixes
+            bridge.filePathSuffixes = vm.remote.fileSuffixes
             bridge.autoRetryAttempt = isLast ? vm.autoRetryAttempt : 0
             bridge.autoRetryCountdown = isLast ? vm.autoRetryCountdown : 0
             // [T-ios-session-status-mismatch] Defense-in-depth: even if vm.canResume
