@@ -4092,6 +4092,12 @@ struct ContentView: View {
             }
             let newId = Self.makeNewSessionId()
             Task { @MainActor in
+                // [Fix 2026-09-09] 预建 sessions 行（source=remoteBridge）：
+                // 此前 .claude 新建会话不落行 → updateSessionModelId 纯 UPDATE
+                // 是 no-op（model_id 也没写上）→ isRemoteSession() 三重判定
+                // 全 fail（directEntry 不被认 / 冷启动 flag false / 无 source 行）
+                // → 打开页面按本地 agent 渲染、远端 backfill 不跑。
+                await ChatStore.shared.upsertRemoteSessionRow(id: newId, modelId: entry.model.id)
                 // [Fix 2026-09-09] 同时落 binding：顶栏的模型名/副行读的是
                 // sessionBindings；只写 sessions.model_id 会让顶栏回落到本地
                 // 默认组，纯远端用户没有默认组 → 顶栏显示"未选择模型"。

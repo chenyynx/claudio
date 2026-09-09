@@ -30,8 +30,7 @@ final class RemoteHistoryBackfillTests: XCTestCase {
                 reasoningContent: nil,
                 streamInterruptCount: 0,
                 sortOrder: 0,
-                errorInfo: nil,
-                uiSequence: nil
+                errorInfo: nil
             )
         }
     }
@@ -53,8 +52,7 @@ final class RemoteHistoryBackfillTests: XCTestCase {
             reasoningContent: nil,
             streamInterruptCount: 0,
             sortOrder: 0,
-            errorInfo: nil,
-            uiSequence: nil
+            errorInfo: nil
         )
     }
 
@@ -150,8 +148,7 @@ final class RemoteHistoryBackfillTests: XCTestCase {
                 reasoningContent: nil,
                 streamInterruptCount: 0,
                 sortOrder: 0,
-                errorInfo: nil,
-                uiSequence: nil
+                errorInfo: nil
             )
         }
         let history = [makeAgentMessage(seq: 1)]
