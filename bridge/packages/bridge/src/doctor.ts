@@ -11,6 +11,7 @@ import {
   constants as fsConstants,
   existsSync,
   readFileSync,
+  statSync,
 } from "node:fs";
 import net from "node:net";
 import { homedir } from "node:os";
@@ -662,6 +663,53 @@ export async function checkKeychainAccess(): Promise<CheckResult> {
 // Runner
 // ---------------------------------------------------------------------------
 
+// [doris P0 Step7b] LLM gateway health (opt-in; loopback probe + credential perms)
+async function checkGateway(): Promise<CheckResult> {
+  if (process.env.GATEWAY_ENABLED !== "1") {
+    return {
+      name: "LLM gateway",
+      status: "skip",
+      message: "disabled (start bridge with --gateway-enabled to activate)",
+    };
+  }
+  const port = parseInt(process.env.GATEWAY_PORT ?? "8767", 10);
+  const credPath = join(homedir(), ".ccpocket", "gateway", "credentials.json");
+  try {
+    const st = statSync(credPath);
+    if ((st.mode & 0o077) !== 0) {
+      return {
+        name: "LLM gateway",
+        status: "fail",
+        message: `credentials.json is group/other-readable (${(st.mode & 0o777).toString(8)})`,
+        remediation: `chmod 600 ${credPath}`,
+      };
+    }
+  } catch {
+    return { name: "LLM gateway", status: "fail", message: `missing ${credPath}`, remediation: "run gateway migration (starts automatically with GATEWAY_ENABLED=1)" };
+  }
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/gateway/health`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) {
+      return { name: "LLM gateway", status: "fail", message: `health returned HTTP ${res.status}` };
+    }
+    const json = (await res.json()) as { upstreams?: unknown[] };
+    return {
+      name: "LLM gateway",
+      status: "pass",
+      message: `127.0.0.1:${port}, ${json.upstreams?.length ?? 0} upstream(s) configured`,
+    };
+  } catch (err) {
+    return {
+      name: "LLM gateway",
+      status: "fail",
+      message: `not reachable on 127.0.0.1:${port}: ${(err as Error).message}`,
+      remediation: "gateway only binds loopback — confirm bridge is running with GATEWAY_ENABLED=1",
+    };
+  }
+}
+
 function getAllChecks(): CheckDefinition[] {
   const port = parseInt(process.env.BRIDGE_PORT ?? "8765", 10);
 
@@ -676,6 +724,8 @@ function getAllChecks(): CheckDefinition[] {
       category: "required",
       run: () => checkPortAvailable(port),
     },
+    // [doris P0 Step7b] gateway self-check (skip when disabled)
+    { name: "LLM gateway", category: "optional", run: checkGateway },
     // Optional — macOS permissions
     {
       name: "Screen Recording",
