@@ -1234,14 +1234,6 @@ struct ContentView: View {
         "\(newSessionPrefix)\(UUID().uuidString)\(entrySeparator)\(entryId)"
     }
 
-    /// [Fix 2026-09-09 v1.14.10] .onDevice 用（draft id 先于意图确定时补编）：
-    /// draft 已带 entry 段则原样返回；否则追加 entry 段（截断可能的 group 段）。
-    private static func makeNewSessionIdReencode(draftId: String, entryId: String) -> String {
-        if extractEntryId(from: draftId) != nil { return draftId }
-        if let r = draftId.range(of: entrySeparator) { return String(draftId[..<r.lowerBound]) + entrySeparator + entryId }
-        if let r = draftId.range(of: groupSeparator) { return String(draftId[..<r.lowerBound]) + entrySeparator + entryId }
-        return draftId + entrySeparator + entryId
-    }
 
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var shareCoordinator: ShareCoordinator
@@ -4082,33 +4074,16 @@ struct ContentView: View {
     private func handleNewSessionResult(_ result: RemoteNewSessionResult) {
         switch result {
         case .onDevice:
-            // 本机 agent 会话: 显式绑非 remoteAgent 启用模型,绝不落默认组拼到云端。
-            // 绝对隔离:远端只能经 Claude tab 进入。用 for 替代 .first(where:),
-            // 避免长闭包让 ContentView body 的 SwiftUI 类型推导超时(已踩坑)。
-            var pickedSession: String?
-            var pickedModelId: String?
-            var pickedEntryId: String?
-            for entry in providerStore.modelEntries {
-                if entry.isHidden { continue }
-                guard let inst = providerStore.instance(for: entry.providerInstanceId) else { continue }
-                guard inst.providerType != .remoteAgent, inst.isEnabled else { continue }
-                pickedSession = Self.makeNewSessionId()
-                pickedModelId = entry.model.id
-                pickedEntryId = entry.id
-                break
-            }
-            guard let sid = pickedSession, let mid = pickedModelId else {
-                startSessionError = NSLocalizedString("No local model configured — add a provider in Settings.", comment: "")
-                return
-            }
-            // [Fix 2026-09-09 v1.14.10 方案B] pickedModelId 经 draft id 编码
-            // 直传（updateSessionModelId 对不存在的 draft 行是 no-op，此前
-            // picked 意图实际丢失靠默认组兜底）。
-            if let eid = pickedEntryId {
-                openSession(Self.makeNewSessionIdReencode(draftId: sid, entryId: eid))
-            } else {
-                openSession(sid)
-            }
+            // [Fix 2026-09-09 v1.14.16 对齐官方] 普通"开始对话" = 普通 draft：
+            // 模型由 createInitialBinding Tier 1 默认组接管（组策略解析成员、
+            // 组内 fallback、顶栏/picker 显示组解析模型）——官方语义。
+            // 历史包袱：旧版在这里遍历全模型列表 picked 第一个 entry 经方案B
+            // intent 直传，绕过了默认组 = "顶栏显示供应商全部模型里的第一个"。
+            // 隔离防线（默认组不含远端）已在源头保证：建组时 remoteAgent
+            // filter（OnboardingModelSelectionView）+ picker remoteAgent 过滤
+            // + Tier 0a 仅 Claude tab 显式触发。无本地可用模型时 send() 会
+            // 报"No model configured"（原 guard 语义由 VM 侧承接）。
+            openSession(Self.makeNewSessionId())
         case .claude:
             var pickedInstance: ProviderInstance?
             for inst in providerStore.instances where inst.providerType == .remoteAgent && inst.isEnabled {
