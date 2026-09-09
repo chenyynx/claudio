@@ -1268,7 +1268,11 @@ extension AIChatViewModel {
             return sid
         }
         let model = selectedModel
-        let session = await ChatStore.shared.createSession(modelId: model.id, source: sessionSource)
+        // [Fix 2026-09-09 v1.14.10 方案B] 入口意图决定 source：远端 entry →
+        // "remoteBridge"（isRemoteSession 第三重判定 + loadSession 分流依赖）。
+        let intentEntry = pendingIntentEntryId.flatMap { ProviderConfigStore.shared.entry(for: $0) }
+        let intentIsRemote = intentEntry.flatMap { ProviderConfigStore.shared.instance(for: $0.providerInstanceId) }?.providerType == .remoteAgent
+        let session = await ChatStore.shared.createSession(modelId: model.id, source: intentIsRemote ? "remoteBridge" : sessionSource)
         sessionId = session.id
         Self.activeSessionId = session.id
         // [T-memory-enabled-new-session-bug] Sync the @Published memoryEnabled
@@ -1311,6 +1315,26 @@ extension AIChatViewModel {
         // group's default thinking level, which would otherwise overwrite the
         // user's pick on the very first send.
         let userSetThinkingLevel = flushPendingThinkingLevel()
+        // [Fix 2026-09-09 v1.14.10 方案B] 消费入口意图：draft 页面顶栏已按
+        // selectedModel（=intent 模型）显示；此处把 intent 固化为 binding+
+        // model_id（一次建对），并清 transient 防泄漏到缓存 VM。
+        if let intentEntryId = pendingIntentEntryId,
+           let entry = ProviderConfigStore.shared.entry(for: intentEntryId) {
+            let intentBinding = SessionModelBinding(
+                sessionId: session.id,
+                primarySource: .directEntry(modelEntryId: intentEntryId),
+                subModelSource: nil
+            )
+            ProviderConfigStore.shared.setBinding(intentBinding, for: session.id)
+            await ChatStore.shared.updateSessionModelId(session.id, modelId: entry.model.id)
+            NotificationCenter.default.post(
+                name: .sessionModelBindingChanged,
+                object: nil,
+                userInfo: ["sessionId": session.id]
+            )
+            logger.info("🔑DRAFT [vm=\(vmInstanceId)] ensureSession intent applied entry=\(intentEntryId.prefix(8)) model=\(entry.model.id)")
+        }
+        pendingIntentEntryId = nil
         // Cache this draft VM now that it has a session ID
         ViewModelCache.shared.cacheDraft(self, sessionId: session.id)
         logger.info("🔑DRAFT [vm=\(self.vmInstanceId)] ensureSession CREATED sessionId=\(session.id) draftId=\(self.draftId ?? "nil")")

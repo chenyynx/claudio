@@ -1202,6 +1202,10 @@ struct ContentView: View {
     }
 
     private static let groupSeparator = "__grp__"
+    /// [Fix 2026-09-09 v1.14.10] 入口意图直传：draft id 编码 entryId（方案 B，
+    /// 对齐 groupId 编码模式）——draftId 零持久状态，意图经 id → AIChatView →
+    /// VM transient → ensureSession 一次建对（binding+source+model_id）。
+    private static let entrySeparator = "__entry__"
 
     /// Generate a draft session ID that also carries a model group selection.
     private static func makeNewSessionId(groupId: String) -> String {
@@ -1213,6 +1217,23 @@ struct ContentView: View {
         guard let range = id.range(of: groupSeparator) else { return nil }
         let groupId = String(id[range.upperBound...])
         return groupId.isEmpty ? nil : groupId
+    }
+
+    /// [Fix 2026-09-09 v1.14.10] 与 extractGroupId 同款：从 draft id 尾段提取
+    /// 入口意图 entryId（makeNewSessionId(entryId:) 编码）。与 group 编码互斥。
+    private static func extractEntryId(from id: String) -> String? {
+        guard let range = id.range(of: entrySeparator) else { return nil }
+        let entryId = String(id[range.upperBound...])
+        return entryId.isEmpty ? nil : entryId
+    }
+
+    /// [Fix 2026-09-09 v1.14.10] .onDevice 用（draft id 先于意图确定时补编）：
+    /// draft 已带 entry 段则原样返回；否则追加 entry 段（截断可能的 group 段）。
+    private static func makeNewSessionIdReencode(draftId: String, entryId: String) -> String {
+        if extractEntryId(from: draftId) != nil { return draftId }
+        if let r = draftId.range(of: entrySeparator) { return String(draftId[..<r.lowerBound]) + entrySeparator + entryId }
+        if let r = draftId.range(of: groupSeparator) { return String(draftId[..<r.lowerBound]) + entrySeparator + entryId }
+        return draftId + entrySeparator + entryId
     }
 
     @Environment(\.scenePhase) private var scenePhase
@@ -4059,20 +4080,26 @@ struct ContentView: View {
             // 避免长闭包让 ContentView body 的 SwiftUI 类型推导超时(已踩坑)。
             var pickedSession: String?
             var pickedModelId: String?
+            var pickedEntryId: String?
             for entry in providerStore.modelEntries {
                 if entry.isHidden { continue }
                 guard let inst = providerStore.instance(for: entry.providerInstanceId) else { continue }
                 guard inst.providerType != .remoteAgent, inst.isEnabled else { continue }
                 pickedSession = Self.makeNewSessionId()
                 pickedModelId = entry.model.id
+                pickedEntryId = entry.id
                 break
             }
             guard let sid = pickedSession, let mid = pickedModelId else {
                 startSessionError = NSLocalizedString("No local model configured — add a provider in Settings.", comment: "")
                 return
             }
-            Task { @MainActor in
-                await ChatStore.shared.updateSessionModelId(sid, modelId: mid)
+            // [Fix 2026-09-09 v1.14.10 方案B] pickedModelId 经 draft id 编码
+            // 直传（updateSessionModelId 对不存在的 draft 行是 no-op，此前
+            // picked 意图实际丢失靠默认组兜底）。
+            if let eid = pickedEntryId {
+                openSession(Self.makeNewSessionIdReencode(draftId: sid, entryId: eid))
+            } else {
                 openSession(sid)
             }
         case .claude:
@@ -4090,32 +4117,14 @@ struct ContentView: View {
                 startSessionError = NSLocalizedString("The remote agent has no models — configure a model first.", comment: "")
                 return
             }
-            let newId = Self.makeNewSessionId()
-            Task { @MainActor in
-                // [Fix 2026-09-09] 预建 sessions 行（source=remoteBridge）：
-                // 此前 .claude 新建会话不落行 → updateSessionModelId 纯 UPDATE
-                // 是 no-op（model_id 也没写上）→ isRemoteSession() 三重判定
-                // 全 fail（directEntry 不被认 / 冷启动 flag false / 无 source 行）
-                // → 打开页面按本地 agent 渲染、远端 backfill 不跑。
-                await ChatStore.shared.upsertRemoteSessionRow(id: newId, modelId: entry.model.id)
-                // [Fix 2026-09-09] 同时落 binding：顶栏的模型名/副行读的是
-                // sessionBindings；只写 sessions.model_id 会让顶栏回落到本地
-                // 默认组，纯远端用户没有默认组 → 顶栏显示"未选择模型"。
-                // 写法与 SessionModelPicker.bindToEntry 一致。
-                let binding = SessionModelBinding(
-                    sessionId: newId,
-                    primarySource: .directEntry(modelEntryId: entry.id),
-                    subModelSource: nil
-                )
-                providerStore.setBinding(binding, for: newId)
-                await ChatStore.shared.updateSessionModelId(newId, modelId: entry.model.id)
-                NotificationCenter.default.post(
-                    name: .sessionModelBindingChanged,
-                    object: nil,
-                    userInfo: ["sessionId": newId]
-                )
-                openSession(newId)
-            }
+            // [Fix 2026-09-09 v1.14.10 方案B] draftId 零持久状态：意图（远端
+            // entry）编码进 draft id，AIChatView 提取 → VM transient →
+            // ensureSession 一次建对（binding+source+model_id）。
+            // 回退 Fix2 预建行（draftId 行与 ensureSession 真实行并存 = 空卡片）
+            // 与 setBinding/updateSessionModelId（挂 draftId，真实会话用另一 id，
+            // 全部落空 = "本地页面"）。
+            let newId = Self.makeNewSessionId(entryId: entry.id)
+            openSession(newId)
         }
     }
 

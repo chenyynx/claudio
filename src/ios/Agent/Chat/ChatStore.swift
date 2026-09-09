@@ -2085,26 +2085,6 @@ actor ChatStore {
     /// UPDATE，行不存在时 model_id 也写不上。幂等：行已存在（broadcast
     /// 物化）则只补 model_id，不覆盖既有 source。本地 .onDevice 入口不
     /// 调用（本地会话沿用"首条消息时建行"的原语义，零行为变化）。
-    func upsertRemoteSessionRow(id: String, modelId: String) {
-        invalidateSessionListCache()
-        let now = Date().timeIntervalSince1970
-        let memEnabled: Int32 = ((UserDefaults.standard.object(forKey: "memory.global.enabled") as? Bool) ?? true) ? 1 : 0
-        let sql = """
-            INSERT INTO sessions (id, title, model_id, created_at, updated_at, source, memory_enabled)
-            VALUES (?, NULL, ?, ?, ?, 'remoteBridge', ?)
-            ON CONFLICT(id) DO UPDATE SET model_id = excluded.model_id
-        """
-        var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(stmt, 2, (modelId as NSString).utf8String, -1, nil)
-            sqlite3_bind_double(stmt, 3, now)
-            sqlite3_bind_double(stmt, 4, now)
-            sqlite3_bind_int(stmt, 5, memEnabled)
-            sqlite3_step(stmt)
-        }
-        sqlite3_finalize(stmt)
-    }
 
     func updateSessionTitle(_ id: String, title: String, category: String? = nil) {
         invalidateSessionListCache()

@@ -2090,6 +2090,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// Source tag written to the session record on creation (e.g. "shortcut").
     var sessionSource: String?
 
+    /// [Fix 2026-09-09 v1.14.10 方案B] 入口意图（Claude/On-Device tab 选定的
+    /// entryId），AIChatView onAppear 从 draft id 提取赋值。transient：不持久、
+    /// 不进 sync/备份；ensureSession 建行时消费（binding+source+model_id 一次
+    /// 建对）后清空，防泄漏到缓存后的真实会话 VM。
+    var pendingIntentEntryId: String?
+
     /// [T-shortcut-duplicate-completion-notification] Suppresses the *generic*
     /// background-completion notification for this run, because a Shortcuts
     /// intent already posts its own via `ShortcutNotification`. Without this the
