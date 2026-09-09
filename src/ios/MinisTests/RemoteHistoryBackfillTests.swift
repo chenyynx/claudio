@@ -143,6 +143,68 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-198", "bridge-199"])
     }
 
+    func test_liveUserRowWithSameText_blocksHistoryInsert() {
+        // [排查 2026-09-10] live user 行（UUID，含图片 mediaRef）与回放
+        // user_input 行（bridge-{seq}）同文本并存 = 同一条用户消息渲染两次
+        // 且 UUID 行按旧 sort_order 进保留区 → 位置错乱。修法：history 的
+        // 同文本 user 行不插入（保本地行——图片在），assistant/toolResult
+        // 行不受影响。
+        let history = [
+            makeHistoryRaw(id: "bridge-1", role: .user),      // 与 UUID-USER 同文本
+            makeHistoryRaw(id: "bridge-2", role: .assistant),
+        ]
+        var liveUser = makeDBRow(id: "UUID-USER", role: .user, sortOrder: 1)
+        liveUser.parts = [.text("content-bridge-1"), .mediaRef(MediaRef(
+            id: "m1", relativePath: "media/shot.png", mimeType: "image/png",
+            originalFileName: "shot.png"
+        ))]
+        let db = [liveUser]
+        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: db)
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-2"], "同文本 user 回放行不插，本地行（含图）保留")
+        XCTAssertTrue(plan.deleteIds.isEmpty)
+    }
+
+    func test_liveToolResultRow_blocksHistoryInsert() {
+        // [排查 2026-09-10] toolResult-only user 行的双份是比文本更狠的坑：
+        // live 落库的 toolResult 行（UUID）+ 回放 bridge-{seq} 行并存 →
+        // 渲染重复 + UUID 行进保留区错位。按 toolUseId（同一工具调用稳定
+        // 唯一）判定，history 的同 id toolResult 行不插入。
+        let history = [
+            makeHistoryRaw(id: "bridge-1", role: .user),
+            makeHistoryRaw(id: "bridge-2", role: .assistant),
+        ]
+        var historyToolResult = makeHistoryRaw(id: "bridge-3", role: .user)
+        historyToolResult.parts = [.toolResult(ToolResult(
+            toolUseId: "toolu-1", output: "ok", success: true, mediaRef: nil, snapshot: nil, pageURL: nil, status: "success", outputFile: nil
+        ))]
+        let liveToolResult = makeDBRow(id: "UUID-TR", role: .user, sortOrder: 3)
+        let db = [
+            makeDBRow(id: "UUID-USER", role: .user, sortOrder: 1),
+            makeDBRow(id: "UUID-ASSIST", role: .assistant, sortOrder: 2),
+            liveToolResult,
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: [history[0], history[1], historyToolResult],
+            dbRows: db
+        )
+        // bridge-1/2 的文本与 UUID-USER/UUID-ASSIST 行不同（fixture 文本不同源）
+        // → 正常插入；bridge-3 toolUseId 命中 UUID-TR → 阻断
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-1", "bridge-2"])
+        XCTAssertFalse(plan.inserts.contains { $0.id == "bridge-3" },
+                       "同 toolUseId 的 toolResult 回放行必须被阻断（防双份）")
+    }
+
+    func test_userRowWithDifferentText_stillInserts() {
+        // 不同文本的 user 回放行照常插入（DB 空的首次恢复场景）。
+        let history = [
+            makeHistoryRaw(id: "bridge-1", role: .user),
+            makeHistoryRaw(id: "bridge-2", role: .assistant),
+        ]
+        let db = [makeDBRow(id: "UUID-USER", role: .user, sortOrder: 1)] // parts text = "db-UUID-USER"
+        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: db)
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-1", "bridge-2"])
+    }
+
     func test_historyOutOfOrder_stillIdBased() {
         // id 集合校准对 history 乱序不敏感（顺序由 finalOrder renumber 兜）。
         let history = [

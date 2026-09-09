@@ -275,7 +275,17 @@ extension AIChatViewModel {
             // boundaries by id after restore.
             var agentMsg = raw.toAgentMessage(mediaResolver: resolver)
             agentMsg.dbMessageId = raw.id
-            loadedHistory.append(agentMsg)
+            // [排查 2026-09-10] 空 parts 行不进 LLM 上下文——thinking-only
+            // 回放行（parts=[] + reasoningContent 有）的 thinking 已在 UI
+            // blocks 层渲染（toChatMessage 从 reasoningContent 重建），但
+            // 空 content 消息送 Anthropic API 会 400。本地 live 路径不产生
+            // 此类行（appendMessages 空 assistant 过滤）→ 过滤对本地行为
+            // 等价，纯防御。toolResult-only user 行保留（API 合法）。
+            if agentMsg.parts.isEmpty {
+                logger.debug("[SessionLoad] skip empty-parts row id=\(raw.id.prefix(8)) role=\(raw.role.rawValue) in agentHistory")
+            } else {
+                loadedHistory.append(agentMsg)
+            }
 
             // [T-bridge-message-ui-leak] The #579 role-alternation bridge is
             // LLM-context-only: it stays in loadedHistory (appended above, so

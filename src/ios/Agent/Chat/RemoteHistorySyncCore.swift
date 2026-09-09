@@ -11,8 +11,14 @@
 // 本地 DB 现有行，算出"校准计划"——保留什么、删除什么、插入什么。
 //
 // 保留规则：
-// - user 行全保留（live 落库的用户消息，含附件 XML 解析结果等本地增强；
-//   bridge 端 user_input 的图片等价信息少于本地行，换血反而丢数据）
+// - user 行全保留（live 落库的用户消息，含附件 mediaRef、XML 解析结果等
+//   本地增强；bridge 端 user_input 的图片等价信息少于本地行，换血反而丢数据）
+//   ↳ 防双份（排查 2026-09-10）：bridge 回放的 user_input（bridge-{seq}）与
+//     live 落库的同文本 user 行（UUID）并存 = 同一条用户消息渲染两次且
+//     位置错乱（UUID 行按旧 sort_order 进保留区，回放行按 history 序）。
+//     修法在 inserts 端：history 的 user 行若已有同文本本地行 → 不插入
+//     （本地行保住图片+解析，bridge 行不重复落库；该 seq 每轮校准重复
+//     判定一次 skip，幂等无膨胀）。
 // - 非 user 行分两类：
 //   · UUID 行（live 落库，id 非 "bridge-" 前缀）→ 删除，其内容已由
 //     bridge-{seq} 行承载（同内容换血）
@@ -61,7 +67,37 @@ enum RemoteHistorySyncCore {
             .map { $0.id }
 
         // 插入：history 中 DB 还没有的行（按 history 原序）。
-        let inserts = historyRaws.filter { !dbIds.contains($0.id) }
+        // [排查 2026-09-10] user 行防双份（live UUID 行与回放 bridge-{seq}
+        // 行并存 = 同一消息渲染两次 + UUID 行按旧 sort_order 进保留区错位）。
+        // 换血方向选"保本地删回放"——本地行带 mediaRef/解析产物。两类键：
+        // · toolResult-only user 行按 toolUseId 比对（同一工具调用稳定唯一）
+        // · text user 行按首条 text 比对
+        var liveToolResultIds = Set<String>()
+        var liveUserTexts = Set<String>()
+        for row in dbRows where row.role == .user {
+            switch row.parts.first {
+            case .toolResult(let tr):
+                liveToolResultIds.insert(tr.toolUseId)
+            case .text(let t):
+                liveUserTexts.insert(t)
+            default:
+                break
+            }
+        }
+        let inserts = historyRaws.filter { raw in
+            if dbIds.contains(raw.id) { return false }
+            if raw.role == .user {
+                switch raw.parts.first {
+                case .toolResult(let tr):
+                    return !liveToolResultIds.contains(tr.toolUseId)
+                case .text(let t):
+                    return !liveUserTexts.contains(t)
+                default:
+                    return true
+                }
+            }
+            return true
+        }
 
         let keptCount = dbRows.count - deleteIds.count
         return RemoteHistoryReplacePlan(
