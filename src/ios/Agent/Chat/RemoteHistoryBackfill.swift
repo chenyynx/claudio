@@ -90,6 +90,27 @@ final class RemoteHistoryBackfill {
         let lastWireType = wireMessages.last?.type
         logger.info("[HistorySync] session=\(sessionId.prefix(8)) bridge returned \(history.count) engine messages, lastWireType=\(lastWireType ?? "nil")")
 
+        // [排查 2026-09-10 双份渲染·终版根因] seq 是 per-bridge-session 计数。
+        // resume 会换 bridge 会话 → seq 从 1 重计。bridgeId 变化 = 确定性
+        // 重置信号（长度启发式在短会话上必漏——旧空间 3 行 vs 新空间 5 行
+        // 时 dbMax<histMax，同 seq 不同内容照样串台）。per-chat 存储，
+        // 首次同步（无存储值）视为同空间，不触发换血。
+        let bridgeIdKey = "RemoteSyncBridgeId.v1.\(sessionId)"
+        let storedBridgeId = UserDefaults.standard.string(forKey: bridgeIdKey)
+        let currentBridgeId = fetched.bridgeId
+        let bridgeSessionSwitched: Bool
+        if let stored = storedBridgeId, let current = currentBridgeId {
+            bridgeSessionSwitched = stored != current
+        } else {
+            bridgeSessionSwitched = false
+        }
+        if bridgeSessionSwitched {
+            logger.warning("[HistorySync] session=\(sessionId.prefix(8)) BRIDGE SESSION SWITCHED \(storedBridgeId?.prefix(8) ?? "nil") → \(currentBridgeId?.prefix(8) ?? "nil") — seq space reset, full reshuffle")
+        }
+        if let current = currentBridgeId, current != storedBridgeId {
+            UserDefaults.standard.set(current, forKey: bridgeIdKey)
+        }
+
         // === 4. 逐条转换（复用 buildRawMessage；tool_result/user_input 行
         //     已在 agentMessage(fromServer:) 注入 bridgeSeq → 稳定 id） ===
         var historyRaws: [RawMessage] = []
@@ -116,7 +137,8 @@ final class RemoteHistoryBackfill {
         let plan = RemoteHistorySyncCore.planReplace(
             historyRaws: historyRaws,
             dbRows: dbRows,
-            nonEngineSeqs: nonEngineSeqs
+            nonEngineSeqs: nonEngineSeqs,
+            forceFullReshuffle: bridgeSessionSwitched
         )
         if !plan.inserts.isEmpty || !plan.deleteIds.isEmpty {
             await ChatStore.shared.replaceRemoteHistory(

@@ -185,6 +185,11 @@ final class CCPocketClient: @unchecked Sendable {
     /// the Bridge, so input can route to it without resuming (no new
     /// runtime session in the official client's running list).
     private var knownBridgeSessions: [CCPocketProtocol.ServerSession]?
+    /// [排查 2026-09-10 双份渲染] The bridge session id actually used by the
+    /// most recent `requestHistory` — the sync layer compares it against the
+    /// stored per-chat value to detect bridge-session switches (seq space
+    /// resets). See RemoteHistorySyncCore.planReplace.
+    var lastHistoryBridgeId: String?
 
     /// [Claudio 2026-09-06 G2] Bridge-side `BRIDGE_ALLOWED_DIRS` whitelist,
     /// captured from every `session_list` broadcast (websocket.ts:7880/7923).
@@ -622,6 +627,11 @@ final class CCPocketClient: @unchecked Sendable {
             return nil
         }
         logger.info("[CCPocket] history: \(unique.count) messages from bridge (raw=\(result.count) msgs, dedup removed 09-05)")
+        // [排查 2026-09-10 双份渲染] 暴露本次 get_history 实际使用的 bridge
+        // 会话 id——seq 是 per-bridge-session 计数，同步层需要它检测"resume
+        // 换了 bridge 会话 → seq 空间重置"。长度启发式（DB max > history
+        // max）在短会话上必漏，bridgeId 变化才是确定性信号。
+        lastHistoryBridgeId = bridgeId
         return unique
     }
 

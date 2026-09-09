@@ -58,7 +58,7 @@ enum RemoteHistorySyncCore {
     ///     错绑残留（live 曾把 result 的 seq 错注入 assistant 行）→ 删。
     ///     仅此集合内的 bridge 行可删——trim 窗口外的老行（seq 不在本次
     ///     history）依旧只增不删（R1 规则）。
-    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage], nonEngineSeqs: Set<Int> = []) -> RemoteHistoryReplacePlan {
+    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage], nonEngineSeqs: Set<Int> = [], forceFullReshuffle: Bool = false) -> RemoteHistoryReplacePlan {
         let dbIds = Set(dbRows.map { $0.id })
 
         // 删除③（seq 空间重置检测，优先级最高）：bridge-{seq} 的 seq 是
@@ -66,9 +66,11 @@ enum RemoteHistorySyncCore {
         // （官方语义，注释见 CCPocketClient.reconnectNow），新会话从 seq=1
         // 重新计数。此时 DB 里旧空间的 bridge-1..N 与新空间的 bridge-1..M
         // 同 id 不同内容 → id 命中 keep 旧行 = 内容串台/重复渲染（pp 真机
-        // 实锤：正文/卡片/思考块全部双份）。信号：DB 的 bridge 最大 seq >
-        // 本次 history 最大 seq（trim 场景方向相反：DB ≤ history 且单调
-        // 增长）。重置 → 非 user 行全部换血到新空间（user 行 UUID 无前缀，
+        // 实锤：正文/卡片/思考块全部双份）。信号（确定性优先）：
+        // · forceFullReshuffle = bridgeId 与上次同步不同（per-chat 存储）
+        // · 兜底：DB bridge max seq > history max seq（短会话会漏——
+        //   旧 3 行 vs 新 5 行不触发，真实翻车后补 bridgeId 主信号）
+        // 重置 → 非 user 行全部换血到新空间（user 行 UUID 无前缀，
         // 由防双份两键挡回放重复）。
         func bridgeSeq(_ id: String) -> Int? {
             guard id.hasPrefix("bridge-") else { return nil }
@@ -76,12 +78,14 @@ enum RemoteHistorySyncCore {
         }
         let dbBridgeSeqs = dbRows.compactMap { $0.role != .user ? bridgeSeq($0.id) : nil }
         let historySeqs = historyRaws.compactMap { bridgeSeq($0.id) }
-        let seqSpaceReset: Bool
-        if let dbMax = dbBridgeSeqs.max(), let histMax = historySeqs.max() {
-            seqSpaceReset = dbMax > histMax
-        } else {
-            seqSpaceReset = false
-        }
+        // bridgeId 切换（sync 层传入）是确定性信号；长度启发式只是无
+        // bridgeId 时的兜底（短会话 dbMax<=histMax 时漏判——真实翻车）。
+        let seqSpaceReset = forceFullReshuffle || {
+            if let dbMax = dbBridgeSeqs.max(), let histMax = historySeqs.max() {
+                return dbMax > histMax
+            }
+            return false
+        }()
 
         // 删除①：live 落库的非 user UUID 行（id 非 "bridge-" 前缀）。
         // 删除②：错绑残留行——id=bridge-{seq} 但该 seq 的 wire 消息是

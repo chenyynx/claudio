@@ -219,6 +219,28 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-1", "bridge-2", "bridge-3"])
     }
 
+    func test_bridgeSessionSwitch_shortSession_fullReshuffle() {
+        // [终版根因·pp 真机实锤] 长度启发式在短会话必漏：旧空间 2 行 vs
+        // 新空间 3 行（dbMax=2 < histMax=3）不触发，同 seq 不同内容照样
+        // 串台双份。bridgeId 切换（forceFullReshuffle）是确定性信号。
+        let history = [
+            makeHistoryRaw(id: "bridge-1", role: .assistant), // 新空间内容 A
+            makeHistoryRaw(id: "bridge-2", role: .user),
+            makeHistoryRaw(id: "bridge-3", role: .assistant),
+        ]
+        let db = [
+            makeDBRow(id: "UUID-USER", role: .user, sortOrder: 1),
+            makeDBRow(id: "bridge-1", role: .assistant, sortOrder: 2), // 旧空间内容 B
+            makeDBRow(id: "bridge-2", role: .assistant, sortOrder: 3), // 旧空间
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: history, dbRows: db,
+            nonEngineSeqs: [], forceFullReshuffle: true
+        )
+        XCTAssertEqual(Set(plan.deleteIds), ["bridge-1", "bridge-2"], "bridgeId 切换 → 旧空间行全换血")
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-1", "bridge-2", "bridge-3"])
+    }
+
     func test_trimWindow_noFalseReset() {
         // R1 场景回归保护：trim 窗口内 DB 1..N、history 尾窗 (N-99)..N →
         // history max = N ≥ DB max → 不触发重置，老行照常保留。

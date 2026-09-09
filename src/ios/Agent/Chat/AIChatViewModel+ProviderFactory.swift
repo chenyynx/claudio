@@ -173,7 +173,7 @@ extension AIChatViewModel {
     /// wire type (turn-in-progress detection for the restore-state send/stop
     /// button). Kept separate so existing callers see the same `[AgentMessage]?`
     /// contract.
-    static func fetchRemoteHistoryWithWire(instance: ProviderInstance, chatSessionID: String?, allowLegacyMappingFallback: Bool = true) async -> (wire: [CCPocketProtocol.ServerMessage], engine: [AgentMessage])? {
+    static func fetchRemoteHistoryWithWire(instance: ProviderInstance, chatSessionID: String?, allowLegacyMappingFallback: Bool = true) async -> (wire: [CCPocketProtocol.ServerMessage], engine: [AgentMessage], bridgeId: String?)? {
         guard let urlString = instance.effectiveCustomBaseURL,
               let baseURL = URL(string: urlString) else {
             logger.error("[HistoryBackfill] no wss URL for instance \(instance.id)")
@@ -224,10 +224,10 @@ extension AIChatViewModel {
             // (e.g. only status/result). Return the wire sequence anyway —
             // the sync pipeline needs lastWireType for the restore-state
             // send/stop detection even when nothing converts.
-            return (wire: wireMessages, engine: [])
+            return (wire: wireMessages, engine: [], bridgeId: client.lastHistoryBridgeId)
         }
         logger.info("[HistoryBackfill] mapped \(history.count) engine messages from bridge")
-        return (wire: wireMessages, engine: history)
+        return (wire: wireMessages, engine: history, bridgeId: client.lastHistoryBridgeId)
     }
 
     /// [Stop-session] Destroy the Bridge runtime session hosting this chat
