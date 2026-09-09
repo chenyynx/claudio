@@ -894,13 +894,28 @@ extension AIChatViewModel {
     /// 主 actor），逻辑与 loadSession 冷进路径共用。
     private func applyRemoteSyncOutcome(_ outcome: RemoteHistorySyncOutcome) async {
         if outcome.changed {
-            // 全量重建（messages + agentHistory + merge 链 + canResume）。
-            // loadSession 会再次调度本管线 → inFlight 锁挡住，无递归。
-            await loadSession()
+            applyCalibrationRefresh()
         }
         // 恢复态衔接：turn 还在跑 → 停止键 + 轮询直至 result。
         if RemoteHistorySyncCore.isTurnInProgress(lastWireType: outcome.lastWireType) {
             beginRemoteTurnWatchdog()
+        }
+    }
+
+    /// [排查 2026-09-10 首轮非流式] 校准后的 UI 刷新必须让路于进行中的流式
+    /// 回复——直接 loadSession 会从 DB 全量重建 messages，把流式中的内存
+    /// 占位块整个替换掉 = 首轮回复"思考/工具/文字一下子蹦出来"（第二轮起
+    /// 校准已同步不再触发，所以后面恢复正常流式）。挂 pendingSyncReloadOnIdle，
+    /// isProcessing→false 时由 didSet 自动 drain（现成机制），一轮重建补齐。
+    func applyCalibrationRefresh() {
+        if isProcessing || isCompacting {
+            pendingSyncReloadOnIdle = true
+            logger.info("[HistorySync] calibration changed but stream in flight — reload deferred to idle drain")
+        } else {
+            Task { @MainActor in
+                // loadSession 会再次调度本管线 → inFlight 锁挡住，无递归。
+                await self.loadSession()
+            }
         }
     }
 

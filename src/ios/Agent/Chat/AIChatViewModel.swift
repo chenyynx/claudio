@@ -4202,20 +4202,19 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             },
             chatSessionID: capturedSid
         )
-        // pollRemoteTurnProgress 本身在 @MainActor（VM 隔离，Task{} 继承）——
-        // 直接操作，不需要 MainActor.run 包装（其同步闭包里不能 await async 的
-        // loadSession，CI 34383639188 的 4214 编译错误）。
+        // pollRemoteTurnProgress 本身在 @MainActor（VM 隔离，Task{} 继承）。
         if outcome.lastWireType == "result" || outcome.lastWireType == "error" {
             logger.info("[RemoteWatchdog] result landed — ending watchdog")
             endRemoteTurnWatchdog()
             if outcome.changed && isActive {
+                // endRemoteTurnWatchdog 已把 isProcessing 置 false（didSet drain
+                // 若有挂起的 reload 会跑）——这里直接重建补齐 result 内容。
                 await loadSession()
             }
         } else if outcome.changed && isActive {
-            // 增量小（1-3 条/轮），loadSession 全量重建后 CollectionView
-            // diff 只动尾部；isLoadingSession 的 spinner 只在 messages
-            // 为空的 pre-load window 显示，刷新不闪。
-            await loadSession()
+            // [排查 2026-09-10] 恢复态期间用户可能在排队（isProcessing=true）：
+            // 不直接重建打断队列观感，挂 idle drain，result 落地时一次补齐。
+            applyCalibrationRefresh()
         }
     }
 
