@@ -711,14 +711,74 @@ final class RemoteAgentProvider: AgentProvider {
             }
             return userMsg
         default:
+            // [C-5.5 修复 2026-09-10 会话窗连续] past_history 的磁盘 raw 消息
+            // （{role, content}，无 type 字段）——bridge resume 时 SDK 新进程
+            // 起来，磁盘 jsonl 以 claudeSessionId 为键跨进程连续；官方 App 的
+            // "会话窗复用"（历史+新消息同一窗口延续）正是靠这份磁盘全量。
+            // 之前这里直接 return nil → resume/bridge 会话切换后全部磁盘
+            // 消息丢失 = 窗口断裂/内容串台的终局根源。
+            if let role = m.rawRole, let blocks = m.rawContentBlocks {
+                return agentMessageFromRawDisk(role: role, blocks: blocks)
+            }
             // system / result / error / session_list ... carry no replayable content
             return nil
         }
     }
 
+    /// Convert one disk-format past_history message (`{role, content}`) to an
+    /// AgentMessage. Bridge-side shape per websocket.ts
+    /// splitPastHistoryMessages: user/assistant keep the raw content blocks;
+    /// tool_result arrives reshaped with toolUseId/toolName on the message
+    /// itself (handled by the caller's tool_result branch, not here).
+    private static func agentMessageFromRawDisk(
+        role: String,
+        blocks: [CCPocketProtocol.AssistantContentBlock]
+    ) -> AgentMessage? {
+        var parts: [AgentContentPart] = []
+        var thinking: [String] = []
+        for b in blocks {
+            switch b.type {
+            case "text":
+                let t = b.text ?? ""
+                if !t.isEmpty { parts.append(.text(t)) }
+            case "thinking":
+                let t = b.thinking ?? b.text ?? ""
+                if !t.isEmpty { thinking.append(t) }
+            case "tool_use":
+                guard let id = b.id else { continue }
+                let name = b.name ?? "unknown"
+                let args = Self.jsonArgs(from: b.input)
+                parts.append(.toolUse(id: id, name: name, input: args))
+            default:
+                break
+            }
+        }
+        if parts.isEmpty && thinking.isEmpty { return nil }
+        let isUser = role == "user"
+        var msg = AgentMessage(role: isUser ? .user : .assistant, parts: parts)
+        if !thinking.isEmpty {
+            msg.reasoningContent = thinking.joined(separator: "\n")
+        }
+        return msg
+    }
+
     /// [A-plan v1] Bridge wire messages → engine messages, in seq order.
+    /// [C-5.5] Disk-format past messages (no type/historySeq) get a stable
+    /// `past-{index}` id via dbMessageId (AgentProvider.rawMessageId only
+    /// handles the seq channel): the disk jsonl is append-only per Claude
+    /// session, so the same conversation always yields the same sequence —
+    /// the calibration keep-set can hit across bridge-session switches.
     static func historyAgentMessages(from serverMessages: [CCPocketProtocol.ServerMessage]) -> [AgentMessage] {
-        serverMessages.compactMap { agentMessage(fromServer: $0) }
+        var pastIndex = 0
+        return serverMessages.compactMap { m in
+            if m.type == nil, m.rawRole != nil {
+                defer { pastIndex += 1 }
+                guard var msg = agentMessage(fromServer: m) else { return nil }
+                msg.dbMessageId = "past-\(pastIndex)"
+                return msg
+            }
+            return agentMessage(fromServer: m)
+        }
     }
 
     /// Same conversion rules as the live `assistant` case in

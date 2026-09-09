@@ -360,6 +360,34 @@ enum CCPocketProtocol {
         let cost: Double?
         let duration: Double?
         let toolCalls: Int?
+        // [C-5.5 修复 2026-09-10] past_history 的消息是磁盘 jsonl 的 raw
+        // Claude API 格式：{role: "user"/"assistant", content: [blocks]}——
+        // 没有 type/type 字段（bridge/websocket.ts splitPastHistoryMessages
+        // 原样透传）。没有这两个字段时解码器把 content 数组整个丢弃 →
+        // 历史恢复丢全部磁盘消息（resume 场景 + bridge 会话切换场景的
+        // "会话窗断裂"根因）。tool_result 的 raw 形态走既有
+        // toolUseId/content 字段，无需额外字段。
+        let rawRole: String?
+        let rawContentBlocks: [AssistantContentBlock]?
+
+        private enum CodingKeys: String, CodingKey {
+            case type, status, subtype, model
+            case provider, projectPath, sessionId, claudeSessionId
+            case permissionMode, message, text, toolUseId
+            case content, toolName, permissionOutcome, input
+            case result, error, stopReason, inputTokens
+            case outputTokens, cacheCreationInputTokens, cachedInputTokens, cost
+            case duration, toolCalls, messages, pastMessages
+            case fromSeq, toSeq, reason, entries
+            case sessions, hasMore, sourceSessionId, resumeRequestId
+            case acceptedSeq, queued, historySeq, errorCode
+            case requestId, userMessageUuid, clientMessageId, baseSeq
+            case skills, skillMetadata, claudeModels, claudeModelEfforts
+            case codexModels, codexModelReasoningEfforts, codexModelServiceTiers, codexProfiles
+            case defaultCodexProfile, allowedDirs
+            case rawRole = "role", rawContentBlocks = "content"
+        }
+
         // history / past_history payload — bridge sends TWO sequential
         // messages: past_history (disk-resident history from resume), then
         // history (in-memory accumulated since session start). The entries[]

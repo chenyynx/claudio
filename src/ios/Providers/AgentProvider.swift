@@ -141,6 +141,11 @@ struct AgentMessage: @unchecked Sendable {
     /// - bridgeSeq nil → fresh UUID each call (live-stream path, no replay).
     func rawMessageId() -> String {
         if let seq = bridgeSeq { return "bridge-\(seq)" }
+        // [C-5.5 修复 2026-09-10] past_history 磁盘消息（bridgeSeq=nil）用
+        // historyAgentMessages 注入的 `past-{index}` 稳定 id——磁盘 jsonl 按
+        // Claude 会话 append-only，同一会话每次 fetch 序列相同 → 校准 keep
+        // 集跨 bridge 会话切换命中。live 消息（无 seq 无 past id）仍走 UUID。
+        if let dbId = dbMessageId, dbId.hasPrefix("past-") { return dbId }
         return UUID().uuidString
     }
 }

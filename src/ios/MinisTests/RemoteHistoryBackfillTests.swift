@@ -219,6 +219,32 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-1", "bridge-2", "bridge-3"])
     }
 
+    func test_pastHistoryRawDisk_convertedWithStableId() {
+        // [C-5.5 会话窗连续] past_history 的磁盘 raw 消息（{role, content}，
+        // 无 type）必须被解析且拿到稳定 past-{index} id——之前落 default
+        // 全丢，resume/bridge 切换后窗口断裂。
+        let json = """
+        [{"role":"assistant","content":[{"type":"text","text":"old reply"},{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"ls"}}]},
+         {"role":"user","content":[{"type":"text","text":"old question"}]}]
+        """
+        let wire = try! JSONDecoder().decode([CCPocketProtocol.ServerMessage].self, from: Data(json.utf8))
+        let msgs = RemoteAgentProvider.historyAgentMessages(from: wire)
+        XCTAssertEqual(msgs.count, 2)
+        XCTAssertEqual(msgs[0].dbMessageId, "past-0")
+        XCTAssertEqual(msgs[0].rawMessageId(), "past-0", "rawMessageId 必须走 past- 分支")
+        XCTAssertEqual(msgs[0].role, .assistant)
+        XCTAssertNotNil(msgs[0].parts.first)
+        XCTAssertEqual(msgs[1].dbMessageId, "past-1")
+        XCTAssertEqual(msgs[1].role, .user)
+        // tool_use 转 part
+        if case .toolUse(let id, let name, _)? = msgs[0].parts.last {
+            XCTAssertEqual(id, "t9")
+            XCTAssertEqual(name, "Bash")
+        } else {
+            XCTFail("tool_use 块必须转成 .toolUse part")
+        }
+    }
+
     func test_bridgeSessionSwitch_shortSession_fullReshuffle() {
         // [终版根因·pp 真机实锤] 长度启发式在短会话必漏：旧空间 2 行 vs
         // 新空间 3 行（dbMax=2 < histMax=3）不触发，同 seq 不同内容照样
