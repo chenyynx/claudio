@@ -4628,9 +4628,11 @@ struct ContentView: View {
         // [Fix 2026-09-09] 配置完供应商的"自动接选模型"改由 AddProviderView
         // 内部 push 完成（系统返回键可回添加页修改）；此处不再接力弹第二个
         // sheet。欢迎页本地卡片"补第②步"入口（showSelectModels）保留不变。
+        // [Fix 2026-09-09 入口区分] 欢迎页传 true = onboarding 流（保存后
+        // push 选模型）；设置页入口不传（默认 false = 官方保存即返回）。
         .sheet(isPresented: $showAddProvider) {
             NavigationStack {
-                AddProviderView()
+                AddProviderView(pushesModelSelectionOnSave: true)
             }
         }
         .sheet(isPresented: $showSelectModels) {
