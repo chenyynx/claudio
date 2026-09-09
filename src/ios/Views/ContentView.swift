@@ -1227,6 +1227,13 @@ struct ContentView: View {
         return entryId.isEmpty ? nil : entryId
     }
 
+    /// [Fix 2026-09-09 v1.14.13] draft id 携带入口意图 entryId（方案B）。
+    /// （v1.14.10 起被 .claude/.onDevice 分支调用但漏定义——三 run 同挂
+    /// incorrect argument label entryId:/groupId:，一处修完三者。）
+    private static func makeNewSessionId(entryId: String) -> String {
+        "\(newSessionPrefix)\(UUID().uuidString)\(entrySeparator)\(entryId)"
+    }
+
     /// [Fix 2026-09-09 v1.14.10] .onDevice 用（draft id 先于意图确定时补编）：
     /// draft 已带 entry 段则原样返回；否则追加 entry 段（截断可能的 group 段）。
     private static func makeNewSessionIdReencode(draftId: String, entryId: String) -> String {
