@@ -2,17 +2,17 @@
 //
 // 显示：
 // 1. 远端 agent provider 连接状态（实时刷新）
-// 2. 各 session 的 lastSyncedBridgeSeq（最近一次桥同步水位）
+// 2. 各 session 的本地 DB 行数（[Fix 2026-09-10 v1.14.18] 水位机制已退役，
+//    恢复 = 全量校准，无水位概念）
 // 3. 操作：Clear Local Cache（清空本地 messages）
 //
 // 数据来源：
 // - ProviderConfigStore.shared.enabledInstances(for: .remoteAgent) — provider 列表
-// - RemoteSessionMetadata（UserDefaults）— 每个 session 的同步水位
 // - ChatStore.shared.listSessions() — 列出远端 session（source=remoteBridge）
 //
 // 与 iCloud Sync（多设备同步）是独立概念：
 // - iCloud Sync：本机 DB ↔ 其他 iOS 设备（CKEngine）
-// - Remote Bridge Sync：本机 DB ↔ 桥服务器（get_history + appendMessages）
+// - Remote Bridge Sync：本机 DB ↔ 桥服务器（get_history + replaceEntries）
 // 本 view 只关心后者。
 
 import SwiftUI
@@ -28,6 +28,7 @@ struct RemoteSessionSyncView: View {
     @State private var bridgeStatusText: String = "未知"
     @State private var lastRefresh: Date = Date()
     @State private var clearing: Set<String> = []
+    @State private var syncRowCounts: [String: Int] = [:]
     private let refreshTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -103,7 +104,7 @@ struct RemoteSessionSyncView: View {
                 } header: {
                     Text("Session Sync Status")
                 } footer: {
-                    Text("每条消息带一个 bridgeSeq。\"Last synced seq\" = 本地 cache 已经包含到哪个 seq。\nClear Local Cache 会清空本地 messages 表，下次进入该 session 时重新从桥拉取。")
+                    Text("恢复 = 与桥端 history 全量校准（official replaceEntries 语义），无水位概念。\nClear Local Cache 会清空本地 messages 表，下次进入该 session 时重新从桥拉取。")
                         .font(.caption)
                 }
             }
@@ -114,42 +115,29 @@ struct RemoteSessionSyncView: View {
 
     @ViewBuilder
     private func sessionRow(_ session: ChatSession) -> some View {
-        let meta = RemoteSessionMetadata.load(sessionId: session.id)
+        // [Fix 2026-09-10 v1.14.18] RemoteSessionMetadata 水位机制已退役
+        // （恢复=全量校准，无水位概念）——诊断页改为展示 DB 行数。
+        let rowCount = syncRowCounts[session.id] ?? 0
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(session.title ?? "Untitled")
                     .font(.headline)
                     .lineLimit(1)
                 Spacer()
-                if meta != nil {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .font(.caption)
-                } else {
-                    Image(systemName: "questionmark.circle")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                }
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.caption)
             }
             HStack(spacing: 12) {
-                if let meta = meta {
-                    Text("Last synced seq: \(meta.lastSyncedBridgeSeq)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("·")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(meta.lastBackfilledAt, style: .relative)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("前")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Never synced")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("Local rows: \(rowCount)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("·")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Sync = full calibration against bridge history")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             HStack(spacing: 12) {
                 Button(role: .destructive) {
@@ -211,6 +199,10 @@ struct RemoteSessionSyncView: View {
         Task {
             let all = await ChatStore.shared.listSessions()
             sessions = all
+            for session in all {
+                let stats = await ChatStore.shared.sessionWriteStats(sessionId: session.id)
+                syncRowCounts[session.id] = stats.count
+            }
         }
         lastRefresh = Date()
     }
@@ -220,7 +212,7 @@ struct RemoteSessionSyncView: View {
         defer { clearing.remove(session.id) }
         syncViewLogger.info("[RemoteSyncView] clear local cache session=\(session.id.prefix(8))")
         await ChatStore.shared.deleteMessages(sessionId: session.id)
-        UserDefaults.standard.removeObject(forKey: RemoteSessionMetadata.keyPrefix + session.id)
+        syncRowCounts[session.id] = 0
         refreshAll()
     }
 }

@@ -165,6 +165,15 @@ extension AIChatViewModel {
     /// chat turns; otherwise opens a throwaway connection (NOT retained in
     /// RemoteAgentStore — history fetches must never own the slot).
     static func fetchRemoteHistory(instance: ProviderInstance, chatSessionID: String?, allowLegacyMappingFallback: Bool = true) async -> [AgentMessage]? {
+        await fetchRemoteHistoryWithWire(instance: instance, chatSessionID: chatSessionID, allowLegacyMappingFallback: allowLegacyMappingFallback)?.engine
+    }
+
+    /// Wire-level variant of `fetchRemoteHistory` — also returns the raw
+    /// `ServerMessage` sequence so the sync pipeline can read the trailing
+    /// wire type (turn-in-progress detection for the restore-state send/stop
+    /// button). Kept separate so existing callers see the same `[AgentMessage]?`
+    /// contract.
+    static func fetchRemoteHistoryWithWire(instance: ProviderInstance, chatSessionID: String?, allowLegacyMappingFallback: Bool = true) async -> (wire: [CCPocketProtocol.ServerMessage], engine: [AgentMessage])? {
         guard let urlString = instance.effectiveCustomBaseURL,
               let baseURL = URL(string: urlString) else {
             logger.error("[HistoryBackfill] no wss URL for instance \(instance.id)")
@@ -211,10 +220,14 @@ extension AIChatViewModel {
         let history = RemoteAgentProvider.historyAgentMessages(from: wireMessages)
         if history.isEmpty {
             logger.info("[HistoryBackfill] bridge history mapped to 0 engine messages")
-            return nil
+            // Empty engine mapping can still carry a meaningful wire tail
+            // (e.g. only status/result). Return the wire sequence anyway —
+            // the sync pipeline needs lastWireType for the restore-state
+            // send/stop detection even when nothing converts.
+            return (wire: wireMessages, engine: [])
         }
         logger.info("[HistoryBackfill] mapped \(history.count) engine messages from bridge")
-        return history
+        return (wire: wireMessages, engine: history)
     }
 
     /// [Stop-session] Destroy the Bridge runtime session hosting this chat

@@ -2869,6 +2869,148 @@ actor ChatStore {
         }
     }
 
+    /// [Fix 2026-09-10 v1.14.18] Remote-session history calibration (official
+    /// replaceEntries semantics — bridge history is the single source of truth).
+    /// Single transaction: delete stale non-user rows, insert missing rows with
+    /// explicit sort orders, then renumber the final sequence.
+    ///
+    /// Kept rows (user rows + non-user rows whose id already matches
+    /// `bridge-{seq}`) are left untouched, so local enrichments (errorInfo,
+    /// tokenUsage) survive. Replaces the old watermark + fingerprint +
+    /// incremental-append mechanism whose four blind spots caused the
+    /// reorder/duplicate/drop cluster on kill-and-reenter.
+    ///
+    /// - Parameters:
+    ///   - plan: computed by `RemoteHistorySyncCore.planReplace`
+    ///   - finalOrder: the full bridge-history row sequence — the definitive
+    ///     ordering used for renumbering (user rows absent from bridge history
+    ///     keep their original sort_order; inserted rows are numbered above
+    ///     them to avoid collisions)
+    func replaceRemoteHistory(sessionId: String, plan: RemoteHistoryReplacePlan, finalOrder: [RawMessage]) {
+        invalidateSessionListCache()
+        let dbOK = (db != nil)
+        logger.info("[Store] replaceRemoteHistory enter sid=\(sessionId.prefix(8)) inserts=\(plan.inserts.count) deletes=\(plan.deleteIds.count) dbOpen=\(dbOK)")
+
+        exec("BEGIN TRANSACTION")
+
+        // 1. Delete stale non-user rows (live UUID rows, history-missing rows).
+        if !plan.deleteIds.isEmpty {
+            let deleteSQL = "DELETE FROM messages WHERE session_id = ? AND id = ?"
+            for rowId in plan.deleteIds {
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, deleteSQL, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, (sessionId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(stmt, 2, (rowId as NSString).utf8String, -1, nil)
+                    if sqlite3_step(stmt) != SQLITE_DONE {
+                        logger.error("[Store] replace DELETE failed sid=\(sessionId.prefix(8)) mid=\(rowId.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                    }
+                } else {
+                    logger.error("[Store] replace DELETE prepare failed err=\(String(cString: sqlite3_errmsg(db)))")
+                }
+                sqlite3_finalize(stmt)
+                markDirty(recordType: "Message", recordId: rowId, operation: "delete")
+            }
+        }
+
+        // 2. Insert missing rows with explicit sort_order (appendMessages uses
+        //    trailing nextSortOrder — unusable for mid-sequence inserts).
+        let insertSQL = """
+            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        for message in plan.inserts {
+            let partsJSON: String
+            do {
+                let data = try JSONEncoder().encode(message.parts)
+                partsJSON = String(data: data, encoding: .utf8) ?? "[]"
+            } catch {
+                logger.error("[Store] replace INSERT encode failed sid=\(sessionId.prefix(8)) mid=\(message.id.prefix(8)) err=\(error)")
+                continue
+            }
+            let partFlags = Self.partFlags(for: message.parts)
+            let usageJSON: String?
+            if let usage = message.tokenUsage {
+                usageJSON = (try? JSONEncoder().encode(usage)).flatMap { String(data: $0, encoding: .utf8) }
+            } else {
+                usageJSON = nil
+            }
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, insertSQL, -1, &stmt, nil) == SQLITE_OK {
+                // sort_order assigned below in the renumber pass — store a
+                // provisional high value so a crash mid-transaction cannot
+                // leave it colliding with kept rows.
+                sqlite3_bind_text(stmt, 1, (message.id as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 2, (message.sessionId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 3, (message.role.rawValue as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 4, (partsJSON as NSString).utf8String, -1, nil)
+                sqlite3_bind_double(stmt, 5, message.createdAt.timeIntervalSince1970)
+                bindOptionalText(stmt, index: 6, value: usageJSON)
+                sqlite3_bind_int64(stmt, 7, Int64(message.sortOrder))
+                bindOptionalText(stmt, index: 8, value: message.reasoningContent)
+                sqlite3_bind_int64(stmt, 9, Int64(message.streamInterruptCount))
+                sqlite3_bind_double(stmt, 10, message.createdAt.timeIntervalSince1970)
+                bindOptionalText(stmt, index: 11, value: message.errorInfo)
+                sqlite3_bind_int64(stmt, 12, Int64(partFlags))
+                bindOptionalText(stmt, index: 13, value: message.modelId)
+                bindOptionalText(stmt, index: 14, value: message.modelDisplayName)
+                bindOptionalText(stmt, index: 15, value: message.providerType)
+                bindOptionalText(stmt, index: 16, value: message.providerInstanceId)
+                if sqlite3_step(stmt) != SQLITE_DONE {
+                    logger.error("[Store] replace INSERT failed sid=\(sessionId.prefix(8)) mid=\(message.id.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                } else {
+                    markDirty(recordType: "Message", recordId: message.id)
+                }
+            } else {
+                logger.error("[Store] replace INSERT prepare failed err=\(String(cString: sqlite3_errmsg(db)))")
+            }
+            sqlite3_finalize(stmt)
+        }
+
+        // 3. Renumber the final sequence. Rows present in bridge history get
+        //    1..N in history order; user rows absent from history (legacy /
+        //    old-bridge data) keep their sort_order and are numbered ABOVE so
+        //    nothing collides.
+        let finalIds = Set(finalOrder.map { $0.id })
+        var nextOrder = 1
+        let renumberSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
+        for row in finalOrder {
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, renumberSQL, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(stmt, 1, Int64(nextOrder))
+                sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 3, (row.id as NSString).utf8String, -1, nil)
+                _ = sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
+            nextOrder += 1
+        }
+        // Orphan kept user rows: number above the renumbered block.
+        let orphanUserRows = loadMessages(sessionId: sessionId).filter {
+            $0.role == .user && !finalIds.contains($0.id)
+        }
+        for row in orphanUserRows {
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, renumberSQL, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(stmt, 1, Int64(nextOrder))
+                sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 3, (row.id as NSString).utf8String, -1, nil)
+                _ = sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
+            nextOrder += 1
+        }
+
+        touchSession(sessionId)
+        markDirty(recordType: "Session", recordId: sessionId)
+        pendingSyncSessionIds.insert(sessionId)
+
+        exec("COMMIT")
+
+        NotificationCenter.default.post(name: .sessionDidUpdate, object: sessionId)
+        let stats = sessionWriteStats(sessionId: sessionId)
+        logger.info("[Store] replaceRemoteHistory done sid=\(sessionId.prefix(8)) finalCount=\(stats.count) maxSO=\(stats.maxSortOrder)")
+    }
+
     /// Diagnostic helper: returns (count, maxSortOrder) for a session. Used to detect
     /// silent write failures where appendMessage returns but the DB row never lands.
     func sessionWriteStats(sessionId: String) -> (count: Int, maxSortOrder: Int) {

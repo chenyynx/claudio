@@ -1731,6 +1731,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// [A-plan v1] Remote history backfill in-flight guard (one fetch per
     /// loadSession; re-entry re-runs loadSession and may refetch).
     var remoteBackfillInFlight = false
+    /// [Fix 2026-09-10 v1.14.18] Restore-state polling task: remote turn in
+    /// progress but no live stream consumer on this device — poll the bridge
+    /// history until a result lands (send button shows Stop meanwhile).
+    var remoteTurnWatchdogTask: Task<Void, Never>? = nil
 
     /// Create an AVSpeechUtterance with the user's speech settings applied.
     private func makeUtterance(_ text: String) -> AVSpeechUtterance {
@@ -4147,6 +4151,85 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         }
     }
 
+    // MARK: - Restore-state watchdog（恢复态轮询，v1.14.18）
+
+    /// [Fix 2026-09-10 v1.14.18] 恢复态轮询：远端 turn 进行中但本机无活跃
+    /// stream 消费者（重进不 resume，bridge 广播没有接收者）→ 定时校准把
+    /// bridge 端新产生的消息增量同步到 UI，直到 history 尾部出现 result。
+    ///
+    /// 入口在 scheduleRemoteHistoryBackfill（+Persistence，全量校准后按
+    /// wire 尾条 type 判定）。isProcessing=true 期间发送键显示停止键
+    /// （AIChatView.sendButton 三态绑定，零 UI 改动）。
+    ///
+    /// 官方对照：ccpocket 打开会话时本身持有 stream 连接消费广播；我们的
+    /// 恢复路径在重进后没有 stream，用轮询换确定性（M4 打磨期可升级为
+    /// 被动 observer 连接）。
+    func beginRemoteTurnWatchdog() {
+        guard !isProcessing else { return }
+        isProcessing = true
+        logger.info("[RemoteWatchdog] turn-in-progress detected — isProcessing=true, polling every 3s")
+        remoteTurnWatchdogTask?.cancel()
+        remoteTurnWatchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, !Task.isCancelled else { return }
+                await self.pollRemoteTurnProgress()
+            }
+        }
+    }
+
+    /// 单轮轮询：非活跃会话跳过（vm 缓存仍活但不在前台——回前台时
+    /// onAppear→loadSession→sync 校准兜底），result 落地则收尾。
+    private func pollRemoteTurnProgress() async {
+        guard Self.activeSessionId == sessionId else { return }
+        guard await isRemoteSession() else {
+            endRemoteTurnWatchdog()
+            return
+        }
+        let instances = await ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
+        guard instances.count == 1, let instance = instances.first else {
+            endRemoteTurnWatchdog()
+            return
+        }
+        let capturedSid = sessionId ?? ""
+        let outcome = await RemoteHistoryBackfill.shared.syncIfNeeded(
+            sessionId: capturedSid,
+            buildRawMessage: { [weak self] agentMsg in
+                guard let self else { return nil }
+                return await self.buildRawMessage(agentMsg, reasoningContent: agentMsg.reasoningContent)
+            },
+            chatSessionID: capturedSid
+        )
+        if outcome.lastWireType == "result" || outcome.lastWireType == "error" {
+            await MainActor.run {
+                self.logger.info("[RemoteWatchdog] result landed — ending watchdog")
+                self.endRemoteTurnWatchdog()
+                if outcome.changed { self.loadSession() }
+            }
+        } else if outcome.changed {
+            await MainActor.run {
+                // 增量小（1-3 条/轮），loadSession 全量重建后 CollectionView
+                // diff 只动尾部；isLoadingSession 的 spinner 只在 messages
+                // 为空的 pre-load window 显示，刷新不闪。
+                self.loadSession()
+            }
+        }
+    }
+
+    func endRemoteTurnWatchdog() {
+        remoteTurnWatchdogTask?.cancel()
+        remoteTurnWatchdogTask = nil
+        guard isProcessing else { return }
+        isProcessing = false
+        // [T-watchdog-queue-continuity] 恢复态排队兜底：watchdog 运行期间
+        // 用户 enqueue 的消息在 result 落地后必须接续 drain——恢复路径没有
+        // runAgentLoop 的 epilogue，不接住的话队列永远卡着。
+        if !promptQueue.isEmpty && !isCompacting {
+            logger.info("[RemoteWatchdog] result landed with \(promptQueue.count) queued prompt(s) — resuming drain")
+            resumeQueueAfterCancel()
+        }
+    }
+
     /// Resume queue processing after the user stopped the current task.
     /// Spawns a fresh Task (not cancelled) so the drain loop can call runAgentLoop().
     private func resumeQueueAfterCancel() {
@@ -6083,8 +6166,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 if let persistedId = await persistAgentMessage(assistantMessage, tokenUsage: turnUsage, thoughtSignatures: sigMap, streamInterruptCount: interruptCount, modelEntryId: activeEntryId, bridgeSeq: turnBridgeSeq),
                    assistantAgentIdx < agentHistory.count {
                     agentHistory[assistantAgentIdx].dbMessageId = persistedId
-                    // [Fix 2026-09-09 v1.14.17] 水位逐轮抬 helper（最终轮）。
-                    bumpRemoteWatermark(seq: turnBridgeSeq)
+                    // [Fix 2026-09-10 v1.14.18] bumpRemoteWatermark 已随水位机制
+                    // 退役（恢复=全量校准）。seq 注入保留：该行 id=bridge-{seq}
+                    // 直接命中校准 keep 集，重进时少一次删插。
                     // [T-error-persist-ios] Persist this turn's error state AFTER the
                     // row exists + dbMessageId is assigned, keyed by that id, so the
                     // indicator survives reload. Write UNCONDITIONALLY (incl. nil) so a

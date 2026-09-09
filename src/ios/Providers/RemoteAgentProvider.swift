@@ -87,7 +87,7 @@ final class RemoteAgentProvider: AgentProvider {
     /// "bridge-{seq}" string that `agentMessage(fromServer:)` produces
     /// for the history-replay path — without this alignment, the live
     /// path writes UUIDs that the backfill path's id-set never matches
-    /// and BackfillCore.computePlan re-appends everything (Bug D root cause).
+    /// and the remote-history calibration re-appends everything (Bug D root cause).
     ///
     /// Thread safety: `handle` runs on the WebSocket callback thread
     /// (`client.onMessage`); the read site is `runAgentLoop` on the engine
@@ -675,10 +675,30 @@ final class RemoteAgentProvider: AgentProvider {
             let out = m.content ?? ""
             let isError = out.hasPrefix("Tool execution was interrupted")
                 || out.hasPrefix("Error:")
-            return AgentMessage(
+            var toolResultMsg = AgentMessage(
                 role: .user,
                 parts: [.toolResult(id: id, name: m.toolName ?? "", content: out, isError: isError)]
             )
+            // [Fix 2026-09-10 v1.14.18] Inject bridgeSeq — without it the row id
+            // is a random UUID on every sync, so the calibration plan re-inserts
+            // every historical tool_result on every re-entry (DB bloat + the id
+            // layer can never hit). Same injection as the assistant/user branch.
+            if let seq = m.historySeq {
+                toolResultMsg.bridgeSeq = seq
+            }
+            return toolResultMsg
+        case "user_input":
+            // [Fix 2026-09-10 v1.14.18] Bridge stores user turns as
+            // type=user_input (websocket.ts:3237). Previously this fell to
+            // `default` → every user message vanished from the replay, which
+            // made full-history calibration (replaceEntries semantics) lose
+            // user bubbles for DB-empty restores.
+            guard let text = m.text, !text.isEmpty else { return nil }
+            var userMsg = AgentMessage(role: .user, parts: [.text(text)])
+            if let seq = m.historySeq {
+                userMsg.bridgeSeq = seq
+            }
+            return userMsg
         default:
             // system / result / error / session_list ... carry no replayable content
             return nil

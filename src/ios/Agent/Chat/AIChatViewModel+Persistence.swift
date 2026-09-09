@@ -244,8 +244,7 @@ extension AIChatViewModel {
             // unreachable after this early return, so a just-materialized
             // remote session stayed blank forever. Schedule the same
             // backfill here; local sessions no-op (no claude mapping).
-            let resolver = await ChatStore.shared.mediaFileURLResolver()
-            scheduleRemoteHistoryBackfill(resolver: resolver)
+            scheduleRemoteHistoryBackfill()
             return
         }
 
@@ -823,49 +822,34 @@ extension AIChatViewModel {
         // rebuild rendering in memory. v1 does not re-persist (cache
         // write-back is step 2). Offline / failure falls back to local
         // rendering silently — official client semantics.
-        scheduleRemoteHistoryBackfill(resolver: resolver)
+        scheduleRemoteHistoryBackfill()
     }
 
-    /// [C-方案 09-05] 远端 session 异步触发 history 增量同步。
-    /// 走 RemoteHistoryBackfill.shared.backfillIfNeeded 工具类：
-    /// - 拉桥 history → 判重（bridgeSeq / id）→ 增量 appendMessages 落库
-    /// - 返回 BackfillResult：.replaced（DB 空）/ .appended（DB 有）/ .noop / .failed
-    /// 调用方负责把返回的 messages 喂给 UI。
+    /// [Fix 2026-09-10 v1.14.18] 远端 session 恢复：全量校准（官方 replaceEntries
+    /// 语义）。fetch bridge history → planReplace → 单事务落库 → loadSession 重建。
+    /// 水位/指纹/增量 append 三套自创机制已整套退役——它们是杀后台重进
+    /// 乱序/重复/吞的四个盲区根因（见 RemoteHistorySyncCore.swift 头注释）。
     ///
     /// 设计要点：
     /// - 本地 agent session 永不进入（loadSession 用 isRemoteSession() 三重门 gate）
-    /// - 杀后台时 stream 没结束 → 5970 没执行 → assistant 缺一条 → 这次补回
-    /// - 二次杀后台 → DB 已有 → 走 .appended/.noop（不再 .replaced 整替换）
-    private func scheduleRemoteHistoryBackfill(resolver: @escaping (MediaRef) -> URL) {
-        // [C-方案 09-05] 入口 gate：远端 session 才走（本地 agent 永不进入）。
-        // 远端 session 即使 DB 非空也走（杀后台时 stream 没结束 → assistant 缺 → 补漏）。
-        // isRemoteSession 是 async（需要 await ChatStore.shared.getSession 查 source），
-        // 所以在 Task 内部 await 检查，避免 sync 函数里 await。
-        // 本地 agent session 三重门全 false → 永不进入 backfill。
+    /// - 重活在 Task.detached 上跑（v1.14.5 主线程冻结教训）
+    /// - 校准完成后回主线程调 loadSession() 全量重建（与 iCloud sync reload
+    ///   同款先例）——渲染与下次冷进 100% 一致
+    /// - 恢复态衔接：校准发现 turn 进行中（wire 尾条非 result）→ isProcessing=true
+    ///   （发送键自动变停止键）+ 启动轮询 sync 直至 result 落地
+    private func scheduleRemoteHistoryBackfill() {
         guard remoteBackfillInFlight == false else { return }
+        // [Fix 2026-09-10 v1.14.18] iCloud 来源的远端会话（remoteDeviceId 非空）
+        // 展示走 remote_messages 镜像表（CloudSync 推送），校准写本机主表对它
+        // 无效——旧管线在这里的行为本来就是半吊子（读 remote 表判重、写主表）。
+        // 本期明确：校准只服务本机远端会话；iCloud 场景的恢复由 CloudSync 负责。
+        guard remoteDeviceId == nil else { return }
         let instances = ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
         guard instances.count == 1, let instance = instances.first else { return }
         remoteBackfillInFlight = true
-        // sessionId/remoteDeviceId 都是 String? — 先 guard 解包成 String
         guard let capturedSessionId = sessionId else { return }
-        let capturedRemoteDeviceId = remoteDeviceId
-        // [Fix 2026-09-05 bug 3] Use Task.detached so the heavy backfill work
-        // (network fetch + dedup plan + SQLite write + UI conversion) runs off
-        // the main actor. Previously this was a plain `Task { ... }`, which
-        // inherits the enclosing @MainActor and would park the main thread for
-        // 4-5 seconds on every chat page entry — the "click chat page → freeze"
-        // symptom. The flag and final UI apply still hop back to MainActor; only
-        // the heavy middle is detached.
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
-            // [Fix 2026-09-05 build] Mark the closure @MainActor so the
-            // `remoteBackfillInFlight` mutation inside compiles under Swift 6
-            // — the enclosing `Task.detached` body is nonisolated, and
-            // without the annotation the closure's isolation is inferred
-            // from its context (detached) and Swift 6 errors on the
-            // @MainActor property write. The `Task { @MainActor in clearFlag() }`
-            // call site is correct, but the closure body needs the type-level
-            // promise too.
             let clearFlag: @MainActor () -> Void = {
                 self.remoteBackfillInFlight = false
             }
@@ -873,121 +857,30 @@ extension AIChatViewModel {
             // 远端 session gate（async）
             guard await self.isRemoteSession() else { return }
             let startedAt = CFAbsoluteTimeGetCurrent()
-            // 拍下当前 DB 已有 raw（用于判重）
-            // ChatStore 是 regular class，方法可直接 await（无 MainActor 阻塞）
-            let existingRaw: [RawMessage]
-            if let dev = capturedRemoteDeviceId, !dev.isEmpty {
-                existingRaw = await ChatStore.shared.loadRemoteMessages(sessionId: capturedSessionId, deviceId: dev)
-            } else {
-                existingRaw = await ChatStore.shared.loadMessages(sessionId: capturedSessionId)
-            }
-            let result = await RemoteHistoryBackfill.shared.backfillIfNeeded(
+            let outcome = await RemoteHistoryBackfill.shared.syncIfNeeded(
                 sessionId: capturedSessionId,
-                remoteDeviceId: capturedRemoteDeviceId,
-                existingRawMessages: existingRaw,
-                mediaResolver: resolver,
                 buildRawMessage: { [weak self] agentMsg in
                     guard let self else { return nil }
                     return await self.buildRawMessage(agentMsg, reasoningContent: agentMsg.reasoningContent)
                 },
-                toChatMessage: { raw in
-                    raw.toChatMessage(mediaResolver: resolver, showThinking: true)
-                },
                 chatSessionID: capturedSessionId
             )
             await MainActor.run {
-                self.applyBackfillResult(result, startedAt: startedAt)
+                let elapsed = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
+                self.logger.info("[HistorySync] apply outcome changed=\(outcome.changed) lastWireType=\(outcome.lastWireType ?? "nil") \(String(format: "%.0f", elapsed))ms")
+                if outcome.changed {
+                    // 全量重建（messages + agentHistory + merge 链 + canResume）。
+                    // loadSession 会再次调度本管线 → inFlight 锁挡住，无递归。
+                    self.loadSession()
+                }
+                // 恢复态衔接：turn 还在跑 → 停止键 + 轮询直至 result。
+                if RemoteHistorySyncCore.isTurnInProgress(lastWireType: outcome.lastWireType) {
+                    self.beginRemoteTurnWatchdog()
+                }
             }
         }
     }
 
-    /// [C-方案] 处理 backfill 结果。
-    /// - .replaced：DB 空 → 全替换 messages + agentHistory（远端 session 第一次杀后台进）
-    /// - .appended：DB 有 → appendMessages 追加（杀后台第二次进，补漏的尾部）
-    /// - .noop / .failed：什么都不做（保留本地）
-    private func applyBackfillResult(_ result: BackfillResult, startedAt: CFAbsoluteTime) {
-        let elapsed = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
-        switch result {
-        case .empty:
-            logger.info("[HistoryBackfill] applyBackfillResult=empty \(String(format: "%.0f", elapsed))ms")
-        case .noop(let reason):
-            logger.info("[HistoryBackfill] applyBackfillResult=noop reason=\(reason) \(String(format: "%.0f", elapsed))ms")
-        case .failed(let error):
-            logger.error("[HistoryBackfill] applyBackfillResult=failed error=\(error.localizedDescription) \(String(format: "%.0f", elapsed))ms")
-        case .replaced(let msgs):
-            logger.info("[HistoryBackfill] applyBackfillResult=replaced count=\(msgs.count) \(String(format: "%.0f", elapsed))ms")
-            self.messages = msgs
-            // agentHistory 简化为只保留 assistant turn 文字（不做 tool 重建，UI 渲染够用，
-            // 完整 LLM 上下文续接留待下次 turn 触发时重建）。ChatMessage.id 是 UUID，
-            // AgentMessage.dbMessageId 是 String，用 uuidString 转。
-            self.agentHistory = msgs.compactMap { cm in
-                guard cm.role == .assistant else { return nil }
-                var am = AgentMessage(
-                    role: .assistant,
-                    parts: cm.blocks.compactMap { b in
-                        if b.kind == .text { return .text(b.content) }
-                        return nil
-                    }
-                )
-                am.dbMessageId = cm.id.uuidString
-                return am
-            }
-            self.scrollToBottomSignal.send()
-        case .appended(let msgs):
-            logger.info("[HistoryBackfill] applyBackfillResult=appended count=\(msgs.count) \(String(format: "%.0f", elapsed))ms")
-            // [Fix 2026-09-08 重复渲染] 增量追加前做内容指纹去重。
-            // 活体消息（UUID id）和回填消息（bridge 派生 id）的 id 永远
-            // 不同 → 仅靠 id 判重防不住杀重进的重复追加。
-            // [Fix 2026-09-09 v1.14.14 R1] 指纹结构化：旧版只取首 text block
-            // 前80字 → thinking-only / tool 消息指纹全为空串互相撞车（回放误
-            // skip = 思考不完整；该挡没挡 = 重复）。改为 blocks 全量参与：
-            // kind + 内容前80，三段¦连接（prefix(3) 防超长消息指纹爆炸）。
-            func contentFingerprint(_ m: ChatMessage) -> String {
-                let parts = m.blocks.prefix(3).map { b -> String in
-                    let c: String
-                    if b.kind == .thinking || b.kind == .text {
-                        c = String(b.content.prefix(80))
-                    } else {
-                        c = b.toolUseId ?? String(b.content.prefix(80))
-                    }
-                    return "\(b.kind)|\(c)"
-                }
-                return "\(String(describing: m.role))#" + parts.joined(separator: "¦")
-            }
-            var existingFingerprints = Set(self.messages.map { contentFingerprint($0) })
-            var addedCount = 0
-            for m in msgs {
-                let fingerprint = contentFingerprint(m)
-                if !self.messages.contains(where: { $0.id == m.id }),
-                   !existingFingerprints.contains(fingerprint) {
-                    self.messages.append(m)
-                    existingFingerprints.insert(fingerprint)
-                    addedCount += 1
-                } else {
-                    logger.info("[HistoryBackfill] dedup: skipped id=\(m.id.uuidString.prefix(8)) fp=\(fingerprint.prefix(40))")
-                }
-            }
-            logger.info("[HistoryBackfill] appended dedup: \(msgs.count) → \(addedCount) added")
-            // agentHistory 增量补 assistant turn（用 uuidString 转 ChatMessage.id）
-            for m in msgs where m.role == .assistant {
-                let dbId = m.id.uuidString
-                if !self.agentHistory.contains(where: { $0.dbMessageId == dbId }) {
-                    var am = AgentMessage(
-                        role: .assistant,
-                        parts: m.blocks.compactMap { b in
-                            if b.kind == .text { return .text(b.content) }
-                            return nil
-                        }
-                    )
-                    am.dbMessageId = dbId
-                    self.agentHistory.append(am)
-                }
-            }
-            if addedCount > 0 {
-                self.scrollToBottomSignal.send()
-            }
-        }
-    }
 
     /// [C-方案] 远端 session 判别三重门（任一为真即视为远端）。
     /// loadSession 末尾用此 gate 决定是否触发增量补漏 backfill。
@@ -1263,25 +1156,6 @@ extension AIChatViewModel {
                 block.toolDuration = dur
             }
         }
-    }
-
-    /// [Fix 2026-09-09 v1.14.17] 远端水位逐轮抬（gate=seq 非空；max 单调）。
-    /// F2 此前只挂"最终轮 persist 成功"分支——多轮工具会话中途杀后台时水位
-    /// 从未离开 0 → 重进 computePlan 全量重拉（工具轮消息 id=UUID 与回放
-    /// bridge-{seq} 不匹配，id 层也失效）= 工具沉底/重复/思考观感乱。
-    /// 工具轮 batch 落库后与最终轮共用本 helper。
-    func bumpRemoteWatermark(seq: Int?) {
-        guard let seq, let sid = sessionId else { return }
-        let prev = RemoteSessionMetadata.load(sessionId: sid)
-        guard seq > (prev?.lastSyncedBridgeSeq ?? 0) else { return }
-        RemoteSessionMetadata.save(
-            RemoteSessionMetadata(
-                lastSyncedBridgeSeq: seq,
-                lastBackfilledAt: prev?.lastBackfilledAt ?? Date(),
-                totalBackfilledMessages: prev?.totalBackfilledMessages ?? 0
-            ),
-            sessionId: sid
-        )
     }
 
     /// Lazily create a session on first message send (draft mode).
@@ -2215,10 +2089,9 @@ extension AIChatViewModel {
     ///   for `RemoteAgentProvider`; local providers always pass nil). When
     ///   non-nil AND `msg.bridgeSeq` is nil, the seq is injected into a local
     ///   copy of `msg` so `buildRawMessage → rawMessageId()` derives the SAME
-    ///   "bridge-{seq}" id that the history-replay path produces — aligning
-    ///   the live and backfill id sets so `BackfillCore.computePlan` can dedup
-    ///   (route D, root cause fix for the duplicate-render / role-mismatch /
-    ///   kill-reenter cluster, see Bug经验库「远端 agent 三连 bug」).
+    ///   "bridge-{seq}" id that the history-replay path produces — the live
+    ///   row then lands in the sync calibration's keep set directly
+    ///   (v1.14.18 replaceEntries semantics).
     ///   When `msg.bridgeSeq` is already set (history-replay path), the
     ///   existing value wins.
     @discardableResult

@@ -136,7 +136,7 @@ struct AgentMessage: @unchecked Sendable {
     /// while the test suite passed.
     ///
     /// - bridgeSeq present → deterministic `bridge-{seq}`, so re-running
-    ///   `BackfillCore.computePlan` against the same bridge history hits the
+    ///   remote-history sync calibration against the same bridge history hits the
     ///   existing-ids set instead of re-appending duplicates.
     /// - bridgeSeq nil → fresh UUID each call (live-stream path, no replay).
     func rawMessageId() -> String {
@@ -246,7 +246,7 @@ protocol AgentProvider {
     /// the persistence layer to derive a stable `RawMessage.id` ("bridge-{seq}")
     /// that matches the id the backfill path will re-derive from history replay
     /// — without this, the live path and the backfill path produce disjoint
-    /// id sets and BackfillCore.computePlan cannot dedup (the root cause of
+    /// id sets and the remote-history calibration cannot dedup (the root cause of
     /// the duplicate-render / role-mismatch / kill-reenter cluster).
     /// ccpocket official uses runtime-store seq; Claudio persists to SQLite
     /// (per dev-rules 1 段) so we mirror the seq onto our own row.id instead.
