@@ -4625,16 +4625,10 @@ struct ContentView: View {
         }
         .foregroundStyle(.white)
         .background(OceanBackground(isPaused: welcomeSheetActive).ignoresSafeArea())
-        .sheet(isPresented: $showAddProvider, onDismiss: {
-            // [Fix 2026-09-09] 加完服务商自动接上第 ② 步（选模型）——双卡片
-            // 版没有可点的"选模型"入口，不自动接上用户就卡在未配置态。
-            // 闭包内直接读 store（不捕获呈现时的旧值）；defaultPrimaryGroupId
-            // 仍是 nil 即"还没选过模型"，此时才弹，避免打断已就绪用户。
-            let hasLocalProviders = !providerStore.instances.filter { $0.providerType != .remoteAgent }.isEmpty
-            if hasLocalProviders, providerStore.defaultPrimaryGroupId == nil {
-                showSelectModels = true
-            }
-        }) {
+        // [Fix 2026-09-09] 配置完供应商的"自动接选模型"改由 AddProviderView
+        // 内部 push 完成（系统返回键可回添加页修改）；此处不再接力弹第二个
+        // sheet。欢迎页本地卡片"补第②步"入口（showSelectModels）保留不变。
+        .sheet(isPresented: $showAddProvider) {
             NavigationStack {
                 AddProviderView()
             }
