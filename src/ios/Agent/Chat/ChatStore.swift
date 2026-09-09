@@ -2882,10 +2882,12 @@ actor ChatStore {
     ///
     /// - Parameters:
     ///   - plan: computed by `RemoteHistorySyncCore.planReplace`
-    ///   - finalOrder: the full bridge-history row sequence — the definitive
-    ///     ordering used for renumbering (user rows absent from bridge history
-    ///     keep their original sort_order; inserted rows are numbered above
-    ///     them to avoid collisions)
+    ///   - finalOrder: the full bridge-history row sequence — fallback ordering
+    ///     source for renumbering. **实际定序用 `plan.unifiedFinalOrderIds`**：
+    ///     防双份被挡的回放 user 行位置已替换为本地承载行 id——否则本地 user
+    ///     行（UUID）不在该序列内，"retained 排前"规则把它们全部顶到最前
+    ///     = user 气泡置顶、回复全在后（pp 真机实锤 2026-09-10）。finalOrder
+    ///     保留作 unifiedFinalOrderIds 缺行时的兜底（caller 旧调用兼容）。
     func replaceRemoteHistory(sessionId: String, plan: RemoteHistoryReplacePlan, finalOrder: [RawMessage]) {
         invalidateSessionListCache()
         let dbOK = (db != nil)
@@ -2967,17 +2969,30 @@ actor ChatStore {
         }
 
         // 3. Renumber the final sequence.
+        //    [乱序修复 2026-09-10 v1.14.21] 定序基准 = plan.unifiedFinalOrderIds
+        //    （bridge history 序 + 防双份命中的回放 user 行位置替换为本地行
+        //    id）。旧的"retained 排前 + finalOrder 排后"拼接把本地 user 行
+        //    全部甩到最前 = 顺序大乱（pp 真机实锤）。
         //    [R1 对抗审查] bridge 端 trimHistory 只保留尾部 100 条
-        //    （session.ts:186）——DB 里更老的 bridge-{seq} 行不在 finalOrder
-        //    里且必须保留（只增不删）。最终顺序 = [不在 finalOrder 的保留行
-        //    （老 bridge 行 + 孤儿 user 行，按现有 sort_order 排前）] +
-        //    [finalOrder 按 history 序排后]，统一 renumber 1..M，无序号冲突。
-        let finalIds = Set(finalOrder.map { $0.id })
+        //    （session.ts:186）——更老的 bridge-{seq}/past-{index} 行不在
+        //    unified 序里且必须保留（只增不删），它们是历史最早的消息，
+        //    排在 unified 序之前语义正确；其余不在 unified 序的行按现有
+        //    sort_order 排前。统一 renumber 1..M，无序号冲突。
+        let unifiedIds = plan.unifiedFinalOrderIds
+        let finalIds = Set(finalOrder.map { $0.id }).union(unifiedIds)
         let currentRows = loadMessages(sessionId: sessionId)
         let retainedOutsideFinal = currentRows
             .filter { !finalIds.contains($0.id) }
             .sorted { $0.sortOrder < $1.sortOrder }
-        let fullFinalSequence = retainedOutsideFinal + finalOrder
+        let rowById = Dictionary(uniqueKeysWithValues: currentRows.map { ($0.id, $0) })
+        var fullFinalSequence: [RawMessage] = retainedOutsideFinal
+        for id in unifiedIds {
+            if let row = rowById[id] {
+                fullFinalSequence.append(row)
+            } else if let fallback = finalOrder.first(where: { $0.id == id }) {
+                fullFinalSequence.append(fallback)
+            }
+        }
         var nextOrder = 1
         let renumberSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
         for row in fullFinalSequence {

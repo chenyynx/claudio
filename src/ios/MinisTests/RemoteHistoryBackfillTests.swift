@@ -406,6 +406,35 @@ final class RemoteHistoryBackfillTests: XCTestCase {
                        "新空间 bridge 行插入，past 行 id 命中不重插")
     }
 
+    func test_unifiedFinalOrder_interleavesLocalUserRows() {
+        // [乱序修复 v1.14.21] replaceRemoteHistory 的 renumber 用
+        // unifiedFinalOrderIds——防双份被挡的回放 user_input 行位置替换为
+        // 本地承载行 id。旧逻辑（retained 排前 + finalOrder 排后）把本地
+        // user 行全部顶到最前 = 两个 user 气泡置顶、回复全在后（pp 真机
+        // 实锤 07:06 日志：perMsg [0 user][1 user][2..12 assistant/tr]）。
+        let history = [
+            makeHistoryRaw(id: "bridge-8", role: .user),      // user_input 回放 → 本地顶位
+            makeHistoryRaw(id: "bridge-9", role: .assistant),
+            makeHistoryRaw(id: "bridge-10", role: .user),     // toolResult 回放 → 无本地 → 插入
+            makeHistoryRaw(id: "bridge-11", role: .assistant),
+            makeHistoryRaw(id: "bridge-14", role: .user),     // user_input 回放 → 本地顶位
+            makeHistoryRaw(id: "bridge-15", role: .assistant),
+        ]
+        let db = [
+            makeDBRow(id: "UUID-USER1", role: .user, sortOrder: 1),  // 文本 = content-bridge-8
+            makeDBRow(id: "UUID-USER2", role: .user, sortOrder: 3),  // 文本 = content-bridge-14
+        ]
+        // 让两条本地 user 行文本与回放行匹配（防双份按首条 text 比对）
+        var u1 = db[0]; u1.parts = [.text("content-bridge-8")]
+        var u2 = db[1]; u2.parts = [.text("content-bridge-14")]
+        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: [u1, u2])
+        XCTAssertEqual(plan.unifiedFinalOrderIds,
+                       ["UUID-USER1", "bridge-9", "bridge-10", "bridge-11", "UUID-USER2", "bridge-15"],
+                       "unified 序 = bridge 序，防双份命中位由本地 user 行顶替，user 行不置顶")
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-9", "bridge-10", "bridge-11", "bridge-15"],
+                       "被顶替的回放 user 行不插入（防双份），其余全插")
+    }
+
     func test_toolResultReplay_injectsBridgeSeq() {
         // agentMessage(fromServer:) 的 tool_result 分支必须注入 historySeq ——
         // 漏注入 = UUID id = 每次校准全量重插（v1.14.18 修复的根因 3）。

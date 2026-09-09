@@ -40,6 +40,12 @@ struct RemoteHistoryReplacePlan {
     let deleteIds: [String]
     /// 保留的原行数（诊断用）
     let keptCount: Int
+    /// 最终排序的 id 序列（bridge history 序，防双份被挡的回放 user 行位置
+    /// 替换为承载同内容的本地行 id）。replaceRemoteHistory 用它 renumber
+    /// sort_order——没有它，本地 user 行（UUID）不在 history 序列内，
+    /// renumber 的"retained 排前"规则会把所有 user 行顶到最前 = 顺序大乱
+    /// （pp 真机实锤 2026-09-10 07:06 日志：两个 user 气泡置顶、回复全在后）。
+    let unifiedFinalOrderIds: [String]
 
     var isEmpty: Bool { inserts.isEmpty && deleteIds.isEmpty }
 }
@@ -130,38 +136,64 @@ enum RemoteHistorySyncCore {
         // · text user 行按首条 text 比对
         var liveToolResultIds = Set<String>()
         var liveUserTexts = Set<String>()
+        // toolUseId/text → 本地承载行 id（防双份命中时 unifiedFinalOrderIds
+        // 用本地行替换该 history 位置，user 行才不会在 renumber 时被甩到最前）
+        var liveToolResultOwner: [String: String] = [:]
+        var liveUserTextOwner: [String: String] = [:]
         for row in dbRows where row.role == .user {
             switch row.parts.first {
             case .toolResult(let tr):
-                liveToolResultIds.insert(tr.toolUseId)
+                if liveToolResultIds.insert(tr.toolUseId).inserted {
+                    liveToolResultOwner[tr.toolUseId] = row.id
+                }
             case .text(let t):
-                liveUserTexts.insert(t)
+                if liveUserTexts.insert(t).inserted {
+                    liveUserTextOwner[t] = row.id
+                }
             default:
                 break
             }
         }
         let deleteIdSet = Set(deleteIds)
         let keptIds = dbIds.subtracting(deleteIdSet)
-        let inserts = historyRaws.filter { raw in
-            if keptIds.contains(raw.id) { return false }
+        var inserts: [RawMessage] = []
+        var unifiedFinalOrderIds: [String] = []
+        for raw in historyRaws {
+            var localOwnerId: String?
+            if keptIds.contains(raw.id) {
+                // 已在 DB（回放行命中 keep/不重插）——直接占位
+                unifiedFinalOrderIds.append(raw.id)
+                continue
+            }
             if raw.role == .user {
                 switch raw.parts.first {
                 case .toolResult(let tr):
-                    return !liveToolResultIds.contains(tr.toolUseId)
+                    if let owner = liveToolResultOwner[tr.toolUseId] {
+                        localOwnerId = owner
+                    }
                 case .text(let t):
-                    return !liveUserTexts.contains(t)
+                    if let owner = liveUserTextOwner[t] {
+                        localOwnerId = owner
+                    }
                 default:
-                    return true
+                    break
                 }
             }
-            return true
+            if let owner = localOwnerId {
+                // 防双份：回放 user 行不插，本地行顶替它在 bridge 序里的位置
+                unifiedFinalOrderIds.append(owner)
+                continue
+            }
+            unifiedFinalOrderIds.append(raw.id)
+            inserts.append(raw)
         }
 
         let keptCount = dbRows.count - deleteIds.count
         return RemoteHistoryReplacePlan(
             inserts: inserts,
             deleteIds: deleteIds,
-            keptCount: keptCount
+            keptCount: keptCount,
+            unifiedFinalOrderIds: unifiedFinalOrderIds
         )
     }
 
