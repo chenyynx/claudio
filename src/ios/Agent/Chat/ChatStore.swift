@@ -2086,6 +2086,21 @@ actor ChatStore {
     /// 物化）则只补 model_id，不覆盖既有 source。本地 .onDevice 入口不
     /// 调用（本地会话沿用"首条消息时建行"的原语义，零行为变化）。
 
+    /// [Fix 2026-09-09 v1.14.14 R5] 会话 source 写入（远端 Tier 0a 意图时补
+    /// "remoteBridge"）——loadSession 分流（loadRemoteMessages）与 isRemoteSession
+    /// 第三重判定依赖。独立小 API，模式同 updateSessionModelId。
+    func updateSessionSource(_ id: String, source: String?) {
+        invalidateSessionListCache()
+        let sql = "UPDATE sessions SET source = ? WHERE id = ?"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            bindOptionalText(stmt, index: 1, value: source)
+            sqlite3_bind_text(stmt, 2, (id as NSString).utf8String, -1, nil)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+    }
+
     func updateSessionTitle(_ id: String, title: String, category: String? = nil) {
         invalidateSessionListCache()
         let sql = "UPDATE sessions SET title = ?, category = COALESCE(?, category), updated_at = ? WHERE id = ?"
