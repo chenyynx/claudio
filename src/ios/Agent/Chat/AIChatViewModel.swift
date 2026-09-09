@@ -4202,19 +4202,20 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             },
             chatSessionID: capturedSid
         )
+        // pollRemoteTurnProgress 本身在 @MainActor（VM 隔离，Task{} 继承）——
+        // 直接操作，不需要 MainActor.run 包装（其同步闭包里不能 await async 的
+        // loadSession，CI 34383639188 的 4214 编译错误）。
         if outcome.lastWireType == "result" || outcome.lastWireType == "error" {
-            await MainActor.run {
-                self.logger.info("[RemoteWatchdog] result landed — ending watchdog")
-                self.endRemoteTurnWatchdog()
-                if outcome.changed && isActive { self.loadSession() }
+            logger.info("[RemoteWatchdog] result landed — ending watchdog")
+            endRemoteTurnWatchdog()
+            if outcome.changed && isActive {
+                await loadSession()
             }
         } else if outcome.changed && isActive {
-            await MainActor.run {
-                // 增量小（1-3 条/轮），loadSession 全量重建后 CollectionView
-                // diff 只动尾部；isLoadingSession 的 spinner 只在 messages
-                // 为空的 pre-load window 显示，刷新不闪。
-                self.loadSession()
-            }
+            // 增量小（1-3 条/轮），loadSession 全量重建后 CollectionView
+            // diff 只动尾部；isLoadingSession 的 spinner 只在 messages
+            // 为空的 pre-load window 显示，刷新不闪。
+            await loadSession()
         }
     }
 

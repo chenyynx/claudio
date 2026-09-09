@@ -867,22 +867,32 @@ extension AIChatViewModel {
                 },
                 chatSessionID: capturedSessionId
             )
+            // [CI 34383639188 编译修复] detached task（nonisolated）里不能用
+            // MainActor.run 的同步闭包包 async 调用——先回主 actor（Task {}）
+            // 再按顺序 await。
             await MainActor.run {
                 let elapsed = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
-                self.logger.info("[HistorySync] apply outcome changed=\(outcome.changed) lastWireType=\(outcome.lastWireType ?? "nil") \(String(format: "%.0f", elapsed))ms")
-                if outcome.changed {
-                    // 全量重建（messages + agentHistory + merge 链 + canResume）。
-                    // loadSession 会再次调度本管线 → inFlight 锁挡住，无递归。
-                    self.loadSession()
-                }
-                // 恢复态衔接：turn 还在跑 → 停止键 + 轮询直至 result。
-                if RemoteHistorySyncCore.isTurnInProgress(lastWireType: outcome.lastWireType) {
-                    self.beginRemoteTurnWatchdog()
-                }
+                logger.info("[HistorySync] apply outcome changed=\(outcome.changed) lastWireType=\(outcome.lastWireType ?? "nil") \(String(format: "%.0f", elapsed))ms")
             }
+            await self.applyRemoteSyncOutcome(outcome)
         }
     }
 
+
+    /// [Fix 2026-09-10 v1.14.18] 校准结果应用（@MainActor）：全量重建 + 恢复态
+    /// 衔接。从 scheduleRemoteHistoryBackfill 的 detached task 尾部调用（先回
+    /// 主 actor），逻辑与 loadSession 冷进路径共用。
+    private func applyRemoteSyncOutcome(_ outcome: RemoteHistorySyncOutcome) async {
+        if outcome.changed {
+            // 全量重建（messages + agentHistory + merge 链 + canResume）。
+            // loadSession 会再次调度本管线 → inFlight 锁挡住，无递归。
+            await loadSession()
+        }
+        // 恢复态衔接：turn 还在跑 → 停止键 + 轮询直至 result。
+        if RemoteHistorySyncCore.isTurnInProgress(lastWireType: outcome.lastWireType) {
+            beginRemoteTurnWatchdog()
+        }
+    }
 
     /// [C-方案] 远端 session 判别三重门（任一为真即视为远端）。
     /// loadSession 末尾用此 gate 决定是否触发增量补漏 backfill。
@@ -899,7 +909,7 @@ extension AIChatViewModel {
     /// | 本机远端 session 发过消息             | .remoteAgt  | true         | remoteBridge      | true   |
     /// | iPhone A 远端 session iCloud 到 B     | .remoteAgt  | false        | remoteBridge      | true   |
     /// | B 上对 iCloud 来的远端 session 发消息 | .remoteAgt  | true         | remoteBridge      | true   |
-    private func isRemoteSession() async -> Bool {
+    func isRemoteSession() async -> Bool {
         // 第一重：model binding.provider == .remoteAgent（用户明确选了远端）
         if isBoundToRemoteAgentGroup() { return true }
         // 第二重：lastAgentProviderIsRemote（当前 vm 上次发消息用的是远端 provider）
