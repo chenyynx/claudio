@@ -6083,24 +6083,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 if let persistedId = await persistAgentMessage(assistantMessage, tokenUsage: turnUsage, thoughtSignatures: sigMap, streamInterruptCount: interruptCount, modelEntryId: activeEntryId, bridgeSeq: turnBridgeSeq),
                    assistantAgentIdx < agentHistory.count {
                     agentHistory[assistantAgentIdx].dbMessageId = persistedId
-                    // [Fix 2026-09-09 v1.14.14 R2] live 抬水位：此前
-                    // lastSyncedBridgeSeq 只被 backfill 更新——live 消息带
-                    // bridgeSeq 落库但水位不进 → 重进时 computePlan 把全部
-                    // live 消息当"新"→ 全量重拉（判重只剩指纹层）。此处
-                    // persist 成功即抬水位（gate = bridgeSeq 非空且 sessionId 在；max 单调）。
-                    if let seq = turnBridgeSeq, let sid = sessionId {
-                        let prev = RemoteSessionMetadata.load(sessionId: sid)
-                        if seq > (prev?.lastSyncedBridgeSeq ?? 0) {
-                            RemoteSessionMetadata.save(
-                                RemoteSessionMetadata(
-                                    lastSyncedBridgeSeq: seq,
-                                    lastBackfilledAt: prev?.lastBackfilledAt ?? Date(),
-                                    totalBackfilledMessages: prev?.totalBackfilledMessages ?? 0
-                                ),
-                                sessionId: sid
-                            )
-                        }
-                    }
+                    // [Fix 2026-09-09 v1.14.17] 水位逐轮抬 helper（最终轮）。
+                    bumpRemoteWatermark(seq: turnBridgeSeq)
                     // [T-error-persist-ios] Persist this turn's error state AFTER the
                     // row exists + dbMessageId is assigned, keyed by that id, so the
                     // indicator survives reload. Write UNCONDITIONALLY (incl. nil) so a

@@ -1265,6 +1265,25 @@ extension AIChatViewModel {
         }
     }
 
+    /// [Fix 2026-09-09 v1.14.17] 远端水位逐轮抬（gate=seq 非空；max 单调）。
+    /// F2 此前只挂"最终轮 persist 成功"分支——多轮工具会话中途杀后台时水位
+    /// 从未离开 0 → 重进 computePlan 全量重拉（工具轮消息 id=UUID 与回放
+    /// bridge-{seq} 不匹配，id 层也失效）= 工具沉底/重复/思考观感乱。
+    /// 工具轮 batch 落库后与最终轮共用本 helper。
+    func bumpRemoteWatermark(seq: Int?) {
+        guard let seq, let sid = sessionId else { return }
+        let prev = RemoteSessionMetadata.load(sessionId: sid)
+        guard seq > (prev?.lastSyncedBridgeSeq ?? 0) else { return }
+        RemoteSessionMetadata.save(
+            RemoteSessionMetadata(
+                lastSyncedBridgeSeq: seq,
+                lastBackfilledAt: prev?.lastBackfilledAt ?? Date(),
+                totalBackfilledMessages: prev?.totalBackfilledMessages ?? 0
+            ),
+            sessionId: sid
+        )
+    }
+
     /// Lazily create a session on first message send (draft mode).
     func ensureSession() async {
         guard sessionId == nil else { return }
