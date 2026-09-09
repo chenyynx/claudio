@@ -402,10 +402,6 @@ struct RawMessage: Identifiable, Codable, Hashable {
     /// turn. Mirrors ChatMessage.error; persisted to the messages.error_info
     /// column so the error indicator survives reload. nil = no error.
     var errorInfo: String? = nil
-    /// UI block sequence snapshot (thinking/tool/text in exact original
-    /// order). Restores the interleaving across a relaunch — aligned with
-    /// the official client's content-array rendering. nil = legacy message.
-    var uiSequence: [UIBlockSnapshot]? = nil
 
     /// [T-token-attribution-snapshot] The model that ACTUALLY produced this
     /// message, snapshotted when it was written.
@@ -649,7 +645,6 @@ actor ChatStore {
         addColumnIfMissing(table: "sessions", column: "source", definition: "TEXT")
         addColumnIfMissing(table: "messages", column: "reasoning_content", definition: "TEXT")
         addColumnIfMissing(table: "messages", column: "stream_interrupt_count", definition: "INTEGER NOT NULL DEFAULT 0")
-        addColumnIfMissing(table: "messages", column: "ui_sequence", definition: "TEXT")
         addColumnIfMissing(table: "sessions", column: "memory_enabled", definition: "INTEGER NOT NULL DEFAULT 1")
         addColumnIfMissing(table: "sessions", column: "last_synced_at", definition: "REAL")
         addColumnIfMissing(table: "sessions", column: "remote_origin_device_id", definition: "TEXT")
@@ -2084,6 +2079,33 @@ actor ChatStore {
         sqlite3_finalize(stmt)
     }
 
+    /// [Fix 2026-09-09] 入口预建行（远端 Claude tab 新建会话专用）：在首条
+    /// 消息之前就落 sessions 行 —— ① isRemoteSession() 第三重判定
+    /// （source == "remoteBridge"）依赖它；② updateSessionModelId 是纯
+    /// UPDATE，行不存在时 model_id 也写不上。幂等：行已存在（broadcast
+    /// 物化）则只补 model_id，不覆盖既有 source。本地 .onDevice 入口不
+    /// 调用（本地会话沿用"首条消息时建行"的原语义，零行为变化）。
+    func upsertRemoteSessionRow(id: String, modelId: String) {
+        invalidateSessionListCache()
+        let now = Date().timeIntervalSince1970
+        let memEnabled = ((UserDefaults.standard.object(forKey: "memory.global.enabled") as? Bool) ?? true) ? 1 : 0
+        let sql = """
+            INSERT INTO sessions (id, title, model_id, created_at, updated_at, source, memory_enabled)
+            VALUES (?, NULL, ?, ?, ?, 'remoteBridge', ?)
+            ON CONFLICT(id) DO UPDATE SET model_id = excluded.model_id
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (modelId as NSString).utf8String, -1, nil)
+            sqlite3_bind_double(stmt, 3, now)
+            sqlite3_bind_double(stmt, 4, now)
+            sqlite3_bind_int(stmt, 5, memEnabled)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+    }
+
     func updateSessionTitle(_ id: String, title: String, category: String? = nil) {
         invalidateSessionListCache()
         let sql = "UPDATE sessions SET title = ?, category = COALESCE(?, category), updated_at = ? WHERE id = ?"
@@ -2761,8 +2783,8 @@ actor ChatStore {
         logger.info("[Store] appendMessages enter count=\(messages.count) dbOpen=\(dbOK) sid=\(firstSid)")
 
         let sql = """
-            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, ui_sequence, model_id, model_display_name, provider_type, provider_instance_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
         exec("BEGIN TRANSACTION")
@@ -2804,21 +2826,14 @@ actor ChatStore {
                 sqlite3_bind_double(stmt, 10, message.createdAt.timeIntervalSince1970)
                 bindOptionalText(stmt, index: 11, value: message.errorInfo)  // [T-error-persist-ios]
                 sqlite3_bind_int64(stmt, 12, Int64(partFlags))  // [T-ios-listsessions-part-flags]
-                let uiSeqJSON: String?
-                if let seq = message.uiSequence {
-                    uiSeqJSON = (try? JSONEncoder().encode(seq)).flatMap { String(data: $0, encoding: .utf8) }
-                } else {
-                    uiSeqJSON = nil
-                }
-                bindOptionalText(stmt, index: 13, value: uiSeqJSON)
                 // [T-token-attribution-snapshot] Written from the message the
                 // caller built, which carries the model that actually served
                 // the turn. Never re-read from the session here — failover can
                 // already have repointed it.
-                bindOptionalText(stmt, index: 14, value: message.modelId)
-                bindOptionalText(stmt, index: 15, value: message.modelDisplayName)
-                bindOptionalText(stmt, index: 16, value: message.providerType)
-                bindOptionalText(stmt, index: 17, value: message.providerInstanceId)
+                bindOptionalText(stmt, index: 13, value: message.modelId)
+                bindOptionalText(stmt, index: 14, value: message.modelDisplayName)
+                bindOptionalText(stmt, index: 15, value: message.providerType)
+                bindOptionalText(stmt, index: 16, value: message.providerInstanceId)
                 let stepRC = sqlite3_step(stmt)
                 if stepRC != SQLITE_DONE {
                     let errMsg = String(cString: sqlite3_errmsg(db))
@@ -2880,7 +2895,7 @@ actor ChatStore {
     func loadMessages(sessionId: String) -> [RawMessage] {
         let totalStart = CFAbsoluteTimeGetCurrent()
         let sql = """
-            SELECT id, session_id, role, parts_json, created_at, token_usage, reasoning_content, stream_interrupt_count, sort_order, error_info, ui_sequence, model_id, model_display_name, provider_type, provider_instance_id
+            SELECT id, session_id, role, parts_json, created_at, token_usage, reasoning_content, stream_interrupt_count, sort_order, error_info, model_id, model_display_name, provider_type, provider_instance_id
             FROM messages WHERE session_id = ? ORDER BY sort_order ASC, created_at ASC, id ASC
         """
         var stmt: OpaquePointer?
@@ -2922,13 +2937,6 @@ actor ChatStore {
                 let streamInterruptCount = Int(sqlite3_column_int64(stmt, 7))
                 let sortOrder = Int(sqlite3_column_int64(stmt, 8))
                 let errorInfo = sqlite3_column_text(stmt, 9).map { String(cString: $0) }  // [T-error-persist-ios]
-                let uiSequence: [UIBlockSnapshot]?
-                if let uiSeqStr = sqlite3_column_text(stmt, 10).map({ String(cString: $0) }),
-                   let uiSeqData = uiSeqStr.data(using: .utf8) {
-                    uiSequence = try? JSONDecoder().decode([UIBlockSnapshot].self, from: uiSeqData)
-                } else {
-                    uiSequence = nil
-                }
                 var msg = RawMessage(
                     id: id, sessionId: sessId, role: role, parts: parts,
                     createdAt: createdAt, tokenUsage: tokenUsage,
@@ -2937,14 +2945,13 @@ actor ChatStore {
                 )
                 msg.sortOrder = sortOrder
                 msg.errorInfo = errorInfo
-                msg.uiSequence = uiSequence
                 // [T-token-attribution-snapshot] Hydrated because backup export
                 // serializes RawMessage straight through — dropping these here
                 // would silently strip attribution from every exported package.
-                msg.modelId = sqlite3_column_text(stmt, 11).map { String(cString: $0) }
-                msg.modelDisplayName = sqlite3_column_text(stmt, 12).map { String(cString: $0) }
-                msg.providerType = sqlite3_column_text(stmt, 13).map { String(cString: $0) }
-                msg.providerInstanceId = sqlite3_column_text(stmt, 14).map { String(cString: $0) }
+                msg.modelId = sqlite3_column_text(stmt, 10).map { String(cString: $0) }
+                msg.modelDisplayName = sqlite3_column_text(stmt, 11).map { String(cString: $0) }
+                msg.providerType = sqlite3_column_text(stmt, 12).map { String(cString: $0) }
+                msg.providerInstanceId = sqlite3_column_text(stmt, 13).map { String(cString: $0) }
                 messages.append(msg)
             }
         } else {
@@ -4783,67 +4790,6 @@ extension RawMessage {
         /// get_readable (which don't carry a url arg) can inherit it.
         var lastBrowserURL: String?
 
-        // [Fix] UI sequence snapshot path: rebuild blocks in the EXACT
-        // original order (multiple thinking segments interleaved with tool
-        // calls) — aligned with the official client's content-array
-        // rendering. The merged reasoningContent path below cannot restore
-        // the interleaving. Legacy messages (no snapshot) fall through.
-        if let seq = uiSequence, !seq.isEmpty, role == .assistant {
-            let toolUses = parts.compactMap { part -> ToolUse? in
-                if case .toolUse(let tu) = part { return tu }
-                return nil
-            }
-            for item in seq {
-                switch item.kind {
-                case "thinking":
-                    if let t = item.text, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        blocks.append(AssistantBlock(kind: .thinking, content: t))
-                    }
-                case "text":
-                    if let t = item.text, !t.isEmpty {
-                        let visible = Self.stripSystemReminders(t)
-                        if !visible.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            textContent += (textContent.isEmpty ? "" : "\n") + visible
-                            for segment in Self.splitLongAssistantText(visible) {
-                                blocks.append(AssistantBlock(kind: .text, content: segment))
-                            }
-                        }
-                    }
-                case "tool":
-                    if let tid = item.toolId,
-                       let tu = toolUses.first(where: { $0.toolUseId == tid }) {
-                        let block = Self.makeToolBlock(from: tu, lastBrowserURL: &lastBrowserURL)
-                        blocks.append(block)
-                    }
-                default:
-                    break
-                }
-            }
-            // Pair persisted tool results onto the rebuilt tool blocks.
-            for part in parts {
-                if case .toolResult(let tr) = part {
-                    if let blockIdx = blocks.lastIndex(where: { $0.toolUseId == tr.toolUseId }) {
-                        Self.applyPersistedToolResult(tr, to: blocks[blockIdx], mediaResolver: mediaResolver, lastBrowserURL: &lastBrowserURL)
-                    }
-                }
-            }
-            let msg = ChatMessage(role: uiRole, content: textContent, blocks: blocks)
-            if let usage = tokenUsage {
-                msg.usage = TokenUsage(
-                    inputTokens: usage.inputTokens,
-                    outputTokens: usage.outputTokens,
-                    cacheCreationTokens: usage.cacheCreationTokens,
-                    cacheReadTokens: usage.cacheReadTokens,
-                    latestContextTokens: usage.latestContextTokens ?? 0
-                )
-            }
-            msg.streamInterruptCount = streamInterruptCount
-            if let e = errorInfo, !e.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                msg.error = e
-            }
-            return msg
-        }
-
         for part in parts {
             switch part {
             case .text(let s):
@@ -5033,9 +4979,8 @@ extension RawMessage {
         return msg
     }
 
-    /// Build an assistant tool block from a persisted ToolUse. Shared by the
-    /// parts-based path and the uiSequence snapshot path so the two never
-    /// drift apart.
+    /// Build an assistant tool block from a persisted ToolUse for the
+    /// parts-based reconstruction path.
     fileprivate static func makeToolBlock(from tu: ToolUse, lastBrowserURL: inout String?) -> AssistantBlock {
         let kind: AssistantBlockKind
         let content: String
@@ -5260,7 +5205,6 @@ extension RawMessage {
 
         var msg = AgentMessage(role: agentRole, parts: agentParts)
         msg.reasoningContent = reasoningContent
-        msg.uiSequence = uiSequence
         return msg
     }
 

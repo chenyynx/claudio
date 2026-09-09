@@ -1011,6 +1011,16 @@ extension AIChatViewModel {
     private func isBoundToRemoteAgentGroup() -> Bool {
         guard let sid = sessionId,
               let binding = ProviderConfigStore.shared.binding(for: sid) else { return false }
+        // [Fix 2026-09-09] directEntry 直连远端 entry 也要认——Claude tab 新建
+        // 会话写的是 .directEntry(modelEntryId:)（handleNewSessionResult），
+        // 此前只认 .group → 远端新会话三重判定第一重恒 fail，页面按本地渲染。
+        // 本地直连 entry 的 providerType != .remoteAgent → false，行为不变。
+        if case .directEntry(let entryId, _) = binding.primarySource,
+           let entry = ProviderConfigStore.shared.entry(for: entryId),
+           let inst = ProviderConfigStore.shared.instance(for: entry.providerInstanceId),
+           inst.providerType == ProviderType.remoteAgent {
+            return true
+        }
         // ModelGroup 没有 provider 字段。通过 group 的 memberEntryIds 找到 ModelEntry，
         // 再从 entry.providerInstanceId 找 ProviderInstance，判断 providerType == .remoteAgent。
         if case .group(let gid, _) = binding.primarySource,
@@ -1672,7 +1682,6 @@ extension AIChatViewModel {
             reasoningContent: reasoningContent ?? msg.reasoningContent,
             streamInterruptCount: streamInterruptCount
         )
-        raw.uiSequence = msg.uiSequence
 
         // [T-token-attribution-snapshot] Resolved from the entry the caller
         // says served this turn — the provider TYPE is stored as its rawValue

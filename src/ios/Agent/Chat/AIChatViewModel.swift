@@ -4701,7 +4701,6 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                         if !thinkingText.isEmpty {
                             assistantMsg.reasoningContent = thinkingText
                         }
-                        assistantMsg.uiSequence = Self.uiSequenceSnapshot(from: last.blocks)
                         let asstIdx = agentHistory.count
                         agentHistory.append(assistantMsg)
                         Task { @MainActor [weak self] in
@@ -4801,7 +4800,6 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                     if !thinkingText.isEmpty {
                         assistantMsg.reasoningContent = thinkingText
                     }
-                    assistantMsg.uiSequence = Self.uiSequenceSnapshot(from: last.blocks)
                     let asstIdx = agentHistory.count
                     agentHistory.append(assistantMsg)
                     Task { @MainActor [weak self] in
@@ -5942,14 +5940,6 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             assistantMessage.isInterrupted = streamResult.isStreamInterrupted
             assistantMessage.reasoningContent = streamResult.reasoningContent
             assistantMessage.reasoningEcho = streamResult.reasoningEcho
-            // [Fix] 对齐官方单一事实源语义 — 快照必须在 FINAL FLUSH 之后重拍：
-            // streamResult.uiSequence 在 SSEStream 内部（流结束回调）拍摄，早于
-            // [StreamEnd] FINAL FLUSH，最后一段正文此时还在节流缓冲里没落块，
-            // 快照里的 text 项为空/缺尾 → 杀后台重进走快照恢复路径时正文被吞
-            // （恢复侧 case "text": if !t.isEmpty 直接跳过空项，parts 里的完整正文被无视）。
-            // allBlocks 与 assistantParts 同源（都在 FINAL FLUSH 后读取），
-            // 重拍保证快照与 parts 内容严格一致。本地/远端 agent 共用此路径，一并修复。
-            assistantMessage.uiSequence = Self.uiSequenceSnapshot(from: allBlocks)
             let assistantAgentIdx = agentHistory.count
             agentHistory.append(assistantMessage)
 

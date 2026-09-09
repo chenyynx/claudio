@@ -83,26 +83,6 @@ extension AIChatViewModel {
     }
 
     // MARK: - Background SSE Stream Processing
-
-    /// Snapshot the UI block sequence (thinking/tool/text in exact original
-    /// order) so a relaunch rebuilds the message identically — aligned with
-    /// the official client's content-array rendering. The merged
-    /// `reasoningContent` alone cannot restore multiple interleaved thinking
-    /// segments, so the snapshot carries each block's kind + content.
-    /// Shared by the normal stream end and the stop-interrupt paths (Case 1/2).
-    nonisolated static func uiSequenceSnapshot(from blocks: [AssistantBlock]) -> [UIBlockSnapshot] {
-        blocks.compactMap { block -> UIBlockSnapshot? in
-            switch block.kind {
-            case .thinking:
-                return UIBlockSnapshot(kind: "thinking", text: block.content, toolId: nil)
-            case .text:
-                return UIBlockSnapshot(kind: "text", text: block.content, toolId: nil)
-            default:
-                return UIBlockSnapshot(kind: "tool", text: nil, toolId: block.toolUseId)
-            }
-        }
-    }
-
     /// Result of processing an SSE stream on a background thread.
     struct StreamResult {
         struct ToolEntry {
@@ -146,10 +126,6 @@ extension AIChatViewModel {
         /// .toolResults by toolUseId when persisting so backfill on relaunch
         /// restores AssistantBlock.outputFileRemotePath / Mime / Size.
         var remoteOutputFiles: [(toolUseId: String, file: RemoteOutputFile)] = []
-        /// UI block sequence snapshot (thinking/tool/text in exact original
-        /// order). Built at stream end so a relaunch rebuilds the message
-        /// identically — see AgentMessage.uiSequence.
-        var uiSequence: [UIBlockSnapshot]? = nil
         /// True when the stream was cut short by an error (network drop, timeout, etc.).
         /// tool_use entries collected so far may have incomplete inputs (partialJson truncated).
         var isStreamInterrupted: Bool = false
@@ -1187,15 +1163,6 @@ extension AIChatViewModel {
                     }
                 }
                 result.stopReason = reason
-                // [Fix] Snapshot the UI block sequence (thinking/tool/text in
-                // exact original order) so a relaunch rebuilds the message
-                // identically — aligned with the official client's
-                // content-array rendering. The merged reasoningContent alone
-                // cannot restore multiple interleaved thinking segments.
-                await MainActor.run {
-                    guard msgIdx < messages.count else { return }
-                    result.uiSequence = Self.uiSequenceSnapshot(from: messages[msgIdx].blocks)
-                }
             }
         }
         // The AsyncThrowingStream may silently terminate (return nil) on Task

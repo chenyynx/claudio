@@ -625,14 +625,12 @@ final class RemoteAgentProvider: AgentProvider {
     /// Official semantics: history and live messages share one consumption
     /// pipeline (chat_session_cubit.dart:289-316); our equivalent is
     /// producing AgentMessages that ride buildRawMessage → toChatMessage.
-    /// Thinking blocks fold into reasoningContent AND the uiSequence (so the
-    /// per-block order survives the reload), user text stays .user.
+    /// Thinking blocks fold into reasoningContent, user text stays .user.
     static func agentMessage(fromServer m: CCPocketProtocol.ServerMessage) -> AgentMessage? {
         switch m.type {
         case "assistant", "user":
             guard case .assistant(let am) = m.message, let blocks = am.content else { return nil }
             var parts: [AgentContentPart] = []
-            var uiSeq: [UIBlockSnapshot] = []
             var thinking: [String] = []
             for b in blocks {
                 switch b.type {
@@ -640,7 +638,6 @@ final class RemoteAgentProvider: AgentProvider {
                     let t = b.text ?? ""
                     if t.isEmpty { continue }
                     parts.append(.text(t))
-                    uiSeq.append(UIBlockSnapshot(kind: "text", text: t, toolId: nil))
                 case "thinking":
                     // [Fix] Bridge's thinking block stores content under
                     // the `thinking` key, not `text` (verified against live
@@ -649,13 +646,11 @@ final class RemoteAgentProvider: AgentProvider {
                     let t = b.thinking ?? b.text ?? ""
                     if t.isEmpty { continue }
                     thinking.append(t)
-                    uiSeq.append(UIBlockSnapshot(kind: "thinking", text: t, toolId: nil))
                 case "tool_use":
                     guard let id = b.id else { continue }
                     let name = b.name ?? "unknown"
                     let args = Self.jsonArgs(from: b.input)
                     parts.append(.toolUse(id: id, name: name, input: args))
-                    uiSeq.append(UIBlockSnapshot(kind: "tool", text: nil, toolId: id))
                 default:
                     break
                 }
@@ -663,7 +658,6 @@ final class RemoteAgentProvider: AgentProvider {
             if parts.isEmpty && thinking.isEmpty { return nil }
             let isUser = (am.role ?? "assistant") == "user"
             var msg = AgentMessage(role: isUser ? .user : .assistant, parts: parts)
-            msg.uiSequence = uiSeq
             if !thinking.isEmpty {
                 msg.reasoningContent = thinking.joined(separator: "\n")
             }
