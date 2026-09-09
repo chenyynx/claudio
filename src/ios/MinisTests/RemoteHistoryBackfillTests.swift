@@ -448,6 +448,49 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         XCTAssertEqual(agent?.rawMessageId(), "bridge-7")
     }
 
+    // MARK: - wire `content` 多态分流（v1.14.19 手写 init(from:)）
+
+    func test_wireContent_toolResultString_staysContent() {
+        // [多态分流锁] tool_result 的 wire content 是字符串（工具输出）——
+        // 手写 init 先试 String 再试 [AssistantContentBlock]，字符串形态
+        // 必须落到 content 字段、rawContentBlocks 保持 nil。
+        let json = """
+        {"type":"tool_result","toolUseId":"t1","content":"stdout lines here","historySeq":4}
+        """
+        let msg = try! JSONDecoder().decode(CCPocketProtocol.ServerMessage.self, from: Data(json.utf8))
+        XCTAssertEqual(msg.content, "stdout lines here")
+        XCTAssertNil(msg.rawContentBlocks, "字符串 content 不得被误读为块数组")
+    }
+
+    func test_wireContent_pastRawArray_landsBlocks() {
+        // [多态分流锁] past_history 磁盘 raw 消息（{role, content:[blocks]}，
+        // 无 type）——数组形态必须落到 rawContentBlocks、content 保持 nil，
+        // role 走 rawRole。这是 C-5.5 会话窗连续的解码根基：分流错 = 磁盘
+        // 历史整条丢弃（typeMismatch 炸包）或串进 tool_result 输出。
+        let json = """
+        [{"role":"assistant","content":[{"type":"text","text":"old"},{"type":"thinking","thinking":"hm"}]}]
+        """
+        let msgs = try! JSONDecoder().decode([CCPocketProtocol.ServerMessage].self, from: Data(json.utf8))
+        XCTAssertEqual(msgs.count, 1)
+        XCTAssertEqual(msgs[0].rawRole, "assistant")
+        XCTAssertNil(msgs[0].content, "数组 content 不得误落到字符串字段")
+        XCTAssertEqual(msgs[0].rawContentBlocks?.count, 2)
+        XCTAssertEqual(msgs[0].rawContentBlocks?.first?.text, "old")
+        XCTAssertEqual(msgs[0].rawContentBlocks?.last?.thinking, "hm")
+    }
+
+    func test_wireContent_absent_bothNil() {
+        // 无 content key 的消息（user_input / status / result）——两字段都 nil，
+        // 不得互相污染（解码路径的 else 分支锁）。
+        let json = """
+        {"type":"user_input","text":"hi","historySeq":2}
+        """
+        let msg = try! JSONDecoder().decode(CCPocketProtocol.ServerMessage.self, from: Data(json.utf8))
+        XCTAssertNil(msg.content)
+        XCTAssertNil(msg.rawContentBlocks)
+        XCTAssertEqual(msg.rawRole, nil)
+    }
+
     func test_userInputReplay_converted() {
         // bridge 端 user turn 的 type 是 user_input（websocket.ts:3237）——
         // 旧代码落 default 分支整类丢弃（根因 3 之二）。
