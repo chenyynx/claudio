@@ -1315,26 +1315,10 @@ extension AIChatViewModel {
         // group's default thinking level, which would otherwise overwrite the
         // user's pick on the very first send.
         let userSetThinkingLevel = flushPendingThinkingLevel()
-        // [Fix 2026-09-09 v1.14.10 方案B] 消费入口意图：draft 页面顶栏已按
-        // selectedModel（=intent 模型）显示；此处把 intent 固化为 binding+
-        // model_id（一次建对），并清 transient 防泄漏到缓存 VM。
-        if let intentEntryId = pendingIntentEntryId,
-           let entry = ProviderConfigStore.shared.entry(for: intentEntryId) {
-            let intentBinding = SessionModelBinding(
-                sessionId: session.id,
-                primarySource: .directEntry(modelEntryId: intentEntryId),
-                subModelSource: nil
-            )
-            ProviderConfigStore.shared.setBinding(intentBinding, for: session.id)
-            await ChatStore.shared.updateSessionModelId(session.id, modelId: entry.model.id)
-            NotificationCenter.default.post(
-                name: .sessionModelBindingChanged,
-                object: nil,
-                userInfo: ["sessionId": session.id]
-            )
-            logger.info("🔑DRAFT [vm=\(vmInstanceId)] ensureSession intent applied entry=\(intentEntryId.prefix(8)) model=\(entry.model.id)")
-        }
-        pendingIntentEntryId = nil
+        // [Fix 2026-09-09 v1.14.10 审查修正] intent 固化不在这里做——
+        // createInitialBinding 在本函数尾部才跑，先设后覆盖 = Tier 1 默认组
+        // 赢（第 3 轮对抗审查抓出的顺序 bug）。intent 消费挪进
+        // createInitialBinding 的 Tier 0a；transient 清理挪其调用之后。
         // Cache this draft VM now that it has a session ID
         ViewModelCache.shared.cacheDraft(self, sessionId: session.id)
         logger.info("🔑DRAFT [vm=\(self.vmInstanceId)] ensureSession CREATED sessionId=\(session.id) draftId=\(self.draftId ?? "nil")")
@@ -1344,6 +1328,10 @@ extension AIChatViewModel {
         // provider + latest text model. See createInitialBinding doc for the
         // 3-tier fallback chain.
         await createInitialBinding(for: session.id, preserveThinkingLevel: userSetThinkingLevel)
+        // [Fix 2026-09-09 v1.14.10 审查修正] intent 已被 createInitialBinding
+        // Tier 0a 消费（binding/model_id/source 一次建对）——清 transient 防
+        // 泄漏到 cacheDraft 后的真实会话 VM。
+        pendingIntentEntryId = nil
 
         // Notify sidebar to replace placeholder with the real session.
         // Include draftId so the receiver can verify this came from the active draft.
@@ -1450,6 +1438,28 @@ extension AIChatViewModel {
     ///   [T-first-msg-thinking-level-clobber]
     private func createInitialBinding(for sessionId: String, preserveThinkingLevel: Bool = false) async {
         let store = ProviderConfigStore.shared
+
+        // Tier 0a — [Fix 2026-09-09 v1.14.10 方案B] explicit entry intent from
+        // the creation entrypoint（Claude/On-Device tab 选定的 entry，经 draft
+        // id 编码直传 → AIChatView 提取 → pendingIntentEntryId）。用户明确
+        // 意图优先级最高：入口 entry > 长按组 > 默认组 > last-used > latest。
+        if let intentEntryId = pendingIntentEntryId,
+           let entry = store.entry(for: intentEntryId) {
+            let binding = SessionModelBinding(
+                sessionId: sessionId,
+                primarySource: .directEntry(modelEntryId: intentEntryId),
+                subModelSource: nil
+            )
+            store.setBinding(binding, for: sessionId)
+            Task { await ChatStore.shared.updateSessionModelId(sessionId, modelId: entry.model.id) }
+            NotificationCenter.default.post(
+                name: .sessionModelBindingChanged,
+                object: nil,
+                userInfo: ["sessionId": sessionId]
+            )
+            logger.info("[NewSessionDefault] tier=0a entry-intent sid=\(sessionId.prefix(8)) entry=\(intentEntryId.prefix(8)) modelId=\(entry.model.id)")
+            return
+        }
 
         // Tier 0 — explicit group from long-press FAB.
         let overrideGroupId = initialGroupId
