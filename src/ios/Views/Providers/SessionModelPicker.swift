@@ -237,8 +237,23 @@ enum RemoteSessionTopBar {
 struct SessionModelDisplay {
     let store: ProviderConfigStore
     var draftGroupId: String? = nil
+    /// [Fix 2026-09-09 v1.14.12 第12轮审查] draft 页（sessionId=nil）的入口
+    /// entry 意图（Claude/On-Device tab 选定，经 draft id 编码 → VM
+    /// pendingIntentEntryId）。优先级高于 draftGroupId（明确入口选择 > 长按
+    /// 组）。发消息后 vm.sessionId=realId，顶栏走 binding 分支，本字段随
+    /// transient 清空自然退役。
+    var draftEntryId: String? = nil
 
     func displayName(for sessionId: String?) -> String {
+        // [Fix v1.14.12] entry 意图优先于组意图
+        if sessionId == nil, let eid = draftEntryId,
+           let entry = store.entry(for: eid) {
+            if let inst = store.instance(for: entry.providerInstanceId),
+               inst.providerType == .remoteAgent {
+                return RemoteSessionTopBar.displayName(for: inst)
+            }
+            return entry.model.displayName
+        }
         if sessionId == nil, let gid = draftGroupId,
            let group = store.group(for: gid) {
             return group.name
@@ -265,6 +280,23 @@ struct SessionModelDisplay {
     }
 
     func resolvedDetail(for sessionId: String?) -> (providerLabel: String, modelName: String)? {
+        // [Fix v1.14.12] entry 意图：远端 → 与 binding 远端路径同一套解析
+        // （chatSessionID 尚无 = nil，projectPath 尾段/模型短名照常）；
+        // 本地 → (instance.label, 模型显示名)。
+        if sessionId == nil, let eid = draftEntryId,
+           let entry = store.entry(for: eid),
+           let instance = store.instance(for: entry.providerInstanceId) {
+            if instance.providerType == .remoteAgent {
+                let tail = RemoteSessionTopBar.projectTail(instanceID: instance.id)
+                let model = RemoteSessionTopBar.modelShortName(
+                    instanceID: instance.id, chatSessionID: nil
+                )
+                let labelPart = tail ?? RemoteSessionTopBar.displayName(for: instance)
+                if let model { return (labelPart, model) }
+                return (labelPart, instance.label)
+            }
+            return (instance.label, entry.model.displayName)
+        }
         if sessionId == nil, let gid = draftGroupId {
             return resolvedDetail(forGroupId: gid)
         }
@@ -319,6 +351,13 @@ struct SessionModelDisplay {
     /// credentialType/providerType/model (e.g. the "..." menu's Fast Mode
     /// gate: Responses-API providers with a gpt-family model).
     func resolvedInstanceAndModel(for sessionId: String?) -> (instance: ProviderInstance, modelId: String)? {
+        // [Fix v1.14.12] entry 意图：能力解析（Fast Mode 门/思考徽章）按
+        // 入口选定模型，与顶栏显示一致。
+        if sessionId == nil, let eid = draftEntryId,
+           let entry = store.entry(for: eid),
+           let instance = store.instance(for: entry.providerInstanceId) {
+            return (instance, entry.model.id)
+        }
         if sessionId == nil, let gid = draftGroupId {
             return resolvedInstanceAndModel(forGroupId: gid)
         }

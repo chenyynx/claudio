@@ -2144,7 +2144,7 @@ struct AIChatView: View {
     /// custom base) — and the model id must contain "gpt" (mirrors the
     /// official fast catalog: gpt-5.6-sol/terra/luna, gpt-5.5, gpt-5.4).
     private var activeModelSupportsFastMode: Bool {
-        let display = SessionModelDisplay(store: configStore, draftGroupId: vm.initialGroupId)
+        let display = SessionModelDisplay(store: configStore, draftGroupId: vm.initialGroupId, draftEntryId: vm.pendingIntentEntryId)
         guard let (instance, modelId) = display.resolvedInstanceAndModel(for: vm.sessionId) else { return false }
         guard modelId.lowercased().contains("gpt") else { return false }
         if instance.providerType == .openAIResponses { return true }
@@ -2160,7 +2160,7 @@ struct AIChatView: View {
         #if DEBUG
         NavbarEvalStats.toolbarPass += 1
         #endif
-        let display = SessionModelDisplay(store: configStore, draftGroupId: vm.initialGroupId)
+        let display = SessionModelDisplay(store: configStore, draftGroupId: vm.initialGroupId, draftEntryId: vm.pendingIntentEntryId)
         let resolved = display.resolvedDetail(for: vm.sessionId)
         let sessionTitle: String? = (titlePillSession?.title?.trimmingCharacters(in: .whitespacesAndNewlines))
             .flatMap { $0.isEmpty ? nil : $0 }
@@ -2184,7 +2184,7 @@ struct AIChatView: View {
     }
 
     private var titleView: some View {
-        let display = SessionModelDisplay(store: configStore, draftGroupId: vm.initialGroupId)
+        let display = SessionModelDisplay(store: configStore, draftGroupId: vm.initialGroupId, draftEntryId: vm.pendingIntentEntryId)
         let modelName = display.displayName(for: vm.sessionId)
         let isGroupBound = display.isGroupBound(for: vm.sessionId)
         let resolved = display.resolvedDetail(for: vm.sessionId)

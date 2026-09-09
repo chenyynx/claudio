@@ -3610,7 +3610,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/../../deps/libs";
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../deps/libs-sim";
-				MARKETING_VERSION = 1.14.11;
+				MARKETING_VERSION = 1.14.12;
 				OTHER_LDFLAGS = (
 					"-lish_emu",
 					"-lish",
@@ -3665,7 +3665,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/../../deps/libs";
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../deps/libs-sim";
-				MARKETING_VERSION = 1.14.11;
+				MARKETING_VERSION = 1.14.12;
 				OTHER_LDFLAGS = (
 					"-lish_emu",
 					"-lish",
@@ -3698,7 +3698,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.11;
+				MARKETING_VERSION = 1.14.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.ShareExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3725,7 +3725,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.11;
+				MARKETING_VERSION = 1.14.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.ShareExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3752,7 +3752,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.11;
+				MARKETING_VERSION = 1.14.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.FileProvider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3779,7 +3779,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.11;
+				MARKETING_VERSION = 1.14.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.FileProvider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3806,7 +3806,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.11;
+				MARKETING_VERSION = 1.14.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.AgentWidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3833,7 +3833,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.11;
+				MARKETING_VERSION = 1.14.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.AgentWidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
