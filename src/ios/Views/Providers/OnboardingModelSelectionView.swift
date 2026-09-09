@@ -23,6 +23,9 @@ struct OnboardingModelSelectionView: View {
     @State private var fetchError: String? = nil
     @State private var loadAttempted = false
 
+    /// [Fix 2026-09-09 v1.14.15 S1] 防御：默认组已存在（页面被异常进入）。
+    private var defaultGroupExists: Bool { store.defaultPrimaryGroupId != nil }
+
     /// All visible model entries across all enabled LOCAL instances.
     /// [Fix 2026-09-09] 远端 agent 不进本地选模型流程 —— 它有独立入口
     /// （设置 → 远程 / 欢迎页卡片），模型由桥端目录在远端会话里选。
@@ -75,7 +78,11 @@ struct OnboardingModelSelectionView: View {
                 } header: {
                     Text("Models")
                 } footer: {
-                    Text(isFetching ? "Fetching model list from your provider…" : "Tap retry to fetch again, or Skip to configure later.")
+                    if defaultGroupExists {
+                        Text("A default model group already exists. Manage it in Settings → Model Groups.")
+                    } else {
+                        Text(isFetching ? "Fetching model list from your provider…" : "Tap retry to fetch again, or Skip to configure later.")
+                    }
                 }
             } else {
                 // Group entries by provider instance
@@ -110,8 +117,10 @@ struct OnboardingModelSelectionView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
+                // [Fix 2026-09-09 v1.14.15 S1 防御] 已有默认组 → 本页不该
+                // 被进入（官方 gate 保证）；页面可达时置灰防堆组/覆盖。
                 Button("Next") { createGroupAndDismiss() }
-                    .disabled(selectedModelEntryIds.isEmpty)
+                    .disabled(selectedModelEntryIds.isEmpty || defaultGroupExists)
             }
         }
     }
@@ -176,22 +185,20 @@ struct OnboardingModelSelectionView: View {
         }
     }
 
+    // [Fix 2026-09-09 v1.14.15 S1] 官方逐字原样（origin/main 同名函数）：
+    // 无条件新建 "Default Models" 组（勾选原序，strategy=.fallback），
+    // defaultPrimaryGroupId 为空才指默认。官方语义下本页一次性可达（入口
+    // gate hasProviders && !hasGroups），此前 claudio 的 union 合并分支
+    // （v1.14.9）因 Set 乱序导致 fallback first 命中旧模型 = "默认成其他
+    // 模型"，随重复进入语义一起移除；重复配置走 Model Groups 管理页。
     private func createGroupAndDismiss() {
-        // [Fix 2026-09-09] 防二次分组：本页建组语义只属于首次 onboarding
-        // （默认组不存在）。已配置用户（返回修改后重新选模型 / 其他再入）
-        // 把新选模型并入现有默认组，不新建组。
-        if let existingId = store.defaultPrimaryGroupId,
-           let existing = store.modelGroups.first(where: { $0.id == existingId }) {
-            var updated = existing
-            updated.memberEntryIds = Array(Set(existing.memberEntryIds).union(selectedModelEntryIds))
-            store.updateGroup(updated)
-        } else {
-            let group = ModelGroup(
-                name: "Default Models",
-                memberEntryIds: selectedModelEntryIds,
-                strategy: .fallback
-            )
-            store.addGroup(group)
+        let group = ModelGroup(
+            name: "Default Models",
+            memberEntryIds: selectedModelEntryIds,
+            strategy: .fallback
+        )
+        store.addGroup(group)
+        if store.defaultPrimaryGroupId == nil {
             store.defaultPrimaryGroupId = group.id
         }
         if let finish = onFinished {

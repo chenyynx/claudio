@@ -4605,15 +4605,23 @@ struct ContentView: View {
                         kind: .local, title: "本地",
                         subtitle: localReady
                             ? (localSummary ?? "")
-                            : (localHasProviders ? "选好模型就能开始对话" : "跑在手机内置 Linux 上的 AI agent"),
+                            : (providerStore.modelGroups.isEmpty
+                                ? (localHasProviders ? "选好模型就能开始对话" : "跑在手机内置 Linux 上的 AI agent")
+                                : "在模型组中调整模型与优先级"),
                         connected: localReady,
                         action: {
                             if localReady {
                                 // 已就绪 → 模型管理（看/改现有组），不再新建组
                                 showModelGroups = true
                             } else if localHasProviders {
-                                // 服务商已加、模型未选 → 补第 ② 步
-                                showSelectModels = true
+                                // [Fix 2026-09-09 v1.14.15 S2] 官方 gate：建过
+                                // 任何组后选模型页不可达；有组但未就绪（组内无
+                                // 可用本地模型）→ 引导去 Model Groups 管理页。
+                                if providerStore.modelGroups.isEmpty {
+                                    showSelectModels = true
+                                } else {
+                                    showModelGroups = true
+                                }
                             } else {
                                 showAddProvider = true
                             }
