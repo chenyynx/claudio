@@ -4305,6 +4305,29 @@ actor ChatStore {
     /// OR any compact marker lacks `first_kept_message_id`. Used to skip expensive
     /// repair when the session is already healthy.
     private func sessionNeedsRepair(sessionId: String) -> Bool {
+        // 0. [乱序修复 2 2026-09-10 v1.14.22] **远端校准会话完全跳过 repair**。
+        // 校准 renumber（replaceRemoteHistory / plan.unifiedFinalOrderIds）按
+        // bridge history 序写 sort_order，是远端会话顺序的唯一权威。而本函数
+        // 第 3 条的"canonical created_at+id"在远端会话上是错的：回放行
+        // createdAt 全部= 校准同一秒（buildRawMessage 的 Date()），同秒行
+        // 退化为 id 字典序（bridge-1 < bridge-10 < bridge-2 字符串序）→ 与
+        // bridge 序必然不一致 → 误判 inversion → repair 把校准写好的正确
+        // 顺序重写回乱序（pp 真机实锤：1.14.21 第一次杀后台顺序对，第二次
+        // 杀冷启动 [Repair] sortOrderFixed=12 又乱——user 行置顶+回放字典序）。
+        // 重复 sort_order 的场景交由校准自愈（replaceRemoteHistory 的
+        // renumber 全量重写 1..M，重复自然消失），repair 对远端会话无职责。
+        // 判据用 sessions.source（'remoteBridge'，setSessionSource/801 写入）
+        // ——messages.provider_type 在校准/回放路径均为 NULL，不可靠。
+        let remoteSql = "SELECT 1 FROM sessions WHERE id = ? AND source = 'remoteBridge' LIMIT 1"
+        var rStmt: OpaquePointer?
+        var isRemoteSession = false
+        if sqlite3_prepare_v2(db, remoteSql, -1, &rStmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(rStmt, 1, (sessionId as NSString).utf8String, -1, nil)
+            isRemoteSession = sqlite3_step(rStmt) == SQLITE_ROW
+        }
+        sqlite3_finalize(rStmt)
+        if isRemoteSession { return false }
+
         // 1. sortOrder duplicates
         let dupSql = "SELECT COUNT(*), COUNT(DISTINCT sort_order) FROM messages WHERE session_id = ?"
         var dupStmt: OpaquePointer?
@@ -4338,6 +4361,7 @@ actor ChatStore {
         // Catches the case where a remote merge inserted with a hint integer that
         // didn't match local rank (legacy data from pre-fix builds), or where any
         // other pathway left holes/out-of-order rows.
+        // （仅本地 agent 会话走这条——见第 0 条远端 gate 注释。）
         let invSql = """
             SELECT 1 FROM (
               SELECT sort_order,

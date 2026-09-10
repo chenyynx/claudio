@@ -140,15 +140,23 @@ final class RemoteHistoryBackfill {
             nonEngineSeqs: nonEngineSeqs,
             forceFullReshuffle: bridgeSessionSwitched
         )
+        // [乱序修复 2 2026-09-10 v1.14.22] replaceRemoteHistory **无条件执行**
+        // （含 plan.isEmpty）：它的 renumber 按 plan.unifiedFinalOrderIds 全量
+        // 重写 sort_order——即使删插为空也要落序。原因：v1.14.21 之前
+        // ChatStore.repairSession 曾把校准写好的 bridge 序按 created_at+id
+        // 字典序重写（远端会话 inversion 误判，pp 真机实锤），此后 DB 停留
+        // 在乱序且校准 plan.isEmpty 永不触碰 → 顺序无法自愈。无条件 renumber
+        // 幂等（同一 bridge 序每次写同一结果），一次校准即修复已污染 DB。
+        // changed 判定不变（无删插不触发 UI 全量重建，避免无谓闪烁）。
+        await ChatStore.shared.replaceRemoteHistory(
+            sessionId: sessionId,
+            plan: plan,
+            finalOrder: historyRaws
+        )
         if !plan.inserts.isEmpty || !plan.deleteIds.isEmpty {
-            await ChatStore.shared.replaceRemoteHistory(
-                sessionId: sessionId,
-                plan: plan,
-                finalOrder: historyRaws
-            )
             logger.info("[HistorySync] session=\(sessionId.prefix(8)) calibrated: +\(plan.inserts.count) -\(plan.deleteIds.count) kept=\(plan.keptCount)")
         } else {
-            logger.info("[HistorySync] session=\(sessionId.prefix(8)) already in sync (kept=\(plan.keptCount))")
+            logger.info("[HistorySync] session=\(sessionId.prefix(8)) renumber-only (already in sync, order rewritten, kept=\(plan.keptCount))")
         }
 
         let changed = !plan.inserts.isEmpty || !plan.deleteIds.isEmpty
