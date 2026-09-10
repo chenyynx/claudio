@@ -213,6 +213,12 @@ extension AIChatViewModel {
         } else {
             let fresh = CCPocketClient(baseURL: baseURL, token: token)
             fresh.mappingInstanceID = instance.id
+            // [Fix v1.14.27] 一次性 client 也要认领 chat 会话身份——否则
+            // resume spawn 出的 bridge 会话 mapping 写不回持久层（saveMapping
+            // 以 chatSessionID 为 key，nil 直接丢），发消息时
+            // loadPersistedBridgeId 拿不到 → 二次 resume spawn 第二个会话 =
+            // pp 报的"另起新窗口"（见 fetchRemoteHistoryWithWire 同款修复）。
+            fresh.boundChatSessionID = chatSessionID
             do {
                 try await fresh.connect(
                     projectPath: projectPath,
@@ -285,6 +291,14 @@ extension AIChatViewModel {
         } else {
             let fresh = CCPocketClient(baseURL: baseURL, token: token)
             fresh.mappingInstanceID = instance.id
+            // [Fix v1.14.27] 一次性 client 也要认领 chat 会话身份——校准
+            // 路径的 requestHistory 在 mapping 无活 bridgeId 时会 resume
+            // spawn 新 bridge 会话，但 saveMapping 以 chatSessionID 为 key、
+            // nil 直接丢 → spawn 出的 B2 写不进持久层 → 发消息时
+            // loadPersistedBridgeId 仍拿旧 id → ensureSessionStarted 再
+            // resume 一次（pp 真机 04:01:14/04:01:17 resume×2 实锤，会话
+            // 堆积 + cursor 永远对不上）。认领后 system 消息到达即写回。
+            fresh.boundChatSessionID = chatSessionID
             do {
                 try await fresh.connect(
                     projectPath: projectPath,

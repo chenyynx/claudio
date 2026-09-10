@@ -2976,8 +2976,16 @@ actor ChatStore {
         //    [R1 对抗审查] bridge 端 trimHistory 只保留尾部 100 条
         //    （session.ts:186）——更老的 bridge-{seq}/past-{index} 行不在
         //    unified 序里且必须保留（只增不删），它们是历史最早的消息，
-        //    排在 unified 序之前语义正确；其余不在 unified 序的行按现有
-        //    sort_order 排前。统一 renumber 1..M，无序号冲突。
+        //    排在 unified 序之前语义正确。
+        //    [Fix 2026-09-11 v1.14.27 乱序复发] 不在 unified 序里的 **live
+        //    UUID 行**语义与老回放行相反——它们是 bridge history 尚未承载
+        //    的本地新内容（用户刚发的消息、流式未完的 assistant 行），必须
+        //    排在 unified 序**之后**。pp 真机实锤（04:01 日志）：校准发生在
+        //    "resume 刚 spawn、磁盘历史不含本轮"的窗口 → 刚发的"在吗"不在
+        //    历史序列 → 旧规则"retained 全排前"把它 renumber 到 sort_order=1
+        //    （比会话第一条"你好"还靠前）。现在按 id 形态分流：bridge-/
+        //    past- 前缀（trim 窗口幸存的老回放行）排前，其余（live UUID）
+        //    排后；组内保持现有相对顺序。统一 renumber 1..M，无序号冲突。
         let unifiedIds = plan.unifiedFinalOrderIds
         let finalIds = Set(finalOrder.map { $0.id }).union(unifiedIds)
         let currentRows = loadMessages(sessionId: sessionId)
@@ -2985,14 +2993,13 @@ actor ChatStore {
             .filter { !finalIds.contains($0.id) }
             .sorted { $0.sortOrder < $1.sortOrder }
         let rowById = Dictionary(uniqueKeysWithValues: currentRows.map { ($0.id, $0) })
-        var fullFinalSequence: [RawMessage] = retainedOutsideFinal
-        for id in unifiedIds {
-            if let row = rowById[id] {
-                fullFinalSequence.append(row)
-            } else if let fallback = finalOrder.first(where: { $0.id == id }) {
-                fullFinalSequence.append(fallback)
-            }
-        }
+        // 定序规则见 RemoteHistorySyncCore.orderedRowSequence（纯函数可单测）。
+        let fullFinalSequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: unifiedIds,
+            finalOrder: finalOrder,
+            retainedRows: retainedOutsideFinal,
+            rowById: rowById
+        )
         var nextOrder = 1
         let renumberSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
         for row in fullFinalSequence {

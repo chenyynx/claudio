@@ -435,6 +435,110 @@ final class RemoteHistoryBackfillTests: XCTestCase {
                        "被顶替的回放 user 行不插入（防双份），其余全插")
     }
 
+    // MARK: - orderedRowSequence（replaceRemoteHistory 第 3 步 renumber 定序）
+
+    func test_renumber_liveUserRow_goesAfterHistory() {
+        // [Fix v1.14.27] pp 真机实锤复现（04:01 日志）：校准发生在
+        // "resume 刚 spawn、磁盘历史不含本轮"的窗口——刚发的"在吗"是 live
+        // UUID 行、不在 history 序列里，旧规则"retained 全排前"把它
+        // renumber 到 sort_order=1（比会话第一条"你好"还靠前）。
+        // 期望：不在 unified 序里的 live 行排在历史**之后**。
+        let history = [
+            makeHistoryRaw(id: "bridge-1", role: .user),
+            makeHistoryRaw(id: "bridge-2", role: .assistant),
+        ]
+        let dbUser = makeDBRow(id: "UUID-EARLIER", role: .user, sortOrder: 1)
+        let dbLive = makeDBRow(id: "UUID-JUSTSENT", role: .user, sortOrder: 2)
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: ["bridge-1", "bridge-2"],
+            finalOrder: history,
+            retainedRows: [dbUser, dbLive],
+            rowById: [dbUser.id: dbUser, dbLive.id: dbLive]
+        )
+        XCTAssertEqual(sequence.map { $0.id },
+                       ["bridge-1", "bridge-2", "UUID-EARLIER", "UUID-JUSTSENT"],
+                       "live 行（含历史更早的 user 行）排历史后，组内保持现有序")
+    }
+
+    func test_renumber_trimWindowReplayRows_stayBefore() {
+        // [R1 规则保留] trimHistory 100 条窗口外的 bridge-/past- 老回放行
+        // 是历史最早的消息，必须排在 unified 序之前——本次修复只动 live
+        // UUID 行的归属，老回放行行为不变。
+        let history = [makeHistoryRaw(id: "bridge-50", role: .assistant)]
+        let oldBridge = makeDBRow(id: "bridge-1", role: .assistant, sortOrder: 1)
+        let oldPast = makeDBRow(id: "past-0", role: .user, sortOrder: 2)
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: ["bridge-50"],
+            finalOrder: history,
+            retainedRows: [oldBridge, oldPast],
+            rowById: [oldBridge.id: oldBridge, oldPast.id: oldPast]
+        )
+        XCTAssertEqual(sequence.map { $0.id }, ["bridge-1", "past-0", "bridge-50"],
+                       "trim 窗口外的回放行排前，历史主体在后")
+    }
+
+    func test_renumber_distinguishesReplayWindowFromLiveNew() {
+        // 三类行混合的标志性场景：老回放行（窗口外）+ history 主体 +
+        // 窗口内 live 新行。期望顺序 = 老回放 → history → live。
+        let history = [
+            makeHistoryRaw(id: "bridge-8", role: .user),
+            makeHistoryRaw(id: "bridge-9", role: .assistant),
+        ]
+        let oldReplay = makeDBRow(id: "bridge-2", role: .assistant, sortOrder: 1)
+        let liveUser = makeDBRow(id: "UUID-NEW", role: .user, sortOrder: 2)
+        let liveAssistant = makeDBRow(id: "UUID-STREAMING", role: .assistant, sortOrder: 3)
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: ["bridge-8", "bridge-9"],
+            finalOrder: history,
+            retainedRows: [oldReplay, liveUser, liveAssistant],
+            rowById: [oldReplay.id: oldReplay, liveUser.id: liveUser, liveAssistant.id: liveAssistant]
+        )
+        XCTAssertEqual(sequence.map { $0.id },
+                       ["bridge-2", "bridge-8", "bridge-9", "UUID-NEW", "UUID-STREAMING"],
+                       "老回放在前、history 居中、live 新行在后")
+    }
+
+    func test_renumber_ownerReplacedLocalUserRow_keptInPosition() {
+        // [v1.14.21 语义回归] 防双份命中的本地 user 行 id 已在 unified 序内
+        // → 按 unified 序居中，**不得**被本次分流挪到最后。
+        let history = [
+            makeHistoryRaw(id: "bridge-8", role: .user),
+            makeHistoryRaw(id: "bridge-9", role: .assistant),
+        ]
+        let owner = makeDBRow(id: "UUID-USER1", role: .user, sortOrder: 1)
+        var ownerMatched = owner
+        ownerMatched.parts = [.text("content-bridge-8")]
+        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: [ownerMatched])
+        XCTAssertEqual(plan.unifiedFinalOrderIds, ["UUID-USER1", "bridge-9"],
+                       "前置：防双份命中位由本地行顶替")
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: plan.unifiedFinalOrderIds,
+            finalOrder: history,
+            retainedRows: [],  // owner 在 unified 序内，不属于 retained
+            rowById: [ownerMatched.id: ownerMatched, "bridge-9": history[1]]
+        )
+        XCTAssertEqual(sequence.map { $0.id }, ["UUID-USER1", "bridge-9"],
+                       "顶位本地行保持 history 序中的位置，不被分流到末尾")
+    }
+
+    func test_renumber_missingHistoryRow_fallsBackToFinalOrder() {
+        // history 行尚未落库（rowById 缺）时用 finalOrder 同 id 行兜底补齐
+        // 序列（renumber 的 UPDATE 对不存在行是 no-op，不产生副作用）。
+        let history = [
+            makeHistoryRaw(id: "bridge-1", role: .user),
+            makeHistoryRaw(id: "bridge-2", role: .assistant),
+        ]
+        let dbRow = makeDBRow(id: "bridge-1", role: .user, sortOrder: 1)
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: ["bridge-1", "bridge-2"],
+            finalOrder: history,
+            retainedRows: [],
+            rowById: [dbRow.id: dbRow]
+        )
+        XCTAssertEqual(sequence.map { $0.id }, ["bridge-1", "bridge-2"],
+                       "缺行用 finalOrder 兜底，序列完整")
+    }
+
     func test_toolResultReplay_injectsBridgeSeq() {
         // agentMessage(fromServer:) 的 tool_result 分支必须注入 historySeq ——
         // 漏注入 = UUID id = 每次校准全量重插（v1.14.18 修复的根因 3）。

@@ -211,6 +211,51 @@ enum RemoteHistorySyncCore {
         )
     }
 
+    /// 校准事务的最终行序列（`ChatStore.replaceRemoteHistory` 第 3 步 renumber
+    /// 的定序来源）。抽成纯函数以便单测——DB 事务本身依赖 sqlite，但
+    /// "哪些行排前/排后"的规则是纯逻辑，pp 真机两轮乱序（07:06 user 气泡
+    /// 置顶 / 09-11 "在吗"被甩到第一条）都栽在这里。
+    ///
+    /// 规则（三段拼接）：
+    /// 1. `replayBefore` — 不在本次 history 序里的 bridge-{seq}/past-{index}
+    ///    老回放行（trimHistory 100 条窗口外的幸存者，只增不删）→ 历史最早。
+    /// 2. `unifiedFinalOrderIds` 序（bridge history + 防双份命中的本地行替换）
+    ///    → 中段主体。缺行时用 finalOrder 里的同 id 行兜底。
+    /// 3. `liveAfter` — 其余不在 history 序里的行（live UUID：用户刚发的
+    ///    消息、流式未完 assistant 行；bridge history 尚未承载 = 语义最新）
+    ///    → 排最后。旧规则把它们排最前 = 乱序复发根因（见 §3 注释）。
+    ///
+    /// 组内均保持传入顺序（caller 已按现有 sort_order 升序给 `retainedRows`），
+    /// 不重排。
+    static func orderedRowSequence(
+        unifiedFinalOrderIds: [String],
+        finalOrder: [RawMessage],
+        retainedRows: [RawMessage],
+        rowById: [String: RawMessage]
+    ) -> [RawMessage] {
+        var before: [RawMessage] = []
+        var after: [RawMessage] = []
+        for row in retainedRows {
+            // bridge-/past- 前缀 = 回放行（老历史，排前）；其余（live UUID）
+            // = 本地新内容（排后）。
+            if row.id.hasPrefix("bridge-") || row.id.hasPrefix("past-") {
+                before.append(row)
+            } else {
+                after.append(row)
+            }
+        }
+        var sequence: [RawMessage] = before
+        for id in unifiedFinalOrderIds {
+            if let row = rowById[id] {
+                sequence.append(row)
+            } else if let fallback = finalOrder.first(where: { $0.id == id }) {
+                sequence.append(fallback)
+            }
+        }
+        sequence.append(contentsOf: after)
+        return sequence
+    }
+
     /// 判定 bridge history 末尾是否处于"turn 进行中"。
     ///
     /// bridge 端 result（turn 结束）会 append 进 history（session.ts:614）；
