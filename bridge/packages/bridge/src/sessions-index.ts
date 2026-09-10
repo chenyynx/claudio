@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { renameSession as renameClaudeSdkSession } from "@anthropic-ai/claude-agent-sdk";
 import { isAutoRenamePromptText } from "./auto-rename.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
+import { normalizeToolResultContent } from "./parser.js";
 
 export interface SessionIndexEntry {
   sessionId: string;
@@ -2741,6 +2742,136 @@ async function findCodexSessionJsonlPath(threadId: string): Promise<string | nul
 }
 
 /**
+ * Convert one raw Claude transcript JSONL entry into display rows.
+ * Pure and exported for unit tests (file IO stays in getSessionHistory).
+ * Rows: tool_result rows first (they answer the preceding assistant row),
+ * then the entry's own content row.
+ */
+export function claudeTranscriptEntryToHistoryMessages(
+  entry: Record<string, unknown>,
+): SessionHistoryMessage[] {
+  const messages: SessionHistoryMessage[] = [];
+
+  const type = entry.type as string;
+  if (type !== "user" && type !== "assistant") return messages;
+
+  // Skip context compaction and transcript-only messages (not real user input)
+  if (type === "user") {
+    if (entry.isCompactSummary === true || entry.isVisibleInTranscriptOnly === true) {
+      return messages;
+    }
+  }
+
+  const message = entry.message as
+    | { role: string; content: unknown[] | string }
+    | undefined;
+  if (!message?.content) return messages;
+
+  const role = message.role as "user" | "assistant";
+  const isMeta = role === "user" && entry.isMeta === true ? true : undefined;
+  const uuid = entry.uuid as string | undefined;
+  const ts = entry.timestamp as string | undefined;
+
+  // Handle string content (e.g. user message after interrupt)
+  if (typeof message.content === "string") {
+    if (message.content) {
+      messages.push({
+        role,
+        content: [{ type: "text" as const, text: message.content }],
+        ...(uuid ? { uuid } : {}),
+        ...(ts ? { timestamp: ts } : {}),
+        ...(isMeta ? { isMeta } : {}),
+      });
+    }
+    return messages;
+  }
+
+  if (!Array.isArray(message.content)) return messages;
+
+  // [Claudio fix 2026-09-11] Keep text / thinking / tool_use / tool_result.
+  // The previous filter dropped tool_result ("skip for cleaner display")
+  // and silently skipped thinking. The disk transcript is the only source
+  // for resumed sessions, so after a bridge restart every client that
+  // rebuilds from past history permanently lost all tool output and
+  // thinking blocks (measured on a real session: 623 tool_result + 105
+  // thinking blocks on disk, 0 of either in past_history). Both types are
+  // first-class on the live path — the raw transcript is the truth.
+  const content: SessionHistoryContentItem[] = [];
+  const toolResults: SessionHistoryMessage[] = [];
+  let imageCount = 0;
+  for (const c of message.content) {
+    if (typeof c !== "object" || c === null) continue;
+    const item = c as Record<string, unknown>;
+    const contentType = item.type as string;
+
+    if (contentType === "text" && item.text) {
+      content.push({ type: "text", text: item.text as string });
+    } else if (contentType === "thinking") {
+      const thinkingText =
+        typeof item.thinking === "string"
+          ? item.thinking
+          : typeof item.text === "string"
+            ? item.text
+            : "";
+      if (thinkingText.trim()) {
+        content.push({ type: "thinking", thinking: thinkingText });
+      }
+    } else if (contentType === "tool_use") {
+      content.push({
+        type: "tool_use",
+        id: item.id as string,
+        name: item.name as string,
+        input: (item.input as Record<string, unknown>) ?? {},
+      });
+    } else if (contentType === "tool_result") {
+      // Emit as its own row (consumers pair results to the assistant row
+      // that precedes them — same shape as splitPastHistoryMessages).
+      const toolUseId =
+        typeof item.tool_use_id === "string" ? item.tool_use_id : "";
+      if (toolUseId) {
+        toolResults.push({
+          role: "tool_result",
+          toolUseId,
+          content: normalizeToolResultContent(
+            item.content as string | unknown[],
+          ),
+          ...(uuid ? { uuid } : {}),
+          ...(ts ? { timestamp: ts } : {}),
+        });
+      }
+    } else if (contentType === "image") {
+      imageCount++;
+    }
+  }
+
+  // Results first: they answer the preceding assistant row; any fresh
+  // user text in the same raw entry starts a new turn after them.
+  if (toolResults.length > 0) {
+    messages.push(...toolResults);
+  }
+
+  if (content.length > 0 || imageCount > 0) {
+    // If there are only images and no text, add a placeholder
+    if (content.length === 0 && imageCount > 0) {
+      content.push({
+        type: "text",
+        text: `[Image attached${imageCount > 1 ? ` x${imageCount}` : ""}]`,
+      });
+    }
+    messages.push({
+      role,
+      content,
+      ...(uuid ? { uuid } : {}),
+      ...(ts ? { timestamp: ts } : {}),
+      ...(isMeta ? { isMeta } : {}),
+      ...(imageCount > 0 ? { imageCount } : {}),
+    });
+  }
+
+  return messages;
+}
+
+/**
  * Read past conversation messages from a session's JSONL file.
  * Returns user and assistant messages suitable for display.
  */
@@ -2770,83 +2901,7 @@ export async function getSessionHistory(
       continue;
     }
 
-    const type = entry.type as string;
-    if (type !== "user" && type !== "assistant") continue;
-
-    // Skip context compaction and transcript-only messages (not real user input)
-    if (type === "user") {
-      if (entry.isCompactSummary === true || entry.isVisibleInTranscriptOnly === true) {
-        continue;
-      }
-    }
-
-    const message = entry.message as
-      | { role: string; content: unknown[] | string }
-      | undefined;
-    if (!message?.content) continue;
-
-    const role = message.role as "user" | "assistant";
-    const isMeta = role === "user" && entry.isMeta === true ? true : undefined;
-
-    // Handle string content (e.g. user message after interrupt)
-    if (typeof message.content === "string") {
-      if (message.content) {
-        const uuid = entry.uuid as string | undefined;
-        const ts = entry.timestamp as string | undefined;
-        messages.push({
-          role,
-          content: [{ type: "text" as const, text: message.content }],
-          ...(uuid ? { uuid } : {}),
-          ...(ts ? { timestamp: ts } : {}),
-          ...(isMeta ? { isMeta } : {}),
-        });
-      }
-      continue;
-    }
-
-    if (!Array.isArray(message.content)) continue;
-
-    // Filter content to only text and tool_use (skip tool_result for cleaner display)
-    const content: SessionHistoryContentItem[] = [];
-    let imageCount = 0;
-    for (const c of message.content) {
-      if (typeof c !== "object" || c === null) continue;
-      const item = c as Record<string, unknown>;
-      const contentType = item.type as string;
-
-      if (contentType === "text" && item.text) {
-        content.push({ type: "text", text: item.text as string });
-      } else if (contentType === "tool_use") {
-        content.push({
-          type: "tool_use",
-          id: item.id as string,
-          name: item.name as string,
-          input: (item.input as Record<string, unknown>) ?? {},
-        });
-      } else if (contentType === "image") {
-        imageCount++;
-      }
-    }
-
-    if (content.length > 0 || imageCount > 0) {
-      const uuid = entry.uuid as string | undefined;
-      const ts = entry.timestamp as string | undefined;
-      // If there are only images and no text, add a placeholder
-      if (content.length === 0 && imageCount > 0) {
-        content.push({
-          type: "text",
-          text: `[Image attached${imageCount > 1 ? ` x${imageCount}` : ""}]`,
-        });
-      }
-      messages.push({
-        role,
-        content,
-        ...(uuid ? { uuid } : {}),
-        ...(ts ? { timestamp: ts } : {}),
-        ...(isMeta ? { isMeta } : {}),
-        ...(imageCount > 0 ? { imageCount } : {}),
-      });
-    }
+    messages.push(...claudeTranscriptEntryToHistoryMessages(entry));
   }
 
   return messages;

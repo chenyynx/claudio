@@ -19,6 +19,7 @@ import {
   getCodexSessionHistory,
   extractMessageImages,
   codexThreadToSessionHistory,
+  claudeTranscriptEntryToHistoryMessages,
 } from "./sessions-index.js";
 import { buildAutoRenamePrompt } from "./auto-rename.js";
 
@@ -2522,5 +2523,90 @@ describe("claude namedOnly optimization", () => {
     expect(result.sessions).toHaveLength(1);
     expect(result.sessions[0].sessionId).toBe(sessionId);
     expect(result.sessions[0].name).toBe("SDK title");
+  });
+});
+
+describe("claudeTranscriptEntryToHistoryMessages", () => {
+  it("keeps thinking blocks on assistant entries", () => {
+    const rows = claudeTranscriptEntryToHistoryMessages({
+      type: "assistant",
+      uuid: "u1",
+      timestamp: "2026-09-11T00:00:00Z",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "deep thought" },
+          { type: "text", text: "hello" },
+        ],
+      },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].content).toEqual([
+      { type: "thinking", thinking: "deep thought" },
+      { type: "text", text: "hello" },
+    ]);
+  });
+
+  it("emits tool_result as its own row with normalized content", () => {
+    const rows = claudeTranscriptEntryToHistoryMessages({
+      type: "user",
+      uuid: "u2",
+      timestamp: "2026-09-11T00:00:00Z",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_1",
+            content: [
+              { type: "text", text: "line1" },
+              { type: "text", text: "line2" },
+            ],
+          },
+        ],
+      },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].role).toBe("tool_result");
+    expect(rows[0].toolUseId).toBe("toolu_1");
+    expect(rows[0].content).toBe("line1\nline2");
+  });
+
+  it("orders tool_result rows before user text in the same entry", () => {
+    const rows = claudeTranscriptEntryToHistoryMessages({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_2", content: "out" },
+          { type: "text", text: "next question" },
+        ],
+      },
+    });
+    expect(rows.map((r) => r.role)).toEqual(["tool_result", "user"]);
+  });
+
+  it("skips meta, compact-summary and non-display entries", () => {
+    expect(
+      claudeTranscriptEntryToHistoryMessages({ type: "system" }),
+    ).toEqual([]);
+    expect(
+      claudeTranscriptEntryToHistoryMessages({
+        type: "user",
+        isCompactSummary: true,
+        message: { role: "user", content: [{ type: "text", text: "s" }] },
+      }),
+    ).toEqual([]);
+  });
+
+  it("keeps string-content user entries", () => {
+    const rows = claudeTranscriptEntryToHistoryMessages({
+      type: "user",
+      message: { role: "user", content: "plain string" },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].content).toEqual([
+      { type: "text", text: "plain string" },
+    ]);
   });
 });
