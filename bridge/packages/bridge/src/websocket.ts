@@ -8274,7 +8274,9 @@ export class BridgeWebSocketServer {
       type: "session_list",
       sessions,
       allowedDirs: this.allowedDirs,
-      claudeModels: this.claudeModels,
+      // re-applied per broadcast: the host may have switched providers since the
+      // last refresh, and the app renders this list verbatim
+      claudeModels: withEnvModels(this.claudeModels),
       claudeModelEfforts: this.claudeModelEfforts,
       codexModels: this.codexModels,
       codexModelReasoningEfforts: this.codexModelReasoningEfforts,
@@ -8317,7 +8319,9 @@ export class BridgeWebSocketServer {
       type: "session_list",
       sessions,
       allowedDirs: this.allowedDirs,
-      claudeModels: this.claudeModels,
+      // re-applied per broadcast: the host may have switched providers since the
+      // last refresh, and the app renders this list verbatim
+      claudeModels: withEnvModels(this.claudeModels),
       claudeModelEfforts: this.claudeModelEfforts,
       codexModels: this.codexModels,
       codexModelReasoningEfforts: this.codexModelReasoningEfforts,

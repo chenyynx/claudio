@@ -19,6 +19,59 @@
  * @module claude-model-list
  */
 
+import { readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+/**
+ * Host settings file (Claude Code). `sm` (~/bin/switch-model) rewrites its `env`
+ * block on every provider switch and does NOT touch pm2 — so a long-running
+ * bridge's process.env is a stale snapshot. Reading the file on demand (cached
+ * by mtime+size) is what makes a provider switch take effect with zero restarts.
+ * Precedence mirrors Claude Code itself: the settings.json env block beats the
+ * inherited shell environment.
+ */
+function settingsPath(): string {
+  return process.env["CLAUDIO_SETTINGS_PATH"] ?? join(homedir(), ".claude", "settings.json");
+}
+
+let hostCache: { readonly key: string; readonly env: Readonly<Record<string, string>> } | undefined;
+
+/** The settings.json env block, re-read only when the file actually changed. */
+export function hostEnvBlock(path = settingsPath()): Readonly<Record<string, string>> {
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch {
+    hostCache = undefined; // gone/unreadable: nothing to remember
+    return {};
+  }
+  // path belongs in the key: two files of identical size/mtime must never share a cache entry
+  const key = `${path}:${stat.mtimeMs}:${stat.size}`;
+  if (hostCache !== undefined && hostCache.key === key) return hostCache.env;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { env?: Record<string, unknown> };
+    const raw = parsed.env;
+    const collected: Record<string, string> = {};
+    if (raw !== undefined && raw !== null && typeof raw === "object") {
+      for (const [name, value] of Object.entries(raw)) {
+        if (typeof value === "string") collected[name] = value;
+      }
+    }
+    hostCache = { key, env: collected };
+    return collected;
+  } catch {
+    // corrupt JSON mid-write must not break the bridge: fall back to the
+    // inherited environment, and do not poison the cache with a bad read
+    return {};
+  }
+}
+
+/** The environment as the host currently declares it: process env + settings.json wins. */
+export function effectiveEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, ...hostEnvBlock() };
+}
+
 /** Environment variables that name a model the current provider serves. */
 const MODEL_ENV_KEYS = [
   "ANTHROPIC_MODEL",
@@ -32,11 +85,14 @@ const MODEL_ENV_KEYS = [
  * Models named by the environment, in declaration order, de-duplicated.
  * Blank/unset entries are skipped; a provider that declares nothing yields [].
  */
-export function envConfiguredModels(env: NodeJS.ProcessEnv = process.env): string[] {
+export function envConfiguredModels(env?: NodeJS.ProcessEnv): string[] {
+  // no explicit env passed → ask the host, hot (this is what a provider switch
+  // without a restart depends on)
+  const source = env ?? effectiveEnv();
   const seen = new Set<string>();
   const models: string[] = [];
   for (const key of MODEL_ENV_KEYS) {
-    const raw = env[key];
+    const raw = source[key];
     if (typeof raw !== "string") continue;
     const model = raw.trim();
     if (model === "" || seen.has(model)) continue;
@@ -53,7 +109,7 @@ export function envConfiguredModels(env: NodeJS.ProcessEnv = process.env): strin
  */
 export function withEnvModels(
   discovered: readonly string[],
-  env: NodeJS.ProcessEnv = process.env,
+  env?: NodeJS.ProcessEnv,
 ): string[] {
   const envModels = envConfiguredModels(env);
   const seen = new Set(envModels);

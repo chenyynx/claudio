@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { envConfiguredModels, resolveAllowedModel, withEnvModels } from "./claude-model-list";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { envConfiguredModels, hostEnvBlock, resolveAllowedModel, withEnvModels } from "./claude-model-list";
 
 /**
  * The list the bridge advertises drives the app's model picker (session_list
@@ -89,5 +92,78 @@ describe("resolveAllowedModel", () => {
   it("an empty allowed set still falls back when the environment declares one", () => {
     expect(resolveAllowedModel("glm-5.3-flash[1m]", [], fallback))
       .toEqual({ model: fallback, fellBackFrom: "glm-5.3-flash[1m]" });
+  });
+});
+
+/**
+ * Host settings hot-reload (the reason a provider switch needs no restart):
+ * `sm` rewrites settings.json's env block and never touches pm2, so the file —
+ * not process.env — has to be the source of truth.
+ */
+describe("host settings hot reload", () => {
+  function withSettings(env: Record<string, unknown> | string | undefined) {
+    const dir = mkdtempSync(join(tmpdir(), "claude-host-env-"));
+    const file = join(dir, "settings.json");
+    const body = typeof env === "string" ? env : JSON.stringify({ env });
+    writeFileSync(file, body, "utf8");
+    return { file, done: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("reads declared models out of the settings file", () => {
+    const t = withSettings({ ANTHROPIC_MODEL: "kimi-k3[1m]" });
+    try {
+      expect(hostEnvBlock(t.file)).toEqual({ ANTHROPIC_MODEL: "kimi-k3[1m]" });
+    } finally {
+      t.done();
+    }
+  });
+
+  it("settings.json beats the inherited environment (CC's own precedence)", () => {
+    const previousModel = process.env["ANTHROPIC_MODEL"];
+    const previousPath = process.env["CLAUDIO_SETTINGS_PATH"];
+    process.env["ANTHROPIC_MODEL"] = "stale-from-pm2-snapshot[1m]";
+    const t = withSettings({ ANTHROPIC_MODEL: "deepseek-v4-pro[1m]" });
+    try {
+      // the real default path: no argument, resolved through CLAUDIO_SETTINGS_PATH
+      process.env["CLAUDIO_SETTINGS_PATH"] = t.file;
+      const models = envConfiguredModels();
+      expect(models).toContain("deepseek-v4-pro[1m]");
+      expect(models).not.toContain("stale-from-pm2-snapshot[1m]");
+    } finally {
+      if (previousModel === undefined) delete process.env["ANTHROPIC_MODEL"];
+      else process.env["ANTHROPIC_MODEL"] = previousModel;
+      if (previousPath === undefined) delete process.env["CLAUDIO_SETTINGS_PATH"];
+      else process.env["CLAUDIO_SETTINGS_PATH"] = previousPath;
+      t.done();
+    }
+  });
+
+  it("picks up a rewrite immediately (mtime+size cache invalidation)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude-host-env-"));
+    const file = join(dir, "settings.json");
+    try {
+      writeFileSync(file, JSON.stringify({ env: { ANTHROPIC_MODEL: "first" } }), "utf8");
+      expect(hostEnvBlock(file).ANTHROPIC_MODEL).toBe("first");
+      expect(hostEnvBlock(join(dir, "other.json"))).toEqual({}); // a second path cannot reuse the cache entry
+      writeFileSync(file, JSON.stringify({ env: { ANTHROPIC_MODEL: "second" } }), "utf8");
+      // same content length on purpose: mtime alone must be enough to notice
+      const future = new Date(Date.now() + 5000);
+      utimesSync(file, future, future);
+      expect(hostEnvBlock(file).ANTHROPIC_MODEL).toBe("second");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a corrupt or absent file degrades to the inherited environment, never throws", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude-host-env-"));
+    const broken = join(dir, "settings.json");
+    writeFileSync(broken, "{ not json", "utf8");
+    try {
+      expect(hostEnvBlock(broken)).toEqual({});
+      expect(hostEnvBlock(join(dir, "missing.json"))).toEqual({});
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
