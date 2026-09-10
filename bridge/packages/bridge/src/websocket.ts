@@ -6,6 +6,7 @@ import { lstat, readFile, readlink, realpath, stat, unlink } from "node:fs/promi
 import { resolve, join, extname, basename, relative, posix, win32 } from "node:path";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
+import { withEnvModels } from "./claude-model-list.js";
 import {
   SessionManager,
   MAX_HISTORY_PER_SESSION,
@@ -9051,14 +9052,17 @@ export class BridgeWebSocketServer {
   }
 
   private applyClaudeModels(models: ClaudeModelMetadata[]): void {
-    this.claudeModels = models.map((model) => model.model);
+    // Environment-declared models lead: they are what THIS endpoint serves, and
+    // the app renders this list verbatim — a picker offering a model the current
+    // provider rejects (e.g. a pre-sm-switch name) can only ever 400.
+    this.claudeModels = withEnvModels(models.map((model) => model.model));
     this.claudeModelEfforts = Object.fromEntries(
       models.map((model) => [model.model, model.effortLevels]),
     );
   }
 
   private applyFallbackClaudeModels(): void {
-    this.claudeModels = FALLBACK_CLAUDE_MODELS;
+    this.claudeModels = withEnvModels(FALLBACK_CLAUDE_MODELS);
     this.claudeModelEfforts = { ...FALLBACK_CLAUDE_MODEL_EFFORTS };
   }
 
