@@ -4325,14 +4325,39 @@ actor ChatStore {
         // renumber 全量重写 1..M，重复自然消失），repair 对远端会话无职责。
         // 判据用 sessions.source（'remoteBridge'，setSessionSource/801 写入）
         // ——messages.provider_type 在校准/回放路径均为 NULL，不可靠。
-        let remoteSql = "SELECT 1 FROM sessions WHERE id = ? AND source = 'remoteBridge' LIMIT 1"
+        // [Fix v1.14.28] **source 不是唯一判据**：iCloud V2 同步 schema 无
+        // source 字段 → 重装/换机 iCloud 恢复的远端会话 source=NULL；
+        // 801 的 backfill 只跑一次（UserDefaults 标记），救不了之后进来的
+        // 行。source=NULL 的远端会话会漏过本 gate → 第 3 条 rank inversion
+        // 误判 → repair 把校准顺序重写回乱序（v1.14.22 注释自己预言的
+        // 残余风险，pp 真机复发实锤）。兜底：数据特征判定——回放行 id
+        // 前缀 bridge-/past- 是远端会话的确定性指纹（本地 agent 永不产生
+        // 这两种 id），命中即按远端处理（只跳过 repair，无副作用）。
+        let sourceRemoteSql = "SELECT 1 FROM sessions WHERE id = ? AND source = 'remoteBridge' LIMIT 1"
         var rStmt: OpaquePointer?
         var isRemoteSession = false
-        if sqlite3_prepare_v2(db, remoteSql, -1, &rStmt, nil) == SQLITE_OK {
+        if sqlite3_prepare_v2(db, sourceRemoteSql, -1, &rStmt, nil) == SQLITE_OK {
             sqlite3_bind_text(rStmt, 1, (sessionId as NSString).utf8String, -1, nil)
             isRemoteSession = sqlite3_step(rStmt) == SQLITE_ROW
         }
         sqlite3_finalize(rStmt)
+        if !isRemoteSession {
+            let dataRemoteSql = """
+                SELECT 1 FROM messages
+                WHERE session_id = ?
+                  AND (id LIKE 'bridge-%' OR id LIKE 'past-%')
+                LIMIT 1
+            """
+            var dStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, dataRemoteSql, -1, &dStmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(dStmt, 1, (sessionId as NSString).utf8String, -1, nil)
+                isRemoteSession = sqlite3_step(dStmt) == SQLITE_ROW
+            }
+            sqlite3_finalize(dStmt)
+            if isRemoteSession {
+                logger.info("[Repair] session \(sessionId.prefix(8)) has replay rows (bridge-/past-) but source is not remoteBridge — skipping repair (data-characteristic gate)")
+            }
+        }
         if isRemoteSession { return false }
 
         // 1. sortOrder duplicates
