@@ -22,6 +22,50 @@ struct RemoteHistorySyncOutcome {
     let insertedCount: Int
     let deletedCount: Int
     let historyCount: Int
+    /// 本次校准实际写入的游标（诊断/测试用；nil = 未写入）
+    var writtenCursor: RemoteHistoryCursor? = nil
+}
+
+/// [增量恢复 v1.14.23] per-chat 校准游标。
+///
+/// 语义：本地 DB 已确认持有 `bridgeId` 会话 ≤ `lastSeq` 的**全部** wire
+/// 消息（含 nonEngine 行）。仅在 planReplace 校准**落库成功后**写入——
+/// 落库是唯一原子真相点，fetch 成功但落库失败绝不写（v1.14.17 水位
+/// 教训：水位抬升与落库解耦导致全量重拉乱序）。
+///
+/// 读取侧（Phase 2 启用）invalidation 规则（任一命中即弃 cursor 走全量）：
+/// cursor 为 nil / bridgeId 变了 / DB 无 bridge-{seq} 行 / provider 非 claude。
+/// 本 Phase（1）只写不读：线上行为与 v1.14.22 完全一致，仅积攒游标
+/// 健康度数据，Phase 2 的 delta fetch 决策树合入后开始消费。
+struct RemoteHistoryCursor: Codable, Equatable {
+    /// 游标所属的 bridge 会话 id（seq 是 per-bridge-session 计数，
+    /// bridgeId 变化 = seq 空间重置 = cursor 必须作废）
+    let bridgeId: String
+    /// 已确认连续持有的最大 wire seq
+    let lastSeq: Int
+}
+
+/// 游标 UserDefaults 存取（独立类型便于单测注入）。
+/// 单 key 原子读写（bridgeId+lastSeq 打包 JSON），不存在半新半旧状态。
+enum RemoteHistoryCursorStore {
+    private static func key(for sessionId: String) -> String {
+        "RemoteHistoryCursor.v2.\(sessionId)"
+    }
+
+    static func read(sessionId: String, defaults: UserDefaults = .standard) -> RemoteHistoryCursor? {
+        guard let data = defaults.data(forKey: key(for: sessionId)) else { return nil }
+        return try? JSONDecoder().decode(RemoteHistoryCursor.self, from: data)
+    }
+
+    static func write(_ cursor: RemoteHistoryCursor, sessionId: String, defaults: UserDefaults = .standard) {
+        if let data = try? JSONEncoder().encode(cursor) {
+            defaults.set(data, forKey: key(for: sessionId))
+        }
+    }
+
+    static func clear(sessionId: String, defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: key(for: sessionId))
+    }
 }
 
 /// 远端 history 校准管理器（单例 + per-session 防重入）。
@@ -162,12 +206,30 @@ final class RemoteHistoryBackfill {
         let changed = !plan.inserts.isEmpty || !plan.deleteIds.isEmpty
         let elapsedMs = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
         logger.info("[HistorySync] session=\(sessionId.prefix(8)) done in \(String(format: "%.0f", elapsedMs))ms history=\(historyRaws.count) changed=\(changed)")
+
+        // === 6. 游标写入（Phase 1：只写不读，零行为变化） ===
+        // 落库成功（replaceRemoteHistory 返回即事务已 COMMIT）后才写 cursor。
+        // lastSeq 取本次 wire 序列的最大 historySeq（含 nonEngine 行——游标
+        // 语义是"全部 wire 消息"，不只是 engine 行）。wire 无任何 seq（空
+        // history / 全为 past raw）→ 不写（cursor 语义需要至少一个锚点）。
+        // bridgeId 缺失 → 不写（无 seq 空间锚点的游标无意义）。
+        var writtenCursor: RemoteHistoryCursor?
+        if let currentBridgeId = fetched.bridgeId {
+            let wireSeqs = wireMessages.compactMap { $0.historySeq }
+            if let maxSeq = wireSeqs.max() {
+                let cursor = RemoteHistoryCursor(bridgeId: currentBridgeId, lastSeq: maxSeq)
+                RemoteHistoryCursorStore.write(cursor, sessionId: sessionId)
+                writtenCursor = cursor
+                logger.info("[HistorySync] session=\(sessionId.prefix(8)) cursor written bridge=\(currentBridgeId.prefix(8)) lastSeq=\(maxSeq)")
+            }
+        }
         return RemoteHistorySyncOutcome(
             changed: changed,
             lastWireType: lastWireType,
             insertedCount: plan.inserts.count,
             deletedCount: plan.deleteIds.count,
-            historyCount: historyRaws.count
+            historyCount: historyRaws.count,
+            writtenCursor: writtenCursor
         )
     }
 }

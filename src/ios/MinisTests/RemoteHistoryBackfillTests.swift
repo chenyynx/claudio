@@ -450,6 +450,32 @@ final class RemoteHistoryBackfillTests: XCTestCase {
 
     // MARK: - wire `content` 多态分流（v1.14.19 手写 init(from:)）
 
+    // MARK: - 游标（v1.14.23 Phase 1：只写不读）
+
+    func test_cursorStore_roundTrip() {
+        // 游标读写往返：bridgeId + lastSeq 编解码无损（JSON Codable）。
+        let suite = UserDefaults(suiteName: "test.cursor.roundtrip")!
+        suite.removePersistentDomain(forName: "test.cursor.roundtrip")
+        defer { suite.removePersistentDomain(forName: "test.cursor.roundtrip") }
+
+        XCTAssertNil(RemoteHistoryCursorStore.read(sessionId: "s1", defaults: suite),
+                     "未写入时读出 nil")
+
+        let cursor = RemoteHistoryCursor(bridgeId: "abc12345", lastSeq: 42)
+        RemoteHistoryCursorStore.write(cursor, sessionId: "s1", defaults: suite)
+
+        let read = RemoteHistoryCursorStore.read(sessionId: "s1", defaults: suite)
+        XCTAssertEqual(read, cursor, "写入后读出必须无损等值")
+
+        // 不同 sessionId 隔离
+        XCTAssertNil(RemoteHistoryCursorStore.read(sessionId: "s2", defaults: suite),
+                     "per-chat 隔离：另一 session 读不到")
+
+        RemoteHistoryCursorStore.clear(sessionId: "s1", defaults: suite)
+        XCTAssertNil(RemoteHistoryCursorStore.read(sessionId: "s1", defaults: suite),
+                     "clear 后读出 nil")
+    }
+
     func test_wireContent_toolResultString_staysContent() {
         // [多态分流锁] tool_result 的 wire content 是字符串（工具输出）——
         // 手写 init 先试 String 再试 [AssistantContentBlock]，字符串形态
