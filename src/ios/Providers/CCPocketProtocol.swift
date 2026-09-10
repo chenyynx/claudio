@@ -462,7 +462,6 @@ enum CCPocketProtocol {
             codexProfiles = try c.decodeIfPresent([String].self, forKey: .codexProfiles)
             defaultCodexProfile = try c.decodeIfPresent(String.self, forKey: .defaultCodexProfile)
             allowedDirs = try c.decodeIfPresent([String].self, forKey: .allowedDirs)
-            messages = try c.decodeIfPresent([ServerMessage].self, forKey: .messages)
             pastMessages = try c.decodeIfPresent([ServerMessage].self, forKey: .pastMessages)
             rawRole = try c.decodeIfPresent(String.self, forKey: .rawRole)
 
@@ -476,6 +475,9 @@ enum CCPocketProtocol {
             // typeMismatch，try? 不触发 → delta 消息全丢。正确做法：先用
             // [JSONValue] 探测原始形态（首元素含 seq+message 键 = entry
             // 形态），再按已知形态解码。
+            // [CI 34474439182 修复] messages 只能初始化一次——上面的合成
+            // 序列里已有一行无条件解码（v1.14.19 遗留），此处分支内再赋值
+            // = double init 编译错。删原行，分支内唯一赋值。
             if let rawShape = try? c.decodeIfPresent([JSONValue].self, forKey: .messages),
                !rawShape.isEmpty,
                case .object(let first) = rawShape[0],
