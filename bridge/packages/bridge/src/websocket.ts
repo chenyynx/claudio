@@ -6,7 +6,7 @@ import { lstat, readFile, readlink, realpath, stat, unlink } from "node:fs/promi
 import { resolve, join, extname, basename, relative, posix, win32 } from "node:path";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
-import { withEnvModels } from "./claude-model-list.js";
+import { envConfiguredModels, resolveAllowedModel, withEnvModels } from "./claude-model-list.js";
 import {
   SessionManager,
   MAX_HISTORY_PER_SESSION,
@@ -825,7 +825,9 @@ export class BridgeWebSocketServer {
   private codexAutoReviewPolicyLoaded = false;
   private codexMetadataRequest: Promise<void> | null = null;
   private lastConnectMetadataRefreshAt: number | null = null;
-  private claudeModels: string[] = FALLBACK_CLAUDE_MODELS;
+  // seeded with the environment's models so a client that connects before the
+  // first refresh still sees something this endpoint can actually serve
+  private claudeModels: string[] = withEnvModels(FALLBACK_CLAUDE_MODELS);
   private claudeModelEfforts: Record<string, ClaudeEffortLevel[]> = {
     ...FALLBACK_CLAUDE_MODEL_EFFORTS,
   };
@@ -2650,10 +2652,11 @@ export class BridgeWebSocketServer {
     usedFallback: boolean;
   } {
     const initialMode = params.options?.permissionMode ?? "default";
+    const guardedOptions = this.guardClaudeModel(params.options);
     try {
       const sessionId = this.sessionManager.create(
         params.projectPath,
-        params.options,
+        guardedOptions,
         params.pastMessages,
         params.worktreeOptions,
       );
@@ -2675,7 +2678,7 @@ export class BridgeWebSocketServer {
         throw err;
       }
       const fallbackOptions = {
-        ...params.options,
+        ...guardedOptions,
         permissionMode: "default" as const,
       };
       const sessionId = this.sessionManager.create(
@@ -2692,6 +2695,27 @@ export class BridgeWebSocketServer {
         usedFallback: true,
       };
     }
+  }
+
+  /**
+   * Keep a request's model when this endpoint can serve it, otherwise swap in the
+   * environment's model and log it. Only model *selection* is guarded here; the
+   * normal pass-through of a legal client choice is untouched, and with nothing
+   * declared in the environment nothing is changed at all (see resolveAllowedModel).
+   */
+  private guardClaudeModel(
+    options?: StartOptions & { permissionMode?: ClaudePermissionMode },
+  ): (StartOptions & { permissionMode?: ClaudePermissionMode }) | undefined {
+    if (options === undefined) return undefined;
+    const allowed = withEnvModels(this.claudeModels);
+    const resolved = resolveAllowedModel(options.model, allowed, envConfiguredModels()[0]);
+    if (resolved.model === options.model) return options;
+    if (resolved.fellBackFrom !== undefined) {
+      console.warn(
+        `[bridge] model "${resolved.fellBackFrom}" is not served by this endpoint; using "${resolved.model}" instead`,
+      );
+    }
+    return { ...options, model: resolved.model };
   }
 
   close(): void {

@@ -64,3 +64,31 @@ export function withEnvModels(
   });
   return [...envModels, ...rest];
 }
+
+/**
+ * Pick the model to actually run for one request.
+ *
+ * pp's decision (2026-09-11): a stored session model can outlive the provider it
+ * was chosen for (host `sm` switches rewrite the environment; the app keeps
+ * sending whatever it has saved). Passing that name through 400s every turn, and
+ * the server has no way to correct the app's stored value — so fall back to the
+ * model the environment declares, and say so in the log.
+ *
+ * Deliberately conservative:
+ *  - a legal request is returned untouched (upstream pass-through stays intact),
+ *  - an empty/absent request is left alone (the SDK's own default applies),
+ *  - with no environment-declared fallback we change nothing: guessing would
+ *    silently override the user's choice, which is worse than an honest 400.
+ */
+export function resolveAllowedModel(
+  requested: string | undefined,
+  allowed: readonly string[],
+  fallback: string | undefined,
+): { model: string | undefined; fellBackFrom?: string } {
+  if (requested === undefined || requested.trim() === "") return { model: requested };
+  if (allowed.includes(requested)) return { model: requested };
+  if (fallback !== undefined && fallback.trim() !== "") {
+    return { model: fallback, fellBackFrom: requested };
+  }
+  return { model: requested };
+}
