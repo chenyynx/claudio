@@ -12,6 +12,13 @@
 
 import Foundation
 
+/// 增量恢复开关（v1.14.23 Phase 2 合入默认 off：编译+单测验证期，
+/// 线上行为与 v1.14.22 完全一致）。pp 真机验证清单通过后切 true。
+/// 回滚 = 把此值改回 false（cursor 残留无害，读取侧全跳过）。
+enum RemoteHistorySyncConfig {
+    static let useDelta = false
+}
+
 /// 校准结果（供 UI 层决策）。
 struct RemoteHistorySyncOutcome {
     /// 校准是否产生变化（inserts/deletes 非空）
@@ -119,20 +126,103 @@ final class RemoteHistoryBackfill {
             return RemoteHistorySyncOutcome(changed: false, lastWireType: nil, insertedCount: 0, deletedCount: 0, historyCount: 0)
         }
 
-        // === 3. 拉桥 history（wire 原始消息，含 type 序列） ===
+        // === 3. 拉桥 history（delta 优先，fallback 全量） ===
         // [三-B 规则] guard 条件里不放多行链式——先绑定中间结果再 guard。
-        let fetched = await AIChatViewModel.fetchRemoteHistoryWithWire(
-            instance: instance,
-            chatSessionID: chatSessionID ?? sessionId
-        )
-        guard let fetched else {
-            logger.warning("[HistorySync] session=\(sessionId.prefix(8)) bridge fetch failed")
+        // [增量恢复 v1.14.23 Phase 2] 决策树（对齐官方 bridge_service.dart
+        // requestSessionHistory:2838——有缓存走 delta 无缓存全量）：
+        // useDelta && provider==claude && cursor 有效 → delta；
+        // delta 任何失败形态（连接/超时/error/终态缺失/snapshot/gap）→
+        // fallback 全量（= v1.14.22 已验证路径，不劣于现状）。
+        // 有效性前提之二（DB 有 bridge-{seq} 行）在 delta 命中后校验：
+        // DB 空 → cursor 不可能有意义（落库成功才写 cursor 的逆否），
+        // 保守起见 delta 命中后查 dbRows 非 bridge 行才提交——见 === 5 前置。
+        struct WireFetch {
+            let wire: [CCPocketProtocol.ServerMessage]
+            let engine: [AgentMessage]
+            let bridgeId: String?
+            let isDelta: Bool
+            /// delta 终态信封的 toSeq（cursor 更新用；全量路径 nil）
+            let deltaToSeq: Int?
+            let snapshotFallback: Bool
+        }
+        var wireFetch: WireFetch?
+        if RemoteHistorySyncConfig.useDelta,
+           (RemoteAgentConnection.load(instanceID: instance.id)?.provider ?? "claude") == "claude",
+           let cursor = RemoteHistoryCursorStore.read(sessionId: sessionId) {
+            logger.info("[HistorySync] session=\(sessionId.prefix(8)) delta attempt bridge=\(cursor.bridgeId.prefix(8)) sinceSeq=\(cursor.lastSeq)")
+            if let delta = await AIChatViewModel.fetchDeltaWithWire(
+                instance: instance,
+                chatSessionID: chatSessionID ?? sessionId,
+                cursor: cursor
+            ) {
+                let from = delta.envelope.fromSeq ?? -1
+                let to = delta.envelope.toSeq ?? -1
+                let isSnapshot = delta.envelope.type == "history_snapshot"
+                // 空 delta 形态（bridge getHistorySince:789-793）：from=to+1
+                // entries=[]——语义"没有新消息"，合法命中。
+                let emptyDelta = (from == to + 1)
+                // 连续性强校验（方案 R1 对策）：delta 必须无缝衔接 cursor，
+                // 否则 planReplace 的补插依赖完整 historyRaws 会被破坏。
+                // [R1 对策之二·基线守卫] delta 命中但 DB 无 bridge- 前缀的
+                // 非 user 行 = 无基线（DB 被清/重装后 UserDefaults 残留
+                // cursor / iCloud 恢复时序）——delta 只含增量，无基线上校准
+                // = 老消息永久缺失。此处 probe（本地 SQLite <10ms），无基线
+                // 直接在本分支内 fallback 全量（不构建 delta WireFetch，
+                // 下游派生变量全部从最终来源计算——杜绝 mid-way 替换）。
+                var deltaUsable = !isSnapshot && (emptyDelta || from == cursor.lastSeq + 1)
+                if deltaUsable, !isSnapshot, !emptyDelta {
+                    let dbRowsProbe = await ChatStore.shared.loadMessages(sessionId: sessionId)
+                    let hasBaseline = dbRowsProbe.contains {
+                        $0.role != .user && $0.id.hasPrefix("bridge-")
+                    }
+                    if !hasBaseline {
+                        logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta hit but DB has no bridge baseline — fallback full")
+                        deltaUsable = false
+                    }
+                }
+                if isSnapshot {
+                    logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta → snapshot (cursor beyond trim window) — fallback full")
+                } else if !emptyDelta && from != cursor.lastSeq + 1 {
+                    logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta gap from=\(from) expected=\(cursor.lastSeq + 1) — fallback full")
+                } else if deltaUsable {
+                    wireFetch = WireFetch(
+                        wire: delta.wire,
+                        engine: RemoteAgentProvider.historyAgentMessages(from: delta.wire),
+                        bridgeId: delta.bridgeId,
+                        isDelta: true,
+                        deltaToSeq: to,
+                        snapshotFallback: false
+                    )
+                }
+            } else {
+                logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta unavailable — fallback full")
+            }
+        }
+        if wireFetch == nil {
+            let fetched = await AIChatViewModel.fetchRemoteHistoryWithWire(
+                instance: instance,
+                chatSessionID: chatSessionID ?? sessionId
+            )
+            guard let fetched else {
+                logger.warning("[HistorySync] session=\(sessionId.prefix(8)) bridge fetch failed")
+                return RemoteHistorySyncOutcome(changed: false, lastWireType: nil, insertedCount: 0, deletedCount: 0, historyCount: 0)
+            }
+            wireFetch = WireFetch(
+                wire: fetched.wire,
+                engine: fetched.engine,
+                bridgeId: fetched.bridgeId,
+                isDelta: false,
+                deltaToSeq: nil,
+                snapshotFallback: false
+            )
+        }
+        guard let resolvedFetch = wireFetch else {
             return RemoteHistorySyncOutcome(changed: false, lastWireType: nil, insertedCount: 0, deletedCount: 0, historyCount: 0)
         }
-        let wireMessages = fetched.wire
-        let history = fetched.engine
+        let wireMessages = resolvedFetch.wire
+        let history = resolvedFetch.engine
         let lastWireType = wireMessages.last?.type
-        logger.info("[HistorySync] session=\(sessionId.prefix(8)) bridge returned \(history.count) engine messages, lastWireType=\(lastWireType ?? "nil")")
+        logger.info("[HistorySync] session=\(sessionId.prefix(8)) bridge returned \(history.count) engine messages, lastWireType=\(lastWireType ?? "nil") isDelta=\(resolvedFetch.isDelta)")
 
         // [排查 2026-09-10 双份渲染·终版根因] seq 是 per-bridge-session 计数。
         // resume 会换 bridge 会话 → seq 从 1 重计。bridgeId 变化 = 确定性
@@ -141,7 +231,7 @@ final class RemoteHistoryBackfill {
         // 首次同步（无存储值）视为同空间，不触发换血。
         let bridgeIdKey = "RemoteSyncBridgeId.v1.\(sessionId)"
         let storedBridgeId = UserDefaults.standard.string(forKey: bridgeIdKey)
-        let currentBridgeId = fetched.bridgeId
+        let currentBridgeId = resolvedFetch.bridgeId
         let bridgeSessionSwitched: Bool
         if let stored = storedBridgeId, let current = currentBridgeId {
             bridgeSessionSwitched = stored != current
@@ -208,19 +298,32 @@ final class RemoteHistoryBackfill {
         logger.info("[HistorySync] session=\(sessionId.prefix(8)) done in \(String(format: "%.0f", elapsedMs))ms history=\(historyRaws.count) changed=\(changed)")
 
         // === 6. 游标写入（Phase 1：只写不读，零行为变化） ===
-        // 落库成功（replaceRemoteHistory 返回即事务已 COMMIT）后才写 cursor。
-        // lastSeq 取本次 wire 序列的最大 historySeq（含 nonEngine 行——游标
-        // 语义是"全部 wire 消息"，不只是 engine 行）。wire 无任何 seq（空
-        // history / 全为 past raw）→ 不写（cursor 语义需要至少一个锚点）。
-        // bridgeId 缺失 → 不写（无 seq 空间锚点的游标无意义）。
+        // 落库成功（replaceRemoteHistory 返回返回即事务已 COMMIT）后才写 cursor。
+        // delta 命中：lastSeq = 终态信封 toSeq（bridge 端 historyRevision，
+        // 比本地 max(wireSeqs) 权威——本地只见了 seq>cursor.lastSeq 的增量）。
+        // 全量路径：lastSeq = 本次 wire 序列的最大 historySeq（含 nonEngine
+        // 行——游标语义是"全部 wire 消息"，不只是 engine 行）。wire 无任何
+        // seq（空 history / 全为 past raw）→ 不写（cursor 语义需要至少一个
+        // 锚点）。bridgeId 缺失 → 不写（无 seq 空间锚点的游标无意义）。
+        // [Phase 2 附加守卫] delta 命中但本次非 user 行全灭（极端：bridge 端
+        // 也没有任何 engine 行）→ DB 里 bridge 行存疑，宁可作废 cursor 下次
+        // 全量重锚。
         var writtenCursor: RemoteHistoryCursor?
-        if let currentBridgeId = fetched.bridgeId {
-            let wireSeqs = wireMessages.compactMap { $0.historySeq }
-            if let maxSeq = wireSeqs.max() {
-                let cursor = RemoteHistoryCursor(bridgeId: currentBridgeId, lastSeq: maxSeq)
+        if let currentBridgeId = resolvedFetch.bridgeId {
+            let lastSeq: Int?
+            if resolvedFetch.isDelta, let toSeq = resolvedFetch.deltaToSeq {
+                lastSeq = toSeq
+            } else {
+                lastSeq = wireMessages.compactMap { $0.historySeq }.max()
+            }
+            if let lastSeq, !(resolvedFetch.isDelta && historyRaws.isEmpty) {
+                let cursor = RemoteHistoryCursor(bridgeId: currentBridgeId, lastSeq: lastSeq)
                 RemoteHistoryCursorStore.write(cursor, sessionId: sessionId)
                 writtenCursor = cursor
-                logger.info("[HistorySync] session=\(sessionId.prefix(8)) cursor written bridge=\(currentBridgeId.prefix(8)) lastSeq=\(maxSeq)")
+                logger.info("[HistorySync] session=\(sessionId.prefix(8)) cursor written bridge=\(currentBridgeId.prefix(8)) lastSeq=\(lastSeq) isDelta=\(resolvedFetch.isDelta)")
+            } else {
+                RemoteHistoryCursorStore.clear(sessionId: sessionId)
+                logger.info("[HistorySync] session=\(sessionId.prefix(8)) cursor cleared (no seq anchor or empty delta)")
             }
         }
         return RemoteHistorySyncOutcome(

@@ -173,6 +173,9 @@ final class CCPocketClient: @unchecked Sendable {
     /// Collected history messages (history + past_history merged).
     private var historyMessages: [CCPocketProtocol.ServerMessage] = []
     private var historyWaiter: CheckedContinuation<[CCPocketProtocol.ServerMessage], Never>?
+    /// [增量恢复 v1.14.23] get_history_delta 专用 waiter（单飞：同一时刻
+    /// 最多一个 delta 请求在途，与全量 historyWaiter 互不干扰）。
+    private var deltaWaiter: CheckedContinuation<[CCPocketProtocol.ServerMessage], Never>?
 
     /// [Session sync] Pending continuation for a `recent_sessions` reply
     /// (mirror of the history waiter — request/response, never broadcast).
@@ -635,6 +638,54 @@ final class CCPocketClient: @unchecked Sendable {
         return unique
     }
 
+    /// [增量恢复 v1.14.23 Phase 2] Request an incremental history delta for
+    /// the Bridge session (official `get_history_delta`, websocket.ts:5054).
+    /// Returns ALL reply envelopes (past_history 附带 + delta/snapshot 终态)
+    /// — caller 检查终态 type 与 fromSeq/toSeq 连续性，任何不满足即弃走全量。
+    ///
+    /// wire 契约（Phase 0 勘察，官方源码逐行确认）：
+    /// - 请求：{type:"get_history_delta", sessionId, sinceSeq}（无 requestId，
+    ///   靠 deltaWaiter 单飞配对——同一时刻最多一个 delta 在途）
+    /// - Claude 分支响应：disk past 非空时先发一条 past_history（不受
+    ///   sinceSeq 控制，幂等无害），随后发 history_delta 或 history_snapshot
+    ///   （messages = HistoryEntry[{seq,message}]，message 已注入 historySeq）
+    /// - session 不存在 → error（"Session not found"）→ caller fallback 全量
+    /// - bridge 版本过旧不支持 → error（unsupported_message）→ 同上
+    /// - delta 响应附带 status（session 运行态），caller 可用于 turn-in-progress
+    func requestHistoryDelta(bridgeId: String, sinceSeq: Int, timeout: TimeInterval = 10) async -> [CCPocketProtocol.ServerMessage]? {
+        guard state == .connected else {
+            logger.info("[CCPocket] history delta: not connected, skip")
+            return nil
+        }
+        guard let payload = try? CCPocketProtocol.encode(CCPocketProtocol.GetHistoryDeltaRequest(sessionId: bridgeId, sinceSeq: sinceSeq)) else { return nil }
+        do {
+            try await send(payload, allowsReconnect: false)
+        } catch {
+            logger.warning("[CCPocket] history delta: send failed \(error.localizedDescription)")
+            return nil
+        }
+        historyMessages = []
+        let result: [CCPocketProtocol.ServerMessage] = await withCheckedContinuation { c in
+            deltaWaiter = c
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(timeout))
+                guard let self else { return }
+                if let w = self.deltaWaiter {
+                    self.deltaWaiter = nil
+                    w.resume(returning: self.historyMessages)
+                }
+            }
+        }
+        historyMessages = []
+        if result.isEmpty {
+            logger.warning("[CCPocket] history delta: timeout after \(timeout)s")
+            return nil
+        }
+        let kinds = result.map { $0.type ?? "?" }.joined(separator: ",")
+        logger.info("[CCPocket] history delta: \(result.count) envelopes (\(kinds))")
+        return result
+    }
+
     func ensureConnected() {
         guard state != .connected, state != .connecting else { return }
         guard reconnectTask == nil else { return }
@@ -811,6 +862,26 @@ final class CCPocketClient: @unchecked Sendable {
         // Resume-once contract: only `history` (new bridge, LAST) and
         // `history_snapshot` (old Codex bridge, SOLE) resume.  past_history
         // and history_delta accumulate into historyMessages.
+        // [增量恢复 v1.14.23 Phase 2] get_history_delta 的响应走独立
+        // deltaWaiter（单飞）：history_delta / history_snapshot（bridge
+        // Claude 分支与 Codex 同款信封，websocket.ts:5059-5070）resume
+        // waiter，past_history 附带累积（Claude 会话有磁盘历史时 bridge
+        // 先发一条全量 past_history，websocket.ts:5050——iOS 忽略其内容
+        // 但不能让它掉进 historyMessages 污染下一次全量请求）。
+        if deltaWaiter != nil {
+            if message.type == "history_delta" || message.type == "history_snapshot" {
+                if let w = deltaWaiter {
+                    deltaWaiter = nil
+                    w.resume(returning: historyMessages + [message])
+                }
+                historyMessages = []
+                return
+            }
+            if message.type == "past_history" {
+                historyMessages.append(message)
+                return
+            }
+        }
         if message.type == "history" || message.type == "history_snapshot" {
             if let w = historyWaiter {
                 historyWaiter = nil

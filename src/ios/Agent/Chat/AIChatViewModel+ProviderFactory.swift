@@ -168,6 +168,99 @@ extension AIChatViewModel {
         await fetchRemoteHistoryWithWire(instance: instance, chatSessionID: chatSessionID, allowLegacyMappingFallback: allowLegacyMappingFallback)?.engine
     }
 
+    /// [增量恢复 v1.14.23 Phase 2] Incremental delta fetch — 官方
+    /// `get_history_delta`（websocket.ts:5054，Claude/Codex 同款信封）。
+    /// 用 cursor 里的 bridgeId+lastSeq 直接请求，**不做全量预探测**：
+    /// bridgeId 失效（bridge 重启/evict）→ error → caller fallback 全量，
+    /// 代价 = 一次无效 delta 请求（<100ms），不劣于现状。
+    ///
+    /// 连接获取段与 `fetchRemoteHistoryWithWire` 逐字一致（existing 优先 /
+    /// fresh 一次性）——不抽 helper 的原因：不碰已稳定的全量路径，
+    /// Phase 3 验证后如需统一再合并。
+    ///
+    /// 返回 nil = delta 不可用（连接失败/超时/error 响应/终态缺失），
+    /// caller 必须 fallback 全量。非 nil = caller 仍需校验 fromSeq 连续性。
+    struct DeltaFetchResult {
+        /// flat 后的 wire 序列（delta entries 的 message 依 seq 序展开；
+        /// 空 delta = 空数组）
+        let wire: [CCPocketProtocol.ServerMessage]
+        /// 终态信封本体（type==history_delta / history_snapshot，读
+        /// fromSeq/toSeq/status/reason）
+        let envelope: CCPocketProtocol.ServerMessage
+        /// 本次请求使用的 bridge 会话 id（= cursor.bridgeId）
+        let bridgeId: String
+    }
+
+    static func fetchDeltaWithWire(
+        instance: ProviderInstance,
+        chatSessionID: String?,
+        cursor: RemoteHistoryCursor
+    ) async -> DeltaFetchResult? {
+        guard let urlString = instance.effectiveCustomBaseURL,
+              let baseURL = URL(string: urlString) else {
+            logger.error("[HistoryDelta] no wss URL for instance \(instance.id)")
+            return nil
+        }
+        let token = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+        let connection = RemoteAgentConnection.load(instanceID: instance.id)
+        let projectPath = connection?.projectPath ?? ""
+        // 连接获取：与 fetchRemoteHistoryWithWire 同款（existing 优先）。
+        let client: CCPocketClient
+        if let chatSessionID,
+           let existing = RemoteAgentStore.shared.existingClient(instanceID: instance.id, chatSessionID: chatSessionID),
+           existing.state == .connected {
+            client = existing
+        } else {
+            let fresh = CCPocketClient(baseURL: baseURL, token: token)
+            fresh.mappingInstanceID = instance.id
+            do {
+                try await fresh.connect(
+                    projectPath: projectPath,
+                    provider: connection?.provider ?? "claude",
+                    permissionMode: connection?.permissionMode ?? "bypassPermissions"
+                )
+            } catch {
+                logger.warning("[HistoryDelta] connect failed: \(error.localizedDescription)")
+                return nil
+            }
+            client = fresh
+        }
+        // delta 直接打 cursor 里的 bridgeId——无需 claudeId 解析。
+        guard let replies = await client.requestHistoryDelta(
+            bridgeId: cursor.bridgeId,
+            sinceSeq: cursor.lastSeq
+        ) else {
+            return nil
+        }
+        // 分离附带 past_history（忽略其内容——past-{index} 行幂等已在 DB）
+        // 与终态信封（history_delta / history_snapshot）。
+        var terminal: CCPocketProtocol.ServerMessage?
+        for reply in replies {
+            switch reply.type {
+            case "history_delta", "history_snapshot":
+                terminal = reply
+            case "error":
+                logger.warning("[HistoryDelta] bridge error: \(reply.error ?? reply.message.map { "\($0)" } ?? "unknown")")
+                return nil
+            default:
+                break // past_history / status 附带，忽略
+            }
+        }
+        guard let envelope = terminal else {
+            logger.warning("[HistoryDelta] no terminal envelope in reply")
+            return nil
+        }
+        // entries → flat wire 序列（message 已注入 historySeq，seq 序展开）。
+        var flat: [CCPocketProtocol.ServerMessage] = []
+        if let entries = envelope.deltaEntries {
+            for entry in entries {
+                if let m = entry.message { flat.append(m) }
+            }
+        }
+        logger.info("[HistoryDelta] bridge=\(cursor.bridgeId.prefix(8)) kind=\(envelope.type ?? "?") from=\(envelope.fromSeq ?? -1) to=\(envelope.toSeq ?? -1) flat=\(flat.count)")
+        return DeltaFetchResult(wire: flat, envelope: envelope, bridgeId: cursor.bridgeId)
+    }
+
     /// Wire-level variant of `fetchRemoteHistory` — also returns the raw
     /// `ServerMessage` sequence so the sync pipeline can read the trailing
     /// wire type (turn-in-progress detection for the restore-state send/stop

@@ -164,6 +164,16 @@ enum CCPocketProtocol {
         var sessionId: String
     }
 
+    /// [增量恢复 v1.14.23] `get_history_delta` 请求（官方 websocket.ts:5054
+    /// Claude/Codex 同款）。sinceSeq 语义见 bridge session.ts:774
+    /// getHistorySince：返回 seq > sinceSeq 的增量；cursor 落后 trim 窗口
+    /// → kind=snapshot；cursor 恰好= 全部 → 空 delta。
+    struct GetHistoryDeltaRequest: Encodable {
+        let type = "get_history_delta"
+        var sessionId: String
+        var sinceSeq: Int
+    }
+
     // MARK: - File Peek (text/image/media) — ccpocket file_peek protocol
     //
     // 桥端三段式 RPC:list_files 拿文件列表 + read_file 读文本/小图 +
@@ -456,6 +466,27 @@ enum CCPocketProtocol {
             pastMessages = try c.decodeIfPresent([ServerMessage].self, forKey: .pastMessages)
             rawRole = try c.decodeIfPresent(String.self, forKey: .rawRole)
 
+            // [增量恢复 v1.14.23] `messages` key 多态分流（第二处多态，与
+            // content 分流同模式）：get_history_delta / history_snapshot 的
+            // Claude 分支信封 messages = HistoryEntry[]（[{seq,message}]），
+            // 全量 get_history 是 flat [ServerMessage]。⚠️ 不能用"先试 flat
+            // 失败再试 entries"——ServerMessage 字段全 optional，entry 形态
+            // 的 {"seq":2,"message":{...}} 会被**静默解码成全 nil 空壳**
+            // （seq 丢弃、message 撞 MessagePayload?→unknown）而非抛
+            // typeMismatch，try? 不触发 → delta 消息全丢。正确做法：先用
+            // [JSONValue] 探测原始形态（首元素含 seq+message 键 = entry
+            // 形态），再按已知形态解码。
+            if let rawShape = try? c.decodeIfPresent([JSONValue].self, forKey: .messages),
+               !rawShape.isEmpty,
+               case .object(let first) = rawShape[0],
+               first["seq"] != nil, first["message"] != nil {
+                messages = nil
+                deltaEntries = try? c.decodeIfPresent([HistoryEntry].self, forKey: .messages)
+            } else {
+                messages = try? c.decodeIfPresent([ServerMessage].self, forKey: .messages)
+                deltaEntries = nil
+            }
+
             // [C-5.5] wire `content` 多态分流：字符串 = tool_result 工具输出
             // （既有语义），数组 = past_history 磁盘 raw 消息的内容块。
             // 直接对 .content 解码 [AssistantContentBlock] 会在 tool_result
@@ -520,6 +551,13 @@ enum CCPocketProtocol {
         // auto-fill Project Path with the first allowed directory (multi-user
         // principle: never hardcode a default like /home/ubuntu).
         let allowedDirs: [String]?
+        // [增量恢复 v1.14.23 Phase 2] get_history_delta / history_snapshot
+        // （Claude 分支）的 messages 字段是 HistoryEntry[]（[{seq,message}]，
+        // websocket.ts:5062），与全量 get_history 的 flat [ServerMessage]
+        // 同名不同形——手写 init(from:) 对 .messages key 先试 flat 再试
+        // entries 形态，命中后者落到本字段。Codex 老桥的 history_snapshot
+        // 是 flat 形态（走 messages 字段），两者互斥不冲突。
+        let deltaEntries: [HistoryEntry]?
     }
 
     /// One seq-tagged entry of a `history_snapshot` / `history_delta`

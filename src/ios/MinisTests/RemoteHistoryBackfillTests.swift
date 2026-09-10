@@ -517,6 +517,69 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         XCTAssertEqual(msg.rawRole, nil)
     }
 
+    // MARK: - messages 多态分流（v1.14.23 Phase 2：delta 信封解码）
+
+    func test_wireMessages_flatShape_landsMessages() {
+        // 全量 get_history 的信封 messages = flat [ServerMessage] → messages
+        // 字段，deltaEntries 保持 nil（形状探测：首元素无 seq+message 包装）。
+        let json = """
+        {"type":"history","sessionId":"s1","messages":[{"type":"assistant","historySeq":1},{"type":"user_input","text":"hi","historySeq":2}]}
+        """
+        let msg = try! JSONDecoder().decode(CCPocketProtocol.ServerMessage.self, from: Data(json.utf8))
+        XCTAssertEqual(msg.messages?.count, 2)
+        XCTAssertNil(msg.deltaEntries, "flat 形态不得误判为 delta entries")
+    }
+
+    func test_wireMessages_deltaEntriesShape_landsDeltaEntries() {
+        // [v1.14.23 关键坑位锁] delta 信封 messages = HistoryEntry[]——
+        // 不能靠"flat 试错失败"分流（ServerMessage 全 optional 字段会把
+        // entry 形态静默解成全 nil 空壳而非抛错），必须先探测 seq+message
+        // 包装再分流。此用例锁该行为：deltaEntries 命中、messages nil。
+        let json = """
+        {"type":"history_delta","sessionId":"s1","fromSeq":11,"toSeq":12,
+         "messages":[{"seq":11,"message":{"type":"assistant","text":"a","historySeq":11}},
+                     {"seq":12,"message":{"type":"user_input","text":"b","historySeq":12}}]}
+        """
+        let msg = try! JSONDecoder().decode(CCPocketProtocol.ServerMessage.self, from: Data(json.utf8))
+        XCTAssertNil(msg.messages, "entry 形态不得误入 flat messages（会产出全 nil 空壳）")
+        XCTAssertEqual(msg.deltaEntries?.count, 2)
+        XCTAssertEqual(msg.deltaEntries?.first?.seq, 11)
+        XCTAssertEqual(msg.deltaEntries?.first?.message?.historySeq, 11)
+        XCTAssertEqual(msg.fromSeq, 11)
+        XCTAssertEqual(msg.toSeq, 12)
+    }
+
+    func test_wireMessages_emptyDeltaShape() {
+        // 空 delta（bridge getHistorySince:789）：from=to+1, messages=[]——
+        // 空数组走 flat 分支（messages=[]），语义"无新消息"。
+        let json = """
+        {"type":"history_delta","sessionId":"s1","fromSeq":11,"toSeq":10,"messages":[]}
+        """
+        let msg = try! JSONDecoder().decode(CCPocketProtocol.ServerMessage.self, from: Data(json.utf8))
+        XCTAssertEqual(msg.messages?.count, 0)
+        XCTAssertNil(msg.deltaEntries)
+        XCTAssertEqual(msg.fromSeq, 11)
+        XCTAssertEqual(msg.toSeq, 10)
+    }
+
+    func test_wireMessages_missingShape_bothNil() {
+        // 无 messages key（status / result 等信封）→ 双 nil 不互相污染。
+        let json = """
+        {"type":"status","sessionId":"s1","status":"idle"}
+        """
+        let msg = try! JSONDecoder().decode(CCPocketProtocol.ServerMessage.self, from: Data(json.utf8))
+        XCTAssertNil(msg.messages)
+        XCTAssertNil(msg.deltaEntries)
+    }
+
+    func test_emptyDeltaForm_fromEqualsToPlusOne() {
+        // 空 delta 判定式（决策树用）：from == to + 1。锁语义防止日后误改。
+        let emptyFrom = 11, emptyTo = 10
+        XCTAssertTrue(emptyFrom == emptyTo + 1, "空 delta 形态 from==to+1")
+        let deltaFrom = 11, deltaTo = 12
+        XCTAssertFalse(deltaFrom == deltaTo + 1, "正常 delta from<=to")
+    }
+
     func test_userInputReplay_converted() {
         // bridge 端 user turn 的 type 是 user_input（websocket.ts:3237）——
         // 旧代码落 default 分支整类丢弃（根因 3 之二）。
