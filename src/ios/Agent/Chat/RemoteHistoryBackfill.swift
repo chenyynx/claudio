@@ -12,11 +12,14 @@
 
 import Foundation
 
-/// 增量恢复开关（v1.14.23 Phase 2 合入默认 off：编译+单测验证期，
-/// 线上行为与 v1.14.22 完全一致）。pp 真机验证清单通过后切 true。
+/// 增量恢复开关（v1.14.23 Phase 2 合入；2026-09-11 pp 拍板切 true —
+/// 恢复提速路径正式启用：cursor 有效且 bridgeId 匹配时只拉增量（delta），
+/// 任何失败形态（连接/超时/error/终态缺失/snapshot/gap/基线缺失）→
+/// fallback 全量 = v1.14.22 已验证路径，不劣于现状）。
+/// 首次运行无 cursor → 自然走全量重锚，第二次起才进 delta（灰度余量）。
 /// 回滚 = 把此值改回 false（cursor 残留无害，读取侧全跳过）。
 enum RemoteHistorySyncConfig {
-    static let useDelta = false
+    static let useDelta = true
 }
 
 /// 校准结果（供 UI 层决策）。
