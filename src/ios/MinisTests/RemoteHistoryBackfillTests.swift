@@ -448,6 +448,36 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         XCTAssertEqual(agent?.rawMessageId(), "bridge-7")
     }
 
+    func test_deltaPartialHistory_oldRowsKeptNewEntriesAppended() {
+        // [审查 2026-09-11] delta 路径语义锁定：historyRaws 只含
+        // new-since-cursor 条目（全量 = 老条目 + 新条目）。planReplace 对
+        // 集合外的老行必须零触碰（只增不删）；新条目沿用集合语义——live
+        // UUID assistant 行删除并插 bridge 行、与本地同文本的 user 回放行
+        // 不插（本地行顶替其 unified 序位置）。老行不在 unified 序内，
+        // replaceRemoteHistory 按既有 sortOrder 排前 → 最终 = 老序 + delta
+        // 序（renumber 无条件执行保证该不变量每次同步后成立）。
+        let deltaHistory = [
+            makeHistoryRaw(id: "bridge-6", role: .assistant),
+            makeHistoryRaw(id: "bridge-7", role: .user),  // user_input 回放行
+        ]
+        var liveUser = makeDBRow(id: "UUID-USER", role: .user, sortOrder: 4)
+        liveUser.parts = [.text("content-bridge-7")]  // 与回放行同文本 → 防双份命中
+        let db = [
+            makeDBRow(id: "bridge-1", role: .user, sortOrder: 1),
+            makeDBRow(id: "bridge-2", role: .assistant, sortOrder: 2),
+            makeDBRow(id: "bridge-3", role: .assistant, sortOrder: 3),
+            liveUser,
+            makeDBRow(id: "UUID-ASSIST", role: .assistant, sortOrder: 5),  // live 新轮 → 删
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(historyRaws: deltaHistory, dbRows: db)
+        XCTAssertEqual(plan.deleteIds, ["UUID-ASSIST"],
+                       "delta 范围外老行（bridge-1/2/3）零触碰；live UUID 非 user 行照删")
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-6"],
+                       "user 回放行被本地同文本行顶替不插；assistant 新条目插入")
+        XCTAssertEqual(plan.unifiedFinalOrderIds, ["bridge-6", "UUID-USER"],
+                       "unified 序 = delta 序（本地行顶替其位置），老行由 renumber retained 段承接")
+    }
+
     // MARK: - wire `content` 多态分流（v1.14.19 手写 init(from:)）
 
     // MARK: - 游标（v1.14.23 Phase 1：只写不读）
@@ -608,5 +638,72 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         XCTAssertEqual(agent?.bridgeSeq, 9)
         XCTAssertEqual(agent?.parts.count, 2, "text + tool_use；thinking 进 reasoningContent")
         XCTAssertNotNil(agent?.reasoningContent)
+    }
+
+    // MARK: - [Fix 2026-09-11] disk past 内容完整性（tool_result/thinking）
+
+    func test_pastToolResultRawShape_converted() {
+        // bridge disk past 的 tool_result 重塑形态：splitPastHistoryMessages
+        // 发 {role:"tool_result", toolUseId, content(string)}（无 type 字段，
+        // websocket.ts:1909）——此前落 default 且 rawContentBlocks 为 nil
+        // （content 是字符串）→ return nil 整行丢弃。实测 resume 后磁盘 623
+        // 个工具结果 0 到达客户端（工具卡片点开无内容根因）。
+        let json = """
+        {"role":"tool_result","toolUseId":"toolu-9","content":"ran ok"}
+        """
+        let msg = try! JSONDecoder().decode(CCPocketProtocol.ServerMessage.self, from: Data(json.utf8))
+        let agent = RemoteAgentProvider.agentMessage(fromServer: msg)
+        XCTAssertNotNil(agent, "disk past 的 tool_result 必须被转换，不得丢弃")
+        XCTAssertEqual(agent?.role, .user)
+        guard case .toolResult(let id, _, let content, let isError, _, _, _, _)? = agent?.parts.first else {
+            return XCTFail("应转换为 .toolResult part")
+        }
+        XCTAssertEqual(id, "toolu-9")
+        XCTAssertEqual(content, "ran ok")
+        XCTAssertFalse(isError)
+        // past-{index} 稳定 id（historyAgentMessages 统一分配）
+        let engine = RemoteAgentProvider.historyAgentMessages(from: [msg])
+        XCTAssertEqual(engine.count, 1)
+        XCTAssertEqual(engine[0].dbMessageId, "past-0")
+    }
+
+    func test_pastRawThinking_converted() {
+        // disk past 的 assistant 条目带 thinking 块（bridge 补全解析后）——
+        // rawContentBlocks 路径必须提 reasoningContent，否则 resume 后
+        // 思考块丢失（另一半根因）。
+        let json = """
+        {"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"answer"}]}
+        """
+        let msg = try! JSONDecoder().decode(CCPocketProtocol.ServerMessage.self, from: Data(json.utf8))
+        let agent = RemoteAgentProvider.agentMessage(fromServer: msg)
+        XCTAssertEqual(agent?.reasoningContent, "hmm")
+        XCTAssertEqual(agent?.parts.count, 1)
+    }
+
+    func test_evictPastRows_migrationClearsOldPastRows() {
+        // past id 空间迁移：bridge 补全 disk 解析后 past-{index} 序列重排，
+        // 旧残缺行与新序列同 id——evictPastRows=true 必须清旧行（含 user
+        // role 的 past 行）并按新序列重插；owner 池排除待删行，旧同文本
+        // user 行不得冒充 owner（否则旧行删了、新行被顶替 = 净丢）。
+        var oldPastUser = makeDBRow(id: "past-0", role: .user, sortOrder: 1)
+        oldPastUser.parts = [.text("content-past-0")]  // 与新序列 past-0 同文本
+        let db = [
+            oldPastUser,
+            makeDBRow(id: "past-1", role: .assistant, sortOrder: 2),
+            makeDBRow(id: "bridge-9", role: .assistant, sortOrder: 3),
+        ]
+        let newHistory = [
+            makeHistoryRaw(id: "past-0", role: .user),      // 新序列同 id 同文本
+            makeHistoryRaw(id: "past-1", role: .assistant),
+            makeHistoryRaw(id: "past-2", role: .assistant), // 补全后被截断的行
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: newHistory, dbRows: db, evictPastRows: true
+        )
+        XCTAssertEqual(Set(plan.deleteIds), ["past-0", "past-1"], "迁移模式清全部旧 past 行")
+        XCTAssertFalse(plan.deleteIds.contains("bridge-9"), "bridge 行不受迁移影响")
+        XCTAssertEqual(plan.inserts.map { $0.id }, ["past-0", "past-1", "past-2"],
+                       "新序列同 id 重插（先删后插同事务），旧 user 行不冒充 owner")
+        XCTAssertEqual(plan.unifiedFinalOrderIds, ["past-0", "past-1", "past-2"])
     }
 }

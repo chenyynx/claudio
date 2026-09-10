@@ -64,7 +64,13 @@ enum RemoteHistorySyncCore {
     ///     错绑残留（live 曾把 result 的 seq 错注入 assistant 行）→ 删。
     ///     仅此集合内的 bridge 行可删——trim 窗口外的老行（seq 不在本次
     ///     history）依旧只增不删（R1 规则）。
-    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage], nonEngineSeqs: Set<Int> = [], forceFullReshuffle: Bool = false) -> RemoteHistoryReplacePlan {
+    ///   - evictPastRows: [Fix 2026-09-11] past id 空间迁移模式。bridge 端
+    ///     disk 解析补全 tool_result/thinking 后，past-{index} 序列重排
+    ///     （同一会话 index 全变），旧残缺序列的 past 行与新序列同 id 不同
+    ///     内容——id 命中 keep 会保留旧残缺行（修复失效）。CLIENT 在检测到
+    ///     迁移未完成 + 全量 fetch 成功时传 true：本次全部 past 行进
+    ///     deleteIds，同事务按新序列重插。日常路径恒 false（past 行只增不删）。
+    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage], nonEngineSeqs: Set<Int> = [], forceFullReshuffle: Bool = false, evictPastRows: Bool = false) -> RemoteHistoryReplacePlan {
         let dbIds = Set(dbRows.map { $0.id })
 
         // 删除③（seq 空间重置检测，优先级最高）：bridge-{seq} 的 seq 是
@@ -109,13 +115,17 @@ enum RemoteHistorySyncCore {
         // history 集里，删了就是永久吞消息（R1 审查实锤）。
         let deleteIds = dbRows
             .filter { row in
+                // [Fix 2026-09-11] past id 空间迁移（见参数注释）：迁移模式
+                // 下 past 行全清（user role 的 past 行同样清——它们会被新
+                // 序列同事务重插；命中本地 owner 则不插由 unified 序承接）。
+                // 检查须先于 user 保留规则。
+                if row.id.hasPrefix("past-") { return evictPastRows }
                 guard row.role != .user else { return false }
                 // [对抗审查 R4 追加] past-{index} 行是磁盘历史回放（claude
                 // 会话 append-only，序列跨 bridge 会话稳定）——seq 空间重置
                 // 换血的靶子是旧 bridge 空间的 bridge-{seq}/UUID 行，past 行
                 // 不属于任何 seq 空间，换血时必须保留（删了不回插：dbIds
                 // 快照命中插入跳过 → 净删 = 磁盘历史丢失）。
-                if row.id.hasPrefix("past-") { return false }
                 if seqSpaceReset { return true }
                 if !row.id.hasPrefix("bridge-") { return true }
                 guard let seq = bridgeSeq(row.id) else { return false }
@@ -129,6 +139,11 @@ enum RemoteHistorySyncCore {
         // 行被删、新空间 bridge-1 行（同 id 不同内容）若按删除前 dbIds 判定
         // 会被跳过 → 换血后内容丢失（test_seqSpaceReset 的期望与之矛盾，
         // 测试步骤挂起从未执行所以一直没暴露）。keptIds = dbIds − deleteIds。
+        // [Fix 2026-09-11] deleteIdSet 提前定义：防双份 owner 池必须排除
+        // 本轮将删除的行——past 迁移模式下 past user 行会进 deleteIds，若
+        // 仍进池会把新序列的同文本行顶替成"旧行 id"（旧行已删 + 新行不插
+        // = 用户消息净丢）。
+        let deleteIdSet = Set(deleteIds)
         // [排查 2026-09-10] user 行防双份（live UUID 行与回放 bridge-{seq}
         // 行并存 = 同一消息渲染两次 + UUID 行按旧 sort_order 进保留区错位）。
         // 换血方向选"保本地删回放"——本地行带 mediaRef/解析产物。两类键：
@@ -140,7 +155,7 @@ enum RemoteHistorySyncCore {
         // 用本地行替换该 history 位置，user 行才不会在 renumber 时被甩到最前）
         var liveToolResultOwner: [String: String] = [:]
         var liveUserTextOwner: [String: String] = [:]
-        for row in dbRows where row.role == .user {
+        for row in dbRows where row.role == .user && !deleteIdSet.contains(row.id) {
             switch row.parts.first {
             case .toolResult(let tr):
                 if liveToolResultIds.insert(tr.toolUseId).inserted {
@@ -154,7 +169,6 @@ enum RemoteHistorySyncCore {
                 break
             }
         }
-        let deleteIdSet = Set(deleteIds)
         let keptIds = dbIds.subtracting(deleteIdSet)
         var inserts: [RawMessage] = []
         var unifiedFinalOrderIds: [String] = []

@@ -714,6 +714,23 @@ final class RemoteAgentProvider: AgentProvider {
             }
             return userMsg
         default:
+            // [Fix 2026-09-11] bridge disk past 的 tool_result 重塑形态：
+            // splitPastHistoryMessages 发 {role:"tool_result", toolUseId,
+            // content(string)}（无 type 字段）。此前这里直接 return nil →
+            // resume/隔夜恢复时全部工具输出丢失（pp 真机：工具卡片点开
+            // 无内容；实测 623 个 tool_result 在磁盘、0 个到达客户端）。
+            // 转换结果与 in-memory 的 tool_result 分支同形态（role=.user +
+            // .toolResult part），下游防双份/配对逻辑零改动。
+            if m.rawRole == "tool_result" {
+                guard let id = m.toolUseId else { return nil }
+                let out = m.content ?? ""
+                let isError = out.hasPrefix("Tool execution was interrupted")
+                    || out.hasPrefix("Error:")
+                return AgentMessage(
+                    role: .user,
+                    parts: [.toolResult(id: id, name: m.toolName ?? "", content: out, isError: isError)]
+                )
+            }
             // [C-5.5 修复 2026-09-10 会话窗连续] past_history 的磁盘 raw 消息
             // （{role, content}，无 type 字段）——bridge resume 时 SDK 新进程
             // 起来，磁盘 jsonl 以 claudeSessionId 为键跨进程连续；官方 App 的

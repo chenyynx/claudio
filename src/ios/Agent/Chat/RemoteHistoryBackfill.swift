@@ -143,12 +143,30 @@ final class RemoteHistoryBackfill {
             let isDelta: Bool
             /// delta 终态信封的 toSeq（cursor 更新用；全量路径 nil）
             let deltaToSeq: Int?
-            let snapshotFallback: Bool
         }
         var wireFetch: WireFetch?
+        // [审查 2026-09-11 G1] cursor 失效校验（设计文档规则「bridgeId
+        // 变了 → 弃 cursor」的实现，Phase 2 初版漏做）：cursor 的 seq 空间
+        // 必须 == 当前 mapping 的 bridge 会话。反例：resume 换了 bridge
+        // 会话、mapping 已更新而 cursor 还钉在旧会话——若旧会话进程仍活，
+        // delta 会一直「成功」返回旧空间条目（永不 fallback），新会话的
+        // 消息永远同步不进来（比全量路径更差）。mapping 缺失/读不到 →
+        // 保守全量（全量路径自带 bridgeId 切换检测 + cursor 重锚）。
+        var deltaCursor: RemoteHistoryCursor?
         if RemoteHistorySyncConfig.useDelta,
            (RemoteAgentConnection.load(instanceID: instance.id)?.provider ?? "claude") == "claude",
-           let cursor = RemoteHistoryCursorStore.read(sessionId: sessionId) {
+           let stored = RemoteHistoryCursorStore.read(sessionId: sessionId) {
+            let mappingBridgeId = CCPocketClient.persistedBridgeId(
+                instanceID: instance.id,
+                chatSessionID: chatSessionID ?? sessionId
+            )
+            if stored.bridgeId == mappingBridgeId {
+                deltaCursor = stored
+            } else {
+                logger.warning("[HistorySync] session=\(sessionId.prefix(8)) cursor stale bridge=\(stored.bridgeId.prefix(8)) != mapping=\(mappingBridgeId?.prefix(8) ?? "nil") — fallback full")
+            }
+        }
+        if let cursor = deltaCursor {
             logger.info("[HistorySync] session=\(sessionId.prefix(8)) delta attempt bridge=\(cursor.bridgeId.prefix(8)) sinceSeq=\(cursor.lastSeq)")
             if let delta = await AIChatViewModel.fetchDeltaWithWire(
                 instance: instance,
@@ -190,8 +208,7 @@ final class RemoteHistoryBackfill {
                         engine: RemoteAgentProvider.historyAgentMessages(from: delta.wire),
                         bridgeId: delta.bridgeId,
                         isDelta: true,
-                        deltaToSeq: to,
-                        snapshotFallback: false
+                        deltaToSeq: to
                     )
                 }
             } else {
@@ -212,8 +229,7 @@ final class RemoteHistoryBackfill {
                 engine: fetched.engine,
                 bridgeId: fetched.bridgeId,
                 isDelta: false,
-                deltaToSeq: nil,
-                snapshotFallback: false
+                deltaToSeq: nil
             )
         }
         guard let resolvedFetch = wireFetch else {
@@ -268,11 +284,33 @@ final class RemoteHistoryBackfill {
                 return seq
             }
         })
+        // [Fix 2026-09-11] past id 空间迁移 v2（一次性）：bridge 端 disk 解析
+        // 补全 tool_result/thinking 后 past-{index} 序列重排，旧残缺序列与新
+        // 序列同 id 不同内容——id 命中 keep 会保住旧残缺行（修复失效）。
+        // 触发条件（缺一不可）：
+        // · 全量 fetch（delta 不触碰 past）
+        // · 检测到"补全序列"特征（past 行带 toolResult part 或 thinking）——
+        //   bridge 尚未部署补全解析时到达的是残缺序列（与旧行同内容），
+        //   此时迁移无意义且会消耗一次性标记；等补全版到达再切。
+        // · 标记未写（成功后写 2，失败不写、下次重试）。
+        let historyHasEnrichedPast = historyRaws.contains { raw in
+            guard raw.id.hasPrefix("past-") else { return false }
+            if raw.reasoningContent?.isEmpty == false { return true }
+            return raw.parts.contains {
+                if case .toolResult = $0 { return true }
+                return false
+            }
+        }
+        let pastMigrationKey = "RemoteSyncPastIdSpace.v2.\(sessionId)"
+        let needPastMigration = !resolvedFetch.isDelta
+            && historyHasEnrichedPast
+            && UserDefaults.standard.integer(forKey: pastMigrationKey) < 2
         let plan = RemoteHistorySyncCore.planReplace(
             historyRaws: historyRaws,
             dbRows: dbRows,
             nonEngineSeqs: nonEngineSeqs,
-            forceFullReshuffle: bridgeSessionSwitched
+            forceFullReshuffle: bridgeSessionSwitched,
+            evictPastRows: needPastMigration
         )
         // [乱序修复 2 2026-09-10 v1.14.22] replaceRemoteHistory **无条件执行**
         // （含 plan.isEmpty）：它的 renumber 按 plan.unifiedFinalOrderIds 全量
@@ -287,6 +325,10 @@ final class RemoteHistoryBackfill {
             plan: plan,
             finalOrder: historyRaws
         )
+        if needPastMigration {
+            UserDefaults.standard.set(2, forKey: pastMigrationKey)
+            logger.info("[HistorySync] session=\(sessionId.prefix(8)) past id-space migration v2 applied — old past rows evicted and re-seeded")
+        }
         if !plan.inserts.isEmpty || !plan.deleteIds.isEmpty {
             logger.info("[HistorySync] session=\(sessionId.prefix(8)) calibrated: +\(plan.inserts.count) -\(plan.deleteIds.count) kept=\(plan.keptCount)")
         } else {
@@ -311,7 +353,10 @@ final class RemoteHistoryBackfill {
         var writtenCursor: RemoteHistoryCursor?
         if let currentBridgeId = resolvedFetch.bridgeId {
             let lastSeq: Int?
-            if resolvedFetch.isDelta, let toSeq = resolvedFetch.deltaToSeq {
+            // [审查 2026-09-11] toSeq 合法性守卫：协议保证 delta 终态带
+            // toSeq，缺失/负值（-1 哨兵）说明桥端形态异常——不信任，退回
+            // 本地可见 max（delta 条目完整时语义等价）。
+            if resolvedFetch.isDelta, let toSeq = resolvedFetch.deltaToSeq, toSeq >= 0 {
                 lastSeq = toSeq
             } else {
                 lastSeq = wireMessages.compactMap { $0.historySeq }.max()

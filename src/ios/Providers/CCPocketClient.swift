@@ -176,6 +176,13 @@ final class CCPocketClient: @unchecked Sendable {
     /// [增量恢复 v1.14.23] get_history_delta 专用 waiter（单飞：同一时刻
     /// 最多一个 delta 请求在途，与全量 historyWaiter 互不干扰）。
     private var deltaWaiter: CheckedContinuation<[CCPocketProtocol.ServerMessage], Never>?
+    /// [审查 2026-09-11] wire 历史请求（全量/delta 任一）在途闸：入口拒绝
+    /// 第二发。仅查 waiter 挡不住 resolve/resume 窗口（waiter 尚未设置的
+    /// 阶段），所以用函数级标志。并发的第二发会覆写 waiter / 清空共享
+    /// 累加器 → continuation 泄漏 + 跨请求串数据；今天调用方仅
+    /// syncIfNeeded（per-session inFlight 串行 + per-chat client 隔离）
+    /// 不可达，纯防未来新调用方。
+    private var historyFetchInFlight = false
 
     /// [Session sync] Pending continuation for a `recent_sessions` reply
     /// (mirror of the history waiter — request/response, never broadcast).
@@ -555,6 +562,13 @@ final class CCPocketClient: @unchecked Sendable {
     /// order, or nil on timeout / unknown session (caller falls back to the
     /// local cache — offline semantics match the official client).
     func requestHistory(claudeId: String, timeout: TimeInterval = 15) async -> [CCPocketProtocol.ServerMessage]? {
+        // [审查 2026-09-11] 单飞闸（见 historyFetchInFlight 注释）。
+        guard !historyFetchInFlight else {
+            logger.warning("[CCPocket] history: request rejected — another wire fetch in flight")
+            return nil
+        }
+        historyFetchInFlight = true
+        defer { historyFetchInFlight = false }
         // Resolve Bridge session id: mapping first, then session_list.
         var bridgeId = loadMapping(instanceID: mappingInstanceID ?? "", chatSessionID: boundChatSessionID)?.bridgeId
         if bridgeId == nil || bridgeId?.isEmpty == true {
@@ -653,6 +667,14 @@ final class CCPocketClient: @unchecked Sendable {
     /// - bridge 版本过旧不支持 → error（unsupported_message）→ 同上
     /// - delta 响应附带 status（session 运行态），caller 可用于 turn-in-progress
     func requestHistoryDelta(bridgeId: String, sinceSeq: Int, timeout: TimeInterval = 10) async -> [CCPocketProtocol.ServerMessage]? {
+        // [审查 2026-09-11] 单飞闸——与 requestHistory 共用同一标志：
+        // 两函数共享 historyMessages 累加器，互斥必须跨函数生效。
+        guard !historyFetchInFlight else {
+            logger.warning("[CCPocket] history delta: request rejected — another wire fetch in flight")
+            return nil
+        }
+        historyFetchInFlight = true
+        defer { historyFetchInFlight = false }
         guard state == .connected else {
             logger.info("[CCPocket] history delta: not connected, skip")
             return nil
