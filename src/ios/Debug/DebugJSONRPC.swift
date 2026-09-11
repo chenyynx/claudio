@@ -1234,7 +1234,18 @@ final class DebugJSONRPC: @unchecked Sendable {
             query.sortDescriptors = [NSSortDescriptor(key: key, ascending: sortAscending)]
         }
         let zoneID = CKRecordZone.ID(zoneName: zoneName)
-        guard ICloudSharedZoneTransport.isContainerEntitled else {
+        // [Fix 2026-09-11] ICloudSharedZoneTransport 标注 @available(iOS 17.0, *)
+        // 而部署目标 16.0——直接引用类型名在 iOS 16 目标下编译失败（测试门
+        // 重开后首次 CI 编译暴露，7ae1964e 埋）。isContainerEntitled 只读
+        // embedded.mobileprovision、不碰任何 iOS 17 专属 API，运行时任意
+        // 版本都安全；iOS 16 以下视为未授权（这些诊断入口只在 iOS 17+ 有意义）。
+        let cloudEntitled: Bool
+        if #available(iOS 17.0, *) {
+            cloudEntitled = ICloudSharedZoneTransport.isContainerEntitled
+        } else {
+            cloudEntitled = false
+        }
+        guard cloudEntitled else {
             return ["ok": false, "error": "iCloud is not available on this build (missing iCloud container entitlement in the provisioning profile)"]
         }
         let container = CKContainer(identifier: "iCloud.com.claudio.app")
@@ -1291,7 +1302,18 @@ final class DebugJSONRPC: @unchecked Sendable {
     /// (minis-shared / minis-devices / minis-secrets) when migration
     /// counters look suspect.
     private func handleSyncAllZones() async -> Any {
-        guard ICloudSharedZoneTransport.isContainerEntitled else {
+        // [Fix 2026-09-11] ICloudSharedZoneTransport 标注 @available(iOS 17.0, *)
+        // 而部署目标 16.0——直接引用类型名在 iOS 16 目标下编译失败（测试门
+        // 重开后首次 CI 编译暴露，7ae1964e 埋）。isContainerEntitled 只读
+        // embedded.mobileprovision、不碰任何 iOS 17 专属 API，运行时任意
+        // 版本都安全；iOS 16 以下视为未授权（这些诊断入口只在 iOS 17+ 有意义）。
+        let cloudEntitled: Bool
+        if #available(iOS 17.0, *) {
+            cloudEntitled = ICloudSharedZoneTransport.isContainerEntitled
+        } else {
+            cloudEntitled = false
+        }
+        guard cloudEntitled else {
             return ["ok": false, "error": "iCloud is not available on this build (missing iCloud container entitlement in the provisioning profile)"]
         }
         let container = CKContainer(identifier: "iCloud.com.claudio.app")
@@ -1343,7 +1365,18 @@ final class DebugJSONRPC: @unchecked Sendable {
     ///     list. Useful for ad-hoc probes.
     private func handleSyncZoneStats(params: [String: Any]) async -> Any {
         let containerId = "iCloud.com.claudio.app"
-        guard ICloudSharedZoneTransport.isContainerEntitled else {
+        // [Fix 2026-09-11] ICloudSharedZoneTransport 标注 @available(iOS 17.0, *)
+        // 而部署目标 16.0——直接引用类型名在 iOS 16 目标下编译失败（测试门
+        // 重开后首次 CI 编译暴露，7ae1964e 埋）。isContainerEntitled 只读
+        // embedded.mobileprovision、不碰任何 iOS 17 专属 API，运行时任意
+        // 版本都安全；iOS 16 以下视为未授权（这些诊断入口只在 iOS 17+ 有意义）。
+        let cloudEntitled: Bool
+        if #available(iOS 17.0, *) {
+            cloudEntitled = ICloudSharedZoneTransport.isContainerEntitled
+        } else {
+            cloudEntitled = false
+        }
+        guard cloudEntitled else {
             return ["ok": false, "error": "iCloud is not available on this build (missing iCloud container entitlement in the provisioning profile)"]
         }
         let container = CKContainer(identifier: containerId)
