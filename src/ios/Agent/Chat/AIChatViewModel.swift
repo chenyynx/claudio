@@ -187,6 +187,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // 写 remote → 永不触发 → 零开销。
         remoteStateCancellable = remote.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
+        // [AskCard 2026-09-12] 问题卡回传的 entry 解析注入（submit/skip 用）。
+        remote.askEntryResolver = { [weak self] in self?.resolveCurrentEntry() }
 
         // [Fix 2026-09-06] One-shot migration of the old Caches-based
         // attachment dir. Pre-Step-5 chips still reference paths under
@@ -1186,6 +1188,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// vm 观察、挂载结构无条件变化。下方旧 @Published 字段随 S4 逐个退役。
     let remote = RemoteAgentSessionState()
     private var remoteStateCancellable: AnyCancellable?
+    // [AskCard 2026-09-12] 远端问题卡回传需要当前 ModelEntry（client 解析）。
+    // 参数化注入（隔离铁律：RemoteAgentSessionState 不反持 VM）。
+    /// resolveCurrentEntry 的注入点——见 init 接线。
 
     // [隔离架构铁律 2026-09-09] 以下远端成员已整体迁至
     // Agent/Chat/RemoteAgentSessionState.swift（常驻 remote 门面，见上）：
@@ -4721,6 +4726,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 case .readImageTool: return "readImage"
                 case .memoryTool: return "memory"
                 case .info: return "info"
+                case .questionCard: return "askCard"
                 }
             }()
             let statusStr: String = {

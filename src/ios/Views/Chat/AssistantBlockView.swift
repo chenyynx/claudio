@@ -1,6 +1,44 @@
 import SwiftUI
 import Combine
 
+
+
+// MARK: - [AskCard 2026-09-12] AskUserQuestion 流内卡片（v3 设计）
+
+/// [AskCard] 宿主：持翻页 @State（A 分页）。cell 复用安全——page 状态
+/// 丢失只影响翻页位置，答案状态在 block.askStatus（Store 侧）。
+private struct AskCardHost: View {
+    let block: AssistantBlock
+    let onAskSubmit: ((UUID, [String: String]) -> Void)?
+    let onAskSkip: ((UUID) -> Void)?
+    @State private var page = 0
+
+    var body: some View {
+        if let payload = block.askPayload {
+            if block.askStatus.isPending {
+                AskQuestionCardView(
+                    payload: payload,
+                    status: block.askStatus,
+                    page: $page,
+                    onSubmit: { answers in onAskSubmit?(block.id, answers) },
+                    onSkip: { onAskSkip?(block.id) }
+                )
+            } else {
+                AskQuestionSummaryView(payload: payload, status: block.askStatus)
+            }
+        }
+    }
+}
+
+extension AssistantBlockView {
+    var askCardView: some View {
+        AskCardHost(
+            block: block,
+            onAskSubmit: onAskSubmit,
+            onAskSkip: onAskSkip
+        )
+    }
+}
 // MARK: - Assistant Block View (individual block — isolated invalidation)
 
 struct AssistantBlockView: View {
@@ -22,6 +60,10 @@ struct AssistantBlockView: View {
     var filePathSuffixes: Set<String>?
     var browserPool: BrowserTabPool?
     var toolSnapshots: [ToolSnapshotItem] = []
+    /// [AskCard 2026-09-12] 流内问题卡答题回调（nil = 只读渲染——历史回放/
+    /// 其他入口）。submit/skip 由 ChatMessageRow 注入 VM。
+    var onAskSubmit: ((UUID, [String: String]) -> Void)?
+    var onAskSkip: ((UUID) -> Void)?
     @Binding var highlightedBlockId: UUID?
     @Binding var detailBlock: AssistantBlock?
     private var isHighlighted: Bool { highlightedBlockId == block.id }
@@ -71,6 +113,8 @@ struct AssistantBlockView: View {
             ToolCapsuleView(block: block, icon: "brain.head.profile", accentColor: .pink,
                             commandStartTime: commandStartTime, onStop: onStop,
                             toolSnapshots: toolSnapshots, detailBlock: $detailBlock)
+        case .questionCard:
+            askCardView
         case .info:
             let allLines = block.content.components(separatedBy: "\n").filter { !$0.isEmpty }
             // Separate reason lines (⚠️) from the final switched line (✅)

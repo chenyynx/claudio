@@ -117,6 +117,54 @@ final class RemoteAgentSessionState: ObservableObject {
 
     /// 仅当 pendingPermission 还是这条 request 时清空（响应乱序保护，
     /// 语义与迁移前 Task 内 if 判断一致）。
+    // MARK: - [AskCard 2026-09-12] AskUserQuestion 流内卡片回传
+
+    /// 问题卡答案回传：`answer`（toolUseId + result）。成功回调 onDone(true)
+    /// 由调用方置卡 answered。防重由卡侧 askStatus gate（submitAskQuestion）。
+    func answerQuestion(
+        toolUseId: String,
+        result: String,
+        sessionId: String?,
+        onDone: @escaping (Bool) -> Void
+    ) {
+        guard let entry = resolveEntryForAsk() else { onDone(false); return }
+        guard let client = RemoteAgentStore.shared.existingClient(
+            instanceID: entry.providerInstanceId,
+            chatSessionID: sessionId
+        ) else { onDone(false); return }
+        Task {
+            await client.sendPermissionResponse(kind: "answer", id: toolUseId, answer: result)
+            await MainActor.run { onDone(true) }
+        }
+    }
+
+    /// 问题卡跳过：向桥发 interrupt（中断本回合 → SDK abort → pendingPermissions
+    /// deny → 模型收"用户没答"）。用 interrupt 而非 reject——跳过语义 = 结束
+    /// 整个回合（桥侧 abort 监听把 pending deny 掉），与"拒绝这个答案"不同。
+    func skipAskQuestion(
+        toolUseId: String,
+        sessionId: String?,
+        onDone: @escaping () -> Void
+    ) {
+        guard let entry = resolveEntryForAsk() else { onDone(); return }
+        guard let client = RemoteAgentStore.shared.existingClient(
+            instanceID: entry.providerInstanceId,
+            chatSessionID: sessionId
+        ) else { onDone(); return }
+        Task {
+            await client.sendInterrupt()
+            await MainActor.run { onDone() }
+        }
+    }
+
+    private func resolveEntryForAsk() -> ModelEntry? {
+        askEntryResolver?()
+    }
+
+    /// 由 VM 注入的当前模型入口解析器（初始化时一次性设置——见 VM init 接线）。
+    /// 参数化原则：本模块不 import AIChatViewModel（隔离铁律）。
+    var askEntryResolver: (() -> ModelEntry?)?
+
     func clearPermissionIfMatching(id: String) {
         if pendingPermission?.id == id {
             pendingPermission = nil

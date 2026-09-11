@@ -618,6 +618,21 @@ enum CCPocketProtocol {
         case object([String: JSONValue])
         case null
 
+        /// [AskCard 2026-09-12] Recursively unwrap to Foundation `Any`
+        /// (String / Double / Bool / [Any] / [String: Any]). AskUserQuestion
+        /// permission payloads carry nested `questions` arrays that must
+        /// survive the provider hop byte-identically.
+        static func any(from value: JSONValue) -> Any {
+            switch value {
+            case .string(let s): return s
+            case .number(let n): return n
+            case .bool(let b): return b
+            case .array(let a): return a.map { any(from: $0) }
+            case .object(let o): return o.mapValues { any(from: $0) }
+            case .null: return NSNull()
+            }
+        }
+
         init(from decoder: Decoder) throws {
             let c = try decoder.singleValueContainer()
             if let s = try? c.decode(String.self) { self = .string(s); return }

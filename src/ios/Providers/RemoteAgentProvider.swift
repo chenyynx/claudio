@@ -491,12 +491,23 @@ final class RemoteAgentProvider: AgentProvider {
                 logger.warning("[RemoteAgent] permission_request without id/name — ignored")
                 break
             }
-            let args: [String: Any] = (message.input ?? [:]).compactMapValues { value in
-                switch value {
-                case .string(let s): return s
-                case .number(let n): return n
-                case .bool(let b): return b
-                default: return nil
+            let args: [String: Any]
+            if toolName == "AskUserQuestion" {
+                var raw: [String: Any] = [:]
+                if let input = message.input {
+                    for (k, v) in input {
+                        raw[k] = CCPocketProtocol.ServerMessage.JSONValue.any(from: v)
+                    }
+                }
+                args = raw
+            } else {
+                args = (message.input ?? [:]).compactMapValues { value in
+                    switch value {
+                    case .string(let s): return s
+                    case .number(let n): return n
+                    case .bool(let b): return b
+                    default: return nil
+                    }
                 }
             }
             continuation.yield(.permissionRequest(id: toolId, toolName: toolName, input: args))
@@ -703,7 +714,7 @@ final class RemoteAgentProvider: AgentProvider {
                 case "tool_use":
                     guard let id = b.id else { continue }
                     let name = b.name ?? "unknown"
-                    let args = Self.jsonArgs(from: b.input)
+                    let args = Self.jsonArgs(name: b.name, from: b.input)
                     parts.append(.toolUse(id: id, name: name, input: args))
                 default:
                     break
@@ -807,7 +818,7 @@ final class RemoteAgentProvider: AgentProvider {
             case "tool_use":
                 guard let id = b.id else { continue }
                 let name = b.name ?? "unknown"
-                let args = Self.jsonArgs(from: b.input)
+                let args = Self.jsonArgs(name: b.name, from: b.input)
                 parts.append(.toolUse(id: id, name: name, input: args))
             default:
                 break
@@ -854,8 +865,14 @@ final class RemoteAgentProvider: AgentProvider {
     /// Same conversion rules as the live `assistant` case in
     /// `handle(_:continuation:)`: only string / number / bool survive as
     /// tool input args (nested shapes dropped — the live path does the same).
-    private static func jsonArgs(from input: [String: CCPocketProtocol.JSONValue]?) -> [String: Any] {
+    /// [AskCard 2026-09-12] 例外：AskUserQuestion 的 `questions` 嵌套结构必须
+    /// 存活（toolInputArgs 持久化 → 回放 makeToolBlock 重建卡需要 options）。
+    /// 其他工具保持扁平化语义不变（隔离）。
+    private static func jsonArgs(name: String?, from input: [String: CCPocketProtocol.JSONValue]?) -> [String: Any] {
         guard let input else { return [:] }
+        if name == "AskUserQuestion" {
+            return input.mapValues { CCPocketProtocol.ServerMessage.JSONValue.any(from: $0) }
+        }
         return input.compactMapValues { value -> Any? in
             switch value {
             case .string(let s): return s
@@ -864,6 +881,11 @@ final class RemoteAgentProvider: AgentProvider {
             default: return nil
             }
         }
+    }
+
+    /// Legacy signature kept for any call sites not yet migrated.
+    private static func jsonArgs(from input: [String: CCPocketProtocol.JSONValue]?) -> [String: Any] {
+        jsonArgs(name: "", from: input)
     }
 
     /// Open a `.text` content block before the first text delta of a turn.

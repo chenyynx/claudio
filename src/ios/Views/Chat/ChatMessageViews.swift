@@ -183,6 +183,9 @@ struct ChatMessageRow: View {
     var onResume: (() -> Void)?
     var onCompact: (() -> Void)?
     var onCopyScreenshot: (() -> Void)?
+    /// [AskCard 2026-09-12] 流内 AskUserQuestion 卡回调（nil = 只读渲染）。
+    var onAskSubmit: ((UUID, [String: String]) -> Void)?
+    var onAskSkip: ((UUID) -> Void)?
     /// Read this whole reply aloud from the start (clears any in-progress TTS).
     /// Wired from AIChatView (which owns the view model). Disabled while the
     /// message is still streaming to avoid fighting the live streaming TTS.
@@ -255,6 +258,16 @@ struct ChatMessageRow: View {
                 if !block.content.isEmpty { parts.append("[Thinking]\n\(block.content)") }
             case .info:
                 if !block.content.isEmpty { parts.append(block.content) }
+            case .questionCard:
+                // [AskCard 2026-09-12] 导出：问题文本（+已答摘要）
+                var s = "[Question]"
+                if let payload = block.askPayload {
+                    for q in payload.questions { s += "\n\(q.question)" }
+                    if case .answered(let answers) = block.askStatus {
+                        s += " → " + answers.values.joined(separator: ", ")
+                    }
+                }
+                parts.append(s)
             }
         }
         return parts.joined(separator: "\n\n")
@@ -530,6 +543,8 @@ struct ChatMessageRow: View {
                     filePathSuffixes: filePathSuffixes,
                     browserPool: browserPool,
                     toolSnapshots: toolSnapshots,
+                    onAskSubmit: onAskSubmit,
+                    onAskSkip: onAskSkip,
                     highlightedBlockId: $highlightedBlockId,
                     detailBlock: $detailBlock
                 )

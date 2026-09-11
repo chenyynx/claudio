@@ -1177,4 +1177,8 @@ final class CellStateBridgeV2: ObservableObject {
     @Published var usageContentVisible: Bool = false
     /// Compact summary — presented from overlay outside cell tree for animation.
     var onShowCompactSummary: ((String) -> Void)?
+    /// [AskCard 2026-09-12] 流内 AskUserQuestion 卡回调（blockId + answers）。
+    /// 由 VM 侧统一注入（getOrCreateBridge 附近接线）；nil = 只读渲染。
+    var onAskSubmit: ((UUID, [String: String]) -> Void)?
+    var onAskSkip: ((UUID) -> Void)?
 }

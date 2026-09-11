@@ -728,6 +728,8 @@ struct ToolLiveSheet: View {
             return "\(truncateParam(action))"
         case .info:
             return ""
+        case .questionCard:
+            return "ask_user_question"
         }
     }
 
@@ -748,6 +750,7 @@ struct ToolLiveSheet: View {
         case .info: Image(systemName: "arrow.triangle.2.circlepath")
         case .text: Image(systemName: "text.alignleft")
         case .thinking: Image("ThinkingIcon")
+        case .questionCard: Image(systemName: "questionmark.circle")
         }
     }
 
@@ -2074,6 +2077,7 @@ struct ToolLiveSheet: View {
         case .info: return "Minis"
         case .text: return "Minis"
         case .thinking: return "Minis"
+        case .questionCard: return "Minis is asking"
         }
     }
 
@@ -2107,6 +2111,7 @@ struct ToolLiveSheet: View {
         case .info: return .secondary
         case .text: return .primary
         case .thinking: return .blue
+        case .questionCard: return .orange
         }
     }
 
@@ -2476,6 +2481,7 @@ private struct ToolPreviewThumbnail: View {
         case .info: return .secondary
         case .text: return .primary
         case .thinking: return .blue
+        case .questionCard: return .orange
         }
     }
 

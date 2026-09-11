@@ -340,6 +340,7 @@ extension AIChatViewModel {
         case .readImageTool: toolName = "read_image"
         case .memoryTool: toolName = "memory"
         case .info: toolName = "info"
+        case .questionCard: toolName = "ask_user_question"
         }
 
         // [T-ios-tool-title-lost-in-status] Prefer the model-supplied

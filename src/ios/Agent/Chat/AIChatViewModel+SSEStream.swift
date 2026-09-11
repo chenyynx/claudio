@@ -473,10 +473,19 @@ extension AIChatViewModel {
                 }
 
             case .permissionRequest(let id, let toolName, let input):
-                // [M3] Surface the Bridge permission request; the dialog
-                // answers via respondToPermission (approve/reject/always).
-                await MainActor.run {
-                    remote.pendingPermission = RemotePermissionRequest(id: id, toolName: toolName, input: input)
+                // [AskCard 2026-09-12] AskUserQuestion 走流内问题卡（v3 设计，
+                // pp 拍板弹窗退役）：升级当前回合里同 toolUseId 的 tool 卡块为
+                // questionCard 块。其他审批工具保持弹窗路径不变（隔离 gate）。
+                if toolName == "AskUserQuestion" {
+                    await MainActor.run {
+                        attachAskCard(id: id, input: input)
+                    }
+                } else {
+                    // [M3] Surface the Bridge permission request; the dialog
+                    // answers via respondToPermission (approve/reject/always).
+                    await MainActor.run {
+                        remote.pendingPermission = RemotePermissionRequest(id: id, toolName: toolName, input: input)
+                    }
                 }
 
             case .remoteFileAttached(let toolUseId, let file):
@@ -1180,6 +1189,12 @@ extension AIChatViewModel {
                     }
                 }
                 result.stopReason = reason
+                // [AskCard 2026-09-12] 回合结束——本回合所有仍 pending 的
+                // 问题卡置 expired（置灰定格，不可再答；跳过的走 skipped）。
+                // gate：只动 questionCard 块，普通工具块零影响。
+                await MainActor.run {
+                    expirePendingAskCards(msgIdx: msgIdx)
+                }
             }
         }
         // The AsyncThrowingStream may silently terminate (return nil) on Task
@@ -1569,4 +1584,80 @@ extension AIChatViewModel {
         return (command, timeout, delay)
     }
 
+}
+
+
+// MARK: - [AskCard 2026-09-12] AskUserQuestion 流内卡片接线（v3 设计）
+
+extension AIChatViewModel {
+
+    /// permissionRequest(toolName == AskUserQuestion) 到达：把当前回合里同
+    /// toolUseId 的工具块升级成 questionCard（单卡不重复）；块不存在（历史
+    /// 回放竞态）则追加。载荷解码失败（帧形状异常）降级为普通 tool 卡不弹窗。
+    @MainActor
+    func attachAskCard(id: String, input: [String: Any]) {
+        guard let payload = AskWirePayload.decode(toolUseId: id, input: input) else { return }
+        guard let msg = messages.last, msg.role == .assistant else { return }
+        if let idx = msg.blocks.lastIndex(where: { $0.toolUseId == id }) {
+            let blk = msg.blocks[idx]
+            blk.kind = .questionCard
+            blk.askPayload = payload
+            blk.askStatus = .pending
+            blk.toolStatus = .running
+        } else {
+            let blk = AssistantBlock(kind: .questionCard, content: "", toolStatus: .running, toolUseId: id)
+            blk.askPayload = payload
+            blk.askStatus = .pending
+            msg.blocks.append(blk)
+        }
+    }
+
+    /// 回合结束：把仍 pending 的问题卡置 expired（灰态定格）。
+    /// 只扫 questionCard 块——普通工具块的 cancelled 收尾路径零变化。
+    @MainActor
+    func expirePendingAskCards(msgIdx: Int) {
+        guard msgIdx < messages.count else { return }
+        for blk in messages[msgIdx].blocks where blk.kind == .questionCard {
+            if blk.askStatus.isPending {
+                blk.askStatus = .expired
+            }
+        }
+    }
+
+    /// 问题卡提交答案：answer wire 回传（kind == "answer"）+ 卡片置 answered。
+    /// 防重：askStatus 非 pending 直接 return（连点/迟到帧）。
+    func submitAskAnswer(blockId: UUID, answers: [String: String]) {
+        guard let blk = RemoteAgentSessionState.findBlock(in: messages, byId: blockId),
+              case .questionCard = blk.kind,
+              blk.askStatus.isPending,
+              let payload = blk.askPayload else { return }
+        let result = AskResultCodec.result(for: payload.questions, answers: answers)
+        guard !result.isEmpty else { return }
+        remote.answerQuestion(toolUseId: payload.toolUseId, result: result, sessionId: sessionId) { [weak self] ok in
+            Task { @MainActor in
+                guard let self, ok else { return }
+                if let i = self.messages.lastIndex(where: { m in m.blocks.contains { $0.id == blockId } }),
+                   let bi = self.messages[i].blocks.firstIndex(where: { $0.id == blockId }) {
+                    self.messages[i].blocks[bi].askStatus = .answered(answers: answers)
+                }
+            }
+        }
+    }
+
+    /// 问题卡跳过：cancel 回合（模型收"用户没答"）+ 卡片置 skipped。
+    func skipAskQuestion(blockId: UUID) {
+        guard let blk = RemoteAgentSessionState.findBlock(in: messages, byId: blockId),
+              case .questionCard = blk.kind,
+              blk.askStatus.isPending,
+              let payload = blk.askPayload else { return }
+        remote.skipAskQuestion(toolUseId: payload.toolUseId, sessionId: sessionId) { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                if let i = self.messages.lastIndex(where: { m in m.blocks.contains { $0.id == blockId } }),
+                   let bi = self.messages[i].blocks.firstIndex(where: { $0.id == blockId }) {
+                    self.messages[i].blocks[bi].askStatus = .skipped
+                }
+            }
+        }
+    }
 }

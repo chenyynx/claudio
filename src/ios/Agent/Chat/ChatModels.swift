@@ -364,6 +364,13 @@ final class AssistantBlock: Identifiable, ObservableObject {
     @Published var cachedAttributedString: NSAttributedString?
     /// The tool_use ID from the provider, used to match with snapshots.
     var toolUseId: String?
+
+    // MARK: [AskCard 2026-09-12] AskUserQuestion 流内卡片（kind == .questionCard 时有效）
+    /// 问题载荷（questions + toolUseId）；nil = 非 question 块，历史回放前无值。
+    @Published var askPayload: AskWirePayload?
+    /// 生命周期四态（pending / answered / skipped / expired）。状态外提原则：
+    /// 本字段由帧事件与回放写，视图只读（cell 复用安全）。
+    @Published var askStatus: AskCardStatus = .pending
     /// Serialized JSON of the tool input arguments (for introspection in SessionMemoryView, etc.).
     var toolInputArgs: String?
     /// Streaming file content for file_write tool (live content as it arrives).
@@ -420,6 +427,8 @@ final class AssistantBlock: Identifiable, ObservableObject {
             return action.isEmpty ? "Memory" : action
         case .info:
             return ""
+        case .questionCard:
+            return "Ask"
         }
     }
 }
@@ -427,6 +436,10 @@ final class AssistantBlock: Identifiable, ObservableObject {
 enum AssistantBlockKind: Equatable {
     case text
     case thinking
+    /// [AskCard 2026-09-12] 流内 AskUserQuestion 问题卡（v3 设计）。载荷与
+    /// 状态存 block.askPayload / block.askStatus（见 AssistantBlock 扩展字段）；
+    /// kind 本身只做路由（AssistantBlockView 分发到 AskQuestionCardView）。
+    /// 远端专属：本地 agent 无此工具（gate 在帧分流处，toolName 判定）。
     case shellTool(command: String)
     case fileReadTool(path: String)
     case fileWriteTool(path: String)
