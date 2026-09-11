@@ -441,6 +441,7 @@
 		E5VMA0003 /* AIChatViewModel+MentionMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5VMA0013 /* AIChatViewModel+MentionMenu.swift */; };
 		E5VMA0004 /* AIChatViewModel+TitleGeneration.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5VMA0014 /* AIChatViewModel+TitleGeneration.swift */; };
 		E1573E8B05AA33A0DE98F708 /* RemoteHistoryBackfill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03089FE67811F66EA7E406B9 /* RemoteHistoryBackfill.swift */; };
+		E53000096 /* RemoteHistoryCursor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E53000097 /* RemoteHistoryCursor.swift */; };
 		C0DE20260910A1B2C3D4E5F6 /* RemoteHistorySyncCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829304152 /* RemoteHistorySyncCore.swift */; };
 		C0DE20260911A1B2C3D4E5AA /* ReplayRowId.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829304153 /* ReplayRowId.swift */; };
 		C0DE20260911A1B2C3D4E5AB /* RemoteHistoryIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829304154 /* RemoteHistoryIdentity.swift */; };
@@ -1159,6 +1160,7 @@
 		E5VMA0013 /* AIChatViewModel+MentionMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AIChatViewModel+MentionMenu.swift"; sourceTree = "<group>"; };
 		E5VMA0014 /* AIChatViewModel+TitleGeneration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AIChatViewModel+TitleGeneration.swift"; sourceTree = "<group>"; };
 		03089FE67811F66EA7E406B9 /* RemoteHistoryBackfill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteHistoryBackfill.swift"; sourceTree = "<group>"; };
+		E53000097 /* RemoteHistoryCursor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHistoryCursor.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6071829304152 /* RemoteHistorySyncCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteHistorySyncCore.swift"; sourceTree = "<group>"; };
 		A1B2C3D4E5F6071829304153 /* ReplayRowId.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ReplayRowId.swift"; sourceTree = "<group>"; };
 		A1B2C3D4E5F6071829304154 /* RemoteHistoryIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteHistoryIdentity.swift"; sourceTree = "<group>"; };
@@ -2121,6 +2123,7 @@
 				E5VMA0013 /* AIChatViewModel+MentionMenu.swift */,
 				E5VMA0014 /* AIChatViewModel+TitleGeneration.swift */,
 				03089FE67811F66EA7E406B9 /* RemoteHistoryBackfill.swift */,
+				E53000097 /* RemoteHistoryCursor.swift */,
 				A1B2C3D4E5F6071829304152 /* RemoteHistorySyncCore.swift */,
 				A1B2C3D4E5F6071829304153 /* ReplayRowId.swift */,
 				A1B2C3D4E5F6071829304154 /* RemoteHistoryIdentity.swift */,
@@ -2871,6 +2874,7 @@
 				E5VMA0003 /* AIChatViewModel+MentionMenu.swift in Sources */,
 				E5VMA0004 /* AIChatViewModel+TitleGeneration.swift in Sources */,
 				E1573E8B05AA33A0DE98F708 /* RemoteHistoryBackfill.swift in Sources */,
+				E53000096 /* RemoteHistoryCursor.swift in Sources */,
 				C0DE20260910A1B2C3D4E5F6 /* RemoteHistorySyncCore.swift in Sources */,
 				C0DE20260911A1B2C3D4E5AA /* ReplayRowId.swift in Sources */,
 				C0DE20260911A1B2C3D4E5AB /* RemoteHistoryIdentity.swift in Sources */,

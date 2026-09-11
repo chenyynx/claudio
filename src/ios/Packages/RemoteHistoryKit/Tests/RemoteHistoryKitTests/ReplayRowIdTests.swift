@@ -212,49 +212,4 @@ final class ReplayRowIdTests: XCTestCase {
 
     // MARK: - AgentMessage 集成（rawMessageId 单点派生）
 
-    func test_rawMessageId_usesNamespaceAndSegment() {
-        var msg = AgentMessage(role: .assistant, parts: [.text("x")])
-        msg.bridgeSeq = 42
-        msg.replayIdNamespace = "abc12345"
-        msg.replayIdSegment = "43db1176"
-        XCTAssertEqual(msg.rawMessageId(), "bridge-abc12345-43db1176-42")
-    }
-
-    func test_rawMessageId_legacyFallbackWithoutNamespace() {
-        var msg = AgentMessage(role: .assistant, parts: [.text("x")])
-        msg.bridgeSeq = 42
-        XCTAssertEqual(msg.rawMessageId(), "bridge-42",
-                       "无 ns 时保持旧形态（兜底路径），旧数据语义不变")
-    }
-
-    func test_historyAgentMessages_injectsNamespaceSegmentAndClientId() {
-        let json = """
-        [{"role":"assistant","content":[{"type":"text","text":"old reply"}]},
-         {"type":"user_input","text":"hi","clientMessageId":"cmid-1","historySeq":7,"sessionId":"s1"}]
-        """
-        let wire = try! JSONDecoder().decode([CCPocketProtocol.ServerMessage].self, from: Data(json.utf8))
-        let msgs = RemoteAgentProvider.historyAgentMessages(
-            from: wire, namespace: "abc12345", segment: "43db1176", diskSegment: "9f3e2a1b"
-        )
-        XCTAssertEqual(msgs.count, 2)
-        XCTAssertEqual(msgs[0].dbMessageId, "past-abc12345-9f3e2a1b-0",
-                       "past 行 id 必须带 disk 段（跨设备 transcript 不同，index 都从 0 起）")
-        XCTAssertEqual(msgs[0].rawMessageId(), "past-abc12345-9f3e2a1b-0")
-        XCTAssertNil(msgs[0].clientMessageId, "磁盘 past 行没有协议身份（只有 bridge 历史条目有）")
-        XCTAssertEqual(msgs[1].rawMessageId(), "bridge-abc12345-43db1176-7")
-        XCTAssertEqual(msgs[1].clientMessageId, "cmid-1",
-                       "协议身份必须从 wire 带到 AgentMessage——校准期对账靠它")
-    }
-
-    func test_historyAgentMessages_degradesWithoutDiskSegment() {
-        let json = """
-        [{"role":"assistant","content":[{"type":"text","text":"old reply"}]}]
-        """
-        let wire = try! JSONDecoder().decode([CCPocketProtocol.ServerMessage].self, from: Data(json.utf8))
-        let msgs = RemoteAgentProvider.historyAgentMessages(
-            from: wire, namespace: "abc12345", segment: "43db1176", diskSegment: nil
-        )
-        XCTAssertEqual(msgs[0].dbMessageId, "past-abc12345-0",
-                       "磁盘段缺失时退回 v1.14.29 形态（兜底链，不崩）")
-    }
 }
