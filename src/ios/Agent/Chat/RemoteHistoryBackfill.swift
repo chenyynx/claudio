@@ -388,8 +388,7 @@ final class RemoteHistoryBackfill {
         var reshuffleForStaleSegments = false
         if !resolvedFetch.isDelta {
             let probe = await ChatStore.shared.loadMessages(sessionId: sessionId)
-            for row in probe
-            where row.id.hasPrefix("bridge-"), ReplayRowId.parseNamespace(row.id) == ns {
+            for row in probe where row.id.hasPrefix("bridge-") && ReplayRowId.parseNamespace(row.id) == ns {
                 if let seg = ReplayRowId.parseSegment(row.id) { dbBridgeSegments.insert(seg) }
             }
             // 当前段不进 previous 池；检测到本会话旧段残留而 stored 失明
