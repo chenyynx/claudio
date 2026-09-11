@@ -1,5 +1,5 @@
 import XCTest
-@testable import Minis
+@testable import RemoteHistoryKit
 
 /// RemoteHistorySyncCore.planReplace 的行为锁定（v1.14.18 全量校准语义）。
 ///

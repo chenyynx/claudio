@@ -1,5 +1,5 @@
 import XCTest
-@testable import Minis
+@testable import RemoteHistoryKit
 
 /// RemoteHistoryOwnerIndex 的行为锁定（[Fix v1.14.30] 身份对账）。
 ///

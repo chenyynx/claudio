@@ -1,5 +1,5 @@
 import XCTest
-@testable import Minis
+@testable import RemoteHistoryKit
 
 /// ReplayRowId 的行为锁定（[Fix v1.14.29] 命名空间 + [Fix v1.14.30] 段身份）。
 ///

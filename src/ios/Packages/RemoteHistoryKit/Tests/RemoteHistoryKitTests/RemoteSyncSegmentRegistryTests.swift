@@ -1,5 +1,5 @@
 import XCTest
-@testable import Minis
+@testable import RemoteHistoryKit
 
 /// RemoteSyncSegmentRegistry 的行为锁定（[Fix v1.14.30] 段首见次序）。
 ///

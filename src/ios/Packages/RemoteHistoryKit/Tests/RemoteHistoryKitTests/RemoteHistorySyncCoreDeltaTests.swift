@@ -1,5 +1,5 @@
 import XCTest
-@testable import Minis
+@testable import RemoteHistoryKit
 
 /// RemoteHistorySyncCore 的两组纯函数锁定。
 ///

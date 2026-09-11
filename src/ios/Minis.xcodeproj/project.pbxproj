@@ -113,6 +113,7 @@
 		E53000001 /* AIChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E53000011 /* AIChatViewModel.swift */; };
 		E53000002 /* AIChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E53000012 /* AIChatView.swift */; };
 		E53000004 /* ChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E53000014 /* ChatStore.swift */; };
+		E53000098 /* ChatWireModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E53000099 /* ChatWireModels.swift */; };
 		E53000005 /* UsageStatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E53000015 /* UsageStatsView.swift */; };
 		E53000006 /* CacheKeepAliveManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E53000016 /* CacheKeepAliveManager.swift */; };
 		E54000001 /* DebugServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E54000011 /* DebugServer.swift */; };
@@ -806,6 +807,7 @@
 		E53000011 /* AIChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIChatViewModel.swift; sourceTree = "<group>"; };
 		E53000012 /* AIChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIChatView.swift; sourceTree = "<group>"; };
 		E53000014 /* ChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStore.swift; sourceTree = "<group>"; };
+		E53000099 /* ChatWireModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWireModels.swift; sourceTree = "<group>"; };
 		E53000015 /* UsageStatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageStatsView.swift; sourceTree = "<group>"; };
 		E53000016 /* CacheKeepAliveManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CacheKeepAliveManager.swift; sourceTree = "<group>"; };
 		E54000011 /* DebugServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugServer.swift; sourceTree = "<group>"; };
@@ -2143,6 +2145,7 @@
 				E5VMC0016 /* AIChatViewModel+BackgroundTask.swift */,
 				E5VMC0017 /* AIChatViewModel+ConcurrentTools.swift */,
 				E53000014 /* ChatStore.swift */,
+				E53000099 /* ChatWireModels.swift */,
 				BB1000110F700000000000AA /* ContextPolicy.swift */,
 				E5FMI0011 /* FileMentionIndex.swift */,
 			);
@@ -2955,6 +2958,7 @@
 				E5F100002 /* LLMSessionRegistry.swift in Sources */,
 				E5F100003 /* MinisUserAgent.swift in Sources */,
 				E53000004 /* ChatStore.swift in Sources */,
+				E53000098 /* ChatWireModels.swift in Sources */,
 				E5FMI0001 /* FileMentionIndex.swift in Sources */,
 				E53000005 /* UsageStatsView.swift in Sources */,
 				E53000006 /* CacheKeepAliveManager.swift in Sources */,
