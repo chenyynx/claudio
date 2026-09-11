@@ -2888,12 +2888,22 @@ actor ChatStore {
     ///     行（UUID）不在该序列内，"retained 排前"规则把它们全部顶到最前
     ///     = user 气泡置顶、回复全在后（pp 真机实锤 2026-09-10）。finalOrder
     ///     保留作 unifiedFinalOrderIds 缺行时的兜底（caller 旧调用兼容）。
-    func replaceRemoteHistory(sessionId: String, plan: RemoteHistoryReplacePlan, finalOrder: [RawMessage]) {
+    ///   - renumber: [Fix v1.14.29] 是否执行第 3 步全量重排。定序契约要求
+    ///     `finalOrder` 是**全量** history 序——全量校准传 true；delta 增量
+    ///     传 false（增量只补内容、顺序保持，插入行按现有 max sort_order
+    ///     递增追加）。把残缺的增量序传进来做 renumber 正是"用户全部发言
+    ///     被甩到会话末尾"（乱序根因 A，pp 真机 2026-09-11 08:06 实证）。
+    /// - Returns: 是否成功落库。任一语句失败 → ROLLBACK + false（调用方
+    ///   不得写 cursor）。旧实现失败只打日志仍然 COMMIT → "删了旧的、插不进
+    ///   新的" = 内容净丢失（吞内容根因 B 的放大器）。
+    @discardableResult
+    func replaceRemoteHistory(sessionId: String, plan: RemoteHistoryReplacePlan, finalOrder: [RawMessage], renumber: Bool) -> Bool {
         invalidateSessionListCache()
         let dbOK = (db != nil)
-        logger.info("[Store] replaceRemoteHistory enter sid=\(sessionId.prefix(8)) inserts=\(plan.inserts.count) deletes=\(plan.deleteIds.count) dbOpen=\(dbOK)")
+        logger.info("[Store] replaceRemoteHistory enter sid=\(sessionId.prefix(8)) inserts=\(plan.inserts.count) deletes=\(plan.deleteIds.count) renumber=\(renumber) dbOpen=\(dbOK)")
 
         exec("BEGIN TRANSACTION")
+        var writeFailed = false
 
         // 1. Delete stale non-user rows (live UUID rows, history-missing rows).
         if !plan.deleteIds.isEmpty {
@@ -2905,12 +2915,16 @@ actor ChatStore {
                     sqlite3_bind_text(stmt, 2, (rowId as NSString).utf8String, -1, nil)
                     if sqlite3_step(stmt) != SQLITE_DONE {
                         logger.error("[Store] replace DELETE failed sid=\(sessionId.prefix(8)) mid=\(rowId.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                        writeFailed = true
                     }
                 } else {
                     logger.error("[Store] replace DELETE prepare failed err=\(String(cString: sqlite3_errmsg(db)))")
+                    writeFailed = true
                 }
                 sqlite3_finalize(stmt)
-                markDirty(recordType: "Message", recordId: rowId, operation: "delete")
+                if !writeFailed {
+                    markDirty(recordType: "Message", recordId: rowId, operation: "delete")
+                }
             }
         }
 
@@ -2927,6 +2941,7 @@ actor ChatStore {
                 partsJSON = String(data: data, encoding: .utf8) ?? "[]"
             } catch {
                 logger.error("[Store] replace INSERT encode failed sid=\(sessionId.prefix(8)) mid=\(message.id.prefix(8)) err=\(error)")
+                writeFailed = true
                 continue
             }
             let partFlags = Self.partFlags(for: message.parts)
@@ -2959,13 +2974,23 @@ actor ChatStore {
                 bindOptionalText(stmt, index: 16, value: message.providerInstanceId)
                 if sqlite3_step(stmt) != SQLITE_DONE {
                     logger.error("[Store] replace INSERT failed sid=\(sessionId.prefix(8)) mid=\(message.id.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                    writeFailed = true
                 } else {
                     markDirty(recordType: "Message", recordId: message.id)
                 }
             } else {
                 logger.error("[Store] replace INSERT prepare failed err=\(String(cString: sqlite3_errmsg(db)))")
+                writeFailed = true
             }
             sqlite3_finalize(stmt)
+        }
+
+        // [Fix v1.14.29] 任一句失败 = 整体回滚（旧实现照常 COMMIT → "删了旧的、
+        // 插不进新的" 净丢失；根因 B 的放大器）。
+        if writeFailed {
+            exec("ROLLBACK")
+            logger.error("[Store] replaceRemoteHistory ROLLBACK sid=\(sessionId.prefix(8)) — write failed, DB untouched (no partial state)")
+            return false
         }
 
         // 3. Renumber the final sequence.
@@ -2987,31 +3012,52 @@ actor ChatStore {
         //    past- 前缀（trim 窗口幸存的老回放行）排前，其余（live UUID）
         //    排后；组内保持现有相对顺序。统一 renumber 1..M，无序号冲突。
         let unifiedIds = plan.unifiedFinalOrderIds
-        let finalIds = Set(finalOrder.map { $0.id }).union(unifiedIds)
-        let currentRows = loadMessages(sessionId: sessionId)
-        let retainedOutsideFinal = currentRows
-            .filter { !finalIds.contains($0.id) }
-            .sorted { $0.sortOrder < $1.sortOrder }
-        let rowById = Dictionary(uniqueKeysWithValues: currentRows.map { ($0.id, $0) })
-        // 定序规则见 RemoteHistorySyncCore.orderedRowSequence（纯函数可单测）。
-        let fullFinalSequence = RemoteHistorySyncCore.orderedRowSequence(
-            unifiedFinalOrderIds: unifiedIds,
-            finalOrder: finalOrder,
-            retainedRows: retainedOutsideFinal,
-            rowById: rowById
-        )
-        var nextOrder = 1
-        let renumberSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
-        for row in fullFinalSequence {
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, renumberSQL, -1, &stmt, nil) == SQLITE_OK {
-                sqlite3_bind_int64(stmt, 1, Int64(nextOrder))
-                sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(stmt, 3, (row.id as NSString).utf8String, -1, nil)
-                _ = sqlite3_step(stmt)
+        if renumber {
+            let finalIds = Set(finalOrder.map { $0.id }).union(unifiedIds)
+            let currentRows = loadMessages(sessionId: sessionId)
+            let retainedOutsideFinal = currentRows
+                .filter { !finalIds.contains($0.id) }
+                .sorted { $0.sortOrder < $1.sortOrder }
+            let rowById = Dictionary(uniqueKeysWithValues: currentRows.map { ($0.id, $0) })
+            // 定序规则见 RemoteHistorySyncCore.orderedRowSequence（纯函数可单测）。
+            let fullFinalSequence = RemoteHistorySyncCore.orderedRowSequence(
+                unifiedFinalOrderIds: unifiedIds,
+                finalOrder: finalOrder,
+                retainedRows: retainedOutsideFinal,
+                rowById: rowById
+            )
+            var nextOrder = 1
+            let renumberSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
+            for row in fullFinalSequence {
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, renumberSQL, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_int64(stmt, 1, Int64(nextOrder))
+                    sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(stmt, 3, (row.id as NSString).utf8String, -1, nil)
+                    _ = sqlite3_step(stmt)
+                }
+                sqlite3_finalize(stmt)
+                nextOrder += 1
             }
-            sqlite3_finalize(stmt)
-            nextOrder += 1
+        } else {
+            // 3'. [Fix v1.14.29] delta 增量路径：不做全量重排——增量只含更新
+            //     的内容，插入行按现有 max sort_order 递增**追加**（顺序权威
+            //     是全量校准的 renumber；残缺序做重排 = 乱序根因 A）。
+            let currentRows = loadMessages(sessionId: sessionId)
+            let maxOrder = currentRows.map { $0.sortOrder }.max() ?? -1
+            var appendOrder = maxOrder + 1
+            let appendSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
+            for row in plan.inserts {
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, appendSQL, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_int64(stmt, 1, Int64(appendOrder))
+                    sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(stmt, 3, (row.id as NSString).utf8String, -1, nil)
+                    _ = sqlite3_step(stmt)
+                }
+                sqlite3_finalize(stmt)
+                appendOrder += 1
+            }
         }
 
         touchSession(sessionId)
@@ -3022,7 +3068,151 @@ actor ChatStore {
 
         NotificationCenter.default.post(name: .sessionDidUpdate, object: sessionId)
         let stats = sessionWriteStats(sessionId: sessionId)
-        logger.info("[Store] replaceRemoteHistory done sid=\(sessionId.prefix(8)) finalCount=\(stats.count) maxSO=\(stats.maxSortOrder)")
+        logger.info("[Store] replaceRemoteHistory done sid=\(sessionId.prefix(8)) finalCount=\(stats.count) maxSO=\(stats.maxSortOrder) renumber=\(renumber)")
+        return true
+    }
+
+    /// [Fix v1.14.29] 回放行 id 命名空间一次性迁移（幂等）。
+    ///
+    /// `messages.id` 是**全局**主键，而回放 id 曾用裸 `bridge-{seq}` /
+    /// `past-{index}`（只在本会话内唯一）→ 两个会话各自同步过不同 bridge
+    /// 会话时撞主键 → INSERT 失败 → 工具卡片/思考/正文被吞（pp 真机
+    /// 2026-09-11 08:06 实证：bridge-8/9/1 UNIQUE constraint failed）。
+    /// 本函数把本会话已有的裸 id 行改写成 `bridge-{ns}-{seq}` /
+    /// `past-{ns}-{index}`（见 `ReplayRowId`），并在同一事务内同步改写
+    /// compact_markers 的 id 引用。
+    ///
+    /// 幂等：已命名空间化的行不满足快检的 `NOT LIKE` 条件 → 第二次零改动。
+    /// 冲突：目标 id 已存在（上次迁移中断 / 与新插行撞）→ 删除旧的裸 id 行，
+    /// 内容由已存在的那行承载。
+    ///
+    /// ⚠️ 调用时机：必须在**读 dbRows 计算校准计划之前**（RemoteHistoryBackfill
+    /// §5）——否则计划按旧 id 算 keep 集、落库按新 id 写，同一行会被当成新行
+    /// 重插（PK 冲突 = 正是要修的病）。
+    func migrateReplayRowIdsIfNeeded(sessionId: String, namespace ns: String) {
+        guard !ns.isEmpty, db != nil else { return }
+        let bridgePattern = "bridge-\(ns)-%"
+        let pastPattern = "past-\(ns)-%"
+        // 快检：本会话是否还有裸 id 回放行（常态为零 → 立即返回）
+        let probeSql = """
+            SELECT COUNT(*) FROM messages
+            WHERE session_id = ?
+              AND (id LIKE 'bridge-%' OR id LIKE 'past-%')
+              AND id NOT LIKE ? AND id NOT LIKE ?
+        """
+        var probeStmt: OpaquePointer?
+        var pending = 0
+        if sqlite3_prepare_v2(db, probeSql, -1, &probeStmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(probeStmt, 1, (sessionId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(probeStmt, 2, (bridgePattern as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(probeStmt, 3, (pastPattern as NSString).utf8String, -1, nil)
+            if sqlite3_step(probeStmt) == SQLITE_ROW {
+                pending = Int(sqlite3_column_int64(probeStmt, 0))
+            }
+        }
+        sqlite3_finalize(probeStmt)
+        guard pending > 0 else { return }
+
+        let listSql = "SELECT id FROM messages WHERE session_id = ? AND (id LIKE 'bridge-%' OR id LIKE 'past-%')"
+        var legacyIds: [String] = []
+        var listStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, listSql, -1, &listStmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(listStmt, 1, (sessionId as NSString).utf8String, -1, nil)
+            while sqlite3_step(listStmt) == SQLITE_ROW {
+                if let cStr = sqlite3_column_text(listStmt, 0) {
+                    legacyIds.append(String(cString: cStr))
+                }
+            }
+        }
+        sqlite3_finalize(listStmt)
+        guard !legacyIds.isEmpty else { return }
+
+        exec("BEGIN TRANSACTION")
+        var renamed = 0
+        var deduped = 0
+        var failed = false
+        for oldId in legacyIds {
+            guard let newId = ReplayRowId.migrationTarget(from: oldId, namespace: ns) else { continue }
+            if messageRowExists(id: newId) {
+                if execDeleteMessage(sessionId: sessionId, id: oldId) {
+                    deduped += 1
+                    markDirty(recordType: "Message", recordId: oldId, operation: "delete")
+                } else {
+                    failed = true
+                }
+                continue
+            }
+            if execRenameReplayRow(sessionId: sessionId, from: oldId, to: newId) {
+                renamed += 1
+                rewriteMarkerReferences(sessionId: sessionId, from: oldId, to: newId)
+                markDirty(recordType: "Message", recordId: oldId, operation: "delete")
+                markDirty(recordType: "Message", recordId: newId)
+            } else {
+                failed = true
+            }
+        }
+        if failed {
+            exec("ROLLBACK")
+            logger.error("[Store] replay id migration ROLLBACK sid=\(sessionId.prefix(8)) ns=\(ns) — old ids kept")
+            return
+        }
+        exec("COMMIT")
+        logger.info("[Store] replay id migration done sid=\(sessionId.prefix(8)) ns=\(ns) renamed=\(renamed) deduped=\(deduped)")
+    }
+
+    private func messageRowExists(id: String) -> Bool {
+        let sql = "SELECT 1 FROM messages WHERE id = ? LIMIT 1"
+        var stmt: OpaquePointer?
+        var found = false
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+            found = sqlite3_step(stmt) == SQLITE_ROW
+        }
+        sqlite3_finalize(stmt)
+        return found
+    }
+
+    private func execDeleteMessage(sessionId: String, id: String) -> Bool {
+        let sql = "DELETE FROM messages WHERE session_id = ? AND id = ?"
+        var stmt: OpaquePointer?
+        var ok = false
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, (sessionId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (id as NSString).utf8String, -1, nil)
+            ok = sqlite3_step(stmt) == SQLITE_DONE
+        }
+        sqlite3_finalize(stmt)
+        return ok
+    }
+
+    private func execRenameReplayRow(sessionId: String, from oldId: String, to newId: String) -> Bool {
+        let sql = "UPDATE messages SET id = ? WHERE session_id = ? AND id = ?"
+        var stmt: OpaquePointer?
+        var ok = false
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, (newId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 3, (oldId as NSString).utf8String, -1, nil)
+            ok = sqlite3_step(stmt) == SQLITE_DONE
+        }
+        sqlite3_finalize(stmt)
+        return ok
+    }
+
+    /// compact_markers 的 id 引用随行 id 迁移同步改写（避免边界悬空）。
+    private func rewriteMarkerReferences(sessionId: String, from oldId: String, to newId: String) {
+        let columns = ["first_kept_message_id", "boundary_message_id", "last_compacted_message_id"]
+        for column in columns {
+            let sql = "UPDATE compact_markers SET \(column) = ? WHERE session_id = ? AND \(column) = ?"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, (newId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 3, (oldId as NSString).utf8String, -1, nil)
+                sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
+        }
     }
 
     /// Diagnostic helper: returns (count, maxSortOrder) for a session. Used to detect

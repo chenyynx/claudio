@@ -148,6 +148,12 @@ final class RemoteHistoryBackfill {
             let deltaToSeq: Int?
         }
         var wireFetch: WireFetch?
+        /// [Fix v1.14.29] 空 delta（bridge 回执"自 cursor 起无新消息"）直返用。
+        /// 旧行为：空 delta 照跑校准 → `historyRaws=[]` → unified 序为空 →
+        /// renumber 把所有 live UUID 行（用户**全部**发言）重排到会话末尾
+        /// （pp 真机 2026-09-11 08:06 实证），且 changed=false 连 UI 都不刷新
+        /// = DB 静默被写坏。现在：无新内容 → 完全不碰 DB / 顺序。
+        var emptyDeltaResolved: (bridgeId: String, toSeq: Int)?
         // [审查 2026-09-11 G1] cursor 失效校验（设计文档规则「bridgeId
         // 变了 → 弃 cursor」的实现，Phase 2 初版漏做）：cursor 的 seq 空间
         // 必须 == 当前 mapping 的 bridge 会话。反例：resume 换了 bridge
@@ -199,6 +205,26 @@ final class RemoteHistoryBackfill {
                     if !hasBaseline {
                         logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta hit but DB has no bridge baseline — fallback full")
                         deltaUsable = false
+                    } else {
+                        // [Fix v1.14.29] 快路径准入（乱序根因 A 的闸门）：定序
+                        // 已被全量校准封版 + 本次为纯追加，才允许跳过 renumber。
+                        // 残缺的 historyRaws 交给 planReplace → unified 序只剩
+                        // 新行 → renumber 会把用户全部发言重排到末尾。
+                        let dbMaxBridgeSeq = dbRowsProbe
+                            .compactMap { ReplayRowId.parseBridgeSeq($0.id) }
+                            .max()
+                        let deltaSeqs = delta.wire.compactMap { $0.historySeq }
+                        let sealed = self.isOrderSealed(sessionId: sessionId, bridgeId: delta.bridgeId)
+                        let fastPathAllowed = RemoteHistorySyncCore.deltaFastPathAllowed(
+                            orderSealed: sealed,
+                            deltaSeqs: deltaSeqs,
+                            dbMaxBridgeSeq: dbMaxBridgeSeq
+                        )
+                        if !fastPathAllowed {
+                            let dbMaxText = dbMaxBridgeSeq.map(String.init) ?? "nil"
+                            logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta fast-path denied (sealed=\(sealed) dbMaxSeq=\(dbMaxText) deltaSeqs=\(deltaSeqs.count)) — fallback full")
+                            deltaUsable = false
+                        }
                     }
                 }
                 if isSnapshot {
@@ -206,17 +232,48 @@ final class RemoteHistoryBackfill {
                 } else if !emptyDelta && from != cursor.lastSeq + 1 {
                     logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta gap from=\(from) expected=\(cursor.lastSeq + 1) — fallback full")
                 } else if deltaUsable {
-                    wireFetch = WireFetch(
-                        wire: delta.wire,
-                        engine: RemoteAgentProvider.historyAgentMessages(from: delta.wire),
-                        bridgeId: delta.bridgeId,
-                        isDelta: true,
-                        deltaToSeq: to
-                    )
+                    if emptyDelta {
+                        // [Fix v1.14.29] 空 delta 不构建 WireFetch——否则下方
+                        // "未封版 → 回全量自愈"分支会被短路（wireFetch 非 nil
+                        // 就跳过全量 fetch）。只记终态给直返分支决策。
+                        emptyDeltaResolved = (bridgeId: delta.bridgeId, toSeq: to)
+                    } else {
+                        wireFetch = WireFetch(
+                            wire: delta.wire,
+                            engine: RemoteAgentProvider.historyAgentMessages(
+                                from: delta.wire,
+                                namespace: ReplayRowId.namespace(sessionId: sessionId)
+                            ),
+                            bridgeId: delta.bridgeId,
+                            isDelta: true,
+                            deltaToSeq: to
+                        )
+                    }
                 }
             } else {
                 logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta unavailable — fallback full")
             }
+        }
+        // [Fix v1.14.29] 空 delta 直返：无新内容 → 完全不碰 DB / 顺序，只把
+        // cursor 维持/推进到终态 toSeq（旧行为见 emptyDeltaResolved 注释）。
+        // ⚠️ 例外：**未封版**会话（新装 / 刚升级 / 被旧版写坏过）不走 no-op
+        // ——否则"没有新消息"的会话永远等不到那次全量自愈，乱序会一直留着。
+        if let emptyDelta = emptyDeltaResolved {
+            if isOrderSealed(sessionId: sessionId, bridgeId: emptyDelta.bridgeId) {
+                let refreshed = RemoteHistoryCursor(bridgeId: emptyDelta.bridgeId, lastSeq: emptyDelta.toSeq)
+                RemoteHistoryCursorStore.write(refreshed, sessionId: sessionId)
+                let elapsedMs = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
+                logger.info("[HistorySync] session=\(sessionId.prefix(8)) empty delta — no-op, cursor kept lastSeq=\(emptyDelta.toSeq) in \(String(format: "%.0f", elapsedMs))ms")
+                return RemoteHistorySyncOutcome(
+                    changed: false,
+                    lastWireType: nil,
+                    insertedCount: 0,
+                    deletedCount: 0,
+                    historyCount: 0,
+                    writtenCursor: refreshed
+                )
+            }
+            logger.warning("[HistorySync] session=\(sessionId.prefix(8)) empty delta on UNSEALED session — fallback full (one-time order heal)")
         }
         if wireFetch == nil {
             let fetched = await AIChatViewModel.fetchRemoteHistoryWithWire(
@@ -274,6 +331,13 @@ final class RemoteHistoryBackfill {
         }
 
         // === 5. 校准计划 + 单事务落库 ===
+        // [Fix v1.14.29] 回放行 id 命名空间一次性迁移（幂等）必须发生在读
+        // dbRows **之前**——否则计划按旧 id 算 keep 集、落库按新 id 写，
+        // 同一行会被当成新行重插（PK 冲突 → 内容被吞，正是要修的病）。
+        await ChatStore.shared.migrateReplayRowIdsIfNeeded(
+            sessionId: sessionId,
+            namespace: ReplayRowId.namespace(sessionId: sessionId)
+        )
         let dbRows = await ChatStore.shared.loadMessages(sessionId: sessionId)
         // nonEngineSeqs：wire history 里存在但不转 engine 的 seq（result/
         // status 等）——落这些 seq 的 DB 行必是错绑残留（旧 live 把 result
@@ -323,19 +387,30 @@ final class RemoteHistoryBackfill {
         // 在乱序且校准 plan.isEmpty 永不触碰 → 顺序无法自愈。无条件 renumber
         // 幂等（同一 bridge 序每次写同一结果），一次校准即修复已污染 DB。
         // changed 判定不变（无删插不触发 UI 全量重建，避免无谓闪烁）。
-        await ChatStore.shared.replaceRemoteHistory(
+        // [Fix v1.14.29] renumber 只在**全量**路径执行——delta 的 historyRaws
+        // 只含增量，不构成定序契约要求的全量序（不合规的 delta 已在入口被
+        // deltaFastPathAllowed 闸掉 → fallback 全量）。
+        let applied = await ChatStore.shared.replaceRemoteHistory(
             sessionId: sessionId,
             plan: plan,
-            finalOrder: historyRaws
+            finalOrder: historyRaws,
+            renumber: !resolvedFetch.isDelta
         )
-        if needPastMigration {
+        if applied, needPastMigration {
             UserDefaults.standard.set(2, forKey: pastMigrationKey)
             logger.info("[HistorySync] session=\(sessionId.prefix(8)) past id-space migration v2 applied — old past rows evicted and re-seeded")
         }
+        if applied, !resolvedFetch.isDelta {
+            // 全量校准成功 = 本会话顺序已封版 → 之后的 delta 才允许走快路径。
+            markOrderSealed(sessionId: sessionId, bridgeId: resolvedFetch.bridgeId)
+        }
+        if !applied {
+            logger.error("[HistorySync] session=\(sessionId.prefix(8)) replaceRemoteHistory FAILED (transaction rolled back) — DB untouched")
+        }
         if !plan.inserts.isEmpty || !plan.deleteIds.isEmpty {
-            logger.info("[HistorySync] session=\(sessionId.prefix(8)) calibrated: +\(plan.inserts.count) -\(plan.deleteIds.count) kept=\(plan.keptCount)")
+            logger.info("[HistorySync] session=\(sessionId.prefix(8)) calibrated: +\(plan.inserts.count) -\(plan.deleteIds.count) kept=\(plan.keptCount) renumber=\(!resolvedFetch.isDelta)")
         } else {
-            logger.info("[HistorySync] session=\(sessionId.prefix(8)) renumber-only (already in sync, order rewritten, kept=\(plan.keptCount))")
+            logger.info("[HistorySync] session=\(sessionId.prefix(8)) no content change (kept=\(plan.keptCount) renumber=\(!resolvedFetch.isDelta))")
         }
 
         let changed = !plan.inserts.isEmpty || !plan.deleteIds.isEmpty
@@ -350,11 +425,16 @@ final class RemoteHistoryBackfill {
         // 行——游标语义是"全部 wire 消息"，不只是 engine 行）。wire 无任何
         // seq（空 history / 全为 past raw）→ 不写（cursor 语义需要至少一个
         // 锚点）。bridgeId 缺失 → 不写（无 seq 空间锚点的游标无意义）。
-        // [Phase 2 附加守卫] delta 命中但本次非 user 行全灭（极端：bridge 端
-        // 也没有任何 engine 行）→ DB 里 bridge 行存疑，宁可作废 cursor 下次
-        // 全量重锚。
+        // [Fix v1.14.29] 空 delta 已在上方直返（cursor 维持终态 toSeq）——旧
+        // 实现"空 delta 一律作废游标"正是 full/delta 乒乓的来源：每次打开都
+        // 先全量修复、2 秒后被一次空 delta 再写坏。
         var writtenCursor: RemoteHistoryCursor?
-        if let currentBridgeId = resolvedFetch.bridgeId {
+        if !applied {
+            // [Fix v1.14.29] 落库失败（事务已 ROLLBACK）→ 绝不写游标，清掉让
+            // 下次全量重锚（v1.14.17 教训：游标抬升与落库解耦 = 全量重拉乱序）。
+            RemoteHistoryCursorStore.clear(sessionId: sessionId)
+            logger.warning("[HistorySync] session=\(sessionId.prefix(8)) cursor cleared (apply failed)")
+        } else if let currentBridgeId = resolvedFetch.bridgeId {
             let lastSeq: Int?
             // [审查 2026-09-11] toSeq 合法性守卫：协议保证 delta 终态带
             // toSeq，缺失/负值（-1 哨兵）说明桥端形态异常——不信任，退回
@@ -364,14 +444,14 @@ final class RemoteHistoryBackfill {
             } else {
                 lastSeq = wireMessages.compactMap { $0.historySeq }.max()
             }
-            if let lastSeq, !(resolvedFetch.isDelta && historyRaws.isEmpty) {
+            if let lastSeq {
                 let cursor = RemoteHistoryCursor(bridgeId: currentBridgeId, lastSeq: lastSeq)
                 RemoteHistoryCursorStore.write(cursor, sessionId: sessionId)
                 writtenCursor = cursor
                 logger.info("[HistorySync] session=\(sessionId.prefix(8)) cursor written bridge=\(currentBridgeId.prefix(8)) lastSeq=\(lastSeq) isDelta=\(resolvedFetch.isDelta)")
             } else {
                 RemoteHistoryCursorStore.clear(sessionId: sessionId)
-                logger.info("[HistorySync] session=\(sessionId.prefix(8)) cursor cleared (no seq anchor or empty delta)")
+                logger.info("[HistorySync] session=\(sessionId.prefix(8)) cursor cleared (no seq anchor)")
             }
         }
         return RemoteHistorySyncOutcome(
@@ -382,5 +462,28 @@ final class RemoteHistoryBackfill {
             historyCount: historyRaws.count,
             writtenCursor: writtenCursor
         )
+    }
+
+    // MARK: - 定序封版标记（[Fix v1.14.29]）
+
+    /// 本会话顺序是否已被一次成功的**全量**校准写死（renumber 1..M）。
+    ///
+    /// delta 快路径只允许在封版后走（见 `deltaFastPathAllowed`）：未封版的
+    /// 会话——新装、刚升级到本版、DB 曾被旧版写坏——一律先跑一次全量，
+    /// 天然完成旧数据自愈（顺序复位 + 被吞的行重插）。
+    /// per-chat UserDefaults，值 = 封版时的 bridge 会话 id（换了会话即失效）。
+    private func isOrderSealed(sessionId: String, bridgeId: String?) -> Bool {
+        guard let bridgeId else { return false }
+        let stored = UserDefaults.standard.string(forKey: Self.orderSealedKey(sessionId: sessionId))
+        return stored == bridgeId
+    }
+
+    private func markOrderSealed(sessionId: String, bridgeId: String?) {
+        guard let bridgeId else { return }
+        UserDefaults.standard.set(bridgeId, forKey: Self.orderSealedKey(sessionId: sessionId))
+    }
+
+    private static func orderSealedKey(sessionId: String) -> String {
+        "RemoteSyncOrderSealed.v1.\(sessionId)"
     }
 }

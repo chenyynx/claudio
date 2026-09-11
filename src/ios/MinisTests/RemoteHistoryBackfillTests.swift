@@ -443,6 +443,13 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         // UUID 行、不在 history 序列里，旧规则"retained 全排前"把它
         // renumber 到 sort_order=1（比会话第一条"你好"还靠前）。
         // 期望：不在 unified 序里的 live 行排在历史**之后**。
+        // ⚠️ [v1.14.29 澄清] 本规则是**全量路径的兜底**：正常路径下"历史更早
+        // 的 user 行"会被 planReplace 的防双份配对（归一化同文本 + 队列配对）
+        // 放回 unified 序内原位，落进这个桶的只剩"bridge history 尚未承载的
+        // 真·新内容"。**delta 路径根本不做 renumber**（见
+        // RemoteHistorySyncCore.deltaFastPathAllowed / ChatStore renumber 参数）
+        // ——旧版本按本规则重排 delta 残缺序，正是"用户全部发言被甩到会话
+        // 末尾"的根因 A（pp 真机 2026-09-11 08:06）。
         let history = [
             makeHistoryRaw(id: "bridge-1", role: .user),
             makeHistoryRaw(id: "bridge-2", role: .assistant),
@@ -557,9 +564,12 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         // new-since-cursor 条目（全量 = 老条目 + 新条目）。planReplace 对
         // 集合外的老行必须零触碰（只增不删）；新条目沿用集合语义——live
         // UUID assistant 行删除并插 bridge 行、与本地同文本的 user 回放行
-        // 不插（本地行顶替其 unified 序位置）。老行不在 unified 序内，
-        // replaceRemoteHistory 按既有 sortOrder 排前 → 最终 = 老序 + delta
-        // 序（renumber 无条件执行保证该不变量每次同步后成立）。
+        // 不插（本地行顶替其 unified 序位置）。
+        // ⚠️ [v1.14.29 更正] 旧注释"replaceRemoteHistory 按既有 sortOrder 排前
+        // / renumber 无条件执行"**已失效**：delta 路径现在**不执行 renumber**
+        // （增量只补内容、顺序保持，插入行按 max sort_order 递增追加）——
+        // 用残缺的 delta 序做全量重排正是乱序根因 A。本用例只锁 planReplace
+        // 的输出（unifiedFinalOrderIds 仍会被全量路径消费）。
         let deltaHistory = [
             makeHistoryRaw(id: "bridge-6", role: .assistant),
             makeHistoryRaw(id: "bridge-7", role: .user),  // user_input 回放行

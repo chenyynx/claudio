@@ -2159,6 +2159,12 @@ extension AIChatViewModel {
         if msg.bridgeSeq == nil, let seq = bridgeSeq {
             var injected = msg
             injected.bridgeSeq = seq
+            // [Fix v1.14.29] live 注入 seq 时同步注入 id 命名空间——否则 live
+            // 行派生旧的 `bridge-{seq}`，与回放行的 `bridge-{ns}-{seq}` 不等 →
+            // 校准 keep 集永不命中 + 跨会话撞主键（内容被吞）。
+            if let sid = sessionId {
+                injected.replayIdNamespace = ReplayRowId.namespace(sessionId: sid)
+            }
             effectiveMsg = injected
         } else {
             effectiveMsg = msg

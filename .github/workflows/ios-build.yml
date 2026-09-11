@@ -147,39 +147,10 @@ jobs:
       # [doris] Release the ipa as a release asset (fixed tag, commit-suffixed
       # filename so every build URL is unique — no Safari cache/416). Asset
       # downloads work through gh.llkk.cc, unlike Actions artifact blobs.
-      - name: Run unit tests (post-package gate)
-        # ⏸ [Claudio 2026-09-07 pp 拍板] 测试基建暂时挂起：首次接入暴露
-        # 存量工程连环问题（Standalone 顶层脚本混入 target / Release 无
-        # testability / Debug+MyMac availability 检查），逐个清是技术债
-        # 专项，不阻塞主线。测试代码与 RemoteFallbackResolverTests 等
-        # pin 全部保留；恢复 = 删掉下面这行 if: false。
-        if: false
-        # [Claudio 2026-09-07 P0] MinisTests 首次真正接入。放在 ipa 上传
-        # 之后：出包零延迟；同一 job 复用 Release 编译产物（测试阶段只编
-        # 测试 bundle + 跑用例，几分钟）。测试红 = job 红（无
-        # continue-on-error），但 ipa 已上传不丢。依赖 deps 构建链产物
-        # （alpine-rootfs / RootfsPatch），故不能拆成独立并行 job ——
-        # 那会要求重复整条 20-40 分钟的原生依赖构建。
-        run: |
-          set -o pipefail   # [fix] | tee 会吞 xcodebuild 退出码
-          cd src/ios
-          xcodebuild test \
-            -project Minis.xcodeproj \
-            -scheme Minis \
-            -configuration Debug \
-            -destination 'platform=macOS,variant=Designed for iPad' \
-            -only-testing:MinisTests \
-            CODE_SIGNING_ALLOWED=NO \
-            SWIFT_NUM_THREADS=2 \
-            -derivedDataPath build/DerivedDataTest \
-          | tee /tmp/xcodebuild-test.log
-          echo "=== TEST SUMMARY ==="
-          grep -E "Test Suite '(All tests|MinisTests)'|Executed .* tests" /tmp/xcodebuild-test.log | tail -10 || true
-          if grep -q "TEST FAILED" /tmp/xcodebuild-test.log; then
-            echo "::error::Unit tests failed (ipa already uploaded — fix before next push)"
-            grep -E "Test Case.*failed|error:" /tmp/xcodebuild-test.log | head -30
-            exit 1
-          fi
+      # [v1.14.29 2026-09-11 pp 拍板] 单元测试门重新打开 —— 步骤挪到文件末尾
+      # 的 Release 之后（测试红不再挡住出包），并限定受影响测试类。
+      # 背景：远端恢复管线历史上多次"修好了"却被锁错行为的测试放行
+      # （v1.14.27 的 live-行排尾断言），必须有自动门。
 
       - name: Release unsigned .ipa
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -192,3 +163,35 @@ jobs:
           cp src/ios/build/Minis-unsigned.ipa "$NAME"
           gh release create "$TAG" --title "Claudio unsigned builds" --notes "Latest main build — asset filename carries the commit hash." || true
           gh release upload "$TAG" "$NAME" --clobber
+
+      # [v1.14.29 2026-09-11 pp 拍板重开] 单元测试门。
+      # ① 位置：Release 之后 —— 测试红 = job 红，但 ipa 已发布不丢（原设计
+      #    意图，之前排在 Release 前会连累出包）。
+      # ② 范围：只跑本包改动的测试类 RemoteHistoryBackfillTests（远端校准
+      #    管线）。存量测试债（工程配置类）不在本包范围内，恢复全量 = 把
+      #    -only-testing 改回 MinisTests。
+      # ③ 依赖 deps 构建链产物，故与主构建同 job（拆并行 job 会重复整条
+      #    20-40 分钟原生依赖构建）。
+      - name: Run unit tests (post-package gate)
+        run: |
+          set -o pipefail   # [fix] | tee 会吞 xcodebuild 退出码
+          cd src/ios
+          xcodebuild test \
+            -project Minis.xcodeproj \
+            -scheme Minis \
+            -configuration Debug \
+            -destination 'platform=macOS,variant=Designed for iPad' \
+            -only-testing:MinisTests/RemoteHistoryBackfillTests \
+            -only-testing:MinisTests/RemoteHistorySyncCoreDeltaTests \
+            -only-testing:MinisTests/ReplayRowIdTests \
+            CODE_SIGNING_ALLOWED=NO \
+            SWIFT_NUM_THREADS=2 \
+            -derivedDataPath build/DerivedDataTest \
+          | tee /tmp/xcodebuild-test.log
+          echo "=== TEST SUMMARY ==="
+          grep -E "Test Suite '(All tests|MinisTests|RemoteHistoryBackfillTests)'|Executed .* tests" /tmp/xcodebuild-test.log | tail -10 || true
+          if grep -q "TEST FAILED" /tmp/xcodebuild-test.log; then
+            echo "::error::RemoteHistoryBackfillTests failed (ipa already released — fix before next push)"
+            grep -E "Test Case.*failed|error:" /tmp/xcodebuild-test.log | head -30
+            exit 1
+          fi

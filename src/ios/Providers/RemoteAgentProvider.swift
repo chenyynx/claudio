@@ -788,16 +788,20 @@ final class RemoteAgentProvider: AgentProvider {
     /// handles the seq channel): the disk jsonl is append-only per Claude
     /// session, so the same conversation always yields the same sequence —
     /// the calibration keep-set can hit across bridge-session switches.
-    static func historyAgentMessages(from serverMessages: [CCPocketProtocol.ServerMessage]) -> [AgentMessage] {
+    static func historyAgentMessages(from serverMessages: [CCPocketProtocol.ServerMessage], namespace: String? = nil) -> [AgentMessage] {
         var pastIndex = 0
         return serverMessages.compactMap { m in
             if m.type == nil, m.rawRole != nil {
                 defer { pastIndex += 1 }
                 guard var msg = agentMessage(fromServer: m) else { return nil }
-                msg.dbMessageId = "past-\(pastIndex)"
+                // [Fix v1.14.29] past id 带本地会话命名空间（ReplayRowId）。
+                msg.dbMessageId = ReplayRowId.past(index: pastIndex, namespace: namespace)
+                msg.replayIdNamespace = namespace
                 return msg
             }
-            return agentMessage(fromServer: m)
+            guard var msg = agentMessage(fromServer: m) else { return nil }
+            msg.replayIdNamespace = namespace
+            return msg
         }
     }
 

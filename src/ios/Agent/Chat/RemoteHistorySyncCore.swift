@@ -84,10 +84,9 @@ enum RemoteHistorySyncCore {
         //   旧 3 行 vs 新 5 行不触发，真实翻车后补 bridgeId 主信号）
         // 重置 → 非 user 行全部换血到新空间（user 行 UUID 无前缀，
         // 由防双份两键挡回放重复）。
-        func bridgeSeq(_ id: String) -> Int? {
-            guard id.hasPrefix("bridge-") else { return nil }
-            return Int(id.split(separator: "-").last ?? "")
-        }
+        // [Fix v1.14.29] 统一走 ReplayRowId：兼容 `bridge-{seq}`（旧）与
+        // `bridge-{ns}-{seq}`（新；ns = 本地会话前 8 位，见 ReplayRowId）。
+        func bridgeSeq(_ id: String) -> Int? { ReplayRowId.parseBridgeSeq(id) }
         let dbBridgeSeqs = dbRows.compactMap { $0.role != .user ? bridgeSeq($0.id) : nil }
         let historySeqs = historyRaws.compactMap { bridgeSeq($0.id) }
         // bridgeId 切换（sync 层传入）是确定性信号；长度启发式只是无
@@ -148,50 +147,43 @@ enum RemoteHistorySyncCore {
         // 行并存 = 同一消息渲染两次 + UUID 行按旧 sort_order 进保留区错位）。
         // 换血方向选"保本地删回放"——本地行带 mediaRef/解析产物。两类键：
         // · toolResult-only user 行按 toolUseId 比对（同一工具调用稳定唯一）
-        // · text user 行按首条 text 比对
-        var liveToolResultIds = Set<String>()
-        var liveUserTexts = Set<String>()
-        // toolUseId/text → 本地承载行 id（防双份命中时 unifiedFinalOrderIds
-        // 用本地行替换该 history 位置，user 行才不会在 renumber 时被甩到最前）
+        // · text user 行按**归一化正文**比对（[Fix v1.14.29]：先剥附件
+        //   XML——本地行 parts = [xml, 正文]，bridge 端 user_input 文本 =
+        //   "正文\n\n" + 同一 XML，旧实现按 parts.first 原文比对必然对不上
+        //   → 回放行当新内容插入 = 重复气泡 + 本地行被甩尾）
+        // [Fix v1.14.29 之二] 同文本多 occurrence 用**队列**配对——第 i 个
+        // history 同文本行 ↔ 第 i 个本地同文本行。旧实现每段文本只留第一个
+        // owner，用户连发两条相同短消息（"在吗"）时第二条永远配不上 → 被甩尾。
         var liveToolResultOwner: [String: String] = [:]
-        var liveUserTextOwner: [String: String] = [:]
+        var liveUserTextOwners: [String: [String]] = [:]
         for row in dbRows where row.role == .user && !deleteIdSet.contains(row.id) {
-            switch row.parts.first {
-            case .toolResult(let tr):
-                if liveToolResultIds.insert(tr.toolUseId).inserted {
+            if case .toolResult(let tr) = row.parts.first {
+                if liveToolResultOwner[tr.toolUseId] == nil {
                     liveToolResultOwner[tr.toolUseId] = row.id
                 }
-            case .text(let t):
-                if liveUserTexts.insert(t).inserted {
-                    liveUserTextOwner[t] = row.id
-                }
-            default:
-                break
+                continue
             }
+            guard let key = Self.userTextMatchKey(parts: row.parts) else { continue }
+            liveUserTextOwners[key, default: []].append(row.id)
         }
         let keptIds = dbIds.subtracting(deleteIdSet)
         var inserts: [RawMessage] = []
         var unifiedFinalOrderIds: [String] = []
         for raw in historyRaws {
             var localOwnerId: String?
+            // [Fix v1.14.29] owner 判定提到 keep 判断之前，且"文本键命中即消费
+            // 一次"——保证同文本的第 i 个 history 行对上第 i 个本地行。
+            if raw.role == .user {
+                if case .toolResult(let tr) = raw.parts.first {
+                    localOwnerId = liveToolResultOwner[tr.toolUseId]
+                } else if let key = Self.userTextMatchKey(parts: raw.parts) {
+                    localOwnerId = Self.takeOwner(&liveUserTextOwners, key: key)
+                }
+            }
             if keptIds.contains(raw.id) {
                 // 已在 DB（回放行命中 keep/不重插）——直接占位
                 unifiedFinalOrderIds.append(raw.id)
                 continue
-            }
-            if raw.role == .user {
-                switch raw.parts.first {
-                case .toolResult(let tr):
-                    if let owner = liveToolResultOwner[tr.toolUseId] {
-                        localOwnerId = owner
-                    }
-                case .text(let t):
-                    if let owner = liveUserTextOwner[t] {
-                        localOwnerId = owner
-                    }
-                default:
-                    break
-                }
             }
             if let owner = localOwnerId {
                 // 防双份：回放 user 行不插，本地行顶替它在 bridge 序里的位置
@@ -237,8 +229,8 @@ enum RemoteHistorySyncCore {
         var after: [RawMessage] = []
         for row in retainedRows {
             // bridge-/past- 前缀 = 回放行（老历史，排前）；其余（live UUID）
-            // = 本地新内容（排后）。
-            if row.id.hasPrefix("bridge-") || row.id.hasPrefix("past-") {
+            // = 本地新内容（排后）。前缀判定收敛到 ReplayRowId（[Fix v1.14.29]）。
+            if ReplayRowId.isReplayRow(row.id) {
                 before.append(row)
             } else {
                 after.append(row)
@@ -273,5 +265,74 @@ enum RemoteHistorySyncCore {
             // assistant / tool_result / user_input / 其他未知类型 → 视为进行中
             return true
         }
+    }
+
+    // MARK: - 增量快路径准入（[Fix v1.14.29] 远端乱序根因 A 的闸门）
+
+    /// delta 增量**只含本次新条目**，而 renumber 的定序契约要求**全量
+    /// history 序**——把残缺序喂进 `planReplace` 会让 `unifiedFinalOrderIds`
+    /// 只剩那几条新行，`orderedRowSequence` 于是把所有不在序里的 live UUID 行
+    /// （= 用户自己的**全部**发言）判为"历史未承载的最新内容"排到末尾：
+    ///
+    ///   pp 真机 2026-09-11 08:06 日志：空 delta → renumber-only →
+    ///   重进后 "你好"/"你什么模型" 落在会话最末（[6]/[7]）。
+    ///
+    /// 因此 delta 只在**顺序已被一次成功全量校准封版**（orderSealed）且
+    /// **纯追加**（所有新条目 seq 都大于本地现有最大 bridge seq）时才允许
+    /// 跳过 renumber；任一不满足 → caller 直接 fallback 全量（= v1.14.22
+    /// 已验证路径，不劣于现状）。
+    ///
+    /// - Parameters:
+    ///   - orderSealed: 本会话已由成功全量校准写入定序封版标记
+    ///   - deltaSeqs: 本次增量条目的 historySeq
+    ///   - dbMaxBridgeSeq: 本地 DB 现有 bridge 行最大 seq（无基线 → nil）
+    static func deltaFastPathAllowed(orderSealed: Bool, deltaSeqs: [Int], dbMaxBridgeSeq: Int?) -> Bool {
+        guard orderSealed else { return false }
+        guard let dbMaxBridgeSeq else { return false }
+        guard !deltaSeqs.isEmpty else { return false }
+        for seq in deltaSeqs where seq <= dbMaxBridgeSeq {
+            return false
+        }
+        return true
+    }
+
+    // MARK: - 用户文本配对（附件归一化 + 多 occurrence 队列）
+
+    /// 用户正文配对键：取第一个"剥掉附件 XML 后非空"的 text part。
+    /// 无文本部分（纯图片 / tool_result-only 行）→ nil，不参与文本配对。
+    static func userTextMatchKey(parts: [AgentContentPart]) -> String? {
+        for part in parts {
+            guard case .text(let raw) = part else { continue }
+            let normalized = normalizedUserText(raw)
+            if !normalized.isEmpty { return normalized }
+        }
+        return nil
+    }
+
+    /// 消费式取 owner：同文本的第 i 个 history 行取第 i 个本地行。
+    /// 命中即出队，保证一个本地行只顶替一个 history 位置。
+    private static func takeOwner(_ owners: inout [String: [String]], key: String) -> String? {
+        guard var queue = owners[key], !queue.isEmpty else { return nil }
+        let owner = queue.removeFirst()
+        owners[key] = queue
+        return owner
+    }
+
+    /// 剥掉附件 XML 块后的用户正文（本地行与 bridge 侧文本的比较基准）。
+    static func normalizedUserText(_ text: String) -> String {
+        var s = removeBlocks(text, open: "<user-attached-files>", close: "</user-attached-files>")
+        s = removeBlocks(s, open: "<attachment-failed", close: "/>")
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 删除成对标记包住的整段（闭合标记缺失则放弃，避免死循环）。
+    private static func removeBlocks(_ text: String, open: String, close: String) -> String {
+        var s = text
+        while let openRange = s.range(of: open) {
+            let searchRange = openRange.upperBound..<s.endIndex
+            guard let closeRange = s.range(of: close, range: searchRange) else { break }
+            s.removeSubrange(openRange.lowerBound..<closeRange.upperBound)
+        }
+        return s
     }
 }

@@ -324,7 +324,10 @@ extension AIChatViewModel {
             return nil
         }
         guard let wireMessages = await client.requestHistory(claudeId: claudeId) else { return nil }
-        let history = RemoteAgentProvider.historyAgentMessages(from: wireMessages)
+        let history = RemoteAgentProvider.historyAgentMessages(
+            from: wireMessages,
+            namespace: chatSessionID.map(ReplayRowId.namespace(sessionId:))
+        )
         if history.isEmpty {
             logger.info("[HistoryBackfill] bridge history mapped to 0 engine messages")
             // Empty engine mapping can still carry a meaningful wire tail

@@ -126,6 +126,14 @@ struct AgentMessage: @unchecked Sendable {
     /// only messages with seq > lastSyncedBridgeSeq are new and need appending.
     /// nil for in-memory messages (not from bridge history replay).
     var bridgeSeq: Int? = nil
+    /// [Fix v1.14.29] 回放行 id 的本地会话命名空间（本地会话 id 前 8 位）。
+    /// 由 `historyAgentMessages(from:namespace:)`（回放路径）与
+    /// `persistAgentMessage`（live 路径注入 bridgeSeq 时）写入。
+    /// 本地 agent 消息恒 nil —— rawMessageId 只在 bridgeSeq/past id 存在时
+    /// 走回放分支，故本地行为零变化。
+    /// 用途见 `ReplayRowId`：messages.id 是全局主键，回放 id 不带命名空间
+    /// 会跨会话撞主键 → INSERT 失败 → 内容被吞（pp 真机 2026-09-11 实证）。
+    var replayIdNamespace: String? = nil
 
     /// [Fix 2026-09-05 bug 1] Single source of truth for the RawMessage id
     /// derived from an AgentMessage. Shared between production
@@ -135,12 +143,16 @@ struct AgentMessage: @unchecked Sendable {
     /// vs "bridge-{seq}" in test) silently broke id-based dedup in prod
     /// while the test suite passed.
     ///
-    /// - bridgeSeq present → deterministic `bridge-{seq}`, so re-running
+    /// - bridgeSeq present → deterministic `bridge-{ns}-{seq}`, so re-running
     ///   remote-history sync calibration against the same bridge history hits the
     ///   existing-ids set instead of re-appending duplicates.
+    ///   [Fix v1.14.29] ns = replayIdNamespace（本地会话前 8 位）——无它时
+    ///   退回旧形态 `bridge-{seq}`（仅兜底路径），生产两处注入点都带 ns。
     /// - bridgeSeq nil → fresh UUID each call (live-stream path, no replay).
     func rawMessageId() -> String {
-        if let seq = bridgeSeq { return "bridge-\(seq)" }
+        if let seq = bridgeSeq {
+            return ReplayRowId.bridge(seq: seq, namespace: replayIdNamespace)
+        }
         // [C-5.5 修复 2026-09-10] past_history 磁盘消息（bridgeSeq=nil）用
         // historyAgentMessages 注入的 `past-{index}` 稳定 id——磁盘 jsonl 按
         // Claude 会话 append-only，同一会话每次 fetch 序列相同 → 校准 keep
