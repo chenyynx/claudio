@@ -236,6 +236,18 @@ final class RemoteHistoryBackfill {
                             logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta mixed-turn batch (user_input not leading) — fallback full")
                             deltaUsable = false
                         }
+                        // [Fix v1.14.30 / 对抗审查·前提 1·delta 变体] DB 有
+                        // stale 自己段 = 换血场景。delta 只含增量，换血删除的
+                        // 基线行无从回插 = 净丢内容。禁用快路径，强制全量。
+                        if deltaUsable {
+                            let probeSegs = Set(dbRowsProbe.compactMap { ReplayRowId.parseSegment($0.id) })
+                            let staleSegs = probeSegs.subtracting(ReplayRowId.segment(id: delta.bridgeId))
+                            if !staleSegs.isEmpty {
+                                let staleList = staleSegs.sorted().map { String($0.prefix(4)) }.joined(separator: ",")
+                                logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta denied — DB has stale own-segment rows [\(staleList)] (reshuffle scenario) — fallback full")
+                                deltaUsable = false
+                            }
+                        }
                     }
                 }
                 if isSnapshot {
@@ -362,6 +374,49 @@ final class RemoteHistoryBackfill {
         // past 行的身份是磁盘 transcript（与 bridge 段无关），照常迁移。
         let previousSegment = storedBridgeId.map(ReplayRowId.segment)
         let currentSegment = resolvedFetch.bridgeId.map(ReplayRowId.segment)
+        // [Fix v1.14.30 / 对抗审查·前提 1] DB 段集反查——storedBridgeId 失明的
+        // 兜底。bridgeId 记录存在 UserDefaults（设备本地，重装即丢），而桥
+        // 行随 iCloud 恢复回米。此时 storedBridgeId = nil → switched 判 false
+        // → 残留旧段 seg ∉ {current, previous} → isOwnSegment 判外来 →
+        // 永不清理 + 新全量插入 → 整段内容永久重复。DB 是事实源：本会话
+        // ns 下的全部 bridge 段（除当前段）都视为"待换血的旧段"。**仅全量
+        // 路径执行**（delta 增量不含完整段集，且见下方 delta 拦截）。
+        // 只统计**本会话命名空间**的段（跨会话行不可能出现在本会话查询里，
+        // ns 过滤是纵深防御）；past 行与裸形态无段，天然排除。
+        let ns = ReplayRowId.namespace(sessionId: sessionId)
+        var dbBridgeSegments: Set<String> = []
+        var reshuffleForStaleSegments = false
+        if !resolvedFetch.isDelta {
+            let probe = await ChatStore.shared.loadMessages(sessionId: sessionId)
+            for row in probe
+            where row.id.hasPrefix("bridge-"), ReplayRowId.parseNamespace(row.id) == ns {
+                if let seg = ReplayRowId.parseSegment(row.id) { dbBridgeSegments.insert(seg) }
+            }
+            // 当前段不进 previous 池；检测到本会话旧段残留而 stored 失明
+            // （没记录或记录不同）→ 事实上发生过切换（或跨设备残留）。
+            // ⚠️ 光判 isOwnSegment 不够：换血删除需要 seqSpaceReset 触发，
+            // 失明场景 stored=nil → switched=false，长度启发式也不可靠
+            // （旧段 seq 通常小于新全量 max）→ 必须显式按切换处理。
+            // ⚠️ 已知边界（多设备同 chat 各持活 bridge 会话）：本判据会把
+            // 对端设备的段也当 stale 清掉 → 对端下次 fetch 又插回 → 删/回插
+            // 乒乓（仅 churn，内容由各自全量 fetch 自愈，不净丢）。pp 单机
+            // 使用不受影响；真到多设备场景再按"段会话仍活着（session_list）
+            // 不清"加细化判据。
+            let staleOwn = dbBridgeSegments.subtracting(currentSegment.map { [$0] } ?? [])
+            if !staleOwn.isEmpty {
+                let staleList = staleOwn.sorted().map { String($0.prefix(4)) }.joined(separator: ",")
+                logger.warning("[HistorySync] session=\(sessionId.prefix(8)) DB has stale own-segment rows [\(staleList)] not covered by stored bridgeId — treating as switch (iCloud-restore / lost-seal scenario)")
+                reshuffleForStaleSegments = true
+            }
+        }
+        let previousSegments: Set<String> = {
+            var s = Set<String>()
+            if let previousSegment { s.insert(previousSegment) }
+            s.formUnion(dbBridgeSegments)
+            if let currentSegment { s.remove(currentSegment) }
+            return s
+        }()
+
         let diskSegment = CCPocketClient.persistedClaudeId(
             instanceID: instance.id,
             chatSessionID: chatSessionID ?? sessionId
@@ -410,10 +465,11 @@ final class RemoteHistoryBackfill {
             historyRaws: historyRaws,
             dbRows: dbRows,
             nonEngineSeqs: nonEngineSeqs,
-            forceFullReshuffle: bridgeSessionSwitched,
+            forceFullReshuffle: bridgeSessionSwitched || reshuffleForStaleSegments,
             evictPastRows: needPastMigration,
             currentSegment: currentSegment,
-            previousSegment: previousSegment
+            previousSegment: previousSegment,
+            previousSegments: previousSegments
         )
         // [乱序修复 2 2026-09-10 v1.14.22] replaceRemoteHistory **无条件执行**
         // （含 plan.isEmpty）：它的 renumber 按 plan.unifiedFinalOrderIds 全量

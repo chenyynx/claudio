@@ -949,4 +949,55 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         XCTAssertEqual(plan.anchorOrder, 6, "认领到的 live 行是锚点")
         XCTAssertTrue(plan.rowsToShift.isEmpty)
     }
+
+    // MARK: - stored 失明（DB 段集反查）[Fix v1.14.30 对抗审查·前提 1]
+
+    func test_planReplace_lostSeal_staleOwnSegmentTreatedAsSwitch() {
+        // 重装 + iCloud 恢复：桥行回 DB（段 B1），UserDefaults 无记录
+        // （stored=nil → switched=false）。previousSegments 反查兜住：
+        // B1 视为旧空间 → 换血删除 + 新全量回插（否则 B1 行永不清理
+        // = 整段内容永久重复渲染）。
+        let history = [
+            makeHistoryRaw(id: "bridge-ns-b2new-1", role: .user),
+            makeHistoryRaw(id: "bridge-ns-b2new-2", role: .assistant),
+        ]
+        let db = [
+            makeDBRow(id: "bridge-ns-b1old-1", role: .assistant, sortOrder: 1),
+            makeDBRow(id: "bridge-ns-b1old-2", role: .assistant, sortOrder: 2),
+        ]
+        // 生产调用形状：§4.5 反查到 staleOwn 非空 → reshuffleForStaleSegments
+        // 并入 forceFullReshuffle（Backfill 调用点 OR 语义）——换血删除必须
+        // 由 seqSpaceReset 触发，仅传 previousSegments 只影响段归属不影响删除。
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: history,
+            dbRows: db,
+            forceFullReshuffle: true,
+            currentSegment: "b2new",
+            previousSegments: ["b1old"]  // §4.5 反查产出
+        )
+        XCTAssertTrue(plan.deleteIds.contains("bridge-ns-b1old-1"))
+        XCTAssertTrue(plan.deleteIds.contains("bridge-ns-b1old-2"),
+                      "失明场景的旧段行必须进换血（否则重复渲染永不自愈）")
+        XCTAssertFalse(plan.inserts.isEmpty, "新空间全量历史必须回插")
+    }
+
+    func test_planReplace_lostSeal_foreignSegmentStillProtected() {
+        // 反查只认**本会话 ns**的段（§4.5 有 ns 过滤）：别的会话/别的设备
+        // 的段照旧受"外来段不碰"保护——反查不得越权清别人的行。
+        let history = [
+            makeHistoryRaw(id: "bridge-ns-b2new-1", role: .user),
+            makeHistoryRaw(id: "bridge-ns-b2new-2", role: .assistant),
+        ]
+        let db = [
+            makeDBRow(id: "bridge-OTHERNS-b1old-1", role: .assistant, sortOrder: 1),
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: history,
+            dbRows: db,
+            currentSegment: "b2new",
+            previousSegments: []  // 反查 ns 过滤后不含 OTHERNS
+        )
+        XCTAssertFalse(plan.deleteIds.contains("bridge-OTHERNS-b1old-1"),
+                       "外来 ns 的行不因失明反查被清（乒乓防线保持）")
+    }
 }

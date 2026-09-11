@@ -70,7 +70,7 @@ enum RemoteHistorySyncCore {
     ///     内容——id 命中 keep 会保留旧残缺行（修复失效）。CLIENT 在检测到
     ///     迁移未完成 + 全量 fetch 成功时传 true：本次全部 past 行进
     ///     deleteIds，同事务按新序列重插。日常路径恒 false（past 行只增不删）。
-    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage], nonEngineSeqs: Set<Int> = [], forceFullReshuffle: Bool = false, evictPastRows: Bool = false, currentSegment: String? = nil, previousSegment: String? = nil) -> RemoteHistoryReplacePlan {
+    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage], nonEngineSeqs: Set<Int> = [], forceFullReshuffle: Bool = false, evictPastRows: Bool = false, currentSegment: String? = nil, previousSegment: String? = nil, previousSegments: Set<String> = []) -> RemoteHistoryReplacePlan {
         let dbIds = Set(dbRows.map { $0.id })
 
         // 删除③（seq 空间重置检测，优先级最高）：bridge-{seq} 的 seq 是
@@ -97,11 +97,15 @@ enum RemoteHistorySyncCore {
         //   自己的段 = ①无段（更早形态，待迁移补段）②本次 fetch 的段
         //              ③上一个 bridge 会话的段（换会话瞬间的旧空间，已被
         //                本次全量覆盖 = 换血靶子）
+        //              ④DB 段集反查出的旧段（stored 失明：iCloud 恢复带回
+        //                他机/旧会话桥行而 UserDefaults 无记录——全量路径专属，
+        //                Backfill §4.5 传入；delta 路径传空集）
         func segmentOf(_ id: String) -> String? { ReplayRowId.parseSegment(id) }
         func isOwnSegment(_ row: RawMessage) -> Bool {
             guard let seg = segmentOf(row.id) else { return true }
             if let currentSegment, seg == currentSegment { return true }
             if let previousSegment, seg == previousSegment { return true }
+            if previousSegments.contains(seg) { return true }
             return false
         }
         let dbBridgeSeqs = dbRows.compactMap { row -> Int? in
