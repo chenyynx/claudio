@@ -440,6 +440,7 @@ enum AssistantBlockKind: Equatable {
     /// 状态存 block.askPayload / block.askStatus（见 AssistantBlock 扩展字段）；
     /// kind 本身只做路由（AssistantBlockView 分发到 AskQuestionCardView）。
     /// 远端专属：本地 agent 无此工具（gate 在帧分流处，toolName 判定）。
+    case questionCard
     case shellTool(command: String)
     case fileReadTool(path: String)
     case fileWriteTool(path: String)
