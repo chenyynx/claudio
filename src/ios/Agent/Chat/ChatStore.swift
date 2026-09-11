@@ -402,6 +402,12 @@ struct RawMessage: Identifiable, Codable, Hashable {
     /// turn. Mirrors ChatMessage.error; persisted to the messages.error_info
     /// column so the error indicator survives reload. nil = no error.
     var errorInfo: String? = nil
+    /// [Fix v1.14.30] 远端回合的 clientMessageId（客户端生成、随 input 上行，
+    /// bridge 原样写进历史条目并在回放时带回）。用于校准期把"本地 live 行"
+    /// 与"bridge 回放行"按**协议身份**对上——不再靠正文猜测（附件/纯图片/
+    /// 重复文本都会猜错）。设备本地语义：不进 iCloud 同步载荷，本地 agent
+    /// 行恒 nil。
+    var clientMessageId: String? = nil
 
     /// [T-token-attribution-snapshot] The model that ACTUALLY produced this
     /// message, snapshotted when it was written.
@@ -714,6 +720,11 @@ actor ChatStore {
         addColumnIfMissing(table: "messages", column: "model_display_name", definition: "TEXT")
         addColumnIfMissing(table: "messages", column: "provider_type", definition: "TEXT")
         addColumnIfMissing(table: "messages", column: "provider_instance_id", definition: "TEXT")
+        // [Fix v1.14.30] 远端回合的 clientMessageId（协议身份，用于校准期
+        // 把本地 live 行与 bridge 回放行确定性对上）。设备本地语义：
+        // 不进 iCloud 同步载荷（mergeRemoteMessage 显式列清单里没有它），
+        // 本地 agent 行恒 NULL。幂等加列。
+        addColumnIfMissing(table: "messages", column: "client_message_id", definition: "TEXT")
 
         // One-shot cleanup: drop legacy v1 dirty rows that have a v2
         // counterpart. Under the V2 engine these have no consumer (the
@@ -2778,8 +2789,8 @@ actor ChatStore {
         logger.info("[Store] appendMessages enter count=\(messages.count) dbOpen=\(dbOK) sid=\(firstSid)")
 
         let sql = """
-            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id, client_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
         exec("BEGIN TRANSACTION")
@@ -2829,6 +2840,8 @@ actor ChatStore {
                 bindOptionalText(stmt, index: 14, value: message.modelDisplayName)
                 bindOptionalText(stmt, index: 15, value: message.providerType)
                 bindOptionalText(stmt, index: 16, value: message.providerInstanceId)
+                // [Fix v1.14.30] 协议身份列（仅远端回合的 user 行非 nil）
+                bindOptionalText(stmt, index: 17, value: message.clientMessageId)
                 let stepRC = sqlite3_step(stmt)
                 if stepRC != SQLITE_DONE {
                     let errMsg = String(cString: sqlite3_errmsg(db))
@@ -2931,8 +2944,8 @@ actor ChatStore {
         // 2. Insert missing rows with explicit sort_order (appendMessages uses
         //    trailing nextSortOrder — unusable for mid-sequence inserts).
         let insertSQL = """
-            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id, client_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         for message in plan.inserts {
             let partsJSON: String
@@ -2972,6 +2985,10 @@ actor ChatStore {
                 bindOptionalText(stmt, index: 14, value: message.modelDisplayName)
                 bindOptionalText(stmt, index: 15, value: message.providerType)
                 bindOptionalText(stmt, index: 16, value: message.providerInstanceId)
+                // [Fix v1.14.30] 回放行也带上协议身份——user_input 回放行若没有
+                // 本地承载行（如别的设备发的），它的 clientMessageId 会成为
+                // 后续校准的对账依据。
+                bindOptionalText(stmt, index: 17, value: message.clientMessageId)
                 if sqlite3_step(stmt) != SQLITE_DONE {
                     logger.error("[Store] replace INSERT failed sid=\(sessionId.prefix(8)) mid=\(message.id.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
                     writeFailed = true
@@ -3019,12 +3036,28 @@ actor ChatStore {
                 .filter { !finalIds.contains($0.id) }
                 .sorted { $0.sortOrder < $1.sortOrder }
             let rowById = Dictionary(uniqueKeysWithValues: currentRows.map { ($0.id, $0) })
+            // [Fix v1.14.30] 段级定序：登记本次见到的 bridge 段，多段并存
+            // （换过 bridge 会话 / 多设备共享同一 chat 会话）时按 (段次序, seq)
+            // 排历史——段是随机十六进制，先后关系只能这样记。
+            // ⚠️ 段的先后 = 它们在 DB 里首次出现的先后（currentRows 已按
+            // sort_order 升序 = 上次校准写的时序）。不能去重成 Set 交给
+            // Registry 排序——字典序没有时间含义（M2 对抗审查实锤：一次调用
+            // 出现多个新段时 50% 概率颠倒，且写错永不修正）。
+            var seenSegmentSet = Set<String>()
+            let orderedSegments = currentRows
+                .compactMap { ReplayRowId.parseSegment($0.id) }
+                .filter { seenSegmentSet.insert($0).inserted }
+            let segmentRanks = RemoteSyncSegmentRegistry.ranks(
+                sessionId: sessionId,
+                segmentsInFirstSeenOrder: orderedSegments
+            )
             // 定序规则见 RemoteHistorySyncCore.orderedRowSequence（纯函数可单测）。
             let fullFinalSequence = RemoteHistorySyncCore.orderedRowSequence(
                 unifiedFinalOrderIds: unifiedIds,
                 finalOrder: finalOrder,
                 retainedRows: retainedOutsideFinal,
-                rowById: rowById
+                rowById: rowById,
+                segmentRanks: segmentRanks
             )
             var nextOrder = 1
             let renumberSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
@@ -3034,18 +3067,75 @@ actor ChatStore {
                     sqlite3_bind_int64(stmt, 1, Int64(nextOrder))
                     sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
                     sqlite3_bind_text(stmt, 3, (row.id as NSString).utf8String, -1, nil)
-                    _ = sqlite3_step(stmt)
+                    if sqlite3_step(stmt) != SQLITE_DONE {
+                        logger.error("[Store] renumber failed sid=\(sessionId.prefix(8)) mid=\(row.id.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                        writeFailed = true
+                    }
+                } else {
+                    logger.error("[Store] renumber prepare failed err=\(String(cString: sqlite3_errmsg(db)))")
+                    writeFailed = true
                 }
                 sqlite3_finalize(stmt)
                 nextOrder += 1
             }
         } else {
             // 3'. [Fix v1.14.29] delta 增量路径：不做全量重排——增量只含更新
-            //     的内容，插入行按现有 max sort_order 递增**追加**（顺序权威
-            //     是全量校准的 renumber；残缺序做重排 = 乱序根因 A）。
+            //     的内容，顺序权威是全量校准的 renumber（残缺序做重排 = 乱序
+            //     根因 A）。
+            //     [Fix v1.14.30 / 对抗审查 S4] 插入锚点不是盲追加 max+1：
+            //     DB 里可能已有"bridge history 尚未承载的 live 行"（用户刚发
+            //     的 U2，此时 U1 的回复才到达 delta）——盲追加会把 U1 的回复
+            //     排到 U2 **之后**。锚点 = 本批 delta 认领到的最后一个 live
+            //     行（unified 序里出现、DB 已存在、且非本批插入行）：delta
+            //     内容在它之后；锚点之后的既有行整体后移腾位。没有认领行
+            //     （delta 内容全在 live 行之前）→ 锚点 = 最后一个回放行，
+            //     同样把其后的行后移。
+            // [Fix v1.14.30 / 对抗审查 2·前提 2 后备闸] 混合批次（插入行位于
+            // 最后一个认领行之前）对单一锚点规则必然错序。正常入口已被
+            // Backfill 的 wire 级判据闸掉；这里是防线纵深——精确形态判定，
+            // 不信任上游（多设备交错等 wire 判据覆盖不了的形态也在此兜住）。
+            // 拒绝执行 = ROLLBACK（DB 原样）+ 失效封版 → 下次同步必走全量
+            // （幂等自愈），不会卡死在 delta 重试。
+            if !RemoteHistorySyncCore.deltaInsertIsSafe(
+                unifiedFinalOrderIds: plan.unifiedFinalOrderIds,
+                inserts: plan.inserts
+            ) {
+                exec("ROLLBACK")
+                RemoteSyncOrderSeal.clear(sessionId: sessionId)
+                logger.error("[Store] replaceRemoteHistory ROLLBACK sid=\(sessionId.prefix(8)) — delta mixed batch (insert before last claimed row), single-anchor insert refused, seal cleared for full resync")
+                return false
+            }
             let currentRows = loadMessages(sessionId: sessionId)
-            let maxOrder = currentRows.map { $0.sortOrder }.max() ?? -1
-            var appendOrder = maxOrder + 1
+            // 插入锚点规则见 RemoteHistorySyncCore.deltaInsertPlan（纯函数可单测）。
+            let deltaPlan = RemoteHistorySyncCore.deltaInsertPlan(
+                unifiedFinalOrderIds: plan.unifiedFinalOrderIds,
+                inserts: plan.inserts,
+                dbRows: currentRows
+            )
+            let anchorOrder = deltaPlan.anchorOrder
+            let shiftCount = plan.inserts.count
+            if shiftCount > 0 {
+                // 从后往前移，避免中途出现重复 sort_order 造成的不确定序。
+                let toShift = deltaPlan.rowsToShift
+                let shiftSQL = "UPDATE messages SET sort_order = sort_order + ? WHERE session_id = ? AND id = ?"
+                for row in toShift {
+                    var stmt: OpaquePointer?
+                    if sqlite3_prepare_v2(db, shiftSQL, -1, &stmt, nil) == SQLITE_OK {
+                        sqlite3_bind_int64(stmt, 1, Int64(shiftCount))
+                        sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
+                        sqlite3_bind_text(stmt, 3, (row.id as NSString).utf8String, -1, nil)
+                        if sqlite3_step(stmt) != SQLITE_DONE {
+                            logger.error("[Store] delta shift failed sid=\(sessionId.prefix(8)) mid=\(row.id.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                            writeFailed = true
+                        }
+                    } else {
+                        logger.error("[Store] delta shift prepare failed err=\(String(cString: sqlite3_errmsg(db)))")
+                        writeFailed = true
+                    }
+                    sqlite3_finalize(stmt)
+                }
+            }
+            var appendOrder = anchorOrder + 1
             let appendSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
             for row in plan.inserts {
                 var stmt: OpaquePointer?
@@ -3053,11 +3143,28 @@ actor ChatStore {
                     sqlite3_bind_int64(stmt, 1, Int64(appendOrder))
                     sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
                     sqlite3_bind_text(stmt, 3, (row.id as NSString).utf8String, -1, nil)
-                    _ = sqlite3_step(stmt)
+                    if sqlite3_step(stmt) != SQLITE_DONE {
+                        logger.error("[Store] delta append failed sid=\(sessionId.prefix(8)) mid=\(row.id.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                        writeFailed = true
+                    }
+                } else {
+                    logger.error("[Store] delta append prepare failed err=\(String(cString: sqlite3_errmsg(db)))")
+                    writeFailed = true
                 }
                 sqlite3_finalize(stmt)
                 appendOrder += 1
             }
+        }
+
+        // [Fix v1.14.30 / 对抗审查 A5] 定序步骤同样计入失败：旧实现 prepare
+        // 失败连日志都没有、step 失败静默吞掉 → 事务照常 COMMIT + 随即封版
+        // → 局部错序被**永久固化**（delta 快路径永不重排，只有下一次全量才
+        // 可能自愈）。与步骤 2 同款：任一句失败 = ROLLBACK + return false
+        // （调用方据此不封版、不写游标）。
+        if writeFailed {
+            exec("ROLLBACK")
+            logger.error("[Store] replaceRemoteHistory ROLLBACK sid=\(sessionId.prefix(8)) — order pass failed, DB untouched (no seal)")
+            return false
         }
 
         touchSession(sessionId)
@@ -3072,40 +3179,45 @@ actor ChatStore {
         return true
     }
 
-    /// [Fix v1.14.29] 回放行 id 命名空间一次性迁移（幂等）。
+    /// [Fix v1.14.29/v1.14.30] 回放行 id 形态一次性迁移（幂等）。
     ///
     /// `messages.id` 是**全局**主键，而回放 id 曾用裸 `bridge-{seq}` /
-    /// `past-{index}`（只在本会话内唯一）→ 两个会话各自同步过不同 bridge
-    /// 会话时撞主键 → INSERT 失败 → 工具卡片/思考/正文被吞（pp 真机
-    /// 2026-09-11 08:06 实证：bridge-8/9/1 UNIQUE constraint failed）。
-    /// 本函数把本会话已有的裸 id 行改写成 `bridge-{ns}-{seq}` /
-    /// `past-{ns}-{index}`（见 `ReplayRowId`），并在同一事务内同步改写
-    /// compact_markers 的 id 引用。
+    /// `past-{index}`（seq 只在单个 bridge 会话内唯一）→ 撞主键 → INSERT 失败
+    /// → 工具卡片/思考/正文被吞（pp 真机 2026-09-11 08:06 实证：bridge-8/9/1
+    /// UNIQUE constraint failed）。v1.14.30 再把 **bridge 段**编入 id
+    /// （`bridge-{ns}-{seg}-{seq}`，见 ReplayRowId）——跨设备共用一个 chat
+    /// 会话时，两台设备各自的 bridge 会话 seq 都从 1 起，只靠命名空间仍会
+    /// 同 id 不同内容（iCloud LWW 互相覆盖）。
     ///
-    /// 幂等：已命名空间化的行不满足快检的 `NOT LIKE` 条件 → 第二次零改动。
-    /// 冲突：目标 id 已存在（上次迁移中断 / 与新插行撞）→ 删除旧的裸 id 行，
-    /// 内容由已存在的那行承载。
+    /// 本函数把两代旧形态统一改写到目标形态，并在同一事务内同步改写
+    /// compact_markers 的 id 引用：
+    ///   `bridge-{seq}`        → `bridge-{ns}-{seg}-{seq}`
+    ///   `bridge-{ns}-{seq}`   → `bridge-{ns}-{seg}-{seq}`（v1.14.29 形态）
+    ///   `past-{index}`        → `past-{ns}-{index}`
+    ///
+    /// 幂等：形态判定由 `ReplayRowId.migrationTarget` 负责（已是目标形态返回
+    /// nil）——SQL 侧不写死形态模式，避免前缀 LIKE 误判。
+    /// 冲突：目标 id 已存在（上次迁移中断 / 与新插行撞）→ 删除旧行，内容由
+    /// 已存在的那行承载。
     ///
     /// ⚠️ 调用时机：必须在**读 dbRows 计算校准计划之前**（RemoteHistoryBackfill
     /// §5）——否则计划按旧 id 算 keep 集、落库按新 id 写，同一行会被当成新行
     /// 重插（PK 冲突 = 正是要修的病）。
-    func migrateReplayRowIdsIfNeeded(sessionId: String, namespace ns: String) {
+    /// ⚠️ segment 为 nil 时只迁移 past 行（bridge 行无法补段，留给下次）。
+    /// ⚠️ diskSegment（claude 会话前 8 位）为 nil 时 past 行不迁移（past 的
+    /// 身份是"哪份磁盘 transcript + 第几条"，bridge 段表达不了）。
+    func migrateReplayRowIdsIfNeeded(sessionId: String, namespace ns: String, segment: String?, diskSegment: String?) {
         guard !ns.isEmpty, db != nil else { return }
-        let bridgePattern = "bridge-\(ns)-%"
-        let pastPattern = "past-\(ns)-%"
-        // 快检：本会话是否还有裸 id 回放行（常态为零 → 立即返回）
+        // 快检：本会话有无回放行（常态为零 → 立即返回；有则下面逐个判形态）
         let probeSql = """
             SELECT COUNT(*) FROM messages
             WHERE session_id = ?
               AND (id LIKE 'bridge-%' OR id LIKE 'past-%')
-              AND id NOT LIKE ? AND id NOT LIKE ?
         """
         var probeStmt: OpaquePointer?
         var pending = 0
         if sqlite3_prepare_v2(db, probeSql, -1, &probeStmt, nil) == SQLITE_OK {
             sqlite3_bind_text(probeStmt, 1, (sessionId as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(probeStmt, 2, (bridgePattern as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(probeStmt, 3, (pastPattern as NSString).utf8String, -1, nil)
             if sqlite3_step(probeStmt) == SQLITE_ROW {
                 pending = Int(sqlite3_column_int64(probeStmt, 0))
             }
@@ -3127,15 +3239,32 @@ actor ChatStore {
         sqlite3_finalize(listStmt)
         guard !legacyIds.isEmpty else { return }
 
+        // 形态判定完全交给 ReplayRowId.migrationTarget（已迁移的返回 nil）——
+        // SQL 侧不再写死形态模式，避免"v1.14.29 形态被前缀 LIKE 误判成已迁移"
+        // 这类耦合（改名目标同时覆盖 `bridge-{seq}` 与 `bridge-{ns}-{seq}` 两代）。
+        let migrationPlan: [(from: String, to: String)] = legacyIds.compactMap { oldId in
+            guard let newId = ReplayRowId.migrationTarget(
+                from: oldId,
+                namespace: ns,
+                segment: segment,
+                diskSegment: diskSegment
+            ) else { return nil }
+            return (oldId, newId)
+        }
+        guard !migrationPlan.isEmpty else { return }
+
         exec("BEGIN TRANSACTION")
         var renamed = 0
         var deduped = 0
         var failed = false
-        for oldId in legacyIds {
-            guard let newId = ReplayRowId.migrationTarget(from: oldId, namespace: ns) else { continue }
+        for (oldId, newId) in migrationPlan {
             if messageRowExists(id: newId) {
                 if execDeleteMessage(sessionId: sessionId, id: oldId) {
                     deduped += 1
+                    // [Fix v1.14.30 / 对抗审查 A6] 旧行被删后，compact_markers
+                    // 里指向 oldId 的锚点必须同步改指 newId——否则边界/压缩
+                    // 锚点悬空（v2 锚点悬空会退化成全量历史，压缩摘要静默失效）。
+                    rewriteMarkerReferences(sessionId: sessionId, from: oldId, to: newId)
                     markDirty(recordType: "Message", recordId: oldId, operation: "delete")
                 } else {
                     failed = true
@@ -3236,7 +3365,7 @@ actor ChatStore {
     func loadMessages(sessionId: String) -> [RawMessage] {
         let totalStart = CFAbsoluteTimeGetCurrent()
         let sql = """
-            SELECT id, session_id, role, parts_json, created_at, token_usage, reasoning_content, stream_interrupt_count, sort_order, error_info, model_id, model_display_name, provider_type, provider_instance_id
+            SELECT id, session_id, role, parts_json, created_at, token_usage, reasoning_content, stream_interrupt_count, sort_order, error_info, model_id, model_display_name, provider_type, provider_instance_id, client_message_id
             FROM messages WHERE session_id = ? ORDER BY sort_order ASC, created_at ASC, id ASC
         """
         var stmt: OpaquePointer?
@@ -3293,6 +3422,9 @@ actor ChatStore {
                 msg.modelDisplayName = sqlite3_column_text(stmt, 11).map { String(cString: $0) }
                 msg.providerType = sqlite3_column_text(stmt, 12).map { String(cString: $0) }
                 msg.providerInstanceId = sqlite3_column_text(stmt, 13).map { String(cString: $0) }
+                // [Fix v1.14.30] 协议身份列（老库无此列时 addColumnIfMissing
+                // 已补空列 → NULL → clientMessageId 保持 nil，走文本兜底）。
+                msg.clientMessageId = sqlite3_column_text(stmt, 14).map { String(cString: $0) }
                 messages.append(msg)
             }
         } else {
@@ -3670,6 +3802,11 @@ actor ChatStore {
         }
         let deletedRows = Int(sqlite3_changes(db))
         sqlite3_finalize(stmt)
+        if deletedRows > 0 {
+            // [Fix v1.14.30 / 对抗审查 M3] 截断（消息编辑/重生成）改了行集合
+            // 与顺序 → 封版失效。
+            RemoteSyncOrderSeal.clear(sessionId: sessionId)
+        }
 
         let afterStats = sessionWriteStats(sessionId: sessionId)
         let boundaryDesc = deleteAll ? "ALL" : String(boundarySortOrder ?? -1)
@@ -4470,6 +4607,11 @@ actor ChatStore {
         sqlite3_finalize(delStmt)
 
         let deleted = Int(sqlite3_changes(db))
+        if deleted > 0 {
+            // [Fix v1.14.30 / 对抗审查 M3] 裁剪删掉了头部 → 残留顺序不再是
+            // 校准写的那份 → 封版失效，下次同步回全量重排。
+            RemoteSyncOrderSeal.clear(sessionId: sessionId)
+        }
         logger.info("[Prune] session \(sessionId.prefix(8)): deleted \(deleted) oldest messages (was \(totalCount), threshold \(Self.pruneThreshold))")
     }
 
@@ -7169,6 +7311,12 @@ extension ChatStore {
             }
             sqlite3_finalize(stmt)
         }
+        // [Fix v1.14.30 / 对抗审查 M3] iCloud 合并是**非校准路径**的顺序写入
+        // （插入可能让位 +1 / 改 sort_order）→ 定序封版标记失效，下次同步
+        // 回退全量重排。不清则 delta 快路径（纯追加、永不重排）会带着被外部
+        // 改坏的顺序长期跑下去。
+        RemoteSyncOrderSeal.clear(sessionId: sessionId)
+
         // Notify the in-process ViewModel cache that this session's
         // messages have changed via iCloud merge. The foreground-visible
         // VM already reloads via `.cloudSyncDidFetchChanges` at the end

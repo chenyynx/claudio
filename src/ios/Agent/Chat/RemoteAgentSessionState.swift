@@ -75,6 +75,13 @@ final class RemoteAgentSessionState: ObservableObject {
     /// runAgentLoop 远端分支交给 provider 后清空。
     @Published var pendingPayloads: [RemotePayload] = []
 
+    /// [Fix v1.14.30] 本轮的**协议身份**（clientMessageId）：
+    /// send() 在远端回合生成 → 随用户行落库（校准期按身份对账，不再靠正文
+    /// 猜）→ runAgentLoop 远端分支交给 provider 上行（bridge 原样写进历史
+    /// 条目，回放时带回）→ 交完立即清空，绝不跨轮复用。
+    /// gate：本地 agent 回合恒 nil（隔离铁律）。
+    var pendingClientMessageId: String?
+
     // MARK: - 远端压缩指示
 
     /// 远端 compacting 进行中（SSEStream .remoteCompactingStarted 写）。

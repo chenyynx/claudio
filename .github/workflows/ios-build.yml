@@ -183,6 +183,8 @@ jobs:
             -destination 'platform=macOS,variant=Designed for iPad' \
             -only-testing:MinisTests/RemoteHistoryBackfillTests \
             -only-testing:MinisTests/RemoteHistorySyncCoreDeltaTests \
+            -only-testing:MinisTests/RemoteHistoryIdentityTests \
+            -only-testing:MinisTests/RemoteSyncSegmentRegistryTests \
             -only-testing:MinisTests/ReplayRowIdTests \
             CODE_SIGNING_ALLOWED=NO \
             SWIFT_NUM_THREADS=2 \

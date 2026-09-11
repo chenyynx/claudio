@@ -480,8 +480,8 @@ final class RemoteHistoryBackfillTests: XCTestCase {
             retainedRows: [oldBridge, oldPast],
             rowById: [oldBridge.id: oldBridge, oldPast.id: oldPast]
         )
-        XCTAssertEqual(sequence.map { $0.id }, ["bridge-1", "past-0", "bridge-50"],
-                       "trim 窗口外的回放行排前，历史主体在后")
+        XCTAssertEqual(sequence.map { $0.id }, ["past-0", "bridge-1", "bridge-50"],
+                       "past 行（磁盘历史）恒最先；其余 trim 窗口外的回放行排前，历史主体在后")
     }
 
     func test_renumber_distinguishesReplayWindowFromLiveNew() {
@@ -819,5 +819,134 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         XCTAssertEqual(plan.inserts.map { $0.id }, ["past-0", "past-1", "past-2"],
                        "新序列同 id 重插（先删后插同事务），旧 user 行不冒充 owner")
         XCTAssertEqual(plan.unifiedFinalOrderIds, ["past-0", "past-1", "past-2"])
+    }
+
+    // MARK: - 段作用域（[Fix v1.14.30] 对抗审查 A2/A3）
+
+    func test_planReplace_foreignSegmentRowsNeverDeleted() {
+        // 别的设备灌进来的段（isOwnSegment == false）：任何删除规则都不许碰
+        // ——删了就是删别的设备的内容，且删除会对端同步 → 对端校准插回 →
+        // 删/回插乒乓（A2 审查）。自己的旧空间（无段形态）照常换血。
+        let history = [makeHistoryRaw(id: "bridge-ns-aaaa-9", role: .assistant)]
+        let db = [
+            makeDBRow(id: "bridge-ns-bbbb-3", role: .assistant, sortOrder: 1),
+            makeDBRow(id: "bridge-ns-2", role: .assistant, sortOrder: 2),
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: history,
+            dbRows: db,
+            forceFullReshuffle: true,
+            currentSegment: "aaaa"
+        )
+        XCTAssertFalse(plan.deleteIds.contains("bridge-ns-bbbb-3"),
+                       "外来段的行不得被换血删除")
+        XCTAssertTrue(plan.deleteIds.contains("bridge-ns-2"),
+                      "自己旧空间（无段形态）的行才是换血靶子")
+    }
+
+    func test_planReplace_resetDeletesPreviousSegmentRows() {
+        let db = [makeDBRow(id: "bridge-ns-oldseg1-3", role: .assistant, sortOrder: 1)]
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: [],
+            dbRows: db,
+            forceFullReshuffle: true,
+            currentSegment: "newseg2",
+            previousSegment: "oldseg1"
+        )
+        XCTAssertTrue(plan.deleteIds.contains("bridge-ns-oldseg1-3"),
+                      "上一个 bridge 会话的行是换血靶子（本次全量已覆盖其内容）")
+    }
+
+    func test_planReplace_resetDeletesLegacyUserReplayRowOnlyWhenCovered() {
+        // [A3] 换会话时旧空间的**回放 user 行**：同 seq 已被新 history 覆盖
+        // → 删（否则它 keep 命中永久占位，真实内容永不落库 + 用户发言被甩尾）；
+        // 未被覆盖（trim 窗口外）→ 保留（删了不回插 = 净丢内容）。
+        let history = [
+            makeHistoryRaw(id: "bridge-ns-newseg-7", role: .user),
+            makeHistoryRaw(id: "bridge-ns-newseg-8", role: .assistant),
+        ]
+        let db = [
+            makeDBRow(id: "bridge-ns-7", role: .user, sortOrder: 1),
+            makeDBRow(id: "bridge-ns-99", role: .user, sortOrder: 2),
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: history,
+            dbRows: db,
+            forceFullReshuffle: true,
+            currentSegment: "newseg"
+        )
+        XCTAssertTrue(plan.deleteIds.contains("bridge-ns-7"),
+                      "被新 history 覆盖的旧空间回放 user 行必须清掉")
+        XCTAssertFalse(plan.deleteIds.contains("bridge-ns-99"),
+                       "未被覆盖的保留——删了不回插等于吞掉用户消息")
+    }
+
+    func test_planReplace_seqHeuristicIgnoresForeignSegments() {
+        // dbMax 启发式只统计自己的段：外来段 seq 更大时不得假触发"seq 空间
+        // 重置"（否则整库非 user 行换血 = 删别的设备的行）。
+        let history = [makeHistoryRaw(id: "bridge-ns-aaaa-1", role: .assistant)]
+        let db = [
+            makeDBRow(id: "bridge-ns-bbbb-999", role: .assistant, sortOrder: 1),
+            makeDBRow(id: "bridge-ns-aaaa-1", role: .assistant, sortOrder: 2),
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: history,
+            dbRows: db,
+            currentSegment: "aaaa"
+        )
+        XCTAssertTrue(plan.deleteIds.isEmpty,
+                      "外来段的 999 不得触发换血")
+    }
+
+    // MARK: - delta 插入锚点（[Fix v1.14.30] 对抗审查 S4）
+
+    func test_deltaInsertPlan_noTrailingLiveRows_anchorsAtLastReplayRow() {
+        let db = [
+            makeDBRow(id: "bridge-ns-aaaa-1", role: .assistant, sortOrder: 1),
+            makeDBRow(id: "past-ns-9f3e2a1b-0", role: .user, sortOrder: 2),
+        ]
+        let inserts = [makeHistoryRaw(id: "bridge-ns-aaaa-2", role: .assistant)]
+        let plan = RemoteHistorySyncCore.deltaInsertPlan(
+            unifiedFinalOrderIds: ["bridge-ns-aaaa-2"],
+            inserts: inserts,
+            dbRows: db
+        )
+        XCTAssertEqual(plan.anchorOrder, 2, "无 live 行 → 锚点 = 最后一个回放行")
+        XCTAssertTrue(plan.rowsToShift.isEmpty)
+    }
+
+    func test_deltaInsertPlan_trailingLiveRowGetsShifted() {
+        // U2 刚发（live，bridge history 尚未承载），此时**上一轮**的回复才
+        // 到达 delta：回复必须插在 U2 之前（盲追加会排到 U2 后面 = S4）。
+        let db = [
+            makeDBRow(id: "bridge-ns-aaaa-5", role: .assistant, sortOrder: 5),
+            makeDBRow(id: "UUID-U2", role: .user, sortOrder: 6),
+        ]
+        let inserts = [makeHistoryRaw(id: "bridge-ns-aaaa-6", role: .assistant)]
+        let plan = RemoteHistorySyncCore.deltaInsertPlan(
+            unifiedFinalOrderIds: ["bridge-ns-aaaa-6"],
+            inserts: inserts,
+            dbRows: db
+        )
+        XCTAssertEqual(plan.anchorOrder, 5)
+        XCTAssertEqual(plan.rowsToShift.map { $0.id }, ["UUID-U2"],
+                       "trailing live 行整体后移腾位")
+    }
+
+    func test_deltaInsertPlan_claimedLiveRowBecomesAnchor() {
+        // delta 携带 U2 自己的 user_input（认领 U2）→ 认领行是锚点，本批回复
+        // 插在 U2 **之后**（真实时序：U2 → 回复）。
+        let db = [
+            makeDBRow(id: "bridge-ns-aaaa-5", role: .assistant, sortOrder: 5),
+            makeDBRow(id: "UUID-U2", role: .user, sortOrder: 6),
+        ]
+        let inserts = [makeHistoryRaw(id: "bridge-ns-aaaa-7", role: .assistant)]
+        let plan = RemoteHistorySyncCore.deltaInsertPlan(
+            unifiedFinalOrderIds: ["UUID-U2", "bridge-ns-aaaa-7"],
+            inserts: inserts,
+            dbRows: db
+        )
+        XCTAssertEqual(plan.anchorOrder, 6, "认领到的 live 行是锚点")
+        XCTAssertTrue(plan.rowsToShift.isEmpty)
     }
 }

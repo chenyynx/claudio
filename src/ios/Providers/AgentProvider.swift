@@ -134,6 +134,16 @@ struct AgentMessage: @unchecked Sendable {
     /// 用途见 `ReplayRowId`：messages.id 是全局主键，回放 id 不带命名空间
     /// 会跨会话撞主键 → INSERT 失败 → 内容被吞（pp 真机 2026-09-11 实证）。
     var replayIdNamespace: String? = nil
+    /// [Fix v1.14.30] 回放行 id 的 **bridge 段**（bridge 会话 id 前 8 位）——
+    /// seq 空间的真正所有者。id = `bridge-{ns}-{seg}-{seq}`：跨设备（同一
+    /// chat 被 iCloud 同步到两台设备，各自持不同 bridge 会话）与跨会话
+    /// （resume/重启换 seq 空间）都不再撞全局主键（见 ReplayRowId）。
+    var replayIdSegment: String? = nil
+    /// [Fix v1.14.30] 协议身份：客户端生成、随 input 上行、bridge 原样写进
+    /// 历史条目并在回放时带回（`bridge websocket.ts:3331-3340`）。校准期用它
+    /// 把回放行与本地行**确定性地**对上（见 RemoteHistoryIdentity）。
+    /// 本地 agent 消息恒 nil。
+    var clientMessageId: String? = nil
 
     /// [Fix 2026-09-05 bug 1] Single source of truth for the RawMessage id
     /// derived from an AgentMessage. Shared between production
@@ -151,7 +161,7 @@ struct AgentMessage: @unchecked Sendable {
     /// - bridgeSeq nil → fresh UUID each call (live-stream path, no replay).
     func rawMessageId() -> String {
         if let seq = bridgeSeq {
-            return ReplayRowId.bridge(seq: seq, namespace: replayIdNamespace)
+            return ReplayRowId.bridge(seq: seq, namespace: replayIdNamespace, segment: replayIdSegment)
         }
         // [C-5.5 修复 2026-09-10] past_history 磁盘消息（bridgeSeq=nil）用
         // historyAgentMessages 注入的 `past-{index}` 稳定 id——磁盘 jsonl 按

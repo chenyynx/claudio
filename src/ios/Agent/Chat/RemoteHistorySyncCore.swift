@@ -70,7 +70,7 @@ enum RemoteHistorySyncCore {
     ///     内容——id 命中 keep 会保留旧残缺行（修复失效）。CLIENT 在检测到
     ///     迁移未完成 + 全量 fetch 成功时传 true：本次全部 past 行进
     ///     deleteIds，同事务按新序列重插。日常路径恒 false（past 行只增不删）。
-    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage], nonEngineSeqs: Set<Int> = [], forceFullReshuffle: Bool = false, evictPastRows: Bool = false) -> RemoteHistoryReplacePlan {
+    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage], nonEngineSeqs: Set<Int> = [], forceFullReshuffle: Bool = false, evictPastRows: Bool = false, currentSegment: String? = nil, previousSegment: String? = nil) -> RemoteHistoryReplacePlan {
         let dbIds = Set(dbRows.map { $0.id })
 
         // 删除③（seq 空间重置检测，优先级最高）：bridge-{seq} 的 seq 是
@@ -87,8 +87,34 @@ enum RemoteHistorySyncCore {
         // [Fix v1.14.29] 统一走 ReplayRowId：兼容 `bridge-{seq}`（旧）与
         // `bridge-{ns}-{seq}`（新；ns = 本地会话前 8 位，见 ReplayRowId）。
         func bridgeSeq(_ id: String) -> Int? { ReplayRowId.parseBridgeSeq(id) }
-        let dbBridgeSeqs = dbRows.compactMap { $0.role != .user ? bridgeSeq($0.id) : nil }
+        // [Fix v1.14.30 / 对抗审查 A2] **段作用域**：seq 只在同一个 bridge
+        // 会话（段）内单调。多段并存时（换过 bridge 会话；或同一 chat 被
+        // iCloud 同步到另一台设备，各自持不同 bridge 会话）按 seq 直接比较
+        // 就是跨段误判——会删掉别的设备/旧段的行，且删除会对端同步 → 对端
+        // 校准又插回 → "删/回插乒乓"。
+        //
+        // 判据只对本设备**自己的段**生效；外来段的行任何删除规则都不碰：
+        //   自己的段 = ①无段（更早形态，待迁移补段）②本次 fetch 的段
+        //              ③上一个 bridge 会话的段（换会话瞬间的旧空间，已被
+        //                本次全量覆盖 = 换血靶子）
+        func segmentOf(_ id: String) -> String? { ReplayRowId.parseSegment(id) }
+        func isOwnSegment(_ row: RawMessage) -> Bool {
+            guard let seg = segmentOf(row.id) else { return true }
+            if let currentSegment, seg == currentSegment { return true }
+            if let previousSegment, seg == previousSegment { return true }
+            return false
+        }
+        let dbBridgeSeqs = dbRows.compactMap { row -> Int? in
+            guard row.role != .user, isOwnSegment(row) else { return nil }
+            return bridgeSeq(row.id)
+        }
         let historySeqs = historyRaws.compactMap { bridgeSeq($0.id) }
+        // [对抗审查 A3] 只有"新 history 在**同 seq 也是 user 行**"时才敢删旧
+        // 空间的回放 user 行——同 seq 不同角色说明两边不是同一轮对话（换过
+        // claude 会话等），删了就真丢内容。
+        let historyUserSeqs = Set(
+            historyRaws.filter { $0.role == .user }.compactMap { bridgeSeq($0.id) }
+        )
         // bridgeId 切换（sync 层传入）是确定性信号；长度启发式只是无
         // bridgeId 时的兜底（短会话 dbMax<=histMax 时漏判——真实翻车）。
         let seqSpaceReset = forceFullReshuffle || {
@@ -119,7 +145,20 @@ enum RemoteHistorySyncCore {
                 // 序列同事务重插；命中本地 owner 则不插由 unified 序承接）。
                 // 检查须先于 user 保留规则。
                 if row.id.hasPrefix("past-") { return evictPastRows }
-                guard row.role != .user else { return false }
+                // [对抗审查 A2] 外来段的行：任何删除规则都不碰（跨设备/旧来源
+                // 的段，删了就是删别的设备的内容 + 回插乒乓）。
+                if !isOwnSegment(row) { return false }
+                if row.role == .user {
+                    // [对抗审查 A3] 换会话（seq 空间重置）时，旧空间的回放
+                    // user 行（无段/旧段）若同 seq 已被本次 history 覆盖 →
+                    // 内容由新行或本地承载行承接，删除旧行。不删则它永久
+                    // 占住该 seq（keep 命中）→ 新内容永不落库 + 用户发言
+                    // 被甩到会话末尾（每次校准复现，幂等不会自愈）。
+                    // 未被 history 覆盖的（trim 窗口外）保留——删了不回插
+                    // = 净丢内容。
+                    guard seqSpaceReset, let seq = bridgeSeq(row.id) else { return false }
+                    return segmentOf(row.id) != currentSegment && historyUserSeqs.contains(seq)
+                }
                 // [对抗审查 R4 追加] past-{index} 行是磁盘历史回放（claude
                 // 会话 append-only，序列跨 bridge 会话稳定）——seq 空间重置
                 // 换血的靶子是旧 bridge 空间的 bridge-{seq}/UUID 行，past 行
@@ -143,46 +182,31 @@ enum RemoteHistorySyncCore {
         // 仍进池会把新序列的同文本行顶替成"旧行 id"（旧行已删 + 新行不插
         // = 用户消息净丢）。
         let deleteIdSet = Set(deleteIds)
-        // [排查 2026-09-10] user 行防双份（live UUID 行与回放 bridge-{seq}
-        // 行并存 = 同一消息渲染两次 + UUID 行按旧 sort_order 进保留区错位）。
-        // 换血方向选"保本地删回放"——本地行带 mediaRef/解析产物。两类键：
-        // · toolResult-only user 行按 toolUseId 比对（同一工具调用稳定唯一）
-        // · text user 行按**归一化正文**比对（[Fix v1.14.29]：先剥附件
-        //   XML——本地行 parts = [xml, 正文]，bridge 端 user_input 文本 =
-        //   "正文\n\n" + 同一 XML，旧实现按 parts.first 原文比对必然对不上
-        //   → 回放行当新内容插入 = 重复气泡 + 本地行被甩尾）
-        // [Fix v1.14.29 之二] 同文本多 occurrence 用**队列**配对——第 i 个
-        // history 同文本行 ↔ 第 i 个本地同文本行。旧实现每段文本只留第一个
-        // owner，用户连发两条相同短消息（"在吗"）时第二条永远配不上 → 被甩尾。
-        var liveToolResultOwner: [String: String] = [:]
-        var liveUserTextOwners: [String: [String]] = [:]
-        for row in dbRows where row.role == .user && !deleteIdSet.contains(row.id) {
-            if case .toolResult(let tr) = row.parts.first {
-                if liveToolResultOwner[tr.toolUseId] == nil {
-                    liveToolResultOwner[tr.toolUseId] = row.id
-                }
-                continue
-            }
-            guard let key = Self.userTextMatchKey(parts: row.parts) else { continue }
-            liveUserTextOwners[key, default: []].append(row.id)
-        }
+        // [Fix v1.14.30] 身份对账交给独立模块 RemoteHistoryOwnerIndex：
+        // 优先级 clientMessageId（协议身份）→ toolUseId → 归一化正文队列兜底。
+        // 旧实现把这三件事按正文猜着内联在这里，附件消息（本地 parts=[xml,
+        // 正文] vs bridge "正文+XML"）、纯图片消息（无正文）、重复文本都会猜错。
+        var owners = RemoteHistoryOwnerIndex(dbRows: dbRows, excluding: deleteIdSet)
         let keptIds = dbIds.subtracting(deleteIdSet)
         var inserts: [RawMessage] = []
         var unifiedFinalOrderIds: [String] = []
+        // [Fix v1.14.30] 已落库的回放 user 行若认领到本地承载行：由本地行顶替
+        // 它的位置，并把这条多余的**回放 user 行**排进删除。否则会出现
+        // "回放行占位 + 本地行无人认领 → 落 after 桶甩到会话末尾 + 同一内容
+        // 两个气泡"（对抗审查 2026-09-11 构造实证；老 build 对附件消息按原文
+        // 比对必然配不上，pp 的库里很可能已有这类重复行）。
+        var redundantReplayUserRowIds: [String] = []
         for raw in historyRaws {
-            var localOwnerId: String?
-            // [Fix v1.14.29] owner 判定提到 keep 判断之前，且"文本键命中即消费
-            // 一次"——保证同文本的第 i 个 history 行对上第 i 个本地行。
-            if raw.role == .user {
-                if case .toolResult(let tr) = raw.parts.first {
-                    localOwnerId = liveToolResultOwner[tr.toolUseId]
-                } else if let key = Self.userTextMatchKey(parts: raw.parts) {
-                    localOwnerId = Self.takeOwner(&liveUserTextOwners, key: key)
-                }
-            }
+            // owner 判定必须在 keep 判断之前，且"命中即消费一次"——保证第 i 个
+            // 回放行对上第 i 个**未被占用**的本地行。
+            let localOwnerId = owners.claimOwner(for: raw)
             if keptIds.contains(raw.id) {
-                // 已在 DB（回放行命中 keep/不重插）——直接占位
-                unifiedFinalOrderIds.append(raw.id)
+                if let owner = localOwnerId, owner != raw.id {
+                    unifiedFinalOrderIds.append(owner)
+                    redundantReplayUserRowIds.append(raw.id)
+                } else {
+                    unifiedFinalOrderIds.append(raw.id)
+                }
                 continue
             }
             if let owner = localOwnerId {
@@ -194,10 +218,16 @@ enum RemoteHistorySyncCore {
             inserts.append(raw)
         }
 
-        let keptCount = dbRows.count - deleteIds.count
+        // [Fix v1.14.30] 冗余回放 user 行（同内容已由本地承载行渲染）并入删除。
+        // "user 行只增不删" 的初衷是防"删了不回插 = 内容净丢"；这里删的是
+        // **重复副本**——内容由 localOwner 行承载且在 unified 序里占位，故安全。
+        var seenDeleteIds = Set<String>()
+        let allDeleteIds = (deleteIds + redundantReplayUserRowIds)
+            .filter { seenDeleteIds.insert($0).inserted }
+        let keptCount = dbRows.count - allDeleteIds.count
         return RemoteHistoryReplacePlan(
             inserts: inserts,
-            deleteIds: deleteIds,
+            deleteIds: allDeleteIds,
             keptCount: keptCount,
             unifiedFinalOrderIds: unifiedFinalOrderIds
         )
@@ -223,7 +253,8 @@ enum RemoteHistorySyncCore {
         unifiedFinalOrderIds: [String],
         finalOrder: [RawMessage],
         retainedRows: [RawMessage],
-        rowById: [String: RawMessage]
+        rowById: [String: RawMessage],
+        segmentRanks: [String: Int] = [:]
     ) -> [RawMessage] {
         var before: [RawMessage] = []
         var after: [RawMessage] = []
@@ -236,6 +267,10 @@ enum RemoteHistorySyncCore {
                 after.append(row)
             }
         }
+        // [Fix v1.14.30] 段级定序：多段并存（换过 bridge 会话 / 多设备共享同一
+        // chat 会话）时，回放区按 (段首见次序, seq) 排——先见到的段 = 更早的
+        // 历史，同段内 seq 单调。past 行恒最先（磁盘历史早于任何 bridge 会话）。
+        before = Self.sortedReplayRows(before, segmentRanks: segmentRanks)
         var sequence: [RawMessage] = before
         for id in unifiedFinalOrderIds {
             if let row = rowById[id] {
@@ -296,43 +331,109 @@ enum RemoteHistorySyncCore {
         return true
     }
 
-    // MARK: - 用户文本配对（附件归一化 + 多 occurrence 队列）
+    // MARK: - delta 插入位置（[Fix v1.14.30] 对抗审查 S4）
 
-    /// 用户正文配对键：取第一个"剥掉附件 XML 后非空"的 text part。
-    /// 无文本部分（纯图片 / tool_result-only 行）→ nil，不参与文本配对。
-    static func userTextMatchKey(parts: [AgentContentPart]) -> String? {
-        for part in parts {
-            guard case .text(let raw) = part else { continue }
-            let normalized = normalizedUserText(raw)
-            if !normalized.isEmpty { return normalized }
+    /// delta 增量行的插入计划：锚点 sort_order + 需要整体后移的行（从后往前）。
+    ///
+    /// 为什么不能盲追加 `max + 1`：DB 里可能已有"bridge history 尚未承载的
+    /// live 行"（用户刚发的 U2，此时**上一轮**的回复才到达 delta）——盲追加会
+    /// 把 U1 的回复排到 U2 **之后**，顺序错到下一次全量校准才修（S4 审查）。
+    ///
+    /// 锚点规则：
+    /// 1. 本批 delta **认领到的最后一个 live 行**（unified 序里出现、DB 已
+    ///    存在、且不是本批插入行）→ delta 内容在它之后（它是载体，不是新内容）；
+    /// 2. 没有认领行（delta 内容全部位于 trailing live 行之前）→ 最后一个
+    ///    回放行的位置。
+    /// 锚点之后的行整体后移 `inserts.count` 位，插入行占住腾出的窗口。
+    ///
+    /// - Returns: `anchorOrder`（插入行从 anchorOrder + 1 起）与 `rowsToShift`
+    ///   （已按 sort_order 降序，调用方依序 +count 即可）
+    ///
+    /// ⚠️ [Fix v1.14.30] 前置条件：`deltaInsertIsSafe == true`（纯尾段
+    /// 插入）。夹心批次单一锚点必然错序——调用方必须先闸形态（见
+    /// `deltaInsertIsSafe`；ChatStore 侧有后备闸拒绝执行）。
+    static func deltaInsertPlan(
+        unifiedFinalOrderIds: [String],
+        inserts: [RawMessage],
+        dbRows: [RawMessage]
+    ) -> (anchorOrder: Int, rowsToShift: [RawMessage]) {
+        let insertedIdSet = Set(inserts.map { $0.id })
+        let rowById = Dictionary(uniqueKeysWithValues: dbRows.map { ($0.id, $0) })
+        let anchorOrder: Int
+        if let claimedId = unifiedFinalOrderIds.last(where: { !insertedIdSet.contains($0) }),
+           let claimedRow = rowById[claimedId] {
+            anchorOrder = claimedRow.sortOrder
+        } else {
+            anchorOrder = dbRows
+                .filter { ReplayRowId.isReplayRow($0.id) }
+                .map { $0.sortOrder }
+                .max() ?? -1
         }
-        return nil
+        let rowsToShift = dbRows
+            .filter { $0.sortOrder > anchorOrder }
+            .sorted { $0.sortOrder > $1.sortOrder }
+        return (anchorOrder, rowsToShift)
     }
 
-    /// 消费式取 owner：同文本的第 i 个 history 行取第 i 个本地行。
-    /// 命中即出队，保证一个本地行只顶替一个 history 位置。
-    private static func takeOwner(_ owners: inout [String: [String]], key: String) -> String? {
-        guard var queue = owners[key], !queue.isEmpty else { return nil }
-        let owner = queue.removeFirst()
-        owners[key] = queue
-        return owner
-    }
-
-    /// 剥掉附件 XML 块后的用户正文（本地行与 bridge 侧文本的比较基准）。
-    static func normalizedUserText(_ text: String) -> String {
-        var s = removeBlocks(text, open: "<user-attached-files>", close: "</user-attached-files>")
-        s = removeBlocks(s, open: "<attachment-failed", close: "/>")
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// 删除成对标记包住的整段（闭合标记缺失则放弃，避免死循环）。
-    private static func removeBlocks(_ text: String, open: String, close: String) -> String {
-        var s = text
-        while let openRange = s.range(of: open) {
-            let searchRange = openRange.upperBound..<s.endIndex
-            guard let closeRange = s.range(of: close, range: searchRange) else { break }
-            s.removeSubrange(openRange.lowerBound..<closeRange.upperBound)
+    /// [Fix v1.14.30 / 对抗审查 2·前提 2] delta 快路径的**形态安全性**：
+    /// 插入行必须全部位于 unified 序的**纯尾段**（最后一个非插入行之后）。
+    /// 「夹心」形态——插入行 → 认领行 →（插入行）——单一锚点规则只能把整批
+    /// 插到最后认领行之后，夹在前段的插入行必然错序：
+    ///   · 一批 delta 跨多个本地回合（快速连发两轮、中间无校准窗口），
+    ///     U1 的回复被排到 U3 的输入之后；
+    ///   · cursor 停在上轮回复中段（上次校准回滚），窗口同时含回复尾段
+    ///     与新 user_input。
+    /// - Returns: false = 混合批次，调用方必须放弃快路径（fallback 全量校准）。
+    static func deltaInsertIsSafe(unifiedFinalOrderIds: [String], inserts: [RawMessage]) -> Bool {
+        let insertedIdSet = Set(inserts.map { $0.id })
+        guard let lastKeptIndex = unifiedFinalOrderIds.lastIndex(where: { !insertedIdSet.contains($0) }) else {
+            return true  // 全是插入行（无认领行）→ 锚点 = 最后回放行，无夹心
         }
-        return s
+        guard let firstInsertIndex = unifiedFinalOrderIds.firstIndex(where: { insertedIdSet.contains($0) }) else {
+            return true  // 没有插入行
+        }
+        return firstInsertIndex > lastKeptIndex
     }
+
+    // MARK: - 段级定序（[Fix v1.14.30]）
+
+    /// 回放区排序：past 行最先（按 index），随后按 (段首见次序, seq)。
+    /// 段缺失/未登记时用现有相对顺序兜底（稳定排序由原始下标保证）。
+    private static func sortedReplayRows(_ rows: [RawMessage], segmentRanks: [String: Int]) -> [RawMessage] {
+        guard rows.count > 1 else { return rows }
+        return rows.enumerated()
+            .sorted { lhs, rhs in
+                replaySortKey(lhs.element, rank: rank(of: lhs.element, segmentRanks: segmentRanks), index: lhs.offset)
+                    < replaySortKey(rhs.element, rank: rank(of: rhs.element, segmentRanks: segmentRanks), index: rhs.offset)
+            }
+            .map { $0.element }
+    }
+
+    /// past 行 → -1（磁盘历史最早）；bridge 行 → 段 rank（未登记 → Int.max，
+    /// 即排在已登记段之后、但仍保持彼此现有顺序）。
+    private static func rank(of row: RawMessage, segmentRanks: [String: Int]) -> Int {
+        if row.id.hasPrefix("past-") { return -1 }
+        guard let segment = ReplayRowId.parseSegment(row.id) else { return Int.max }
+        return segmentRanks[segment] ?? Int.max
+    }
+
+    private static func replaySortKey(_ row: RawMessage, rank: Int, index: Int) -> (Int, Int, Int) {
+        // [Fix v1.14.30 / 对抗审查 S3] 段未登记（rank == Int.max：老形态无段 /
+        // rank 表丢失）→ **不参与 seq 排序**，用原始下标兜底保持现有相对顺序
+        // ——这是本函数文档写明的契约。旧实现仍按 seq 比较，直接违反注释：
+        // 两个未登记段的行会被 seq 交叉重排（`[cccc-2, dddd-1]` 变
+        // `[dddd-1, cccc-2]`），且与 past 特判叠加后跟既有测试互相矛盾
+        // （CI 门里两条期望必红其一）。
+        if rank == Int.max { return (Int.max, index, index) }
+        let seq = ReplayRowId.parseBridgeSeq(row.id) ?? ReplayRowId.parsePastIndex(row.id) ?? Int.max
+        return (rank, seq, index)
+    }
+
+    // MARK: - 内容匹配（已迁出）
+
+    // [Fix v1.14.30] 用户正文归一化/配对（附件 XML 剥离、同文本 occurrence
+    // 队列）已迁到独立模块 `RemoteHistoryOwnerIndex`（见
+    // RemoteHistoryIdentity.swift）——"身份对账"与"定序"是两个改变的理由，
+    // 不再混在本文件里。本文件只保留定序（planReplace / orderedRowSequence /
+    // deltaFastPathAllowed / isTurnInProgress）。
 }

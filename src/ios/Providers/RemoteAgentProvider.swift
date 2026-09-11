@@ -128,6 +128,11 @@ final class RemoteAgentProvider: AgentProvider {
     let chatSessionID: String?
     /// 本 turn 用户带上的附件候选（vm 注入，发送时消费）。
     var pendingRemotePayloads: [RemotePayload] = []
+    /// [Fix v1.14.30] 本 turn 的**协议身份**（clientMessageId，vm 注入，发送时
+    /// 消费后清空）。同一 id 已经随本地用户行落库——bridge 把它写进历史条目
+    /// 再回放回来，校准期即可按身份把回放行与本地行对上（不再靠正文猜）。
+    /// 缺省 nil 时由 CCPocketClient 自生成（离线队列/重试路径，行为不变）。
+    var pendingClientMessageId: String?
     /// Legacy per-instance mapping migration is opt-in from the load path.
     let allowLegacyMappingFallback: Bool
 
@@ -337,7 +342,15 @@ final class RemoteAgentProvider: AgentProvider {
                             }
                         }
                     }
-                    try await self.client.sendInput(inputText, sessionId: bridgeSessionId, images: inlineImages.isEmpty ? nil : inlineImages)
+                    // [Fix v1.14.30] 上行同一 clientMessageId（消费后清空）。
+                    let clientMessageId = self.pendingClientMessageId
+                    self.pendingClientMessageId = nil
+                    try await self.client.sendInput(
+                        inputText,
+                        sessionId: bridgeSessionId,
+                        images: inlineImages.isEmpty ? nil : inlineImages,
+                        clientMessageId: clientMessageId
+                    )
                     logger.info("[RemoteAgent] sendInput OK session=\(bridgeSessionId) images=\(inlineImages.count) text=\(inputText.prefix(60).replacingOccurrences(of: "\n", with: " "))")
                 } catch {
                     continuation.finish(throwing: error)
@@ -788,19 +801,25 @@ final class RemoteAgentProvider: AgentProvider {
     /// handles the seq channel): the disk jsonl is append-only per Claude
     /// session, so the same conversation always yields the same sequence —
     /// the calibration keep-set can hit across bridge-session switches.
-    static func historyAgentMessages(from serverMessages: [CCPocketProtocol.ServerMessage], namespace: String? = nil) -> [AgentMessage] {
+    static func historyAgentMessages(from serverMessages: [CCPocketProtocol.ServerMessage], namespace: String? = nil, segment: String? = nil, diskSegment: String? = nil) -> [AgentMessage] {
         var pastIndex = 0
         return serverMessages.compactMap { m in
             if m.type == nil, m.rawRole != nil {
                 defer { pastIndex += 1 }
                 guard var msg = agentMessage(fromServer: m) else { return nil }
-                // [Fix v1.14.29] past id 带本地会话命名空间（ReplayRowId）。
-                msg.dbMessageId = ReplayRowId.past(index: pastIndex, namespace: namespace)
+                // [Fix v1.14.29/30] past id 带本地会话命名空间 **+ claude 磁盘段**
+                // ——index 是"某份 jsonl 的第几条"，跨设备各有各的 transcript，
+                // 不带磁盘段会跨设备撞全局主键（iCloud LWW 串台）。
+                msg.dbMessageId = ReplayRowId.past(index: pastIndex, namespace: namespace, diskSegment: diskSegment)
                 msg.replayIdNamespace = namespace
                 return msg
             }
             guard var msg = agentMessage(fromServer: m) else { return nil }
             msg.replayIdNamespace = namespace
+            msg.replayIdSegment = segment
+            // [Fix v1.14.30] 协议身份：bridge 把上行时的 clientMessageId 原样
+            // 写进历史条目，回放时带回 → 校准期用它做确定性对账。
+            msg.clientMessageId = m.clientMessageId
             return msg
         }
     }

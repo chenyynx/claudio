@@ -225,6 +225,17 @@ final class RemoteHistoryBackfill {
                             logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta fast-path denied (sealed=\(sealed) dbMaxSeq=\(dbMaxText) deltaSeqs=\(deltaSeqs.count)) — fallback full")
                             deltaUsable = false
                         }
+                        // [Fix v1.14.30 / 对抗审查 2·前提 2 混合批次] 单一锚点
+                        // 只对「纯尾段插入」成立。wire 级保守判据：**任何
+                        // user_input 之前的条目**都意味着可能夹心（本设备认领
+                        // → 它在 unified 里是非插入行，其前内容全是插入行）——
+                        // 回复尾段排到新输入之后 / 多回合批次整段错位。转全量
+                        // 校准（幂等自愈）；过触发的代价只是一次全量 fetch
+                        // （多设备交错形态），方向安全。
+                        if deltaUsable, delta.wire.dropFirst().contains(where: { $0.type == "user_input" }) {
+                            logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta mixed-turn batch (user_input not leading) — fallback full")
+                            deltaUsable = false
+                        }
                     }
                 }
                 if isSnapshot {
@@ -236,13 +247,23 @@ final class RemoteHistoryBackfill {
                         // [Fix v1.14.29] 空 delta 不构建 WireFetch——否则下方
                         // "未封版 → 回全量自愈"分支会被短路（wireFetch 非 nil
                         // 就跳过全量 fetch）。只记终态给直返分支决策。
-                        emptyDeltaResolved = (bridgeId: delta.bridgeId, toSeq: to)
+                        // [Fix v1.14.30 / 对抗审查 M6] toSeq ≥ 0 守卫：空 delta
+                        // 直返分支会拿 toSeq 覆写游标，而非空路径的守卫
+                        // （「toSeq 合法性守卫」）在这条分支被绕过——toSeq
+                        // 缺失/为 -1 时会把游标写成 -1（下次 delta 从 -1 起，
+                        // 语义崩塌）。非法值不设直返 → 落到全量重锚。
+                        if to >= 0 {
+                            emptyDeltaResolved = (bridgeId: delta.bridgeId, toSeq: to)
+                        } else {
+                            logger.warning("[HistorySync] session=\(sessionId.prefix(8)) empty delta with invalid toSeq=\(to) — fallback full")
+                        }
                     } else {
                         wireFetch = WireFetch(
                             wire: delta.wire,
                             engine: RemoteAgentProvider.historyAgentMessages(
                                 from: delta.wire,
-                                namespace: ReplayRowId.namespace(sessionId: sessionId)
+                                namespace: ReplayRowId.namespace(sessionId: sessionId),
+                                segment: ReplayRowId.segment(id: delta.bridgeId)
                             ),
                             bridgeId: delta.bridgeId,
                             isDelta: true,
@@ -334,9 +355,22 @@ final class RemoteHistoryBackfill {
         // [Fix v1.14.29] 回放行 id 命名空间一次性迁移（幂等）必须发生在读
         // dbRows **之前**——否则计划按旧 id 算 keep 集、落库按新 id 写，
         // 同一行会被当成新行重插（PK 冲突 → 内容被吞，正是要修的病）。
+        // [Fix v1.14.30 / 对抗审查 A3] 换 bridge 会话（seq 空间重置）时不给
+        // bridge 行迁移（segment 传 nil）：旧空间的 legacy 行被打上"当前段"
+        // 后会占住新空间的同 seq（keep 命中）→ 新内容永不落库 + 用户发言被
+        // 甩到末尾（每次校准复现）。它们由 planReplace 的换血规则清理。
+        // past 行的身份是磁盘 transcript（与 bridge 段无关），照常迁移。
+        let previousSegment = storedBridgeId.map(ReplayRowId.segment)
+        let currentSegment = resolvedFetch.bridgeId.map(ReplayRowId.segment)
+        let diskSegment = CCPocketClient.persistedClaudeId(
+            instanceID: instance.id,
+            chatSessionID: chatSessionID ?? sessionId
+        ).map(ReplayRowId.segment)
         await ChatStore.shared.migrateReplayRowIdsIfNeeded(
             sessionId: sessionId,
-            namespace: ReplayRowId.namespace(sessionId: sessionId)
+            namespace: ReplayRowId.namespace(sessionId: sessionId),
+            segment: bridgeSessionSwitched ? nil : currentSegment,
+            diskSegment: diskSegment
         )
         let dbRows = await ChatStore.shared.loadMessages(sessionId: sessionId)
         // nonEngineSeqs：wire history 里存在但不转 engine 的 seq（result/
@@ -377,7 +411,9 @@ final class RemoteHistoryBackfill {
             dbRows: dbRows,
             nonEngineSeqs: nonEngineSeqs,
             forceFullReshuffle: bridgeSessionSwitched,
-            evictPastRows: needPastMigration
+            evictPastRows: needPastMigration,
+            currentSegment: currentSegment,
+            previousSegment: previousSegment
         )
         // [乱序修复 2 2026-09-10 v1.14.22] replaceRemoteHistory **无条件执行**
         // （含 plan.isEmpty）：它的 renumber 按 plan.unifiedFinalOrderIds 全量
@@ -474,16 +510,43 @@ final class RemoteHistoryBackfill {
     /// per-chat UserDefaults，值 = 封版时的 bridge 会话 id（换了会话即失效）。
     private func isOrderSealed(sessionId: String, bridgeId: String?) -> Bool {
         guard let bridgeId else { return false }
-        let stored = UserDefaults.standard.string(forKey: Self.orderSealedKey(sessionId: sessionId))
-        return stored == bridgeId
+        return RemoteSyncOrderSeal.sealedBridgeId(sessionId: sessionId) == bridgeId
     }
 
     private func markOrderSealed(sessionId: String, bridgeId: String?) {
         guard let bridgeId else { return }
-        UserDefaults.standard.set(bridgeId, forKey: Self.orderSealedKey(sessionId: sessionId))
+        RemoteSyncOrderSeal.mark(sessionId: sessionId, bridgeId: bridgeId)
+    }
+}
+
+/// 定序封版标记存取（[Fix v1.14.29] 设计；[Fix v1.14.30] 从 Backfill 私有方法
+/// 提为独立类型——**非校准路径也要能失效它**）。
+///
+/// 语义：值 = 完成一次成功**全量**校准时的 bridge 会话 id（bridge 会话换了
+/// 即自动失效）。`deltaFastPathAllowed` 只在整个会话已封版时放行 delta 快
+/// 路径（跳过 renumber）；未封版一律先跑一次全量（天然完成旧数据自愈）。
+///
+/// [Fix v1.14.30 / 对抗审查 M3] 为什么必须有失效通道：封版是一次性的，但
+/// **非校准路径**也会改写顺序——iCloud 合并插入（mergeRemoteMessage 让位
+/// +1）、裁剪（pruneOldMessages 删头部）、截断（deleteMessagesAfter）。外部
+/// 改动后 delta 继续放行（纯追加、永不重排）→ 错位长期不自愈。清标记的代价
+/// 只是下一次多跑一次全量（幂等、无副作用），方向安全。
+enum RemoteSyncOrderSeal {
+
+    private static func key(sessionId: String) -> String {
+        "RemoteSyncOrderSealed.v1.\(sessionId)"
     }
 
-    private static func orderSealedKey(sessionId: String) -> String {
-        "RemoteSyncOrderSealed.v1.\(sessionId)"
+    static func sealedBridgeId(sessionId: String, defaults: UserDefaults = .standard) -> String? {
+        defaults.string(forKey: key(sessionId: sessionId))
+    }
+
+    static func mark(sessionId: String, bridgeId: String, defaults: UserDefaults = .standard) {
+        defaults.set(bridgeId, forKey: key(sessionId: sessionId))
+    }
+
+    /// 失效：非校准路径改动了 messages 的顺序/集合后调用。
+    static func clear(sessionId: String, defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: key(sessionId: sessionId))
     }
 }

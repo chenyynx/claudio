@@ -359,14 +359,19 @@ final class CCPocketClient: @unchecked Sendable {
 
     // MARK: - Sending
 
-    func sendInput(_ text: String, sessionId: String? = nil, images: [[String: String]]? = nil) async throws {
+    /// - Parameter clientMessageId: [Fix v1.14.30] 协议身份。调用方（远端
+    ///   provider）传入时，用**同一个 id** 上行——该 id 已随本地用户行落库，
+    ///   bridge 会把它写进历史条目，回放时带回，校准期据此把回放行与本地行
+    ///   确定性对上。nil = 本路径未预登记身份（离线队列/重试等）→ 自生成，
+    ///   行为与旧版一致。
+    func sendInput(_ text: String, sessionId: String? = nil, images: [[String: String]]? = nil, clientMessageId suppliedClientMessageId: String? = nil) async throws {
         // [Fix] Replay anything queued from an earlier dead socket first
         // (only when no turn is in flight — replaying mid-turn would make
         // the Bridge interrupt the running turn).
         if !pendingInputs.isEmpty, !hasActiveTurn, isStarted {
             flushPendingInputs()
         }
-        let clientMessageId = UUID().uuidString
+        let clientMessageId = suppliedClientMessageId ?? UUID().uuidString
         let input = CCPocketProtocol.InputRequest(
             text: text,
             sessionId: sessionId,
@@ -1475,6 +1480,20 @@ final class CCPocketClient: @unchecked Sendable {
             return nil
         }
         return mapping.bridgeId
+    }
+
+    /// [Fix v1.14.30] claude 会话 id（磁盘 transcript 身份）。past 回放行的
+    /// id 需要它作"磁盘段"（`past-{ns}-{diskSeg}-{index}`）——同一本地会话
+    /// 先后连过多个 claude 会话（resume 到别的 transcript / 多设备）时，
+    /// index 都会从 0 起，只靠命名空间仍会撞 id。每次 fetch 前读一次。
+    static func persistedClaudeId(instanceID: String, chatSessionID: String?) -> String? {
+        guard let chatSessionID else { return nil }
+        let key = Self.mappingKeyPrefix + instanceID + "." + chatSessionID
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let mapping = try? JSONDecoder().decode(SessionMapping.self, from: data) else {
+            return nil
+        }
+        return mapping.claudeId
     }
 
     /// Bridge session id persisted at the last save. Used for cold-start

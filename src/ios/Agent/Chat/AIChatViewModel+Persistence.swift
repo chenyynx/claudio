@@ -1691,7 +1691,10 @@ extension AIChatViewModel {
             role: msg.role == .user ? .user : .assistant,
             parts: parts, createdAt: Date(), tokenUsage: storedUsage,
             reasoningContent: reasoningContent ?? msg.reasoningContent,
-            streamInterruptCount: streamInterruptCount
+            streamInterruptCount: streamInterruptCount,
+            // [Fix v1.14.30] 协议身份随行落库（仅远端 user 行非 nil）——
+            // 校准期 RemoteHistoryOwnerIndex 按它做确定性对账。
+            clientMessageId: msg.clientMessageId
         )
 
         // [T-token-attribution-snapshot] Resolved from the entry the caller
@@ -2134,42 +2137,18 @@ extension AIChatViewModel {
     /// Callers should write the returned id back to `agentHistory[i].dbMessageId`
     /// so compact logic can later resolve boundaries by id.
     ///
-    /// - Parameter bridgeSeq: Bridge-side history sequence number from the most
-    ///   recent wire message the provider received this turn (only meaningful
-    ///   for `RemoteAgentProvider`; local providers always pass nil). When
-    ///   non-nil AND `msg.bridgeSeq` is nil, the seq is injected into a local
-    ///   copy of `msg` so `buildRawMessage → rawMessageId()` derives the SAME
-    ///   "bridge-{seq}" id that the history-replay path produces — the live
-    ///   row then lands in the sync calibration's keep set directly
-    ///   (v1.14.18 replaceEntries semantics).
-    ///   When `msg.bridgeSeq` is already set (history-replay path), the
-    ///   existing value wins.
+    /// [Fix v1.14.30 / 对抗审查 中4] 原 `bridgeSeq:` 参数与"live 注入 seq"
+    /// 分支已删除：全仓库无任何调用方传参（v1.14.20 大一统行退役后 route D
+    /// 调用点已不再传），且该分支只注入命名空间、**不注入段**——一旦被重新
+    /// 启用就会派生 `bridge-{ns}-{seq}`，与回放行的 `bridge-{ns}-{seg}-{seq}`
+    /// 不等（keep 集永不命中 + 同一逻辑消息两套 id = v1.14.29 刚修掉的重复
+    /// 渲染）。回放行 id 的唯一注入点是 `RemoteAgentProvider.historyAgentMessages`
+    /// （namespace + segment 齐全）。
     @discardableResult
-    func persistAgentMessage(_ msg: AgentMessage, tokenUsage: TokenUsage? = nil, snapshots: [String: (toolName: String, snapshot: ToolSnapshot)] = [:], thoughtSignatures: [String: String] = [:], reasoningContent: String? = nil, streamInterruptCount: Int = 0, modelEntryId: String? = nil, bridgeSeq: Int? = nil) async -> String? {
+    func persistAgentMessage(_ msg: AgentMessage, tokenUsage: TokenUsage? = nil, snapshots: [String: (toolName: String, snapshot: ToolSnapshot)] = [:], thoughtSignatures: [String: String] = [:], reasoningContent: String? = nil, streamInterruptCount: Int = 0, modelEntryId: String? = nil) async -> String? {
         let sid = self.sessionId ?? "nil"
-        logger.info("[Persist] enter sid=\(sid.prefix(8)) role=\(String(describing: msg.role)) parts=\(msg.parts.count) bridgeSeq=\(bridgeSeq.map(String.init) ?? "nil")")
-        // [Fix 2026-09-05 route D] Inject the live path's bridge seq into a
-        // local copy of msg ONLY when the caller is supplying it (live path
-        // where `msg.bridgeSeq` is nil because live events go through
-        // `consume()`, not `agentMessage(fromServer:)`). The history-replay
-        // path passes bridgeSeq=nil and `msg.bridgeSeq` is already set there.
-        // `msg` is a struct so this local copy is safe and never mutates the
-        // caller's AgentMessage reference.
-        let effectiveMsg: AgentMessage
-        if msg.bridgeSeq == nil, let seq = bridgeSeq {
-            var injected = msg
-            injected.bridgeSeq = seq
-            // [Fix v1.14.29] live 注入 seq 时同步注入 id 命名空间——否则 live
-            // 行派生旧的 `bridge-{seq}`，与回放行的 `bridge-{ns}-{seq}` 不等 →
-            // 校准 keep 集永不命中 + 跨会话撞主键（内容被吞）。
-            if let sid = sessionId {
-                injected.replayIdNamespace = ReplayRowId.namespace(sessionId: sid)
-            }
-            effectiveMsg = injected
-        } else {
-            effectiveMsg = msg
-        }
-        guard let raw = await buildRawMessage(effectiveMsg, tokenUsage: tokenUsage, snapshots: snapshots, thoughtSignatures: thoughtSignatures, reasoningContent: reasoningContent, streamInterruptCount: streamInterruptCount, modelEntryId: modelEntryId) else {
+        logger.info("[Persist] enter sid=\(sid.prefix(8)) role=\(String(describing: msg.role)) parts=\(msg.parts.count)")
+        guard let raw = await buildRawMessage(msg, tokenUsage: tokenUsage, snapshots: snapshots, thoughtSignatures: thoughtSignatures, reasoningContent: reasoningContent, streamInterruptCount: streamInterruptCount, modelEntryId: modelEntryId) else {
             logger.warning("[Persist] buildRawMessage returned nil sid=\(sid.prefix(8)) role=\(String(describing: msg.role)) — NOT WRITTEN")
             return nil
         }

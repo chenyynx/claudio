@@ -1,18 +1,22 @@
 import XCTest
 @testable import Minis
 
-/// [Fix v1.14.29] 乱序根因 A 的两组新纯函数锁定。
+/// RemoteHistorySyncCore 的两组纯函数锁定。
 ///
-/// 1. `deltaFastPathAllowed` —— 增量快路径闸门：delta 只含增量条目，把残缺
-///    序喂给 renumber 会把用户全部发言甩到会话末尾（pp 真机 2026-09-11
-///    08:06 实证）。准入 = 定序已封版 + 纯追加。
-/// 2. 用户文本配对 —— 附件 XML 归一化（本地 parts=[xml,正文] vs bridge 侧
-///    "正文\n\n"+XML）+ 同文本多 occurrence 队列配对（连发两条"在吗"）。
+/// 1. `deltaFastPathAllowed`（[Fix v1.14.29]）—— 增量快路径闸门：delta 只含
+///    增量条目，把残缺序喂给 renumber 会把用户全部发言甩到会话末尾
+///    （pp 真机 2026-09-11 08:06 实证）。准入 = 定序已封版 + 纯追加。
+/// 2. `orderedRowSequence` 的段级定序（[Fix v1.14.30]）—— 多段并存
+///    （换过 bridge 会话 / 多设备共享同一 chat 会话）时按
+///    (段首见次序, seq) 排；past 行恒最先；live UUID 行恒最后。
+///
+/// 注：用户文本归一化/配对（附件 XML、同文本 occurrence）已迁到
+/// RemoteHistoryOwnerIndex，用例见 RemoteHistoryIdentityTests。
 final class RemoteHistorySyncCoreDeltaTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func makeRaw(id: String, role: MessageRole, text: String, sortOrder: Int = 0) -> RawMessage {
+    private func makeRaw(id: String, role: MessageRole = .assistant, text: String = "t", sortOrder: Int = 0) -> RawMessage {
         RawMessage(
             id: id, sessionId: "test-session", role: role,
             parts: [.text(text)],
@@ -21,10 +25,6 @@ final class RemoteHistorySyncCoreDeltaTests: XCTestCase {
             sortOrder: sortOrder, errorInfo: nil
         )
     }
-
-    private let attachmentXML = """
-    <user-attached-files><file path="/tmp/a.png" size="1" modified="2026-09-11T00:00:00Z"/></user-attached-files>
-    """
 
     // MARK: - deltaFastPathAllowed
 
@@ -63,75 +63,124 @@ final class RemoteHistorySyncCoreDeltaTests: XCTestCase {
         )
     }
 
-    // MARK: - 用户文本归一化（附件消息）
+    // MARK: - orderedRowSequence 段级定序
 
-    func test_normalizedUserText_stripsAttachmentBlocks() {
-        let raw = "看图\n\n\(attachmentXML)"
-        XCTAssertEqual(RemoteHistorySyncCore.normalizedUserText(raw), "看图")
-        XCTAssertEqual(
-            RemoteHistorySyncCore.normalizedUserText("hi<attachment-failed file=\"x\" reason=\"y\"/>"),
-            "hi"
+    func test_orderedRowSequence_multiSegment_ordersBySegmentRank() {
+        // 段 A 先见到（rank 0），段 B 后见到（rank 1）——即便传入顺序反了，
+        // 也必须按段序排（段是随机十六进制，不排就是乱序）。
+        let segB2 = makeRaw(id: "bridge-ns-bbbb-2")
+        let segA1 = makeRaw(id: "bridge-ns-aaaa-1")
+        let segB1 = makeRaw(id: "bridge-ns-bbbb-1")
+        let segA2 = makeRaw(id: "bridge-ns-aaaa-2")
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: [],
+            finalOrder: [],
+            retainedRows: [segB2, segA1, segB1, segA2],
+            rowById: [:],
+            segmentRanks: ["aaaa": 0, "bbbb": 1]
         )
-        XCTAssertEqual(RemoteHistorySyncCore.normalizedUserText("  plain  "), "plain")
-        XCTAssertEqual(RemoteHistorySyncCore.normalizedUserText(attachmentXML), "",
-                       "纯 XML → 空串（图片-only 消息不参与文本配对）")
+        XCTAssertEqual(sequence.map { $0.id },
+                       ["bridge-ns-aaaa-1", "bridge-ns-aaaa-2", "bridge-ns-bbbb-1", "bridge-ns-bbbb-2"],
+                       "段内按 seq、段间按首见次序")
     }
 
-    func test_userTextMatchKey_skipsXMLOnlyPart() {
-        let key = RemoteHistorySyncCore.userTextMatchKey(parts: [.text(attachmentXML), .text("看图")])
-        XCTAssertEqual(key, "看图", "本地行 parts=[xml, 正文] → 必须取正文")
-        XCTAssertNil(RemoteHistorySyncCore.userTextMatchKey(parts: [.text(attachmentXML)]),
-                     "只有 XML → nil")
-        XCTAssertNil(RemoteHistorySyncCore.userTextMatchKey(parts: []))
+    func test_orderedRowSequence_pastRowsAlwaysFirst() {
+        let past = makeRaw(id: "past-ns-0", role: .user)
+        let bridge = makeRaw(id: "bridge-ns-aaaa-1")
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: [],
+            finalOrder: [],
+            retainedRows: [bridge, past],
+            rowById: [:],
+            segmentRanks: ["aaaa": 0]
+        )
+        XCTAssertEqual(sequence.map { $0.id }, ["past-ns-0", "bridge-ns-aaaa-1"],
+                       "past 行是磁盘历史，早于任何 bridge 会话")
     }
 
-    func test_planReplace_attachmentMessage_dedupedAfterStrip() {
-        // 本地行 = [xml, 正文]；bridge 侧 user_input = "正文\n\n" + 同一 XML。
-        // 旧实现按 parts.first 原文比对必然对不上 → 回放行重插（重复气泡）
-        // + 本地行被 renumber 甩尾。
-        let historyUser = makeRaw(id: "bridge-1", role: .user, text: "看图\n\n\(attachmentXML)")
-        var local = makeRaw(id: "UUID-A", role: .user, text: "看图", sortOrder: 1)
-        local.parts = [.text(attachmentXML), .text("看图")]
-
-        let plan = RemoteHistorySyncCore.planReplace(historyRaws: [historyUser], dbRows: [local])
-        XCTAssertTrue(plan.inserts.isEmpty, "归一化同文本 → 回放行不得重插")
-        XCTAssertEqual(plan.unifiedFinalOrderIds, ["UUID-A"], "本地行顶替该 history 位置")
+    func test_orderedRowSequence_unknownSegmentKeepsRelativeOrder() {
+        // 段未登记（老 id / 无 rank 表）→ 退回传入顺序，不得打乱。
+        let a = makeRaw(id: "bridge-ns-cccc-2")
+        let b = makeRaw(id: "bridge-ns-dddd-1")
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: [],
+            finalOrder: [],
+            retainedRows: [a, b],
+            rowById: [:],
+            segmentRanks: [:]
+        )
+        XCTAssertEqual(sequence.map { $0.id }, ["bridge-ns-cccc-2", "bridge-ns-dddd-1"])
     }
 
-    // MARK: - 同文本多 occurrence 配对
-
-    func test_planReplace_duplicateUserTexts_pairByOccurrence() {
-        // 连发两条 "在吗"：旧实现每段文本只留**第一个** owner → 第二个
-        // history 行永远配不上（回放行被插成重复 + 第二条本地行被甩尾）。
-        let history = [
-            makeRaw(id: "bridge-1", role: .user, text: "在吗"),
-            makeRaw(id: "bridge-2", role: .assistant, text: "在的"),
-            makeRaw(id: "bridge-3", role: .user, text: "在吗"),
-        ]
-        let local1 = makeRaw(id: "UUID-A", role: .user, text: "在吗", sortOrder: 1)
-        let local2 = makeRaw(id: "UUID-B", role: .user, text: "在吗", sortOrder: 2)
-
-        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: [local1, local2])
-        XCTAssertEqual(plan.unifiedFinalOrderIds, ["UUID-A", "bridge-2", "UUID-B"],
-                       "两个同文本 owner 各占一个位置，不得重复用同一行")
-        XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-2"],
-                       "两条 user 回放行都被本地行顶替，只有 assistant 行是真新增")
-        XCTAssertTrue(plan.deleteIds.isEmpty, "user 行永不被删")
+    func test_orderedRowSequence_liveRowsStayLast() {
+        let bridge = makeRaw(id: "bridge-ns-aaaa-5")
+        let liveUser = makeRaw(id: "UUID-USER", role: .user)
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: [],
+            finalOrder: [],
+            retainedRows: [liveUser, bridge],
+            rowById: [:],
+            segmentRanks: ["aaaa": 0]
+        )
+        XCTAssertEqual(sequence.map { $0.id }, ["bridge-ns-aaaa-5", "UUID-USER"],
+                       "live UUID 行 = 历史尚未承载的新内容，恒最后")
     }
 
-    func test_planReplace_keptHistoryRow_doesNotShiftPairing() {
-        // history 行已在 DB（keep 命中）时，同文本的**下一**个 occurrence
-        // 仍应拿到第一个未被占用的本地行。
-        let history = [
-            makeRaw(id: "bridge-1", role: .user, text: "在吗"),
-            makeRaw(id: "bridge-3", role: .user, text: "在吗"),
-        ]
-        let db = [
-            makeRaw(id: "bridge-1", role: .user, text: "在吗", sortOrder: 1),  // 已在 DB
-            makeRaw(id: "UUID-B", role: .user, text: "在吗", sortOrder: 2),
-        ]
-        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: db)
-        XCTAssertEqual(plan.unifiedFinalOrderIds, ["bridge-1", "UUID-B"])
-        XCTAssertTrue(plan.inserts.isEmpty)
+    func test_orderedRowSequence_unifiedOrderWinsInMiddle() {
+        let r1 = makeRaw(id: "bridge-ns-aaaa-1")
+        let r2 = makeRaw(id: "bridge-ns-aaaa-2")
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: ["bridge-ns-aaaa-2", "bridge-ns-aaaa-1"],
+            finalOrder: [r1, r2],
+            retainedRows: [],
+            rowById: [r1.id: r1, r2.id: r2],
+            segmentRanks: ["aaaa": 0]
+        )
+        XCTAssertEqual(sequence.map { $0.id }, ["bridge-ns-aaaa-2", "bridge-ns-aaaa-1"],
+                       "unified 序（bridge history 序）是主体，段级定序只管不在序里的行")
+    }
+
+    // MARK: - deltaInsertIsSafe（[Fix v1.14.30] 混合批次形态闸）
+
+    func test_deltaInsertIsSafe_singleTurnTail() {
+        // [U2(认领), R2(插入)] —— 插入行全在最后认领行之后 → 安全（快路径）
+        XCTAssertTrue(RemoteHistorySyncCore.deltaInsertIsSafe(
+            unifiedFinalOrderIds: ["UUID-U2", "bridge-ns-aaaa-6"],
+            inserts: [makeRaw(id: "bridge-ns-aaaa-6")]
+        ))
+    }
+
+    func test_deltaInsertIsSafe_multiTurnSandwichRejected() {
+        // [U2(认领), R2(插入), U3(认领)] —— R2 位于最后认领行 U3 之前 →
+        // 单一锚点会把 R2 整批排到 U3 之后 = 错序 → 必须拒绝
+        XCTAssertFalse(RemoteHistorySyncCore.deltaInsertIsSafe(
+            unifiedFinalOrderIds: ["UUID-U2", "bridge-ns-aaaa-6", "UUID-U3"],
+            inserts: [makeRaw(id: "bridge-ns-aaaa-6")]
+        ))
+    }
+
+    func test_deltaInsertIsSafe_replyTailBeforeClaimedInputRejected() {
+        // [R2(插入·上轮回复尾段), U3(认领)] —— 锚点取 U3 会把 R2 排到
+        // U3 之后（真实序：R2 属上一回合，应在其前）→ 必须拒绝
+        XCTAssertFalse(RemoteHistorySyncCore.deltaInsertIsSafe(
+            unifiedFinalOrderIds: ["bridge-ns-aaaa-5", "UUID-U3"],
+            inserts: [makeRaw(id: "bridge-ns-aaaa-5")]
+        ))
+    }
+
+    func test_deltaInsertIsSafe_allInsertsNoClaim() {
+        // 全是插入行（无认领行）→ 锚点 = 最后回放行，wire 序即目标序 → 安全
+        XCTAssertTrue(RemoteHistorySyncCore.deltaInsertIsSafe(
+            unifiedFinalOrderIds: ["bridge-ns-aaaa-6", "bridge-ns-aaaa-7"],
+            inserts: [makeRaw(id: "bridge-ns-aaaa-6"), makeRaw(id: "bridge-ns-aaaa-7")]
+        ))
+    }
+
+    func test_deltaInsertIsSafe_noInserts() {
+        // 纯认领（无插入行）→ 无从错序 → 安全
+        XCTAssertTrue(RemoteHistorySyncCore.deltaInsertIsSafe(
+            unifiedFinalOrderIds: ["UUID-U2", "UUID-U3"],
+            inserts: []
+        ))
     }
 }

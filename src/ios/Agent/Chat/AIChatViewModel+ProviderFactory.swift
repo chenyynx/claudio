@@ -326,7 +326,16 @@ extension AIChatViewModel {
         guard let wireMessages = await client.requestHistory(claudeId: claudeId) else { return nil }
         let history = RemoteAgentProvider.historyAgentMessages(
             from: wireMessages,
-            namespace: chatSessionID.map(ReplayRowId.namespace(sessionId:))
+            namespace: chatSessionID.map(ReplayRowId.namespace(sessionId:)),
+            // [Fix v1.14.30] bridge 段 = 这次 fetch 实际使用的 bridge 会话
+            // （requestHistory 已写入 lastHistoryBridgeId）——seq 空间的真正
+            // 所有者，跨设备/跨会话不撞全局主键。
+            segment: client.lastHistoryBridgeId.map(ReplayRowId.segment(id:)),
+            // [Fix v1.14.30] disk 段 = claude 会话 id（磁盘 transcript 身份）。
+            // past 行的 index 是"某份 jsonl 的第几条"——不带 disk 段时，同一
+            // chat 同步到两台设备（各有各的 transcript，index 都从 0 起）会
+            // 撞全局主键 → iCloud LWW 互相覆盖（对抗审查 A1）。
+            diskSegment: ReplayRowId.segment(id: claudeId)
         )
         if history.isEmpty {
             logger.info("[HistoryBackfill] bridge history mapped to 0 engine messages")

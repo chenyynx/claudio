@@ -2788,7 +2788,16 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             if !text.isEmpty {
                 userParts.append(.text(text))
             }
-            let userMessage = AgentMessage(role: .user, parts: userParts)
+            // [Fix v1.14.30] 远端回合：生成**协议身份**（clientMessageId）——
+            // 随用户行落库（校准期按身份对账，不再靠正文猜），同一 id 交给
+            // provider 上行，bridge 会把它写进历史条目并原样回放。
+            // gate：仅远端回合生成；本地 agent 分支恒 nil（隔离铁律）。
+            var userMessage = AgentMessage(role: .user, parts: userParts)
+            if collectingForRemote {
+                let clientMessageId = UUID().uuidString
+                userMessage.clientMessageId = clientMessageId
+                self.remote.pendingClientMessageId = clientMessageId
+            }
             let userIdx = self.agentHistory.count
             self.agentHistory.append(userMessage)
 
@@ -2807,6 +2816,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 self.errorMessage = "Kernel not available: \(msg)"
                 self.isProcessing = false
                 self.endBackgroundProcessing()
+                // [Fix v1.14.30 / 对抗审查 M4] 回合未交接 → 清空本轮协议身份
+                // 槽位，绝不留给下一轮消费（陈旧 id 上行 = bridge 把新输入
+                // 回放成旧行，身份错配）。
+                self.remote.pendingClientMessageId = nil
                 return
             }
 
@@ -2820,6 +2833,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 self.isSuspended = false
                 self.isProcessing = false
                 self.endBackgroundProcessing()
+                // [Fix v1.14.30 / 对抗审查 M4] 回合未交接 → 清空本轮协议身份
+                // 槽位，绝不留给下一轮消费（陈旧 id 上行 = bridge 把新输入
+                // 回放成旧行，身份错配）。
+                self.remote.pendingClientMessageId = nil
                 return
             }
             defer { concurrency.releaseSlot(sessionId: sid) }
@@ -3136,9 +3153,17 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // (Case 2a: text streaming cancel). For Case 1 (tool cancel), history already
         // ends with tool_result (user role) and is valid for the next API call.
         if agentHistory.last?.role == .assistant {
-            let continueMsg = AgentMessage(role: .user, parts: [
+            var continueMsg = AgentMessage(role: .user, parts: [
                 .text("<system-reminder>The user stopped the previous response but now wants to continue. Pick up exactly where you left off.</system-reminder>")
             ])
+            // [Fix v1.14.30 / 对抗审查 M5] Continue 是自动生成的 user_input，
+            // 同样带协议身份（与 send() 同款 gate）——否则只能靠正文兜底，
+            // 而正文是 system-reminder 文本，被 bridge 归一化后极易对不上。
+            if lastAgentProviderIsRemote {
+                let continueClientMessageId = UUID().uuidString
+                continueMsg.clientMessageId = continueClientMessageId
+                remote.pendingClientMessageId = continueClientMessageId
+            }
             let continueIdx = agentHistory.count
             agentHistory.append(continueMsg)
             Task { @MainActor [weak self] in
@@ -3167,6 +3192,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 self.errorMessage = "Kernel not available: \(msg)"
                 self.isProcessing = false
                 self.endBackgroundProcessing()
+                // [Fix v1.14.30 / 对抗审查 M4] 回合未交接 → 清空本轮协议身份
+                // 槽位，绝不留给下一轮消费（陈旧 id 上行 = bridge 把新输入
+                // 回放成旧行，身份错配）。
+                self.remote.pendingClientMessageId = nil
                 return
             }
 
@@ -3180,6 +3209,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 self.isSuspended = false
                 self.isProcessing = false
                 self.endBackgroundProcessing()
+                // [Fix v1.14.30 / 对抗审查 M4] 回合未交接 → 清空本轮协议身份
+                // 槽位，绝不留给下一轮消费（陈旧 id 上行 = bridge 把新输入
+                // 回放成旧行，身份错配）。
+                self.remote.pendingClientMessageId = nil
                 return
             }
             defer { concurrency.releaseSlot(sessionId: resumeSid) }
@@ -4354,7 +4387,18 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 }
             }
 
-            let queueAgentMsg = AgentMessage(role: .user, parts: combinedParts)
+            // [Fix v1.14.30 / 对抗审查 M5] 队列 drain 的消息同样要带协议身份：
+            // 队列消息（含附件）在 bridge 回放时若没有 clientMessageId，身份
+            // 对账只能退回正文匹配——附件-only / 正文归一化后为空的队列消息
+            // 必然配对失败 → 重复气泡 + 本地行被甩到会话末尾（与 H1 同症状）。
+            // gate 与 send() 同款（上一回合判定为远端才生成）；交接在
+            // runAgentLoop 的门面分支，本地回合取出即清、不落库。
+            var queueAgentMsg = AgentMessage(role: .user, parts: combinedParts)
+            if lastAgentProviderIsRemote {
+                let queuedClientMessageId = UUID().uuidString
+                queueAgentMsg.clientMessageId = queuedClientMessageId
+                remote.pendingClientMessageId = queuedClientMessageId
+            }
             let qIdx = self.agentHistory.count
             self.agentHistory.append(queueAgentMsg)
             if let pid = await self.persistAgentMessage(queueAgentMsg), qIdx < self.agentHistory.count {
@@ -5015,12 +5059,22 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         }
         var provider = await makeAgentProvider(for: entry)
         lastAgentProviderIsRemote = provider.isRemoteAgent
+        // [Fix v1.14.30 / 对抗审查 中3] 本轮协议身份先取后**无条件清空**：
+        // 解析出的是本地 provider 时也必须清——"远端→本地"改绑后残留的旧 id
+        // 会一直留到某个没有前置 send() 的回合（错误重试 runAgentLoop）被当
+        // 成本轮身份上行，bridge 把新输入回放成旧行 = 身份错配 + 本地行被
+        // 搬到错误位置。取出即消费，不存在跨轮复用。
+        let pendingClientMessageId = remote.pendingClientMessageId
+        remote.pendingClientMessageId = nil
         if let remoteProvider = provider as? RemoteAgentProvider {
             // [隔离架构铁律 2026-09-09] 远端接线全部走 remote 门面（写侧 gate
             // = 本 if 分支）。附件候选交接：本地回合 gate 后恒空数组，交接
             // 语义与迁移前一致。
             remoteProvider.pendingRemotePayloads = remote.pendingPayloads
             remote.pendingPayloads = []
+            // [Fix v1.14.30] 交接本轮协议身份（与附件候选同款门面传递）——
+            // 清空已在上面无条件执行（含本地回合），这里只负责交付。
+            remoteProvider.pendingClientMessageId = pendingClientMessageId
             remote.activeProvider = remoteProvider
             // [Plan B3] Tool-observed paths augment the list_files suffix set.
             remoteProvider.onFilePathsObserved = { [weak self] paths in
