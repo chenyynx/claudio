@@ -2448,10 +2448,15 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // Phase B: agentHistory is no longer mutated by compact, so agentHistory.count
             // is 1:1 with the DB row count; passing it as keepCount is semantically correct.
             let persistedKeepCount = agentHistory.count
+            // [Fix v1.14.30.1 / F2] 精确边界：条目数 ≠ DB 行数（远端回放行
+            // 粒度差）——按"最后保留条目"的 DB 行定位，杜绝多删上一完整回合
+            //（pp 真机实锤：keepCount=18 删了 3 行）。查不到行时 ChatStore
+            // 内部回退 count 语义。
+            let boundaryRowId = agentHistory.last?.dbMessageId
             let hasMarker = cachedLatestMarker != nil
-            logger.info("[DeleteAfter] edit path: sid=\(sessionId?.prefix(8) ?? "nil") keepCount=\(persistedKeepCount) hasMarker=\(hasMarker)")
+            logger.info("[DeleteAfter] edit path: sid=\(sessionId?.prefix(8) ?? "nil") keepCount=\(persistedKeepCount) hasMarker=\(hasMarker) boundary=\(boundaryRowId?.prefix(8) ?? "nil")")
             if let sessionId {
-                Task { await ChatStore.shared.deleteMessagesAfter(sessionId: sessionId, keepCount: persistedKeepCount) }
+                Task { await ChatStore.shared.deleteMessagesAfter(sessionId: sessionId, keepCount: persistedKeepCount, boundaryRowId: boundaryRowId) }
             }
             // Rebuild toolSnapshots from remaining messages
             toolSnapshots = messages
@@ -3512,11 +3517,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // Trim persisted messages to match.
         // Phase B: agentHistory is no longer mutated by compact, so keepCount is valid.
         let persistedKeepCount = agentHistory.count
+        let boundaryRowId = agentHistory.last?.dbMessageId  // [Fix v1.14.30.1 / F2] 精确边界
         let hasMarkerResend = cachedLatestMarker != nil
-        logger.info("[DeleteAfter] resend path: sid=\(sessionId?.prefix(8) ?? "nil") keepCount=\(persistedKeepCount) hasMarker=\(hasMarkerResend)")
+        logger.info("[DeleteAfter] resend path: sid=\(sessionId?.prefix(8) ?? "nil") keepCount=\(persistedKeepCount) hasMarker=\(hasMarkerResend) boundary=\(boundaryRowId?.prefix(8) ?? "nil")")
         if let sessionId {
             Task { @MainActor [weak self] in
-                await ChatStore.shared.deleteMessagesAfter(sessionId: sessionId, keepCount: persistedKeepCount)
+                await ChatStore.shared.deleteMessagesAfter(sessionId: sessionId, keepCount: persistedKeepCount, boundaryRowId: boundaryRowId)
                 // DB truncation done — the truncation window is closed. By now
                 // launchRerunAgentLoop has set isProcessing=true, so reloads
                 // stay suppressed through the rerun; this just releases the
@@ -3607,9 +3613,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         logger.info("[DeleteDiag] deleteFromMessage idx=\(idx) deleted=\(deletedCount) messagesLeft=\(self.messages.count) historyLeft=\(self.agentHistory.count)")
 
         let persistedKeepCount = agentHistory.count
+        let boundaryRowId = agentHistory.last?.dbMessageId  // [Fix v1.14.30.1 / F2] 精确边界
         if let sessionId {
             Task { @MainActor [weak self] in
-                await ChatStore.shared.deleteMessagesAfter(sessionId: sessionId, keepCount: persistedKeepCount)
+                await ChatStore.shared.deleteMessagesAfter(sessionId: sessionId, keepCount: persistedKeepCount, boundaryRowId: boundaryRowId)
                 self?.isTruncatingForRetry = false
             }
         } else {
@@ -3861,9 +3868,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 agentHistory.removeSubrange(ei...)
             }
             let keepCount = agentHistory.count
-            logger.info("[RerunToolBlock] degenerate (no precedingUser) → truncate from assistant start tuId=\(targetToolUseId.prefix(12)) keepCount=\(keepCount)")
+            let boundaryRowId = agentHistory.last?.dbMessageId  // [Fix v1.14.30.1 / F2] 精确边界
+            logger.info("[RerunToolBlock] degenerate (no precedingUser) → truncate from assistant start tuId=\(targetToolUseId.prefix(12)) keepCount=\(keepCount) boundary=\(boundaryRowId?.prefix(8) ?? "nil")")
             if let sessionId {
-                Task { await ChatStore.shared.deleteMessagesAfter(sessionId: sessionId, keepCount: keepCount) }
+                Task { await ChatStore.shared.deleteMessagesAfter(sessionId: sessionId, keepCount: keepCount, boundaryRowId: boundaryRowId) }
             }
             rebuildToolSnapshotsFromMessages()
             // No resume target — a fresh assistant message is appended by the
@@ -3970,7 +3978,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             let trimmedParts = trimmedEntry.parts
             let dbId = trimmedEntryDbId
             Task {
-                await ChatStore.shared.deleteMessagesAfter(sessionId: sessionId, keepCount: persistedKeepCount)
+                // [Fix v1.14.30.1 / F2] boundary = 被改写保留的裁剪行本身
+                //（其后的行全删）。
+                await ChatStore.shared.deleteMessagesAfter(sessionId: sessionId, keepCount: persistedKeepCount, boundaryRowId: dbId)
                 if let dbId {
                     let raw = await self.buildRawMessage(trimmedEntry)
                     await ChatStore.shared.updateMessageParts(messageId: dbId, parts: raw?.parts ?? Self.contentPartsFallback(trimmedParts))
@@ -5075,6 +5085,20 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // [Fix v1.14.30] 交接本轮协议身份（与附件候选同款门面传递）——
             // 清空已在上面无条件执行（含本地回合），这里只负责交付。
             remoteProvider.pendingClientMessageId = pendingClientMessageId
+            // [Fix v1.14.30.1 / F4] 首回合身份缺口：新 draft 会话在 send() 门
+            // 判定时 binding 尚未创建 → user 行无 cmid（校准只能文本兜底，
+            // 改过字的消息 → 身份链断 → 重复渲染，pp 真机实锤）。远端回合
+            // 统一兜底：为"未识别的最后 user 行"生成身份并回写 DB 行。
+            if remoteProvider.pendingClientMessageId == nil,
+               let userIdx = agentHistory.lastIndex(where: { $0.role == .user }),
+               agentHistory[userIdx].clientMessageId == nil,
+               let rowId = agentHistory[userIdx].dbMessageId {
+                let cid = UUID().uuidString
+                agentHistory[userIdx].clientMessageId = cid
+                remoteProvider.pendingClientMessageId = cid
+                await ChatStore.shared.updateMessageClientMessageId(messageId: rowId, clientMessageId: cid)
+                logger.info("[Persist] F4 first-turn identity backfill row=\(rowId.prefix(8)) cmid=\(cid.prefix(8))")
+            }
             remote.activeProvider = remoteProvider
             // [Plan B3] Tool-observed paths augment the list_files suffix set.
             remoteProvider.onFilePathsObserved = { [weak self] paths in

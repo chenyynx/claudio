@@ -357,7 +357,12 @@ final class RemoteHistoryBackfill {
         // === 4. 逐条转换（复用 buildRawMessage；tool_result/user_input 行
         //     已在 agentMessage(fromServer:) 注入 bridgeSeq → 稳定 id） ===
         var historyRaws: [RawMessage] = []
+        // [Fix v1.14.30.1 / F3] 被取代的原始输入（编辑重发/删除——bridge 侧
+        // 无法撤回）直接跳过：不 keep、不插入；DB 侧既有回放行由 planReplace
+        // superseded 删除规则清理。
+        let supersededInputs = RemoteSyncSupersededInputs.all(sessionId: sessionId)
         for agentMsg in history {
+            if let cid = agentMsg.clientMessageId, supersededInputs.contains(cid) { continue }
             if let raw = await buildRawMessage(agentMsg) {
                 historyRaws.append(raw)
             }
@@ -468,7 +473,8 @@ final class RemoteHistoryBackfill {
             evictPastRows: needPastMigration,
             currentSegment: currentSegment,
             previousSegment: previousSegment,
-            previousSegments: previousSegments
+            previousSegments: previousSegments,
+            supersededInputIds: supersededInputs
         )
         // [乱序修复 2 2026-09-10 v1.14.22] replaceRemoteHistory **无条件执行**
         // （含 plan.isEmpty）：它的 renumber 按 plan.unifiedFinalOrderIds 全量

@@ -3051,13 +3051,18 @@ actor ChatStore {
                 sessionId: sessionId,
                 segmentsInFirstSeenOrder: orderedSegments
             )
+            // [Fix v1.14.30.1 / F1] 落座水位：上次成功校准的 max sort_order；
+            // 首轮以当前 DB 现状引导（此刻所有行都已经历过落座判定）。
+            let settledFloor = RemoteSyncSettledWatermark.current(sessionId: sessionId)
+                ?? (currentRows.map { $0.sortOrder }.max() ?? -1)
             // 定序规则见 RemoteHistorySyncCore.orderedRowSequence（纯函数可单测）。
             let fullFinalSequence = RemoteHistorySyncCore.orderedRowSequence(
                 unifiedFinalOrderIds: unifiedIds,
                 finalOrder: finalOrder,
                 retainedRows: retainedOutsideFinal,
                 rowById: rowById,
-                segmentRanks: segmentRanks
+                segmentRanks: segmentRanks,
+                settledSortOrderFloor: settledFloor
             )
             var nextOrder = 1
             let renumberSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
@@ -3175,6 +3180,10 @@ actor ChatStore {
 
         NotificationCenter.default.post(name: .sessionDidUpdate, object: sessionId)
         let stats = sessionWriteStats(sessionId: sessionId)
+        // [Fix v1.14.30.1 / F1] 成功收尾写落座水位（全量与 delta 都 bump：
+        // delta 的 shift 会整体抬高既有行，水位必须同步跟上，否则既有行
+        // 会被误判成"新内容"）。
+        RemoteSyncSettledWatermark.set(sessionId: sessionId, to: Int(stats.maxSortOrder))
         logger.info("[Store] replaceRemoteHistory done sid=\(sessionId.prefix(8)) finalCount=\(stats.count) maxSO=\(stats.maxSortOrder) renumber=\(renumber)")
         return true
     }
@@ -3719,7 +3728,7 @@ actor ChatStore {
     /// Fix: resolve the ACTUAL boundary sort_order = the sort_order of the
     /// keepCount-th row (ascending, 1-based), then delete strictly AFTER it.
     /// This is correct regardless of whether sort_order is dense or shifted.
-    func deleteMessagesAfter(sessionId: String, keepCount: Int) {
+    func deleteMessagesAfter(sessionId: String, keepCount: Int, boundaryRowId: String? = nil) {
         invalidateSessionListCache()
         // DIAG: snapshot state before delete
         let beforeStats = sessionWriteStats(sessionId: sessionId)
@@ -3746,21 +3755,42 @@ actor ChatStore {
             // boundary row shares its sort_order with later rows those rows are
             // NOT deleted — i.e. duplicates make truncation conservative (keep
             // more), never destructive.
-            let boundarySql = """
-                SELECT sort_order FROM messages
-                WHERE session_id = ?
-                ORDER BY sort_order ASC, created_at ASC, id ASC
-                LIMIT 1 OFFSET ?
-                """
-            var bStmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, boundarySql, -1, &bStmt, nil) == SQLITE_OK {
-                sqlite3_bind_text(bStmt, 1, (sessionId as NSString).utf8String, -1, nil)
-                sqlite3_bind_int64(bStmt, 2, Int64(keepCount - 1))
-                if sqlite3_step(bStmt) == SQLITE_ROW {
-                    boundarySortOrder = sqlite3_column_int64(bStmt, 0)
+            // [Fix v1.14.30.1 / F2] 精确边界优先：agentHistory **条目数** ≠ DB
+            // **行数**——远端会话回放行与条目存在 1:N 粒度差（pp 真机实锤：
+            // keepCount=18 而 DB 21 行 → 多删上一完整回合 3 行）。caller 传
+            // "最后保留条目对应的 DB 行 id" 直接定位；未传/查不到回退 count 语义。
+            if let rowId = boundaryRowId {
+                let idSql = "SELECT sort_order FROM messages WHERE session_id = ? AND id = ? LIMIT 1"
+                var idStmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, idSql, -1, &idStmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(idStmt, 1, (sessionId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(idStmt, 2, (rowId as NSString).utf8String, -1, nil)
+                    if sqlite3_step(idStmt) == SQLITE_ROW {
+                        boundarySortOrder = sqlite3_column_int64(idStmt, 0)
+                    }
+                }
+                sqlite3_finalize(idStmt)
+                if boundarySortOrder == nil {
+                    logger.warning("[EditSync] [DeleteAfter] boundaryRowId=\(rowId.prefix(8)) not found — fallback to keepCount semantics")
                 }
             }
-            sqlite3_finalize(bStmt)
+            if boundarySortOrder == nil {
+                let boundarySql = """
+                    SELECT sort_order FROM messages
+                    WHERE session_id = ?
+                    ORDER BY sort_order ASC, created_at ASC, id ASC
+                    LIMIT 1 OFFSET ?
+                    """
+                var bStmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, boundarySql, -1, &bStmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(bStmt, 1, (sessionId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_int64(bStmt, 2, Int64(keepCount - 1))
+                    if sqlite3_step(bStmt) == SQLITE_ROW {
+                        boundarySortOrder = sqlite3_column_int64(bStmt, 0)
+                    }
+                }
+                sqlite3_finalize(bStmt)
+            }
             // No keepCount-th row exists (session has <= keepCount rows): nothing
             // is after the kept set, so there is nothing to delete.
             if boundarySortOrder == nil {
@@ -3771,10 +3801,11 @@ actor ChatStore {
 
         // Mark deleted messages for iCloud sync removal before deleting locally.
         let selectSql = deleteAll
-            ? "SELECT id FROM messages WHERE session_id = ?"
-            : "SELECT id FROM messages WHERE session_id = ? AND sort_order > ?"
+            ? "SELECT id, role, client_message_id FROM messages WHERE session_id = ?"
+            : "SELECT id, role, client_message_id FROM messages WHERE session_id = ? AND sort_order > ?"
         var selectStmt: OpaquePointer?
         var toDelete: [String] = []
+        var supersededCmids: [String] = []
         if sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK {
             sqlite3_bind_text(selectStmt, 1, (sessionId as NSString).utf8String, -1, nil)
             if let boundary = boundarySortOrder {
@@ -3783,6 +3814,13 @@ actor ChatStore {
             while sqlite3_step(selectStmt) == SQLITE_ROW {
                 let msgId = String(cString: sqlite3_column_text(selectStmt, 0))
                 toDelete.append(msgId)
+                // [Fix v1.14.30.1 / F3] 被删 user 行的协议身份 → 登记取代。
+                // 本地 agent 行 client_message_id 恒 NULL（隔离不变量）→ 天然
+                // 只在远端会话登记；编辑/重生成/删除已投递输入统一收口于此。
+                if let rolePtr = sqlite3_column_text(selectStmt, 1), String(cString: rolePtr) == "user",
+                   let cidPtr = sqlite3_column_text(selectStmt, 2) {
+                    supersededCmids.append(String(cString: cidPtr))
+                }
                 markDirty(recordType: "Message", recordId: msgId, operation: "delete")
                 logger.warning("[EditSync] markDirty Message id=\(msgId.prefix(8)) op=delete — will push tombstone")
             }
@@ -3809,12 +3847,38 @@ actor ChatStore {
         }
 
         let afterStats = sessionWriteStats(sessionId: sessionId)
+        if deletedRows > 0 {
+            // [Fix v1.14.30.1 / F3] 截断即取代（防回放复活）；
+            // [F1] 截断后水位同步（剩余行为已落座，重发行 sort_order 在其后）。
+            if !supersededCmids.isEmpty {
+                RemoteSyncSupersededInputs.register(sessionId: sessionId, clientMessageIds: supersededCmids)
+                logger.info("[EditSync] [DeleteAfter] registered \(supersededCmids.count) superseded input id(s) sid=\(sessionId.prefix(8))")
+            }
+            RemoteSyncSettledWatermark.set(sessionId: sessionId, to: Int(afterStats.maxSortOrder))
+        }
         let boundaryDesc = deleteAll ? "ALL" : String(boundarySortOrder ?? -1)
         logger.warning("[EditSync] [DeleteAfter] DONE sid=\(sessionId.prefix(8)) keepCount=\(keepCount) boundarySortOrder=\(boundaryDesc) deletedRows=\(deletedRows) toDeleteMarked=\(toDelete.count) — after: count=\(afterStats.count) maxSortOrder=\(afterStats.maxSortOrder)")
         if deletedRows > 0 {
             let idSample = toDelete.prefix(10).map { String($0.prefix(8)) }.joined(separator: ",")
             logger.warning("[EditSync] [DeleteAfter] deleted msg ids (first 10): \(idSample) — these tombstones should appear in next SyncCore outbound batch.deletes")
         }
+    }
+
+    /// [Fix v1.14.30.1 / F4] 回填既有行的 clientMessageId（draft 首回合发送
+    /// 时门未开 → 行无身份 → 校准只能文本兜底）。不 markDirty——
+    /// client_message_id 设备本地语义，不进 iCloud 同步载荷（v1.14.30 设计）。
+    func updateMessageClientMessageId(messageId: String, clientMessageId: String) {
+        guard db != nil else { return }
+        let sql = "UPDATE messages SET client_message_id = ? WHERE id = ?"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, (clientMessageId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (messageId as NSString).utf8String, -1, nil)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                logger.error("[Store] updateMessageClientMessageId failed mid=\(messageId.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+            }
+        }
+        sqlite3_finalize(stmt)
     }
 
     // MARK: - Media File Management

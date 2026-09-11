@@ -190,9 +190,9 @@ final class RemoteFilePeekTests: XCTestCase {
     func test_parseMediaResponse_audioWithRelativeMediaUrl() {
         let content = RemoteFileContentFetcher.parseMediaResponse(textResponse(
             kind: "audio",
-            mediaUrl: "/api/media/abc123",
             mimeType: "audio/mpeg",
-            sizeBytes: 5678
+            sizeBytes: 5678,
+            mediaUrl: "/api/media/abc123"
         ), httpBaseURL: URL(string: "http://192.168.1.10:8766"))
         guard case .audio(let url, let mime, let size) = content else {
             return XCTFail("expected .audio, got \(content)")

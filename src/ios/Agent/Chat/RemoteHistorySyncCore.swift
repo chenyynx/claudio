@@ -70,7 +70,7 @@ enum RemoteHistorySyncCore {
     ///     内容——id 命中 keep 会保留旧残缺行（修复失效）。CLIENT 在检测到
     ///     迁移未完成 + 全量 fetch 成功时传 true：本次全部 past 行进
     ///     deleteIds，同事务按新序列重插。日常路径恒 false（past 行只增不删）。
-    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage], nonEngineSeqs: Set<Int> = [], forceFullReshuffle: Bool = false, evictPastRows: Bool = false, currentSegment: String? = nil, previousSegment: String? = nil, previousSegments: Set<String> = []) -> RemoteHistoryReplacePlan {
+    static func planReplace(historyRaws: [RawMessage], dbRows: [RawMessage], nonEngineSeqs: Set<Int> = [], forceFullReshuffle: Bool = false, evictPastRows: Bool = false, currentSegment: String? = nil, previousSegment: String? = nil, previousSegments: Set<String> = [], supersededInputIds: Set<String> = []) -> RemoteHistoryReplacePlan {
         let dbIds = Set(dbRows.map { $0.id })
 
         // 删除③（seq 空间重置检测，优先级最高）：bridge-{seq} 的 seq 是
@@ -149,6 +149,11 @@ enum RemoteHistorySyncCore {
                 // 序列同事务重插；命中本地 owner 则不插由 unified 序承接）。
                 // 检查须先于 user 保留规则。
                 if row.id.hasPrefix("past-") { return evictPastRows }
+                // [Fix v1.14.30.1 / F3] 被取代的原始输入（编辑重发/删除——
+                // bridge 无撤回协议，回放不认领不插入；此规则清掉此前校准已
+                // 入库的对应回放行，防"删不掉的双份"）。
+                if row.role == .user, let cid = row.clientMessageId, !cid.isEmpty,
+                   supersededInputIds.contains(cid) { return true }
                 // [对抗审查 A2] 外来段的行：任何删除规则都不碰（跨设备/旧来源
                 // 的段，删了就是删别的设备的内容 + 回插乒乓）。
                 if !isOwnSegment(row) { return false }
@@ -258,15 +263,24 @@ enum RemoteHistorySyncCore {
         finalOrder: [RawMessage],
         retainedRows: [RawMessage],
         rowById: [String: RawMessage],
-        segmentRanks: [String: Int] = [:]
+        segmentRanks: [String: Int] = [:],
+        settledSortOrderFloor: Int? = nil
     ) -> [RawMessage] {
         var before: [RawMessage] = []
+        var settled: [RawMessage] = []
         var after: [RawMessage] = []
         for row in retainedRows {
             // bridge-/past- 前缀 = 回放行（老历史，排前）；其余（live UUID）
             // = 本地新内容（排后）。前缀判定收敛到 ReplayRowId（[Fix v1.14.29]）。
             if ReplayRowId.isReplayRow(row.id) {
                 before.append(row)
+            } else if row.role == .user, let floor = settledSortOrderFloor, row.sortOrder <= floor {
+                // [Fix v1.14.30.1 / F1] 已落座 live user 行：上次校准写过它的
+                // 位置（sort_order ≤ 水位），此后 bridge 历史因 trim/resume 不再
+                // 承载 ≠ 新内容。原规则甩尾 =「你好」排到最新一条（pp 实锤）。
+                // 回放区之后、history 主体之前稳定落座；assistant live 行为不变
+                // （流式未完行仍 after，v1.14.27 语义保持）。
+                settled.append(row)
             } else {
                 after.append(row)
             }
@@ -276,6 +290,7 @@ enum RemoteHistorySyncCore {
         // 历史，同段内 seq 单调。past 行恒最先（磁盘历史早于任何 bridge 会话）。
         before = Self.sortedReplayRows(before, segmentRanks: segmentRanks)
         var sequence: [RawMessage] = before
+        sequence.append(contentsOf: settled)
         for id in unifiedFinalOrderIds {
             if let row = rowById[id] {
                 sequence.append(row)

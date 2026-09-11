@@ -78,3 +78,66 @@ enum RemoteSyncSegmentRegistry {
         defaults.set(data, forKey: key(sessionId: sessionId))
     }
 }
+
+/// 定序落座水位（[Fix v1.14.30.1 / 对抗审查·F1]）。
+///
+/// 背景：`orderedRowSequence` 把"未被 history 承载的 live user 行"一律当
+/// 新内容甩 after 桶（v1.14.27 规则）。但"已被上一次校准落座、随后 bridge
+/// 历史不再承载（trim 窗口 / resume 分界）"的历史行同样满足该条件——pp 真机
+/// 实锤：会话第一条「你好」重进后出现在最新一条（perMsg 末位）。
+/// 判据：每条**成功**校准（全量/delta/截断）收尾把当前 max sort_order 写为
+/// 水位；下一轮 live user 行 sort_order ≤ 水位 = 已落座 → 回放区（before 尾），
+/// > 水位 = 本轮之后新发 → after（原语义保持）。首轮无水位时以当前 DB 现状
+/// 引导（所有现存行皆已落座）。设备本地语义（UserDefaults，per-session）。
+enum RemoteSyncSettledWatermark {
+
+    private static func key(sessionId: String) -> String {
+        "RemoteSyncSettledMax.v1.\(sessionId)"
+    }
+
+    /// 水位；从未成功落库过返回 nil（调用方 bootstrap）。
+    static func current(sessionId: String, defaults: UserDefaults = .standard) -> Int? {
+        let v = defaults.integer(forKey: key(sessionId: sessionId))
+        return v == 0 ? nil : v
+    }
+
+    static func set(sessionId: String, to maxSortOrder: Int, defaults: UserDefaults = .standard) {
+        defaults.set(max(maxSortOrder, 0), forKey: key(sessionId: sessionId))
+    }
+}
+
+/// 已被编辑/删除取代的原始输入协议身份（[Fix v1.14.30.1 / 对抗审查·F3]）。
+///
+/// 语义：bridge 无"撤回已投递输入"协议（官方亦无消息编辑能力，claudio 扩展），
+/// 编辑重发后原输入仍活在 bridge 历史里——回放必与重发行并排 = 同一消息双份
+/// （pp 真机 perMsg [26]/[27]、[40]/[41] 实锤）。截断路径（edit/resend/
+/// regenerate/deleteFromMessage）删除 DB 行时把**被删 user 行的
+/// clientMessageId** 登记于此；校准侧双重消化：①historyRaws 转换跳过这些
+/// cmid（不 keep 不插入）②planReplace 删除规则清掉此前已入库的对应回放行。
+/// 本地 agent 行 client_message_id 恒 NULL（隔离不变量）→ 永不登记。
+enum RemoteSyncSupersededInputs {
+
+    private static func key(sessionId: String) -> String {
+        "RemoteSyncSuperseded.v1.\(sessionId)"
+    }
+
+    static func register(sessionId: String, clientMessageIds cmids: [String], defaults: UserDefaults = .standard) {
+        guard !cmids.isEmpty else { return }
+        var cur = Array(all(sessionId: sessionId, defaults: defaults))
+        let curSet = Set(cur)
+        let added = cmids.filter { !curSet.contains($0) }
+        guard !added.isEmpty else { return }
+        cur.append(contentsOf: added)
+        // 容量护栏：FIFO 截尾（编辑是低频动作，50 足够宽）
+        if cur.count > 50 { cur = Array(cur.suffix(50)) }
+        if let data = try? JSONEncoder().encode(cur) {
+            defaults.set(data, forKey: key(sessionId: sessionId))
+        }
+    }
+
+    static func all(sessionId: String, defaults: UserDefaults = .standard) -> Set<String> {
+        guard let data = defaults.data(forKey: key(sessionId: sessionId)),
+              let arr = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return Set(arr)
+    }
+}

@@ -11,9 +11,13 @@ final class RemoteHistoryBackfillTests: XCTestCase {
     // MARK: - Fixtures
 
     private func makeHistoryRaw(id: String, role: MessageRole, sortOrder: Int = 0) -> RawMessage {
+        makeHistoryRaw(id: id, role: role, sortOrder: sortOrder, parts: [.text("content-\(id)")])
+    }
+
+    private func makeHistoryRaw(id: String, role: MessageRole, sortOrder: Int = 0, parts: [ContentPart]) -> RawMessage {
         RawMessage(
             id: id, sessionId: "test-session", role: role,
-            parts: [.text("content-\(id)")],
+            parts: parts,
             createdAt: Date(), tokenUsage: nil,
             reasoningContent: nil, streamInterruptCount: 0,
             sortOrder: sortOrder, errorInfo: nil
@@ -27,6 +31,28 @@ final class RemoteHistoryBackfillTests: XCTestCase {
             createdAt: Date(), tokenUsage: nil,
             reasoningContent: nil, streamInterruptCount: 0,
             sortOrder: sortOrder, errorInfo: errorInfo
+        )
+    }
+
+    private func makeDBRow(id: String, role: MessageRole, sortOrder: Int, clientMessageId: String) -> RawMessage {
+        RawMessage(
+            id: id, sessionId: "test-session", role: role,
+            parts: [.text("db-\(id)")],
+            createdAt: Date(), tokenUsage: nil,
+            reasoningContent: nil, streamInterruptCount: 0,
+            sortOrder: sortOrder, errorInfo: nil, clientMessageId: clientMessageId
+        )
+    }
+
+    /// [Fix 2026-09-11] parts 定制版（RawMessage.parts 是 let，不允许事后
+    /// 赋值——测试门重开 CI 实锤）。
+    private func makeDBRow(id: String, role: MessageRole, sortOrder: Int, parts: [ContentPart]) -> RawMessage {
+        RawMessage(
+            id: id, sessionId: "test-session", role: role,
+            parts: parts,
+            createdAt: Date(), tokenUsage: nil,
+            reasoningContent: nil, streamInterruptCount: 0,
+            sortOrder: sortOrder, errorInfo: nil
         )
     }
 
@@ -153,11 +179,12 @@ final class RemoteHistoryBackfillTests: XCTestCase {
             makeHistoryRaw(id: "bridge-1", role: .user),      // 与 UUID-USER 同文本
             makeHistoryRaw(id: "bridge-2", role: .assistant),
         ]
-        var liveUser = makeDBRow(id: "UUID-USER", role: .user, sortOrder: 1)
-        liveUser.parts = [.text("content-bridge-1"), .mediaRef(MediaRef(
-            id: "m1", relativePath: "media/shot.png", mimeType: "image/png",
-            originalFileName: "shot.png"
-        ))]
+        let liveUser = makeDBRow(id: "UUID-USER", role: .user, sortOrder: 1, parts: [
+            .text("content-bridge-1"), .mediaRef(MediaRef(
+                id: "m1", relativePath: "media/shot.png", mimeType: "image/png",
+                originalFileName: "shot.png"
+            ))
+        ])
         let db = [liveUser]
         let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: db)
         XCTAssertEqual(plan.inserts.map { $0.id }, ["bridge-2"], "同文本 user 回放行不插，本地行（含图）保留")
@@ -173,10 +200,9 @@ final class RemoteHistoryBackfillTests: XCTestCase {
             makeHistoryRaw(id: "bridge-1", role: .user),
             makeHistoryRaw(id: "bridge-2", role: .assistant),
         ]
-        var historyToolResult = makeHistoryRaw(id: "bridge-3", role: .user)
-        historyToolResult.parts = [.toolResult(ToolResult(
+        let historyToolResult = makeHistoryRaw(id: "bridge-3", role: .user, parts: [.toolResult(ToolResult(
             toolUseId: "toolu-1", output: "ok", success: true, mediaRef: nil, snapshot: nil, pageURL: nil, status: "success", outputFile: nil
-        ))]
+        ))])
         let liveToolResult = makeDBRow(id: "UUID-TR", role: .user, sortOrder: 3)
         let db = [
             makeDBRow(id: "UUID-USER", role: .user, sortOrder: 1),
@@ -425,8 +451,8 @@ final class RemoteHistoryBackfillTests: XCTestCase {
             makeDBRow(id: "UUID-USER2", role: .user, sortOrder: 3),  // 文本 = content-bridge-14
         ]
         // 让两条本地 user 行文本与回放行匹配（防双份按首条 text 比对）
-        var u1 = db[0]; u1.parts = [.text("content-bridge-8")]
-        var u2 = db[1]; u2.parts = [.text("content-bridge-14")]
+        let u1 = makeDBRow(id: "UUID-USER1", role: .user, sortOrder: 1, parts: [.text("content-bridge-8")])
+        let u2 = makeDBRow(id: "UUID-USER2", role: .user, sortOrder: 3, parts: [.text("content-bridge-14")])
         let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: [u1, u2])
         XCTAssertEqual(plan.unifiedFinalOrderIds,
                        ["UUID-USER1", "bridge-9", "bridge-10", "bridge-11", "UUID-USER2", "bridge-15"],
@@ -512,9 +538,7 @@ final class RemoteHistoryBackfillTests: XCTestCase {
             makeHistoryRaw(id: "bridge-8", role: .user),
             makeHistoryRaw(id: "bridge-9", role: .assistant),
         ]
-        let owner = makeDBRow(id: "UUID-USER1", role: .user, sortOrder: 1)
-        var ownerMatched = owner
-        ownerMatched.parts = [.text("content-bridge-8")]
+        let ownerMatched = makeDBRow(id: "UUID-USER1", role: .user, sortOrder: 1, parts: [.text("content-bridge-8")])
         let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: [ownerMatched])
         XCTAssertEqual(plan.unifiedFinalOrderIds, ["UUID-USER1", "bridge-9"],
                        "前置：防双份命中位由本地行顶替")
@@ -574,8 +598,8 @@ final class RemoteHistoryBackfillTests: XCTestCase {
             makeHistoryRaw(id: "bridge-6", role: .assistant),
             makeHistoryRaw(id: "bridge-7", role: .user),  // user_input 回放行
         ]
-        var liveUser = makeDBRow(id: "UUID-USER", role: .user, sortOrder: 4)
-        liveUser.parts = [.text("content-bridge-7")]  // 与回放行同文本 → 防双份命中
+        let liveUser = makeDBRow(id: "UUID-USER", role: .user, sortOrder: 4,
+                                 parts: [.text("content-bridge-7")])  // 与回放行同文本 → 防双份命中
         let db = [
             makeDBRow(id: "bridge-1", role: .user, sortOrder: 1),
             makeDBRow(id: "bridge-2", role: .assistant, sortOrder: 2),
@@ -799,8 +823,8 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         // 旧残缺行与新序列同 id——evictPastRows=true 必须清旧行（含 user
         // role 的 past 行）并按新序列重插；owner 池排除待删行，旧同文本
         // user 行不得冒充 owner（否则旧行删了、新行被顶替 = 净丢）。
-        var oldPastUser = makeDBRow(id: "past-0", role: .user, sortOrder: 1)
-        oldPastUser.parts = [.text("content-past-0")]  // 与新序列 past-0 同文本
+        let oldPastUser = makeDBRow(id: "past-0", role: .user, sortOrder: 1,
+                                    parts: [.text("content-past-0")])  // 与新序列 past-0 同文本
         let db = [
             oldPastUser,
             makeDBRow(id: "past-1", role: .assistant, sortOrder: 2),
@@ -999,5 +1023,74 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         )
         XCTAssertFalse(plan.deleteIds.contains("bridge-OTHERNS-b1old-1"),
                        "外来 ns 的行不因失明反查被清（乒乓防线保持）")
+    }
+
+    // MARK: - F1 settled 水位 [Fix v1.14.30.1 pp 真机「你好」甩尾]
+
+    func test_orderedRowSequence_settledLiveUserRowNotDumpedToTail() {
+        // 「你好」场景：live user 行上次校准已落座（so ≤ 水位），本次 bridge
+        // 历史因 trim/resume 分界不再承载它 → 落回放区最前，不再甩到队尾；
+        // 水位之后的 live user 行（本轮新发）保持 after 语义（v1.14.27 不回归）。
+        let body = makeHistoryRaw(id: "bridge-ns-a-5", role: .assistant)
+        let settledHello = makeDBRow(id: "UUID-HELLO", role: .user, sortOrder: 1)
+        let newPending = makeDBRow(id: "UUID-NEW", role: .user, sortOrder: 9)
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: ["bridge-ns-a-5"],
+            finalOrder: [body],
+            retainedRows: [settledHello, newPending],
+            rowById: ["bridge-ns-a-5": body],
+            settledSortOrderFloor: 6
+        )
+        XCTAssertEqual(sequence.map { $0.id }, ["UUID-HELLO", "bridge-ns-a-5", "UUID-NEW"],
+                       "已落座行回放区最前；新发行仍队尾")
+    }
+
+    func test_orderedRowSequence_nilWatermark_keepsOldBehavior() {
+        // 不传水位（本地会话/旧 caller）→ live 行一律 after，逐字保持 v1.14.27 语义
+        let body = makeHistoryRaw(id: "bridge-ns-a-5", role: .assistant)
+        let oldLive = makeDBRow(id: "UUID-HELLO", role: .user, sortOrder: 1)
+        let sequence = RemoteHistorySyncCore.orderedRowSequence(
+            unifiedFinalOrderIds: ["bridge-ns-a-5"],
+            finalOrder: [body],
+            retainedRows: [oldLive],
+            rowById: ["bridge-ns-a-5": body]
+        )
+        XCTAssertEqual(sequence.map { $0.id }, ["bridge-ns-a-5", "UUID-HELLO"],
+                       "nil 水位 = 原行为：live 恒 after（本地零影响不变量）")
+    }
+
+    // MARK: - F3 superseded 取代登记 [Fix v1.14.30.1 pp 真机编辑双份]
+
+    func test_planReplace_supersededReplayRowDeleted() {
+        // 编辑重发：原输入的 DB 回放行（带被取代 cmid）必须清掉——本地承载行
+        // 已是重发的新版；不清 =「删不掉的双份」。
+        let history = [makeHistoryRaw(id: "bridge-ns-a-9", role: .assistant)]
+        let db = [
+            makeDBRow(id: "bridge-ns-a-1", role: .user, sortOrder: 1, clientMessageId: "cmid-old"),
+            makeDBRow(id: "UUID-EDITED", role: .user, sortOrder: 2),
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: history,
+            dbRows: db,
+            supersededInputIds: ["cmid-old"]
+        )
+        XCTAssertTrue(plan.deleteIds.contains("bridge-ns-a-1"),
+                      "被取代输入的既有回放行必须进删除集")
+    }
+
+    func test_planReplace_supersededOnlyTouchesMatchingCmid() {
+        // 不误伤：无 cmid 的行、cmid 不在取代集的行一律不动
+        let history = [makeHistoryRaw(id: "bridge-ns-a-9", role: .assistant)]
+        let db = [
+            makeDBRow(id: "bridge-ns-a-2", role: .user, sortOrder: 1, clientMessageId: "cmid-alive"),
+            makeDBRow(id: "bridge-ns-a-3", role: .user, sortOrder: 2),  // 无 cmid
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(
+            historyRaws: history,
+            dbRows: db,
+            supersededInputIds: ["cmid-old"]
+        )
+        XCTAssertFalse(plan.deleteIds.contains("bridge-ns-a-2"))
+        XCTAssertFalse(plan.deleteIds.contains("bridge-ns-a-3"))
     }
 }
