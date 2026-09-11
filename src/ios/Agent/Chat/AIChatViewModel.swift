@@ -5826,6 +5826,19 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                     streamResult = result
                 }
             } catch let streamError as LLMError where streamError.isRetryable {
+                // [Fix v1.14.32 / G1] 远端回合且输入已 ack：回合归属已在桥侧，
+                // 这里"重试"若走 streamWithAutoRetry = 重新 sendInput = 桥超录 +
+                // 模型多答一轮（官方 ccpocket 客户端无自动重发；ChatGPT/Claude
+                // app 同为"重挂观察/续写/用户手点"三态，机器绝不静默重投）。
+                // 优雅结束本轮消费：send() 收尾的 B1 结算发现 wire 尾非 result →
+                // beginRemoteTurnWatchdog 轮询校准直至 result（恢复态同款链路）。
+                // 未 ack（半死连接/发送失败）仍走既有 autoRetry 重发
+                // （F1b 同身份复用 + OwnerClaim duplicate 双保险）。
+                if lastAgentProviderIsRemote,
+                   let rp = provider as? RemoteAgentProvider, rp.turnInputAcked {
+                    logger.info("[RetryDiag] G1: remote stall after ack — re-attach via turn-end settle (no resend, no fallback)")
+                    return
+                }
                 logger.error("🔁STREAM mid-stream retryable error, entering autoRetry: \(streamError.localizedDescription)")
                 // Resync msgIdx by stable id before touching messages — the
                 // array may have been shrunk by a concurrent path (user

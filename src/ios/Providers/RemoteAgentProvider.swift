@@ -138,6 +138,12 @@ final class RemoteAgentProvider: AgentProvider {
     /// bridge 把同一逻辑消息超录成两条（详见 stream() 上行处注释）。
     private var turnSentClientMessageId: String?
     private var turnSentInputText: String?
+    /// [Fix v1.14.32 / G1] 本轮输入是否已被 bridge 落地（见到 input_ack 或
+    /// user_input 回显）。VM 的重试分支据此决定"重投"还是"重挂观察"：
+    /// 已落地再重发 = 有状态桥上的超录 + 模型双答（pp 真机日志 0F133A2A：
+    /// 同一句「你好」8 次 sendInput）。provider 每 runAgentLoop 新建，
+    /// 标记天然是回合级生命周期。
+    private(set) var turnInputAcked = false
     /// Legacy per-instance mapping migration is opt-in from the load path.
     let allowLegacyMappingFallback: Bool
 
@@ -451,6 +457,11 @@ final class RemoteAgentProvider: AgentProvider {
             ?? message.subtype
             ?? ""
         logger.info("[RemoteAgent] <- \(message.type ?? "?")\(payload.isEmpty ? "" : " \(payload)")")
+        // [Fix v1.14.32 / G1] 落地标记：首个 input_ack / user_input 回显到达
+        // = 输入已在桥侧 history（模型跑不跑完与发送语义无关）。
+        if message.type == "input_ack" || message.type == "user_input" {
+            turnInputAcked = true
+        }
         switch message.type {
         case "system":
             // Only capture the short Bridge session id for routing; the

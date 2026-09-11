@@ -367,25 +367,42 @@ extension AIChatViewModel {
             let maybeEvent: AgentStreamEvent? = try await withThrowingTaskGroup(of: AgentStreamEvent?.self) { group in
                 group.addTask { try await iterBox.next() }
                 group.addTask {
-                    try await Task.sleep(nanoseconds: UInt64(stallTimeoutSeconds * 1_000_000_000))
-                    // Measured elapsed vs the nominal timeout: a gap far above
-                    // 120s means the sleep was stretched (candidate 3); a gap
-                    // very close to 120s rules that out and points at a genuine
-                    // silent stream (candidate 2).
-                    let firedAt = Date()
-                    let measured = firedAt.timeIntervalSince(iterationStartedAt)
-                    let sinceLastEvent = firedAt.timeIntervalSince(lastEventAt)
-                    let appState = await MainActor.run { Self.diagAppStateName() }
-                    logger.error(
-                        "[StreamDiag][STALL] watchdog fired session=\(streamDiagSession) provider=\(provider.name) model=\(streamDiagModel) "
-                        + "nominal=\(Int(stallTimeoutSeconds))s measured=\(String(format: "%.1f", measured))s "
-                        + "sinceLastEvent=\(String(format: "%.1f", sinceLastEvent))s eventsThisStream=\(eventSeq) "
-                        + "appState=\(appState) iterStart=\(Self.diagTimestamp(iterationStartedAt)) firedAt=\(Self.diagTimestamp(firedAt))"
-                    )
-                    // [T-ios-stream-stall-no-retry] An LLMError so the agent
-                    // loop's retryable-error gate catches it — see the header
-                    // comment at the top of this file.
-                    throw LLMError.transientError(message: "No response from the server for \(Int(stallTimeoutSeconds)) seconds — the stream stalled mid-generation")
+                    // [Fix v1.14.32 / G2] 远端回合的看门狗改为"重新计时循环"：
+                    // ①appState 非 active（挂起冻结 socket/拉长 wall-clock timer）
+                    // ②唤醒瞬间竞态——睡眠到期但事件其实已恢复（sinceLastEvent
+                    // 低于阈值）——都不是流死，不掷错，下一窗口重判。pp 真机
+                    // 02:21:44 实锤：appState=background、97 个事件在途、
+                    // stale 计时器把活回合判死 → 双答。本地 provider 不满足
+                    // gate，行为与旧代码逐字节一致（单次 sleep→掷错）。
+                    while true {
+                        try await Task.sleep(nanoseconds: UInt64(stallTimeoutSeconds * 1_000_000_000))
+                        // Measured elapsed vs the nominal timeout: a gap far above
+                        // 120s means the sleep was stretched (candidate 3); a gap
+                        // very close to 120s rules that out and points at a genuine
+                        // silent stream (candidate 2).
+                        let firedAt = Date()
+                        let measured = firedAt.timeIntervalSince(iterationStartedAt)
+                        let sinceLastEvent = firedAt.timeIntervalSince(lastEventAt)
+                        let appState = await MainActor.run { Self.diagAppStateName() }
+                        logger.error(
+                            "[StreamDiag][STALL] watchdog fired session=\(streamDiagSession) provider=\(provider.name) model=\(streamDiagModel) "
+                            + "nominal=\(Int(stallTimeoutSeconds))s measured=\(String(format: "%.1f", measured))s "
+                            + "sinceLastEvent=\(String(format: "%.1f", sinceLastEvent))s eventsThisStream=\(eventSeq) "
+                            + "appState=\(appState) iterStart=\(Self.diagTimestamp(iterationStartedAt)) firedAt=\(Self.diagTimestamp(firedAt))"
+                        )
+                        if provider.isRemoteAgent, appState != "active" {
+                            logger.info("[StreamDiag][STALL] G2 remote grace — app not active, re-arming without failing the stream")
+                            continue
+                        }
+                        if provider.isRemoteAgent, sinceLastEvent < stallTimeoutSeconds {
+                            logger.info("[StreamDiag][STALL] G2 remote grace — events resumed (sinceLastEvent=\(String(format: "%.1f", sinceLastEvent))s), re-arming")
+                            continue
+                        }
+                        // [T-ios-stream-stall-no-retry] An LLMError so the agent
+                        // loop's retryable-error gate catches it — see the header
+                        // comment at the top of this file.
+                        throw LLMError.transientError(message: "No response from the server for \(Int(stallTimeoutSeconds)) seconds — the stream stalled mid-generation")
+                    }
                 }
                 let result = try await group.next()!
                 group.cancelAll()
