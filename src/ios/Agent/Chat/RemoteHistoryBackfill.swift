@@ -241,7 +241,7 @@ final class RemoteHistoryBackfill {
                         // 基线行无从回插 = 净丢内容。禁用快路径，强制全量。
                         if deltaUsable {
                             let probeSegs = Set(dbRowsProbe.compactMap { ReplayRowId.parseSegment($0.id) })
-                            let staleSegs = probeSegs.subtracting(ReplayRowId.segment(id: delta.bridgeId))
+                            let staleSegs = probeSegs.subtracting([ReplayRowId.segment(id: delta.bridgeId)])
                             if !staleSegs.isEmpty {
                                 let staleList = staleSegs.sorted().map { String($0.prefix(4)) }.joined(separator: ",")
                                 logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta denied — DB has stale own-segment rows [\(staleList)] (reshuffle scenario) — fallback full")
