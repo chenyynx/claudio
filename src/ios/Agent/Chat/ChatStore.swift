@@ -2966,9 +2966,14 @@ actor ChatStore {
             }
             var stmt: OpaquePointer?
             if sqlite3_prepare_v2(db, insertSQL, -1, &stmt, nil) == SQLITE_OK {
-                // sort_order assigned below in the renumber pass — store a
-                // provisional high value so a crash mid-transaction cannot
-                // leave it colliding with kept rows.
+                // sort_order is finalized below in the renumber (full) or
+                // append (delta) pass. The provisional value is the row's own
+                // (0): the whole rewrite runs in ONE transaction and any failure
+                // ROLLBACKs, so the ties are never observable outside. The
+                // loadMessages sortOrder diagnostic is suppressed for reads taken
+                // inside this transaction (orderDiagnostics: false) — it used to
+                // fire on the ties and bury real anomalies in false noise
+                // (v1.14.31 F3; pp log 2026-09-11 22:36 ANOMALY dup=12 was one).
                 sqlite3_bind_text(stmt, 1, (message.id as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(stmt, 2, (message.sessionId as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(stmt, 3, (message.role.rawValue as NSString).utf8String, -1, nil)
@@ -3031,7 +3036,7 @@ actor ChatStore {
         let unifiedIds = plan.unifiedFinalOrderIds
         if renumber {
             let finalIds = Set(finalOrder.map { $0.id }).union(unifiedIds)
-            let currentRows = loadMessages(sessionId: sessionId)
+            let currentRows = loadMessages(sessionId: sessionId, orderDiagnostics: false)
             let retainedOutsideFinal = currentRows
                 .filter { !finalIds.contains($0.id) }
                 .sorted { $0.sortOrder < $1.sortOrder }
@@ -3110,7 +3115,7 @@ actor ChatStore {
                 logger.error("[Store] replaceRemoteHistory ROLLBACK sid=\(sessionId.prefix(8)) — delta mixed batch (insert before last claimed row), single-anchor insert refused, seal cleared for full resync")
                 return false
             }
-            let currentRows = loadMessages(sessionId: sessionId)
+            let currentRows = loadMessages(sessionId: sessionId, orderDiagnostics: false)
             // 插入锚点规则见 RemoteHistorySyncCore.deltaInsertPlan（纯函数可单测）。
             let deltaPlan = RemoteHistorySyncCore.deltaInsertPlan(
                 unifiedFinalOrderIds: plan.unifiedFinalOrderIds,
@@ -3371,7 +3376,7 @@ actor ChatStore {
         return (count, maxSo)
     }
 
-    func loadMessages(sessionId: String) -> [RawMessage] {
+    func loadMessages(sessionId: String, orderDiagnostics: Bool = true) -> [RawMessage] {
         let totalStart = CFAbsoluteTimeGetCurrent()
         let sql = """
             SELECT id, session_id, role, parts_json, created_at, token_usage, reasoning_content, stream_interrupt_count, sort_order, error_info, model_id, model_display_name, provider_type, provider_instance_id, client_message_id
@@ -3502,14 +3507,14 @@ actor ChatStore {
         var sortOrders: [Int] = []
         let soSql = "SELECT sort_order FROM messages WHERE session_id = ? ORDER BY sort_order ASC, created_at ASC, id ASC"
         var soStmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, soSql, -1, &soStmt, nil) == SQLITE_OK {
+        if orderDiagnostics, sqlite3_prepare_v2(db, soSql, -1, &soStmt, nil) == SQLITE_OK {
             sqlite3_bind_text(soStmt, 1, (sessionId as NSString).utf8String, -1, nil)
             while sqlite3_step(soStmt) == SQLITE_ROW {
                 sortOrders.append(Int(sqlite3_column_int64(soStmt, 0)))
             }
         }
         sqlite3_finalize(soStmt)
-        if !sortOrders.isEmpty {
+        if orderDiagnostics, !sortOrders.isEmpty {
             let uniq = Set(sortOrders)
             let dupCount = sortOrders.count - uniq.count
             let minSo = sortOrders.first!

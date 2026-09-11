@@ -19,9 +19,28 @@
 // 优先级 clientMessageId → toolUseId → 文本；文本队列弹出时跳过已被认领的行，
 // 保证"第 i 个同文本回放行 ↔ 第 i 个**未被占用**的本地行"。
 //
+// [v1.14.31] 超额副本判定：同批次里命中同一本地行的第 i+n 条回放行 =
+// bridge 对同一逻辑消息的**超录**（watchdog 重试重发等）→ `.duplicate`
+// 丢弃不插。旧 Optional 语义把"已占用"和"无本地行"都返回 nil → 超录行
+// 被当新内容插成重复气泡（pp 真机 2026-09-11「你好」双气泡实锤）。
+//
 // 纯函数（无 DB / actor / 网络），单测在 RemoteHistoryIdentityTests。
 
 import Foundation
+
+/// 身份对账结果（v1.14.31）：bridge 回放行 vs 本地承载行的三种判定**必须**
+/// 分开——旧 Optional 语义里"已被占用"与"无本地行"同为 nil，超录副本被
+/// 当新内容插入。
+enum OwnerClaim: Equatable {
+    /// 成功认领一条未被占用的本地承载行 → 回放行由它承载（不插入），
+    /// 本地行在 unified 序里顶替回放行的位置。
+    case owner(String)
+    /// 身份/文本命中的本地行已被本批更早的回放行占用 = 同一逻辑消息被
+    /// bridge 超录（watchdog 重试重发等）→ 丢弃本条回放行，不插入。
+    case duplicate
+    /// 没有对应本地行（其他设备/老会话的新内容等）→ 照常插入。
+    case unmatched
+}
 
 /// 一次校准内的配对索引。
 struct RemoteHistoryOwnerIndex {
@@ -69,35 +88,38 @@ struct RemoteHistoryOwnerIndex {
         }
     }
 
-    /// 为一条回放行认领本地承载行；nil = 无本地行（调用方应正常插入该行）。
-    mutating func claimOwner(for raw: RawMessage) -> String? {
-        guard raw.role == .user else { return nil }
+    /// 为一条回放行认领本地承载行（结果语义见 OwnerClaim）。
+    /// "命中即消费一次"——保证第 i 个回放行对上第 i 个**未被占用**的本地行；
+    /// 超额命中（第 i+n 条）返回 .duplicate 而不是当新内容插入（v1.14.31 F1）。
+    mutating func claimOwner(for raw: RawMessage) -> OwnerClaim {
+        guard raw.role == .user else { return .unmatched }
 
         // 1. clientMessageId（协议身份，首选）
         if let clientId = raw.clientMessageId, !clientId.isEmpty,
-           let owner = byClientMessageId[clientId],
-           claimedRowIds.insert(owner).inserted {
-            return owner
+           let owner = byClientMessageId[clientId] {
+            return claimedRowIds.insert(owner).inserted ? .owner(owner) : .duplicate
         }
 
         // 2. toolUseId（工具结果行）
         if case .toolResult(let tr) = raw.parts.first, let owner = byToolUseId[tr.toolUseId] {
-            guard claimedRowIds.insert(owner).inserted else { return nil }
-            return owner
+            return claimedRowIds.insert(owner).inserted ? .owner(owner) : .duplicate
         }
 
         // 3. 配对键兜底（老行 / 无 clientMessageId 的 bridge）
-        guard let key = Self.textKey(parts: raw.parts) else { return nil }
-        guard var queue = textQueues[key], !queue.isEmpty else { return nil }
+        guard let key = Self.textKey(parts: raw.parts) else { return .unmatched }
+        guard textQueues[key] != nil else { return .unmatched }
+        var queue = textQueues[key]!
         while !queue.isEmpty {
             let candidate = queue.removeFirst()
             if claimedRowIds.insert(candidate).inserted {
                 textQueues[key] = queue
-                return candidate
+                return .owner(candidate)
             }
         }
         textQueues[key] = []
-        return nil
+        // 池里本有过该文本的本地行但已全部被占用 → 回放行数超出本地行数
+        // = 超录副本，丢弃。
+        return .duplicate
     }
 
     // MARK: - 内容键（兜底匹配用）

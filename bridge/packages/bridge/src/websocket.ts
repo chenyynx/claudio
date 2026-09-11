@@ -3327,7 +3327,26 @@ export class BridgeWebSocketServer {
           break;
         }
 
-        const userEntry = this.sessionManager.appendHistory(session.id, {
+        // [Fix v1.14.31 / F1] 同 clientMessageId = 客户端 stall 重试重发
+        // （iOS 侧复用回合协议身份）。不再 append history：同一逻辑消息超录
+        // 两条，客户端对账只能认领一条，另一条被插成新行 = 重复气泡。下方
+        // 派发照常（首次尝试的 query 可能已被打断，重试正是为了续上）。
+        const echoedInput = clientMessageId
+          ? session.historyEntries.find(
+              (e) =>
+                e.message.type === "user_input" &&
+                "clientMessageId" in e.message &&
+                e.message.clientMessageId === clientMessageId,
+            )
+          : undefined;
+        if (echoedInput) {
+          console.log(
+            `[ws] duplicate user_input (cmid=${String(clientMessageId).slice(0, 8)}) — history kept, re-dispatch only`,
+          );
+        }
+        const userEntry = echoedInput
+          ? undefined
+          : this.sessionManager.appendHistory(session.id, {
           type: "user_input",
           text,
           ...(session.provider === "codex"
@@ -3338,7 +3357,8 @@ export class BridgeWebSocketServer {
           ...(images.length > 0 ? { imageCount: images.length } : {}),
           ...(imageRefs ? { images: imageRefs } : {}),
         } as ServerMessage);
-        const acceptedSeq = userEntry?.seq ?? session.historyRevision;
+        const acceptedSeq =
+          userEntry?.seq ?? echoedInput?.seq ?? session.historyRevision;
 
         if (session.provider === "codex" && userEntry) {
           this.send(ws, {

@@ -14,6 +14,16 @@ final class RemoteHistoryBackfillTests: XCTestCase {
         makeHistoryRaw(id: id, role: role, sortOrder: sortOrder, parts: [.text("content-\(id)")])
     }
 
+    private func makeHistoryRaw(id: String, role: MessageRole, sortOrder: Int, parts: [ContentPart], clientMessageId: String?) -> RawMessage {
+        RawMessage(
+            id: id, sessionId: "test-session", role: role,
+            parts: parts,
+            createdAt: Date(), tokenUsage: nil,
+            reasoningContent: nil, streamInterruptCount: 0,
+            sortOrder: sortOrder, errorInfo: nil, clientMessageId: clientMessageId
+        )
+    }
+
     private func makeHistoryRaw(id: String, role: MessageRole, sortOrder: Int = 0, parts: [ContentPart]) -> RawMessage {
         RawMessage(
             id: id, sessionId: "test-session", role: role,
@@ -57,6 +67,23 @@ final class RemoteHistoryBackfillTests: XCTestCase {
     }
 
     // MARK: - planReplace
+
+    /// [v1.14.31 F1] pp 真机实锤形态：watchdog 重试重发 → bridge 超录两条
+    /// 「你好」→ 旧算法把第二条插成 DB 副本。再校准一次必须自愈：副本删除、
+    /// unified 序只剩本地承载行一份、不再产生新插入。
+    func test_retryDoubleRecord_selfHealsExistingDuplicateRow() {
+        let live = makeDBRow(id: "UUID-A", role: .user, sortOrder: 1, clientMessageId: "cmid-1")
+        let staleDup = makeDBRow(id: "bridge-ns-seg-2", role: .user, sortOrder: 2, parts: [.text("你好")])
+        let history = [
+            makeHistoryRaw(id: "bridge-ns-seg-1", role: .user, sortOrder: 1, parts: [.text("你好")], clientMessageId: "cmid-1"),
+            makeHistoryRaw(id: "bridge-ns-seg-2", role: .user, sortOrder: 2, parts: [.text("你好")], clientMessageId: "cmid-2"),
+        ]
+        let plan = RemoteHistorySyncCore.planReplace(historyRaws: history, dbRows: [live, staleDup])
+        XCTAssertTrue(plan.inserts.isEmpty, "两条回放均已被本地承载/判超录，不得新增")
+        XCTAssertTrue(plan.deleteIds.contains("bridge-ns-seg-2"), "旧算法误插的副本自愈删除")
+        XCTAssertFalse(plan.deleteIds.contains("UUID-A"), "本地承载行保留")
+        XCTAssertEqual(plan.unifiedFinalOrderIds, ["UUID-A"], "unified 序只有一份「你好」")
+    }
 
     func test_emptyDB_insertsEverything() {
         let history = [

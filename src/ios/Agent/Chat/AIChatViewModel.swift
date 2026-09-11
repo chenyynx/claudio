@@ -2915,6 +2915,17 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 self.lastKnownDbOrderHash = Self.computeOrderHash(of: dbMessages)
             }
 
+            // [Fix v1.14.31 / B1] 结算当场（pp 实测："进会话几秒自动变正确顺序"）：
+            // 远端回合收尾且队列已空时，复用进场校准链立即把 bridge 细粒度
+            // canonical 序落库——下次打开读到的 DB 已是终序，第一眼即正确，
+            // 不再等进场那次 ~5s 网络往返对账后才"跳正"。重入/来源 gate 全在
+            // scheduleRemoteHistoryBackfill 内（isRemoteSession /
+            // remoteBackfillInFlight / remoteDeviceId），本地回合零路径。
+            if lastAgentProviderIsRemote, promptQueue.isEmpty {
+                logger.info("[HistorySync] turn-end settle calibration (B1)")
+                scheduleRemoteHistoryBackfill()
+            }
+
             logger.info("🔄SESSION [vm=\(self.vmInstanceId)] send DONE session=\(self.sessionId ?? "nil")")
             self.playCompletionHaptic()
             self.isProcessing = false
@@ -5089,15 +5100,27 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // 判定时 binding 尚未创建 → user 行无 cmid（校准只能文本兜底，
             // 改过字的消息 → 身份链断 → 重复渲染，pp 真机实锤）。远端回合
             // 统一兜底：为"未识别的最后 user 行"生成身份并回写 DB 行。
+            // [Fix v1.14.31 / F1b] 有身份分支也不能放掉：watchdog/错误重试
+            // 是**新一轮 runAgentLoop（provider 全新实例）**，remote.pendingClientMessageId
+            // 已被上一轮消费 → 若不把最后 user 行的既有 cmid 透传下去，
+            // sendInput 内部兜底会生成**新身份**，bridge 把同一逻辑消息超录成
+            // 两个不同 id（pp 真机 22:32「你好」→ C9E8D2E0 实锤）→ 对账只救
+            // 一条、第二条插成新行 = 重复气泡。透传的是"本轮要上行/重试的
+            // 那条消息自己的身份"，不是跨消息的陈旧复用（M4 防的是后者）。
             if remoteProvider.pendingClientMessageId == nil,
-               let userIdx = agentHistory.lastIndex(where: { $0.role == .user }),
-               agentHistory[userIdx].clientMessageId == nil,
-               let rowId = agentHistory[userIdx].dbMessageId {
-                let cid = UUID().uuidString
-                agentHistory[userIdx].clientMessageId = cid
-                remoteProvider.pendingClientMessageId = cid
-                await ChatStore.shared.updateMessageClientMessageId(messageId: rowId, clientMessageId: cid)
-                logger.info("[Persist] F4 first-turn identity backfill row=\(rowId.prefix(8)) cmid=\(cid.prefix(8))")
+               let userIdx = agentHistory.lastIndex(where: { $0.role == .user }) {
+                if agentHistory[userIdx].clientMessageId == nil,
+                   let rowId = agentHistory[userIdx].dbMessageId {
+                    let cid = UUID().uuidString
+                    agentHistory[userIdx].clientMessageId = cid
+                    remoteProvider.pendingClientMessageId = cid
+                    await ChatStore.shared.updateMessageClientMessageId(messageId: rowId, clientMessageId: cid)
+                    logger.info("[Persist] F4 first-turn identity backfill row=\(rowId.prefix(8)) cmid=\(cid.prefix(8))")
+                } else if let existingCid = agentHistory[userIdx].clientMessageId, !existingCid.isEmpty {
+                    remoteProvider.pendingClientMessageId = existingCid
+                    let rowTag = agentHistory[userIdx].dbMessageId.map { String($0.prefix(8)) } ?? "nil"
+                    logger.info("[Persist] F1b retry reuses identity row=\(rowTag) cmid=\(existingCid.prefix(8))")
+                }
             }
             remote.activeProvider = remoteProvider
             // [Plan B3] Tool-observed paths augment the list_files suffix set.

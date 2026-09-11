@@ -847,7 +847,10 @@ extension AIChatViewModel {
     ///   同款先例）——渲染与下次冷进 100% 一致
     /// - 恢复态衔接：校准发现 turn 进行中（wire 尾条非 result）→ isProcessing=true
     ///   （发送键自动变停止键）+ 启动轮询 sync 直至 result 落地
-    private func scheduleRemoteHistoryBackfill() {
+    /// [v1.14.31 B1] 可见性 private→internal：send() 收尾的回合结束结算点
+    /// 在另一文件（AIChatViewModel.swift），Swift 的 extension-private 仅同
+    /// 文件可见——不放开则跨文件调用编译失败。内部 gate 完备，无旁路风险。
+    func scheduleRemoteHistoryBackfill() {
         guard remoteBackfillInFlight == false else { return }
         // [Fix 2026-09-10 v1.14.18] iCloud 来源的远端会话（remoteDeviceId 非空）
         // 展示走 remote_messages 镜像表（CloudSync 推送），校准写本机主表对它

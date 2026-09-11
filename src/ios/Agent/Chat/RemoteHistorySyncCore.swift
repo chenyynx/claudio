@@ -208,23 +208,34 @@ enum RemoteHistorySyncCore {
         for raw in historyRaws {
             // owner 判定必须在 keep 判断之前，且"命中即消费一次"——保证第 i 个
             // 回放行对上第 i 个**未被占用**的本地行。
-            let localOwnerId = owners.claimOwner(for: raw)
+            let claim = owners.claimOwner(for: raw)
             if keptIds.contains(raw.id) {
-                if let owner = localOwnerId, owner != raw.id {
+                switch claim {
+                case .owner(let owner) where owner != raw.id:
                     unifiedFinalOrderIds.append(owner)
                     redundantReplayUserRowIds.append(raw.id)
-                } else {
+                case .duplicate:
+                    // [v1.14.31 F1 自愈] 已入库的重复回放行（旧算法误插）：
+                    // 同一逻辑消息已由本批更早的行承载 → 旧副本一并清除
+                    // （幂等，一次校准收敛）。
+                    redundantReplayUserRowIds.append(raw.id)
+                default:
                     unifiedFinalOrderIds.append(raw.id)
                 }
                 continue
             }
-            if let owner = localOwnerId {
+            switch claim {
+            case .owner(let owner):
                 // 防双份：回放 user 行不插，本地行顶替它在 bridge 序里的位置
                 unifiedFinalOrderIds.append(owner)
-                continue
+            case .duplicate:
+                // [v1.14.31 F1] 同一逻辑消息的超录副本（watchdog 重试重发）：
+                // 不插、不占位（位置已由更早的同源行持有）。
+                break
+            case .unmatched:
+                unifiedFinalOrderIds.append(raw.id)
+                inserts.append(raw)
             }
-            unifiedFinalOrderIds.append(raw.id)
-            inserts.append(raw)
         }
 
         // [Fix v1.14.30] 冗余回放 user 行（同内容已由本地承载行渲染）并入删除。

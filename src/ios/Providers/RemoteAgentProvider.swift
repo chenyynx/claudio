@@ -133,6 +133,11 @@ final class RemoteAgentProvider: AgentProvider {
     /// 再回放回来，校准期即可按身份把回放行与本地行对上（不再靠正文猜）。
     /// 缺省 nil 时由 CCPocketClient 自生成（离线队列/重试路径，行为不变）。
     var pendingClientMessageId: String?
+    /// [Fix v1.14.31 / F1] 本回合实际上行过的（clientMessageId, 输入文本）。
+    /// watchdog/自动重试以同一输入重入 stream() 时复用同一协议身份，防止
+    /// bridge 把同一逻辑消息超录成两条（详见 stream() 上行处注释）。
+    private var turnSentClientMessageId: String?
+    private var turnSentInputText: String?
     /// Legacy per-instance mapping migration is opt-in from the load path.
     let allowLegacyMappingFallback: Bool
 
@@ -343,8 +348,19 @@ final class RemoteAgentProvider: AgentProvider {
                         }
                     }
                     // [Fix v1.14.30] 上行同一 clientMessageId（消费后清空）。
-                    let clientMessageId = self.pendingClientMessageId
+                    // [Fix v1.14.31 / F1] 回合中途 watchdog/自动重试以**同一输入**
+                    // 重入 stream() 时复用本轮身份——否则 sendInput 内部兜底生成
+                    // 新 UUID，bridge 把同一逻辑消息超录成两个不同身份：对账只能
+                    // 认领一条，另一条被插成新行 = 重复气泡（pp 真机 22:32「你好」
+                    // 双录实锤）。仅同 provider 实例（一回合一生）+ 输入逐字相同
+                    // 才复用，跨回合/换输入零污染。
+                    var clientMessageId = self.pendingClientMessageId
                     self.pendingClientMessageId = nil
+                    if clientMessageId == nil, self.turnSentInputText == inputText {
+                        clientMessageId = self.turnSentClientMessageId
+                    }
+                    self.turnSentClientMessageId = clientMessageId
+                    self.turnSentInputText = inputText
                     try await self.client.sendInput(
                         inputText,
                         sessionId: bridgeSessionId,
