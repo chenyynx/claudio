@@ -22,6 +22,10 @@
 import XCTest
 @testable import Minis
 
+// [Fix 2026-09-11] CI 实锤：remoteFallbackDecision 是 @MainActor 类
+// AIChatViewModel 的 static 方法（extension 继承 actor 隔离），同步测试
+// 调用需要本测试类同样隔离到 MainActor（仓库既有 5 个测试文件同款先例）。
+@MainActor
 final class RemoteFallbackResolverTests: XCTestCase {
 
     // MARK: - 快照构建 helper
@@ -177,11 +181,11 @@ final class RemoteFallbackResolverTests: XCTestCase {
 
     func test_defaultTab_savedProviderWins() {
         XCTAssertEqual(
-            AIChatViewModel.RemoteNewSessionTabProbe.remoteDefaultTab(
+            RemoteNewSessionTabProbe.remoteDefaultTab(
                 savedProvider: "claude", hasUsableLocal: true, hasUsableRemote: true),
             .claude)
         XCTAssertEqual(
-            AIChatViewModel.RemoteNewSessionTabProbe.remoteDefaultTab(
+            RemoteNewSessionTabProbe.remoteDefaultTab(
                 savedProvider: "codex", hasUsableLocal: true, hasUsableRemote: true),
             .codex)
     }
@@ -189,28 +193,28 @@ final class RemoteFallbackResolverTests: XCTestCase {
     func test_defaultTab_bothUsable_onDeviceWins() {
         // 第 0 原则：双可用 → 本地优先
         XCTAssertEqual(
-            AIChatViewModel.RemoteNewSessionTabProbe.remoteDefaultTab(
+            RemoteNewSessionTabProbe.remoteDefaultTab(
                 savedProvider: nil, hasUsableLocal: true, hasUsableRemote: true),
             .onDevice)
     }
 
     func test_defaultTab_remoteOnly_claude() {
         XCTAssertEqual(
-            AIChatViewModel.RemoteNewSessionTabProbe.remoteDefaultTab(
+            RemoteNewSessionTabProbe.remoteDefaultTab(
                 savedProvider: nil, hasUsableLocal: false, hasUsableRemote: true),
             .claude)
     }
 
     func test_defaultTab_localOnly_onDevice() {
         XCTAssertEqual(
-            AIChatViewModel.RemoteNewSessionTabProbe.remoteDefaultTab(
+            RemoteNewSessionTabProbe.remoteDefaultTab(
                 savedProvider: nil, hasUsableLocal: true, hasUsableRemote: false),
             .onDevice)
     }
 
     func test_defaultTab_noneUsable_onDevice() {
         XCTAssertEqual(
-            AIChatViewModel.RemoteNewSessionTabProbe.remoteDefaultTab(
+            RemoteNewSessionTabProbe.remoteDefaultTab(
                 savedProvider: nil, hasUsableLocal: false, hasUsableRemote: false),
             .onDevice)
     }
