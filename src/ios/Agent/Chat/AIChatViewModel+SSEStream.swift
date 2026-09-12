@@ -340,7 +340,7 @@ extension AIChatViewModel {
         let iterBox = StreamIteratorBox(stream)
         // [batch1.5] 新一轮开始：上一轮遗留的 pending 问题卡一律过期
         // （异常收场/用户直接发新消息时，旧卡不能再被点）。
-        await MainActor.run { expirePendingAskCards() }
+        await MainActor.run { expireStaleRemoteRequests() }
         // [StreamDiag] (#181) Diagnostics for the "No response from the server
         // for 120 seconds" stall. Three hypotheses are still live and this
         // instrumentation is what separates them:
@@ -477,11 +477,11 @@ extension AIChatViewModel {
                 }
 
             case .remoteServerError(let toolUseId):
-                // [batch1.5] 桥拒了这次 answer/approve：把该 toolUseId 仍 pending
-                // 的问题卡回滚为 expired（灰态、不可再点），杜绝"显示已回答但
-                // 模型没收到"。普通审批弹窗不受影响（它不用 askStatus）。
+                // [batch1.5→1.6] 桥拒了这次 answer/approve（"No matching pending
+                // tool action." / "No active session."）：统一入口回滚问题卡并关掉
+                // 对应审批弹窗，杜绝"显示已回答/已批准但模型没收到"。
                 await MainActor.run {
-                    rollbackAskCardOnReject(toolUseId: toolUseId)
+                    handleRemoteServerError(toolUseId: toolUseId)
                 }
 
             case .permissionRequest(let id, let toolName, let input):
@@ -1209,7 +1209,7 @@ extension AIChatViewModel {
                 // 问题卡置 expired（置灰定格，不可再答；跳过的走 skipped）。
                 // gate：只动 questionCard 块，普通工具块零影响。
                 await MainActor.run {
-                    expirePendingAskCards()
+                    expireStaleRemoteRequests()
                 }
             }
         }
@@ -1219,7 +1219,7 @@ extension AIChatViewModel {
         try Task.checkCancellation()
         } catch is CancellationError {
             // [batch1.5] 取消/中断收场：pending 问题卡过期（否则永久可点）。
-            await MainActor.run { expirePendingAskCards() }
+            await MainActor.run { expireStaleRemoteRequests() }
             // Flush any throttled text to the block before propagating cancellation,
             // so handleUserCancelledCleanup sees the full streamed content.
             if let blockIdx = currentTextBlockIdx, !result.assistantText.isEmpty {
@@ -1240,7 +1240,7 @@ extension AIChatViewModel {
             result.isStreamInterrupted = true
             _streamError = error
             // [batch1.5] 流以错误终止：pending 问题卡过期。
-            await MainActor.run { expirePendingAskCards() }
+            await MainActor.run { expireStaleRemoteRequests() }
         }
         if let err = _streamError { throw err }
         // Stream ended cleanly. First drain any un-extracted tail past
@@ -1656,16 +1656,24 @@ extension AIChatViewModel {
         msg.blocks.append(blk)
     }
 
-    /// 把**全会话**仍 pending 的问题卡置 expired（灰态定格，不可再答）。
-    /// [batch1.5] 不再只扫单条消息：回合可跨多 assistant 行，且异常收场路径
-    /// （抛错 / 取消 / 断线）也要清，否则卡片变成永久死按钮。
-    /// 只动 questionCard 块——普通工具块的 cancelled 收尾路径零变化。
+    /// [batch1.6] 远端「等待用户输入」类请求的**统一终局出口**：
+    ///  ① 全会话仍 pending 的问题卡 → expired（灰态定格，不可再答）
+    ///  ② 仍挂着的审批弹窗 pendingPermission → 关闭
+    /// 两者是同一类缺口（回合已结束却还显示可点），且既有弹窗只在用户响应时
+    /// 才清（RemoteAgentSessionState.respondToPermission），异常收场必然滞留。
+    /// 流内卡片把它放大成永久死按钮，故一并收口在一个函数里，避免两套状态机漂移。
+    /// 只动 questionCard 块与 remote 状态——普通工具块的 cancelled 收尾零变化。
     @MainActor
-    func expirePendingAskCards() {
+    func expireStaleRemoteRequests() {
         for m in messages {
             for blk in m.blocks where blk.kind == .questionCard && blk.askStatus.isPending {
                 blk.askStatus = .expired
             }
+        }
+        // 审批弹窗：回合已结束，pending 的请求在桥侧必然已不存在（再点必失败），
+        // 故关闭。桥若拒过，error 帧已把原因显示在本回合（finish(throwing:) 路径）。
+        if remote.pendingPermission != nil {
+            remote.pendingPermission = nil
         }
     }
 
@@ -1689,16 +1697,21 @@ extension AIChatViewModel {
         }
     }
 
-    /// [batch1.5] 桥回 error（answer 未被接受）→ 该卡回滚为 expired。
-    /// 只动 pending 的卡：已定格 answered 的说明答案当时已被接受，不回头改。
+    /// [batch1.6] 桥回 error（answer/approve 未被接受）的**统一处理入口**：
+    ///  ① 该 toolUseId 仍 pending 的问题卡 → expired（已定格 answered 的不回头改）
+    ///  ② 该 toolUseId 正挂着的审批弹窗 → 关闭（弹窗无 askStatus，靠 id 匹配）
+    /// 两条通道共用一个函数，避免 answer 与审批的回滚语义各写一份而漂移。
     @MainActor
-    func rollbackAskCardOnReject(toolUseId: String) {
+    func handleRemoteServerError(toolUseId: String) {
         for m in messages {
             for blk in m.blocks where blk.kind == .questionCard
                 && blk.askPayload?.toolUseId == toolUseId
                 && blk.askStatus.isPending {
                 blk.askStatus = .expired
             }
+        }
+        if remote.pendingPermission?.id == toolUseId {
+            remote.pendingPermission = nil
         }
     }
 
