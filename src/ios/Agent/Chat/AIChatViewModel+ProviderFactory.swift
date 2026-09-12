@@ -272,7 +272,12 @@ extension AIChatViewModel {
     /// wire type (turn-in-progress detection for the restore-state send/stop
     /// button). Kept separate so existing callers see the same `[AgentMessage]?`
     /// contract.
-    static func fetchRemoteHistoryWithWire(instance: ProviderInstance, chatSessionID: String?, allowLegacyMappingFallback: Bool = true) async -> (wire: [CCPocketProtocol.ServerMessage], engine: [AgentMessage], bridgeId: String?)? {
+    ///
+    /// [B-1] The `engine` array is lossy (frames that render nothing are
+    /// dropped), so it is returned together with `engineRows` — the same
+    /// messages paired with the exact wire frame each came from.  Callers that
+    /// need per-row identity must use `engineRows`, not index into `wire`.
+    static func fetchRemoteHistoryWithWire(instance: ProviderInstance, chatSessionID: String?, allowLegacyMappingFallback: Bool = true) async -> (wire: [CCPocketProtocol.ServerMessage], engine: [AgentMessage], engineRows: [RemoteAgentProvider.HistoryEngineRow], bridgeId: String?)? {
         guard let urlString = instance.effectiveCustomBaseURL,
               let baseURL = URL(string: urlString) else {
             logger.error("[HistoryBackfill] no wss URL for instance \(instance.id)")
@@ -324,7 +329,7 @@ extension AIChatViewModel {
             return nil
         }
         guard let wireMessages = await client.requestHistory(claudeId: claudeId) else { return nil }
-        let history = RemoteAgentProvider.historyAgentMessages(
+        let engineRows = RemoteAgentProvider.historyAgentMessagesWithWire(
             from: wireMessages,
             namespace: chatSessionID.map(ReplayRowId.namespace(sessionId:)),
             // [Fix v1.14.30] bridge 段 = 这次 fetch 实际使用的 bridge 会话
@@ -337,16 +342,17 @@ extension AIChatViewModel {
             // 撞全局主键 → iCloud LWW 互相覆盖（对抗审查 A1）。
             diskSegment: ReplayRowId.segment(id: claudeId)
         )
+        let history = engineRows.map(\.message)
         if history.isEmpty {
             logger.info("[HistoryBackfill] bridge history mapped to 0 engine messages")
             // Empty engine mapping can still carry a meaningful wire tail
             // (e.g. only status/result). Return the wire sequence anyway —
             // the sync pipeline needs lastWireType for the restore-state
             // send/stop detection even when nothing converts.
-            return (wire: wireMessages, engine: [], bridgeId: client.lastHistoryBridgeId)
+            return (wire: wireMessages, engine: [], engineRows: [], bridgeId: client.lastHistoryBridgeId)
         }
         logger.info("[HistoryBackfill] mapped \(history.count) engine messages from bridge")
-        return (wire: wireMessages, engine: history, bridgeId: client.lastHistoryBridgeId)
+        return (wire: wireMessages, engine: history, engineRows: engineRows, bridgeId: client.lastHistoryBridgeId)
     }
 
     /// [Stop-session] Destroy the Bridge runtime session hosting this chat

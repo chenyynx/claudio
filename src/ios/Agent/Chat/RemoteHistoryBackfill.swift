@@ -18,8 +18,33 @@ import Foundation
 /// fallback 全量 = v1.14.22 已验证路径，不劣于现状）。
 /// 首次运行无 cursor → 自然走全量重锚，第二次起才进 delta（灰度余量）。
 /// 回滚 = 把此值改回 false（cursor 残留无害，读取侧全跳过）。
+/// [stable history ids] 稳定身份合并路径开关（v1.14.33 根治批）。
+///
+/// 开启条件（**两者都必须满足**，否则逐字走旧路径）：
+/// 1. 本 flag = true（默认 true；UserDefaults 可覆盖 = 一键回滚开关）
+/// 2. 桥在 session_list 广播了 `stable_history_ids` 能力，且本次快照的条目
+///    确实携带 `messageUuid`（旧桥 / 老会话数据 → 自动回退）
+///
+/// 开启后：行身份 = `bm-{messageUuid}`（B1 注入），合并按身份幂等 upsert、
+/// 按服务端 seq 定位，**不再全局 renumber** —— 即远端乱序的根治路径。
+/// 关闭后：与 v1.14.32 行为完全一致（旧路径永不删除）。
 enum RemoteHistorySyncConfig {
     static let useDelta = true
+
+    /// [stable history ids] 稳定身份合并总闸。
+    /// 回滚 = 改 false 或 `defaults write ... stableIdMerge -bool NO`。
+    static var stableIdMerge: Bool {
+        if let override = UserDefaults.standard.object(forKey: stableIdMergeDefaultsKey) as? Bool {
+            return override
+        }
+        return true
+    }
+
+    /// UserDefaults 覆盖键（回滚开关；不写入 = 用默认值 true）。
+    static let stableIdMergeDefaultsKey = "claudio.remoteHistory.stableIdMerge"
+
+    /// 桥能力名字符串（与 bridge `protocol-version.ts` 的常量一致）。
+    static let stableHistoryIdsCapability = "stable_history_ids"
 }
 
 /// 校准结果（供 UI 层决策）。
@@ -106,6 +131,11 @@ final class RemoteHistoryBackfill {
         struct WireFetch {
             let wire: [CCPocketProtocol.ServerMessage]
             let engine: [AgentMessage]
+            /// [B-1] Engine messages paired with their originating wire frame.
+            /// `engine` alone is lossy (frames that render nothing are dropped),
+            /// so identity lookups must go through this array, never by
+            /// indexing back into `wire`.
+            let engineRows: [RemoteAgentProvider.HistoryEngineRow]
             let bridgeId: String?
             let isDelta: Bool
             /// delta 终态信封的 toSeq（cursor 更新用；全量路径 nil）
@@ -234,13 +264,18 @@ final class RemoteHistoryBackfill {
                             logger.warning("[HistorySync] session=\(sessionId.prefix(8)) empty delta with invalid toSeq=\(to) — fallback full")
                         }
                     } else {
+                        // [B-1] Convert with exact wire pairing so the stable
+                        // path can resolve each row's identity without index
+                        // alignment (dropped frames make index alignment wrong).
+                        let rows = RemoteAgentProvider.historyAgentMessagesWithWire(
+                            from: delta.wire,
+                            namespace: ReplayRowId.namespace(sessionId: sessionId),
+                            segment: ReplayRowId.segment(id: delta.bridgeId)
+                        )
                         wireFetch = WireFetch(
                             wire: delta.wire,
-                            engine: RemoteAgentProvider.historyAgentMessages(
-                                from: delta.wire,
-                                namespace: ReplayRowId.namespace(sessionId: sessionId),
-                                segment: ReplayRowId.segment(id: delta.bridgeId)
-                            ),
+                            engine: rows.map(\.message),
+                            engineRows: rows,
                             bridgeId: delta.bridgeId,
                             isDelta: true,
                             deltaToSeq: to
@@ -284,6 +319,7 @@ final class RemoteHistoryBackfill {
             wireFetch = WireFetch(
                 wire: fetched.wire,
                 engine: fetched.engine,
+                engineRows: fetched.engineRows,
                 bridgeId: fetched.bridgeId,
                 isDelta: false,
                 deltaToSeq: nil
@@ -333,6 +369,35 @@ final class RemoteHistoryBackfill {
         }
 
         // === 5. 校准计划 + 单事务落库 ===
+        // [stable history ids · C5 路由] 能力探测：桥广播了 stable_history_ids
+        // 且本次条目确实携带 messageUuid → 走 stable 路径（按身份合并、不重排）；
+        // 否则逐字走下方 v1.14.32 旧路径。任何异常都回退旧路径（永不劣于现状）。
+        let bridgeAdvertisedStableIds = CCPocketClient.advertisedCapabilities(
+            instanceID: instance.id
+        ).contains(RemoteHistorySyncConfig.stableHistoryIdsCapability)
+        // 快照/增量的条目是否真的带身份：全量路径看 wireMessages 的信封，
+        // delta 路径 wireFetch.wire 已是展平条目。
+        let wireHasStableIds = wireMessages.contains { $0.messageUuid != nil }
+        let stablePathEnabled = RemoteHistorySyncConfig.stableIdMerge
+            && bridgeAdvertisedStableIds
+            && wireHasStableIds
+        logger.info("[HistorySync] session=\(sessionId.prefix(8)) routing stablePath=\(stablePathEnabled) (flag=\(RemoteHistorySyncConfig.stableIdMerge) bridgeCap=\(bridgeAdvertisedStableIds) wireIds=\(wireHasStableIds))")
+
+        if stablePathEnabled {
+            return await self.applyStablePath(
+                sessionId: sessionId,
+                chatSessionID: chatSessionID,
+                bridgeId: resolvedFetch.bridgeId,
+                isDelta: resolvedFetch.isDelta,
+                deltaToSeq: resolvedFetch.deltaToSeq,
+                history: history,
+                engineRows: resolvedFetch.engineRows,
+                wireMessages: wireMessages,
+                buildRawMessage: buildRawMessage,
+                startedAt: startedAt
+            )
+        }
+
         // [Fix v1.14.29] 回放行 id 命名空间一次性迁移（幂等）必须发生在读
         // dbRows **之前**——否则计划按旧 id 算 keep 集、落库按新 id 写，
         // 同一行会被当成新行重插（PK 冲突 → 内容被吞，正是要修的病）。
@@ -521,6 +586,184 @@ final class RemoteHistoryBackfill {
             insertedCount: plan.inserts.count,
             deletedCount: plan.deleteIds.count,
             historyCount: historyRaws.count,
+            writtenCursor: writtenCursor
+        )
+    }
+
+    // MARK: - [stable history ids · C5] stable 合并路径
+
+    /// 稳定身份合并路径：按 `messageUuid` 幂等 upsert + 服务端 seq 窗口定位，
+    /// **不执行全局 renumber**。
+    ///
+    /// 与旧路径的差异（对齐 ChatGPT/Claude 远程范式）：
+    /// - 排序真相在服务端：客户端只给新行找锚点，绝不动已有行的 sort_order。
+    /// - 幂等：同 `messageUuid` 重复到达 = keep，天然无重复渲染。
+    /// - 兜底：本函数任何一步失败 → 返回 `changed:false` 且**不写游标**，
+    ///   caller 侧不影响 DB（旧路径下次仍可全量自愈）。
+    private func applyStablePath(
+        sessionId: String,
+        chatSessionID: String?,
+        bridgeId: String?,
+        isDelta: Bool,
+        deltaToSeq: Int?,
+        history: [AgentMessage],
+        engineRows: [RemoteAgentProvider.HistoryEngineRow],
+        wireMessages: [CCPocketProtocol.ServerMessage],
+        buildRawMessage: @escaping (AgentMessage) async -> RawMessage?,
+        startedAt: CFAbsoluteTime
+    ) async -> RemoteHistorySyncOutcome {
+        // 1) 逐条转换：stable 路径下回放行 id 用 bm-{messageUuid}。
+        //
+        // [B-1] Identity comes from the **pairing produced during conversion**,
+        // not from `wireMessages[index]`.  `history`/`engineRows` and
+        // `wireMessages` have different lengths: the conversion drops frames
+        // that render nothing (`status`, `result`, …) and every turn emits a
+        // `result`, so the drop is steady-state, not an edge case.  Indexing
+        // into `wireMessages` therefore handed row *i* the uuid of an unrelated
+        // frame — rows got the wrong `bm-` key, so calibration saw them as new
+        // messages and duplicated them.
+        var stableRaws: [RawMessage] = []
+        var skippedNoUuid = 0
+        // Prefer `engineRows` (exact pairing). Fall back to positional pairing
+        // only if a caller supplied the two arrays out of band, which keeps the
+        // signature usable but never silently misaligns when lengths differ.
+        let pairs: [(AgentMessage, String?)]
+        if engineRows.count == history.count {
+            pairs = zip(engineRows, history).map { ($1, $0.wireUuid) }
+        } else {
+            logger.warning("[HistorySync] session=\(sessionId.prefix(8)) engineRows/history length mismatch (\(engineRows.count) vs \(history.count)) — positional pairing")
+            pairs = history.enumerated().map { index, msg in
+                (msg, index < wireMessages.count ? wireMessages[index].messageUuid : nil)
+            }
+        }
+        for (agentMsg, wireUuid) in pairs {
+            guard let raw = await buildRawMessage(agentMsg) else { continue }
+            if let stableId = ReplayRowId.stable(messageUuid: wireUuid) {
+                stableRaws.append(raw.withId(stableId))
+            } else {
+                // 无身份的行（桥未回填到 uuid 的 status/tip 等）：不是错误，
+                // 只是不参与稳定合并——沿用旧形态 id，由旧路径规则兜底。
+                skippedNoUuid += 1
+                stableRaws.append(raw)
+            }
+        }
+
+        let dbRows = await ChatStore.shared.loadMessages(sessionId: sessionId)
+        // [升级路径清理] 本次快照里"已有稳定身份"的条目，其 seq 若在 DB 里还
+        // 坐着同 seq 的**旧形态副本**（`bridge-{ns}-{seg}-{seq}` / `bridge-{seq}`），
+        // 那条旧行就是纯冗余——内容已由 `bm-{uuid}` 行承载。不清则同一消息
+        // 渲染两遍（升级后首次校准必现）。
+        //
+        // 只按 **seq 相等 + 旧行是回放行** 判定，不比对正文：正文比对会在
+        // "同文本的多条消息"上误判（v1.14.30 的教训），而 seq 是桥的权威
+        // 位置身份。stable 行自己（bm-）与 past- 行不在候选内。
+        var supersededLegacyIds = Set<String>()
+        let stableSeqByWire = wireMessages.compactMap { m -> Int? in
+            guard m.messageUuid != nil else { return nil }
+            return m.historySeq
+        }
+        let stableSeqSet = Set(stableSeqByWire)
+        if !stableSeqSet.isEmpty {
+            for row in dbRows {
+                // 只查旧 bridge 形态（past- 的 index 与 seq 不同空间，bm- 是新形态本身）
+                guard row.id.hasPrefix("bridge-") else { continue }
+                if let seq = ReplayRowId.parseBridgeSeq(row.id), stableSeqSet.contains(seq) {
+                    supersededLegacyIds.insert(row.id)
+                }
+            }
+        }
+        let plan = RemoteHistorySyncCore.planStableReplace(
+            stableRaws: stableRaws,
+            dbRows: dbRows,
+            supersededLegacyIds: supersededLegacyIds
+        )
+        // 权威顺序 = 快照里 stable 行的顺序（服务端 seq 升序）。**不能只用
+        // 快照序**：桥的 history 窗口只有 100 条，窗口外的既有 stable 行不在
+        // 快照里——若把它们排除在序列外，段内整形会把窗口内行号压缩到与它们
+        // 重叠，撞号 = 渲染顺序不确定。故把"DB 里已有、但本次快照未提及"的
+        // stable 行按现有序号排在快照序**之前**（窗口外 = 更早的历史）。
+        let snapshotStableIds = stableRaws.map { $0.id }
+        let snapshotIdSet = Set(snapshotStableIds)
+        // [B-6] 段内**所有**已知行都纳入序号分配，不管形态：既有 `bm-{uuid}`
+        // 新形态，也有升级前残留、尚未被本事务删掉的旧形态回放行
+        // （`bridge-{ns}-{seg}-{seq}`）。旧实现只取 `bm-` 行，于是那些旧行不
+        // 参与占位，整形后的 stable 序号会与它们交错/撞号。
+        //
+        // 纳入范围刻意收窄到「本段」：`bm-` 行天然属于本段；旧形态行只取
+        // `supersededLegacyIds` 里已被判定为冗余的那批（同事务会删除，故
+        // 只需占位、不需要写序号）。这样别的段/别的会话的行不会被牵连。
+        let segmentLegacyIds = supersededLegacyIds
+        let outsideStableIds = dbRows
+            .filter {
+                ReplayRowId.parseStableUuid($0.id) != nil
+                    || segmentLegacyIds.contains($0.id)
+            }
+            .filter { !snapshotIdSet.contains($0.id) }
+            // 待删的旧行必须排在候选序列**之后**：它们是历史冗余副本，
+            // 位置由 bm- 行承载；排前面会把 bm- 行整体挤到后面。
+            .sorted { lhs, rhs in
+                let lhsLegacy = segmentLegacyIds.contains(lhs.id)
+                let rhsLegacy = segmentLegacyIds.contains(rhs.id)
+                if lhsLegacy != rhsLegacy { return !lhsLegacy }
+                return lhs.sortOrder < rhs.sortOrder
+            }
+            .map { $0.id }
+        let orderedStableIds = outsideStableIds + snapshotStableIds
+        let planOrders = RemoteHistorySyncCore.stableSortOrders(
+            plan: plan,
+            dbRows: dbRows
+        )
+        // 段内整形：把权威顺序翻译成不与段外行冲突的连续序号（只改 stable 行）。
+        let sortOrders = RemoteHistorySyncCore.stableSegmentRenumber(
+            orderedStableIds: orderedStableIds,
+            newRowOrders: planOrders,
+            dbRows: dbRows
+        )
+
+        let applied = await ChatStore.shared.applyStableHistoryReplace(
+            sessionId: sessionId,
+            inserts: plan.inserts,
+            sortOrders: sortOrders,
+            deleteIds: plan.deleteIds
+        )
+        if !applied {
+            RemoteHistoryCursorStore.clear(sessionId: sessionId)
+            logger.error("[HistorySync] session=\(sessionId.prefix(8)) stable apply FAILED — cursor cleared")
+            return RemoteHistorySyncOutcome(
+                changed: false, lastWireType: nil,
+                insertedCount: 0, deletedCount: 0, historyCount: stableRaws.count
+            )
+        }
+
+        // 2) 游标：语义与旧路径一致（已持有 ≤ lastSeq 的全部 wire 消息）。
+        var writtenCursor: RemoteHistoryCursor?
+        if let currentBridgeId = bridgeId {
+            let lastSeq: Int?
+            if isDelta, let toSeq = deltaToSeq, toSeq >= 0 {
+                lastSeq = toSeq
+            } else {
+                lastSeq = wireMessages.compactMap { $0.historySeq }.max()
+            }
+            if let lastSeq {
+                let cursor = RemoteHistoryCursor(bridgeId: currentBridgeId, lastSeq: lastSeq)
+                RemoteHistoryCursorStore.write(cursor, sessionId: sessionId)
+                writtenCursor = cursor
+            }
+        }
+        // 全量成功 = 顺序已由服务端权威确定，同样视为封版（delta 快路径可用）。
+        if !isDelta {
+            markOrderSealed(sessionId: sessionId, bridgeId: bridgeId)
+        }
+
+        let changed = !plan.inserts.isEmpty || !plan.deleteIds.isEmpty
+        let elapsedMs = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
+        logger.info("[HistorySync] session=\(sessionId.prefix(8)) stable path done in \(String(format: "%.0f", elapsedMs))ms inserts=\(plan.inserts.count) kept=\(plan.keptCount) skippedNoUuid=\(skippedNoUuid) pureAppend=\(plan.isPureAppend)")
+        return RemoteHistorySyncOutcome(
+            changed: changed,
+            lastWireType: wireMessages.last?.type,
+            insertedCount: plan.inserts.count,
+            deletedCount: plan.deleteIds.count,
+            historyCount: stableRaws.count,
             writtenCursor: writtenCursor
         )
     }

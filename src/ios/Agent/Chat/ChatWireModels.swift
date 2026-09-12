@@ -265,6 +265,32 @@ struct RawMessage: Identifiable, Codable, Hashable {
     /// Diagnostics / disambiguation only; the UI never resolves through it.
     var providerInstanceId: String? = nil
 
+    /// [stable history ids · C6] 换 id 的浅拷贝 helper。
+    ///
+    /// 稳定身份路径下回放行的 id 由 `bm-{messageUuid}` 派生（`ReplayRowId`），
+    /// 不能再沿用旧路径的 `bridge-{seq}` / `past-{...}` 形态。`id` 是 `let`，
+    /// 故用复制构造。其余字段（含 `sortOrder`）原样保留——排序号由
+    /// `applyStableHistoryReplace` 按 plan 重写，此处不参与决策。
+    func withId(_ newId: String) -> RawMessage {
+        RawMessage(
+            id: newId,
+            sessionId: sessionId,
+            role: role,
+            parts: parts,
+            createdAt: createdAt,
+            tokenUsage: tokenUsage,
+            reasoningContent: reasoningContent,
+            streamInterruptCount: streamInterruptCount,
+            sortOrder: sortOrder,
+            errorInfo: errorInfo,
+            clientMessageId: clientMessageId,
+            modelId: modelId,
+            modelDisplayName: modelDisplayName,
+            providerType: providerType,
+            providerInstanceId: providerInstanceId
+        )
+    }
+
     /// True if this message contains only tool results (no user text).
     /// These are internal agent loop messages that shouldn't render as user bubbles.
     var isToolResultOnly: Bool {

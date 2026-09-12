@@ -2611,6 +2611,162 @@ actor ChatStore {
     /// - Returns: 是否成功落库。任一语句失败 → ROLLBACK + false（调用方
     ///   不得写 cursor）。旧实现失败只打日志仍然 COMMIT → "删了旧的、插不进
     ///   新的" = 内容净丢失（吞内容根因 B 的放大器）。
+    /// [stable history ids · C5] 稳定身份落库（**不重排任何旧行**）。
+    ///
+    /// 与 `replaceRemoteHistory` 的根本差异：
+    /// - 旧路径做**全局 renumber 1..M**（含非回放行），是"本地保留的窗口外
+    ///   旧消息被卷入重排、散开"的病根。
+    /// - 本方法**只写 stable 段（`bm-` 行）自身的序号**，非 stable 行
+    ///   （live UUID / 老 bridge-/past-）的 `sort_order` **一个都不碰**。
+    ///   顺序真相在服务端 seq，客户端只做幂等 upsert。
+    ///
+    /// 幂等性（重复校准 = 零副作用）：已存在的 `bm-` 行按 id 命中 → 不重插；
+    /// 序号与现值一致 → 不 UPDATE。因此每次同步都走本方法也不会抖动。
+    ///
+    /// - Parameters:
+    ///   - sessionId: 本地 chat 会话 id。
+    ///   - inserts: 需要新增的行（`id` 已是 `bm-{messageUuid}`），按服务端 seq 升序。
+    ///   - sortOrders: **本会话 stable 段的完整权威顺序** → 目标序号。
+    ///     由 `RemoteHistorySyncCore.stableSegmentRenumber` 基于事务内读到的
+    ///     DB 行算出（含已存在行的必要调整）；旧行不在其中则完全不动。
+    /// - Returns: 是否成功。任一句失败 → ROLLBACK + false（调用方不得写游标）。
+    @discardableResult
+    func applyStableHistoryReplace(
+        sessionId: String,
+        inserts: [RawMessage],
+        sortOrders: [String: Int],
+        deleteIds: [String] = []
+    ) -> Bool {
+        invalidateSessionListCache()
+        let dbOK = (db != nil)
+        logger.info("[Store] applyStableHistoryReplace enter sid=\(sessionId.prefix(8)) inserts=\(inserts.count) orderWrites=\(sortOrders.count) deletes=\(deleteIds.count) dbOpen=\(dbOK)")
+
+        exec("BEGIN TRANSACTION")
+        var writeFailed = false
+
+        // 0. 删除**已被 bm- 行承载的旧形态冗余副本**（升级路径清理；不是删
+        //    历史内容——同一 seq 的内容已由 stable 行承载，不删则双份渲染）。
+        //    规则由 `planStableReplace(supersededLegacyIds:)` 判定；缺省空集
+        //    = 不删任何东西。
+        if !deleteIds.isEmpty {
+            let deleteSQL = "DELETE FROM messages WHERE session_id = ? AND id = ?"
+            for rowId in deleteIds {
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, deleteSQL, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, (sessionId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(stmt, 2, (rowId as NSString).utf8String, -1, nil)
+                    if sqlite3_step(stmt) != SQLITE_DONE {
+                        logger.error("[Store] stable DELETE failed sid=\(sessionId.prefix(8)) mid=\(rowId.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                        writeFailed = true
+                    } else {
+                        markDirty(recordType: "Message", recordId: rowId, operation: "delete")
+                    }
+                } else {
+                    logger.error("[Store] stable DELETE prepare failed err=\(String(cString: sqlite3_errmsg(db)))")
+                    writeFailed = true
+                }
+                sqlite3_finalize(stmt)
+            }
+        }
+
+        // 1. 插入新行（INSERT OR IGNORE：bm- id 是稳定身份，重复到达 = 幂等跳过）。
+        let insertSQL = """
+            INSERT OR IGNORE INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id, client_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        for message in inserts {
+            let partsJSON: String
+            do {
+                let data = try JSONEncoder().encode(message.parts)
+                partsJSON = String(data: data, encoding: .utf8) ?? "[]"
+            } catch {
+                logger.error("[Store] stable INSERT encode failed sid=\(sessionId.prefix(8)) mid=\(message.id.prefix(8)) err=\(error)")
+                writeFailed = true
+                continue
+            }
+            let partFlags = Self.partFlags(for: message.parts)
+            let usageJSON: String?
+            if let usage = message.tokenUsage {
+                usageJSON = (try? JSONEncoder().encode(usage)).flatMap { String(data: $0, encoding: .utf8) }
+            } else {
+                usageJSON = nil
+            }
+            // 该行在稳定序里的目标序号（plan 保证 inserts 都带号；缺号用 0，
+            // 随后被第 2 步的 UPDATE 覆盖——两步在同一事务内，中间态不可观测）。
+            let targetOrder = sortOrders[message.id] ?? 0
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, insertSQL, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, (message.id as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 2, (message.sessionId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 3, (message.role.rawValue as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(stmt, 4, (partsJSON as NSString).utf8String, -1, nil)
+                sqlite3_bind_double(stmt, 5, message.createdAt.timeIntervalSince1970)
+                bindOptionalText(stmt, index: 6, value: usageJSON)
+                sqlite3_bind_int64(stmt, 7, Int64(targetOrder))
+                bindOptionalText(stmt, index: 8, value: message.reasoningContent)
+                sqlite3_bind_int64(stmt, 9, Int64(message.streamInterruptCount))
+                sqlite3_bind_double(stmt, 10, message.createdAt.timeIntervalSince1970)
+                bindOptionalText(stmt, index: 11, value: message.errorInfo)
+                sqlite3_bind_int64(stmt, 12, Int64(partFlags))
+                bindOptionalText(stmt, index: 13, value: message.modelId)
+                bindOptionalText(stmt, index: 14, value: message.modelDisplayName)
+                bindOptionalText(stmt, index: 15, value: message.providerType)
+                bindOptionalText(stmt, index: 16, value: message.providerInstanceId)
+                bindOptionalText(stmt, index: 17, value: message.clientMessageId)
+                if sqlite3_step(stmt) != SQLITE_DONE {
+                    logger.error("[Store] stable INSERT failed sid=\(sessionId.prefix(8)) mid=\(message.id.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                    writeFailed = true
+                } else {
+                    // INSERT OR IGNORE 命中已存在行时 sqlite3_changes == 0，
+                    // 此时不该标脏（内容没变）——避免同步风暴下无谓的 iCloud 写。
+                    if sqlite3_changes(db) > 0 {
+                        markDirty(recordType: "Message", recordId: message.id)
+                    }
+                }
+            } else {
+                logger.error("[Store] stable INSERT prepare failed err=\(String(cString: sqlite3_errmsg(db)))")
+                writeFailed = true
+            }
+            sqlite3_finalize(stmt)
+        }
+
+        // 2. 只对 stable 段写序号（**非 stable 行绝不触碰**——这是与旧路径
+        //    renumber 的分水岭：旧路径把 live UUID 行也卷进 1..M 重排，
+        //    导致本地保留的窗口外旧消息被"散开"）。
+        if !writeFailed && !sortOrders.isEmpty {
+            let updateSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
+            for (rowId, order) in sortOrders {
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_int64(stmt, 1, Int64(order))
+                    sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(stmt, 3, (rowId as NSString).utf8String, -1, nil)
+                    if sqlite3_step(stmt) != SQLITE_DONE {
+                        logger.error("[Store] stable ORDER failed sid=\(sessionId.prefix(8)) mid=\(rowId.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                        writeFailed = true
+                    } else if sqlite3_changes(db) > 0 {
+                        markDirty(recordType: "Message", recordId: rowId)
+                    }
+                } else {
+                    logger.error("[Store] stable ORDER prepare failed err=\(String(cString: sqlite3_errmsg(db)))")
+                    writeFailed = true
+                }
+                sqlite3_finalize(stmt)
+            }
+        }
+
+        // 任一句失败 = 整体回滚（与 replaceRemoteHistory 同一立场：宁可 DB
+        // 原样，也不留半截状态）。
+        if writeFailed {
+            exec("ROLLBACK")
+            logger.error("[Store] applyStableHistoryReplace ROLLBACK sid=\(sessionId.prefix(8)) — write failed, DB untouched")
+            return false
+        }
+        exec("COMMIT")
+        logger.info("[Store] applyStableHistoryReplace COMMIT sid=\(sessionId.prefix(8))")
+        return true
+    }
+
     @discardableResult
     func replaceRemoteHistory(sessionId: String, plan: RemoteHistoryReplacePlan, finalOrder: [RawMessage], renumber: Bool) -> Bool {
         invalidateSessionListCache()

@@ -845,9 +845,43 @@ final class RemoteAgentProvider: AgentProvider {
     /// handles the seq channel): the disk jsonl is append-only per Claude
     /// session, so the same conversation always yields the same sequence —
     /// the calibration keep-set can hit across bridge-session switches.
+    ///
+    /// [B-1] Conversion is **lossy**: frames that carry no renderable content
+    /// (`status`, `result`, …) return nil and are dropped.  Callers that also
+    /// need the originating wire frame must not re-align by index — the
+    /// returned array is shorter than the input.  Use
+    /// `historyAgentMessagesWithWire(from:…)`, which keeps the pairing exact.
     static func historyAgentMessages(from serverMessages: [CCPocketProtocol.ServerMessage], namespace: String? = nil, segment: String? = nil, diskSegment: String? = nil) -> [AgentMessage] {
+        historyAgentMessagesWithWire(
+            from: serverMessages,
+            namespace: namespace,
+            segment: segment,
+            diskSegment: diskSegment
+        ).map(\.message)
+    }
+
+    /// [B-1] Engine message paired with the exact wire frame it came from.
+    ///
+    /// The pairing is produced during the same `compactMap` pass as the
+    /// conversion, so it stays correct even when frames are dropped.  Callers
+    /// that need a stable identity for a converted row (the stable-history
+    /// path) read `wireUuid` here instead of indexing back into the original
+    /// `serverMessages` array.
+    struct HistoryEngineRow {
+        let message: AgentMessage
+        /// `messageUuid` of the originating wire frame, when it had one.
+        let wireUuid: String?
+    }
+
+    /// [B-1] Conversion + exact wire pairing.  See `HistoryEngineRow`.
+    static func historyAgentMessagesWithWire(
+        from serverMessages: [CCPocketProtocol.ServerMessage],
+        namespace: String? = nil,
+        segment: String? = nil,
+        diskSegment: String? = nil
+    ) -> [HistoryEngineRow] {
         var pastIndex = 0
-        return serverMessages.compactMap { m in
+        return serverMessages.compactMap { m -> HistoryEngineRow? in
             if m.type == nil, m.rawRole != nil {
                 defer { pastIndex += 1 }
                 guard var msg = agentMessage(fromServer: m) else { return nil }
@@ -856,7 +890,12 @@ final class RemoteAgentProvider: AgentProvider {
                 // 不带磁盘段会跨设备撞全局主键（iCloud LWW 串台）。
                 msg.dbMessageId = ReplayRowId.past(index: pastIndex, namespace: namespace, diskSegment: diskSegment)
                 msg.replayIdNamespace = namespace
-                return msg
+                // [stable history ids · C6] 磁盘 raw 消息也可能带 messageUuid
+                // （桥按 transcript 回填），带上它 → 跨设备/跨窗口的同一行
+                // 主键一致。past- 前缀仍是 dbMessageId 兜底（rawMessageId 里
+                // remoteMessageUuid 优先，两条路径收敛到同一 id）。
+                msg.remoteMessageUuid = m.messageUuid
+                return HistoryEngineRow(message: msg, wireUuid: m.messageUuid)
             }
             guard var msg = agentMessage(fromServer: m) else { return nil }
             msg.replayIdNamespace = namespace
@@ -864,7 +903,11 @@ final class RemoteAgentProvider: AgentProvider {
             // [Fix v1.14.30] 协议身份：bridge 把上行时的 clientMessageId 原样
             // 写进历史条目，回放时带回 → 校准期用它做确定性对账。
             msg.clientMessageId = m.clientMessageId
-            return msg
+            // [stable history ids · C6] 稳定行身份（桥按 CLI transcript UUID
+            // 注入）。有它 → rawMessageId() 走 `bm-{uuid}`，与 live 落库行
+            // 同一主键 = 校准幂等命中，不再需要 seq/正文对账。
+            msg.remoteMessageUuid = m.messageUuid
+            return HistoryEngineRow(message: msg, wireUuid: m.messageUuid)
         }
     }
 

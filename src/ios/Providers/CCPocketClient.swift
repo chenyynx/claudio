@@ -376,6 +376,12 @@ final class CCPocketClient: @unchecked Sendable {
             text: text,
             sessionId: sessionId,
             clientMessageId: clientMessageId,
+            // [stable history ids · C6] 同一个 id 同时作为"用户消息稳定身份"
+            // 上行——桥会把它写进历史条目的 messageUuid。客户端只知道这一个
+            // 身份（桥的 transcript UUID 是它后填的，上行时还不存在），故
+            // 以 clientMessageId 作为收敛点：live 落库行、桥历史条目、回放行
+            // 三者的 id 全部由它派生。
+            userMessageUuid: clientMessageId,
             images: images
         )
         do {
@@ -1012,6 +1018,12 @@ final class CCPocketClient: @unchecked Sendable {
         // closure) per project Swift rules.
         if let sessions = message.sessions {
             knownBridgeSessions = sessions
+            // [stable history ids · C2] 能力协商：记录桥声明的协议能力。
+            // session_list 是全局广播且每连接重放 → 每次连接都会刷新，
+            // 桥升级后无需重装 App 即可生效。
+            if let instanceID = mappingInstanceID {
+                Self.recordAdvertisedCapabilities(message.protocolCapabilities, instanceID: instanceID)
+            }
             // [Session sync] Full live entries → registry inventory so the
             // sidebar can merge remote-only rows (broadcast is idempotent).
             if let instanceID = mappingInstanceID {
@@ -1493,6 +1505,45 @@ final class CCPocketClient: @unchecked Sendable {
             return nil
         }
         return mapping.claudeId
+    }
+
+    // MARK: - 协议能力协商（[stable history ids · C2]）
+
+    /// per-instance 协议能力缓存 key。
+    ///
+    /// 结构：`UserDefaults.standard.set([String], forKey:)`，值为最近一次
+    /// `session_list` 广播里桥声明的能力清单。
+    ///
+    /// 为什么 per-instance 而**不带 chatSessionID**：`session_list` 是桥面向
+    /// 单条连接的**全局广播**（与任何 chat 会话无关），能力是**桥进程**的
+    /// 属性而非会话属性。带 chatSessionID 会造成同一桥被读成多份、彼此漂移。
+    /// 换桥（用户改了实例地址）→ instanceID 变 → 自然读不到旧值（空集 =
+    /// 走旧路径，安全方向）。
+    private static let capabilitiesKeyPrefix = "ccpocket.bridgeCapabilities.v1."
+
+    /// 记录桥广播的能力清单（在 `session_list` 到达时调用）。
+    ///
+    /// 只在**非空**时写入：有些桥帧不带 `protocolCapabilities`（旧桥 / 非
+    /// `session_list` 的会话帧），无条件写入会把上一次的有效值冲成空，
+    /// 导致能力探测在"刚收到一个不带能力的帧"后瞬时误判为不支持。
+    /// 空数组显式写入 = 桥明确声明"我不支持任何可选能力"，这是可信信号，
+    /// 但要与"字段缺失"区分——此处按 `nil` 判定（缺失才跳过）。
+    static func recordAdvertisedCapabilities(_ capabilities: [String]?, instanceID: String) {
+        guard let capabilities else { return }
+        UserDefaults.standard.set(capabilities, forKey: capabilitiesKeyPrefix + instanceID)
+    }
+
+    /// 读取桥最近广播的能力清单。无记录（旧桥 / 从未连过）→ 空集。
+    ///
+    /// 空集是**保守**结果：所有依赖能力的功能都回退到旧路径，永不劣于现状。
+    static func advertisedCapabilities(instanceID: String) -> Set<String> {
+        let stored = UserDefaults.standard.stringArray(forKey: capabilitiesKeyPrefix + instanceID)
+        return Set(stored ?? [])
+    }
+
+    /// 清空某实例的能力缓存（例如用户删除了该实例 / 改了地址）。
+    static func clearAdvertisedCapabilities(instanceID: String) {
+        UserDefaults.standard.removeObject(forKey: capabilitiesKeyPrefix + instanceID)
     }
 
     /// Bridge session id persisted at the last save. Used for cold-start

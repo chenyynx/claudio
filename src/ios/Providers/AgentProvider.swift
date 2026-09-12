@@ -145,6 +145,20 @@ struct AgentMessage: @unchecked Sendable {
     /// 本地 agent 消息恒 nil。
     var clientMessageId: String? = nil
 
+    /// [stable history ids · C6] 桥为这条消息注入的**稳定 id**（CLI transcript
+    /// UUID，由桥的 `resolveMessageUuid` 得出并在 history 条目里带回）。
+    ///
+    /// 与 `clientMessageId` 的分工：
+    /// - `clientMessageId` = **客户端生成**、随 input 上行，桥原样存回的回合
+    ///   身份；用于"本地 live 行 ↔ 回放行"的协议对账（v1.14.30 引入）。
+    /// - `remoteMessageUuid` = **桥/CLI 生成**、对**每一类**消息都存在的行身份
+    ///   （user / assistant / tool_result / status 全覆盖）。它让回放行的 DB 主键
+    ///   与桥历史条目一一对应，校准天然幂等（同 uuid 重复到达 = 同一行）。
+    ///
+    /// 只在远端回合、且桥广播了 `stable_history_ids` 能力时非 nil；本地 agent
+    /// 消息与旧桥恒 nil → `rawMessageId()` 走原路径，零行为变化。
+    var remoteMessageUuid: String? = nil
+
     /// [Fix 2026-09-05 bug 1] Single source of truth for the RawMessage id
     /// derived from an AgentMessage. Shared between production
     /// (`buildRawMessage` in `AIChatViewModel+Persistence`) and the unit
@@ -160,6 +174,28 @@ struct AgentMessage: @unchecked Sendable {
     ///   退回旧形态 `bridge-{seq}`（仅兜底路径），生产两处注入点都带 ns。
     /// - bridgeSeq nil → fresh UUID each call (live-stream path, no replay).
     func rawMessageId() -> String {
+        // [stable history ids · C6] 稳定身份优先：桥注入了 messageUuid 时，行
+        // 主键直接由它派生（`bm-{uuid}` = ReplayRowId.stablePrefix）。这样
+        // **live 落库行与回放行共用同一个 id**——校准不必再靠 seq/正文/协议
+        // 身份去"对账合并"，而是同一主键天然命中（幂等 upsert 的根基）。
+        //
+        // 顺序理由：messageUuid 比 bridgeSeq 更强——seq 是**桥内存**的序号
+        // （重启/换会话即重置、trim 后失效），uuid 是 CLI transcript 的持久
+        // 身份。两者都存在时以 uuid 为准（旧桥只有 seq → 自动走下方原路径）。
+        if let uuid = remoteMessageUuid, let stableId = ReplayRowId.stable(messageUuid: uuid) {
+            return stableId
+        }
+        // [stable history ids · C6] 兜底收敛：user 回合的协议身份（上行时已
+        // 作为 `userMessageUuid` 发给桥，桥会把它写成历史条目的 messageUuid）。
+        // 桥的磁盘回填是**异步**的——上行后短时间内回放拿到的条目可能还没
+        // 回填 uuid（此时上面的 remoteMessageUuid 为 nil），若这里退回 seq
+        // 形态就会产生"live 行 bm-{cid} + 回放行 bridge-{...}"双份。用同一个
+        // cid 派生 id 可让两条路径在 uuid 到位前就收敛到同一主键。
+        //
+        // 仅远端回合非 nil（本地 agent 行 clientMessageId 恒 nil）→ 本地零变化。
+        if let cid = clientMessageId, let stableId = ReplayRowId.stable(messageUuid: cid) {
+            return stableId
+        }
         if let seq = bridgeSeq {
             return ReplayRowId.bridge(seq: seq, namespace: replayIdNamespace, segment: replayIdSegment)
         }

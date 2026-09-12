@@ -20,9 +20,20 @@
 // 于是「同一条回放行」的身份 = (本地会话, 内容来源, 序号)，与真实语义一一对应；
 // 跨设备、跨 bridge 会话、跨 claude 会话都不再撞键。
 //
+// [stable history ids] 第三代形态 `bm-{messageUuid}`（桥侧 B1 起）
+// ---------------------------------------------------------------
+// 上两代的身份本质是**位置**（seq / index）——位置会随压缩、换桥会话、换磁盘
+// transcript 而变，只能靠"段"消歧。桥侧 B1 给每条历史条目分配了**消息自己的**
+// 稳定身份（CLI transcript UUID，压缩/重启/换会话恒定），于是位置身份可以
+// 退役：`bm-{messageUuid}` 不再需要命名空间与段。
+//
+//   桥侧能力 `stable_history_ids` 开启 + 客户端 flag 开 → 落 bm- 形态；
+//   否则（旧桥 / 关 flag / 回滚）→ 逐字保留上两代形态与全部逻辑。
+//
 // 降级链（仅为兜底，生产两处注入点都给全）：
 //   bridge: bridge-{ns}-{seg}-{seq} → bridge-{ns}-{seq} → bridge-{seq}
 //   past:   past-{ns}-{diskSeg}-{index} → past-{ns}-{index} → past-{index}
+//   stable: bm-{messageUuid}（无降级——uuid 缺失即不启用本形态）
 //
 // 纯函数、无 DB/actor 依赖，单测在 ReplayRowIdTests。
 //
@@ -48,11 +59,53 @@ enum ReplayRowId {
         String(id.prefix(8))
     }
 
-    /// 回放行（bridge-* / past-*，含各代形态）判别。
-    /// 本地 agent 会话永不产生这两种前缀——`sessionNeedsRepair` 的
+    /// 回放行（bridge-* / past-* / bm-*，含各代形态）判别。
+    /// 本地 agent 会话永不产生这几种前缀——`sessionNeedsRepair` 的
     /// 数据特征 gate 亦依赖该不变量。
+    ///
+    /// ⚠️ `bm-` 必须在内：stable 路径落库的行用 `bm-{messageUuid}`，而**回滚**
+    /// （关 flag / 降级桥）后旧路径仍会把这些行喂给 `planReplace`；旧路径按
+    /// 「非 bridge-/past- 前缀 = live UUID 行」的规则会**误判为 live 行并删掉**
+    /// （内容已由回放行承载的假设不成立）→ 历史被吞。此处放行 = 回滚安全的关键。
     static func isReplayRow(_ id: String) -> Bool {
-        id.hasPrefix("bridge-") || id.hasPrefix("past-")
+        id.hasPrefix("bridge-") || id.hasPrefix("past-") || id.hasPrefix(stablePrefix)
+    }
+
+    // MARK: - [stable history ids] 第三代形态：稳定身份
+
+    /// stable 回放行前缀。`bm-` = "bridge message"（bridge 分配的稳定身份）。
+    static let stablePrefix = "bm-"
+
+    /// stable 形态回放行 id：`bm-{messageUuid}`。
+    ///
+    /// 与 bridge-/past- 形态的本质区别：前两代的身份是**位置**（seq / index）
+    /// ——压缩、换桥会话、换磁盘 transcript 后都会变，只能靠"段"消歧；本代
+    /// 的身份是**消息自己**（CLI transcript UUID，桥侧 B1 注入），跨压缩/重启/
+    /// 换会话恒定，因此不需要命名空间也不需要段。
+    ///
+    /// 仍加前缀的理由：① 与本地 live 行的 UUID 空间隔离，避免撞全局主键
+    /// （`messages.id` 是全局 PRIMARY KEY）；② `isReplayRow` 可判别，旧路径
+    /// 回滚时不误删。
+    ///
+    /// messageUuid 为空 → 返回 nil，调用方回退到 bridge-/past- 形态（旧桥零感知）。
+    ///
+    /// [防御] uuid 含 id 分隔符/空白/控制字符时返回 nil：`messages.id` 是全局
+    /// 主键，若把 `-` 之外的可疑字符拼进来，① 会与 `bridge-`/`past-` 前缀判别
+    /// 语义混淆；② 从 id 反解 uuid（`parseStableUuid`）会得到二次编码的脏值。
+    /// 正常来源是 UUID（`[A-Fa-f0-9-]`）与桥的 CLI transcript uuid，均天然合法；
+    /// 这里只是不让"上游传了脏值"变成静默的数据损坏。
+    static func stable(messageUuid: String?) -> String? {
+        guard let messageUuid, !messageUuid.isEmpty else { return nil }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        guard messageUuid.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        return "\(stablePrefix)\(messageUuid)"
+    }
+
+    /// 从 stable 形态解析 messageUuid；非 stable 形态 → nil。
+    static func parseStableUuid(_ id: String) -> String? {
+        guard id.hasPrefix(stablePrefix) else { return nil }
+        let uuid = String(id.dropFirst(stablePrefix.count))
+        return uuid.isEmpty ? nil : uuid
     }
 
     // MARK: - 构造

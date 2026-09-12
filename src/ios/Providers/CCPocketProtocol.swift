@@ -81,6 +81,19 @@ enum CCPocketProtocol {
         var text: String
         var sessionId: String?
         var clientMessageId: String?
+        /// [stable history ids · C6] 用户消息的稳定身份。桥的
+        /// `resolveMessageUuid`（bridge/src/session.ts）对 `user_input` 帧优先
+        /// 取这个字段作为历史条目的 `messageUuid`（见协议既有命名：桥
+        /// websocket.ts 的 user_input/tool_result 帧都带 `userMessageUuid`，
+        /// 官方 Flutter 端同样如此）。
+        ///
+        /// 客户端上行时填**与 clientMessageId 相同的值**：这样
+        ///   - 桥侧历史条目的 messageUuid = 我们上行的身份；
+        ///   - 回放行 id = `bm-{该身份}`；
+        ///   - 本地 live 落库行 id 也 = `bm-{该身份}`；
+        /// 三者收敛到同一主键 = 校准天然幂等（无需 seq/正文对账）。
+        /// 不填（旧调用方）→ 桥退回自生成 UUID，行为与旧版一致。
+        var userMessageUuid: String?
         /// Claude Code 内联图片 base64（png/jpeg/gif/webp）。nil = 不带图。
         var images: [[String: String]]?
     }
@@ -399,9 +412,15 @@ enum CCPocketProtocol {
             case sessions, hasMore, sourceSessionId, resumeRequestId
             case acceptedSeq, queued, historySeq, errorCode
             case requestId, userMessageUuid, clientMessageId, baseSeq
+            // [stable history ids] assistant 帧的稳定身份字段（与 user_input /
+            // tool_result 帧的 userMessageUuid 并列，命名沿用桥与官方 Flutter
+            // 既有惯例）。additive：旧桥不下发 → nil。
+            case messageUuid
             case skills, skillMetadata, claudeModels, claudeModelEfforts
             case codexModels, codexModelReasoningEfforts, codexModelServiceTiers, codexProfiles
             case defaultCodexProfile, allowedDirs
+            // [stable history ids · C2] 能力协商帧字段
+            case protocolCapabilities
             // [C-5.5 修复] rawRole 映射 wire key "role"（磁盘 raw 消息）。
             // rawContentBlocks 不能在这里声明——"content" 已被上面的
             // case content 占用（raw value 冲突），改为 init(from:) 里
@@ -450,6 +469,7 @@ enum CCPocketProtocol {
             errorCode = try c.decodeIfPresent(String.self, forKey: .errorCode)
             requestId = try c.decodeIfPresent(String.self, forKey: .requestId)
             userMessageUuid = try c.decodeIfPresent(String.self, forKey: .userMessageUuid)
+            messageUuid = try c.decodeIfPresent(String.self, forKey: .messageUuid)
             clientMessageId = try c.decodeIfPresent(String.self, forKey: .clientMessageId)
             baseSeq = try c.decodeIfPresent(Int.self, forKey: .baseSeq)
             skills = try c.decodeIfPresent([String].self, forKey: .skills)
@@ -462,6 +482,7 @@ enum CCPocketProtocol {
             codexProfiles = try c.decodeIfPresent([String].self, forKey: .codexProfiles)
             defaultCodexProfile = try c.decodeIfPresent(String.self, forKey: .defaultCodexProfile)
             allowedDirs = try c.decodeIfPresent([String].self, forKey: .allowedDirs)
+            protocolCapabilities = try c.decodeIfPresent([String].self, forKey: .protocolCapabilities)
             pastMessages = try c.decodeIfPresent([ServerMessage].self, forKey: .pastMessages)
             rawRole = try c.decodeIfPresent(String.self, forKey: .rawRole)
 
@@ -531,6 +552,11 @@ enum CCPocketProtocol {
         let requestId: String?
         // request correlation
         let userMessageUuid: String?
+        /// [stable history ids] Stable identity carried by assistant frames
+        /// (mirrors `userMessageUuid` on user_input / tool_result frames).
+        /// Sourced from the CLI transcript UUID by the bridge. `nil` when the
+        /// bridge predates the capability.
+        let messageUuid: String?
         let clientMessageId: String?
         let baseSeq: Int?
         // system/supported_commands — 远端(服务器)技能清单
@@ -553,6 +579,17 @@ enum CCPocketProtocol {
         // auto-fill Project Path with the first allowed directory (multi-user
         // principle: never hardcode a default like /home/ubuntu).
         let allowedDirs: [String]?
+        // [stable history ids · C2] 桥广播的协议能力清单。桥在 `session_list`
+        // （以及部分握手帧）里带 `protocolCapabilities: [String]`，声明它支持
+        // 哪些**可选**协议行为——协议版本号本身不变（见
+        // bridge/docs/protocol-versioning.md：能力协商与版本号正交）。
+        //
+        // 本批新增能力 `stable_history_ids`：桥的 history 条目携带稳定
+        // `messageUuid`，客户端可据此按身份合并、不再全局重排。旧桥不带这个
+        // 字段 → 解码为 nil → 客户端自动走 v1.14.32 旧路径（永不劣于现状）。
+        //
+        // 全可选：未知能力名一律忽略（前向兼容）。
+        let protocolCapabilities: [String]?
         // [增量恢复 v1.14.23 Phase 2] get_history_delta / history_snapshot
         // （Claude 分支）的 messages 字段是 HistoryEntry[]（[{seq,message}]，
         // websocket.ts:5062），与全量 get_history 的 flat [ServerMessage]
@@ -569,6 +606,17 @@ enum CCPocketProtocol {
     struct HistoryEntry: Decodable {
         let seq: Int?
         let message: ServerMessage?
+        /// [stable history ids] Bridge-assigned stable identity for this entry
+        /// (the CLI transcript UUID when available). Stable across compaction,
+        /// bridge restarts and session re-binding, so the client can merge by
+        /// identity instead of by position. `nil` from a bridge that predates
+        /// the `stable_history_ids` capability — callers then keep the legacy
+        /// position-based path.
+        let messageUuid: String?
+        /// [stable history ids] Server-side creation timestamp (ISO-8601).
+        /// Currently informational: it is persisted alongside the row so future
+        /// clients can order by server time without a wire change.
+        let createdAt: String?
     }
 
     /// `message` is polymorphic across server message types: an assistant

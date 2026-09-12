@@ -253,6 +253,297 @@ enum RemoteHistorySyncCore {
         )
     }
 
+    // MARK: - [stable history ids] 稳定身份合并路径
+
+    /// stable 路径的执行计划。与 `RemoteHistoryReplacePlan` 的关键区别：
+    /// **没有 `unifiedFinalOrderIds`**——stable 路径不做全局重排（乱序根因），
+    /// 只为**新插入**的行计算落位。
+    struct StableReplacePlan {
+        /// 需要插入的行（`id` 已是 `bm-{messageUuid}` 形态），按服务端 seq 升序
+        let inserts: [RawMessage]
+        /// 需要删除的 DB 行 id（仅限本会话 stable 段内被桥撤回的行）
+        let deleteIds: [String]
+        /// 保留的行数（诊断）
+        let keptCount: Int
+        /// 落位序列：**已存在的行保持其 sort_order 不动**，只给新插入行分配
+        /// 锚点。元素 = (rowId, anchorRowId?) —— anchorRowId 为 nil 表示排到
+        /// 本地已有 stable 段之后（append）。
+        let placements: [StablePlacement]
+        /// 本次是否为纯追加（无删除、全部新行追加到尾部）——供上层判断
+        /// 是否可跳过任何重排逻辑。
+        let isPureAppend: Bool
+
+        struct StablePlacement {
+            let rowId: String
+            /// 插入到该行之后；nil = 追加到末尾。
+            let afterRowId: String?
+        }
+
+        var isEmpty: Bool { inserts.isEmpty && deleteIds.isEmpty }
+    }
+
+    /// [stable history ids · C4] 按**稳定身份**合并服务端历史与本地行。
+    ///
+    /// 与 `planReplace` 的本质差异（对齐 ChatGPT/Claude 远程范式）：
+    /// | 维度 | planReplace（旧路径，保留） | planStableReplace（本函数） |
+    /// |---|---|---|
+    /// | 行身份 | 位置（`bridge-{seg}-{seq}`） | 消息（`bm-{messageUuid}`） |
+    /// | 排序真相 | 客户端 renumber 全局重排 | **服务端 seq**，客户端只定位 |
+    /// | 缺行处理 | 重排全部 sort_order | 旧行 sort_order **一律不动** |
+    /// | 幂等性 | 靠 id 集 + 段规则 | messageUuid 天然幂等 upsert |
+    ///
+    /// 规则：
+    /// 1. **幂等 upsert**：`messageUuid` 已在 DB（`bm-` 行）→ 保留，不插不删。
+    /// 2. **不删历史内容**（继承 planReplace 的 R1 教训）：不在本次快照里的老行
+    ///    保留——桥侧归档后快照带全量，缺失即真缺失，但仍不删（本地是累计
+    ///    缓存，多设备交错时删 = 删别的设备内容）。
+    ///    **唯一例外**：`supersededLegacyIds`（同一 seq 已被 `bm-` 行承载的旧
+    ///    形态副本）——删它是为了不双份渲染，不是删内容。
+    /// 3. **落位**：新行的 `sortOrder` 由「前一条已存在的 stable 行的
+    ///    sort_order + 步长」推导，**不触碰任何旧行**。锚点选择 =
+    ///    快照中该新行之前最近的一条已落库行；没有则用窗口基之前的最后一条
+    ///    本地行（或追加到末尾）。
+    ///
+    /// - Parameters:
+    ///   - stableRaws: 快照转换出的行，`id` 已是 `bm-{messageUuid}`，按服务端
+    ///     seq 升序（管线保证）。
+    ///   - dbRows: 本地 DB 现有行（按 sort_order 升序）。
+    ///   - supersededLegacyIds: 应从 DB 删除的**旧形态冗余副本** id 集。调用方
+    ///     用 wire 的 seq 反解旧行 id 得出（见 `RemoteHistoryBackfill`）；默认
+    ///     空 = 不删任何东西。
+    static func planStableReplace(
+        stableRaws: [RawMessage],
+        dbRows: [RawMessage],
+        supersededLegacyIds: Set<String> = [],
+        sortOrderStep: Int = 1000
+    ) -> StableReplacePlan {
+        let dbIds = Set(dbRows.map { $0.id })
+        let dbRowById = Dictionary(
+            dbRows.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        var inserts: [RawMessage] = []
+        var placements: [StableReplacePlan.StablePlacement] = []
+        // 用于锚点推导：随插入推进而更新的「已知最后落位行 id」
+        var previousStableRowId: String? = nil
+        var deletedAny = false
+        var insertedAny = false
+
+        for raw in stableRaws {
+            if dbIds.contains(raw.id) {
+                // 幂等命中：已在库，保留原 sort_order（不动），仅推进锚点。
+                previousStableRowId = raw.id
+                continue
+            }
+            // 新行 → 插入。锚点 = 快照中前一条已落库/已插入的行。
+            inserts.append(raw)
+            placements.append(.init(rowId: raw.id, afterRowId: previousStableRowId))
+            previousStableRowId = raw.id
+            insertedAny = true
+        }
+
+        // 删除规则：**只删"已被 stable 行取代的旧形态副本"**，绝不删历史内容。
+        //
+        // 场景（升级路径必现）：老版本把同一条消息写成 `bridge-{ns}-{seg}-{seq}`
+        // 行；升级后桥开始注入 messageUuid，回放以 `bm-{uuid}` 插入**同一内容**
+        // 的新行。旧行的 seq 与本次快照某条目的 seq 相同 → 内容已有 bm- 行承载
+        // → 旧行是纯冗余副本，不删则同一条消息渲染两遍。
+        //
+        // 判定由调用方给出（`supersededLegacyIds`）——它才拿得到 wire 的
+        // seq↔messageUuid 对应关系；纯函数不假装知道 wire 语义。
+        // 当前桥协议无"撤回"语义，故除该冗余集合外恒不删。
+        let deleteIds: [String] = dbRows
+            .map { $0.id }
+            .filter { supersededLegacyIds.contains($0) }
+            .filter { dbIds.contains($0) }
+            // 防御：stable 行自己（bm-）永不作为"被取代的副本"删除——它是
+            // 稳定身份的正主。上游若误把 bm- 放进集合（例如把 past- 的索引
+            // 与 seq 空间搞混），这里必须挡住，而不是静默删掉刚落库的内容。
+            .filter { ReplayRowId.parseStableUuid($0) == nil }
+        if !deleteIds.isEmpty { deletedAny = true }
+
+        // 纯追加判定：无删除 + 所有插入都排在已有 stable 段之后。
+        let dbHasStableRows = dbRows.contains { ReplayRowId.parseStableUuid($0.id) != nil }
+        let isPureAppend = !deletedAny && insertedAny && (
+            !dbHasStableRows
+                || placements.allSatisfy { placement in
+                    guard let anchor = placement.afterRowId else { return dbHasStableRows }
+                    return dbRowById[anchor] != nil
+                }
+        )
+
+        return StableReplacePlan(
+            inserts: inserts,
+            deleteIds: deleteIds,
+            keptCount: dbRows.count,
+            placements: placements,
+            isPureAppend: isPureAppend
+        )
+    }
+
+    /// [stable history ids · C4] 把 stable 计划的落位翻译成具体的 sort_order
+    /// 赋值。**不重排任何已有行**——只为新行在锚点之后开辟空间。
+    ///
+    /// 规则（[stable history ids · C4 修订] 中间落位必须腾位）：
+    /// - **连续插入**在同一锚点之后时，序号按 step 递增级联。
+    /// - **锚点之后紧跟已有 stable 行**：新行序号从 `anchor.sortOrder` 起递增；
+    ///   若撞上后一条已有 stable 行的序号，则由 `applyStableHistoryReplace`
+    ///   在执行期对**整个 stable 段**重新等距编号（见该方法的 seg 整形步骤）。
+    ///   这里只负责"新行相对锚点向前排列"的初值，跨行整形在落库事务里做——
+    ///   DB 现状（含并发写入）只有事务里才知道，纯函数不应假装知道。
+    /// - 无锚点（纯追加 / DB 无 stable 段）→ 从 `dbMaxSortOrder + step` 起递增。
+    ///
+    /// 返回 `[rowId: sortOrder]`，仅含需要写入的新行（旧行一律不动）。
+    static func stableSortOrders(
+        plan: StableReplacePlan,
+        dbRows: [RawMessage],
+        sortOrderStep: Int = 1000
+    ) -> [String: Int] {
+        let rowById = Dictionary(
+            dbRows.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let dbMaxSortOrder = dbRows.map { $0.sortOrder }.max() ?? 0
+
+        var result: [String: Int] = [:]
+        var lastAssigned = dbMaxSortOrder
+
+        for placement in plan.placements {
+            let base: Int
+            if let anchorId = placement.afterRowId {
+                if let anchorRow = rowById[anchorId] {
+                    base = anchorRow.sortOrder
+                } else if let assigned = result[anchorId] {
+                    base = assigned
+                } else {
+                    base = lastAssigned
+                }
+            } else {
+                base = lastAssigned
+            }
+            let next = base + sortOrderStep
+            result[placement.rowId] = next
+            lastAssigned = next
+        }
+        return result
+    }
+
+    /// [stable history ids · C4 修订] **落位续号**：先把 stable 段按服务端
+    /// 权威顺序重排成**等距、且与段外行不冲突**的连续序号，再返回需要 UPDATE
+    /// 的全部 stable 行 → 新序号。
+    ///
+    /// 为什么必须在事务里做：`stableSortOrders` 的初值只有"相对锚点靠后"的
+    /// 信息。当真发生**中间落位**（桥窗口滑过 trim 旧行、随后补历史空洞）时，
+    /// 锚点后紧邻已有行，新行初值会 ≥ 后者序号 → 渲染到后面 = 顺序错。DB 的
+    /// 并发现状只有事务里知道，故整形放在落库前基于**当前 DB 行**做一次。
+    ///
+    /// 整形**只改序号、不改身份**：行的 `id`/内容/`clientMessageId` 一律不动。
+    /// 这与旧路径 renumber 有本质区别——后者连**非 stable 行**都卷进 1..M
+    /// 重排，是"本地窗口外旧消息被散开"的病根。
+    ///
+    /// 算法（B-3/B-4/B-6 修订版）：
+    ///
+    /// 1. **固定步长**。`step` 是常量 `defaultStep`，**绝不**依据当前跨度动态
+    ///    计算。旧实现取 `span / (count-1)`，有两个后果：
+    ///    - *越界*（B-3）：`span < count-1` 时 `step` 被压到 1，序号一路涨到
+    ///      `lo + count - 1`，**冲出段内区间**，撞上后面的段外行 → 顺序不确定。
+    ///    - *非幂等*（B-4）：同区间同顺序，第一次算出 step 666，写完后跨度
+    ///      变了，第二次算出 step 500 → **前几行序号全变**，每次同步都写库。
+    ///    固定步长让"同顺序 ⇒ 同结果"，第二次跑天然零写入。
+    ///
+    /// 2. **越界时整体平移腾位，而非压缩步长**。若 `base + step*(n-1)` 会撞上
+    ///    段外行（或越过 `upperBound`），整段向下平移到能容纳的最小 `base`；
+    ///    平移只改 stable 行序号，段外行一个不动。
+    ///
+    /// 3. **混合形态也算进去**（B-6）。段内既有 `bm-` 行也可能残留旧形态
+    ///    `bridge-*` 行。旧实现只把 `bm-` 行纳入序列，于是整形后 stable 序号
+    ///    会与那些"没被算进去"的旧行交错/撞号。现在把 `orderedStableIds`
+    ///    里**所有**已知行（无论形态）都当作段内占位，序号空间统一分配。
+    ///
+    /// - Returns: `[rowId: sortOrder]`。顺序已严格递增/无新行时返回空字典
+    ///   （幂等校准零写入——稳定路径"不该动的绝不动"的体现）。
+    static func stableSegmentRenumber(
+        orderedStableIds: [String],
+        newRowOrders: [String: Int],
+        dbRows: [RawMessage],
+        defaultStep: Int = 1000
+    ) -> [String: Int] {
+        // [B-6] 段内任一已知行（bm- 新形态 或 旧形态回放行）都参与占位。
+        let knownById = Dictionary(
+            dbRows.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let stableIds = orderedStableIds.filter {
+            knownById[$0] != nil || newRowOrders[$0] != nil
+        }
+        guard !stableIds.isEmpty else { return [:] }
+
+        // 段内现有行的序号（新行还没有）。段内**所有**形态都算，B-6。
+        let existingOrders = stableIds.compactMap { knownById[$0]?.sortOrder }
+        guard !existingOrders.isEmpty else {
+            // 段内全是新行（首次落地）→ 用 stableSortOrders 的初值即可。
+            return newRowOrders
+        }
+
+        let count = stableIds.count
+        // 段内区间 [lo, hi]。
+        let lo = existingOrders.min()!
+        let hi = existingOrders.max()!
+
+        // [B-3] 段内现有行的**位置区间** [lo, hi] 不是硬约束——它只是历史上的
+        // 落位结果。真正不能越过的是**段外行**：stable 段整体必须排在它前面。
+        // 段内区间装不下时，整段向下平移腾位（只改 stable 行序号，段外行一个
+        // 不动），而不是像旧实现那样按"当前跨度"去压缩 step。
+        let stableIdSet = Set(stableIds)
+        let upperBound: Int? = dbRows
+            .filter { !stableIdSet.contains($0.id) && $0.sortOrder > lo }
+            .map(\.sortOrder)
+            .min()
+
+        // 可用空间：从段首之后到第一个段外行之前。没有段外行时无上界。
+        //
+        // ⚠️ step 必须**由这个上界推导**（而不是由当前跨度推导），否则：
+        //  · 由当前跨度推导 → 每次写库后跨度变了 → step 变 → 非幂等（B-4）；
+        //  · 完全不推导 → step 跨出可用空间 → 撞段外行（B-3，本次实测）。
+        // 上界由 DB 的**段外行**决定，段内数据怎么排都不会改变它，所以
+        // "同输入 ⇒ 同 step"，幂等仍然成立。
+        var step = max(defaultStep, 1)
+        // 平移后的 base：优先保持段首位置，空间不足时下移。
+        var base = lo
+        if let bound = upperBound {
+            // 段内 n 行必须都严格小于 bound。
+            let room = bound - 1 // 可用的最大序号
+            if count > 1, room > 0 {
+                // 每行至少间隔 1，且不得超过 defaultStep。
+                let maxStep = max(room / (count - 1), 1)
+                step = min(step, maxStep)
+            } else if room <= 0 {
+                // 段外行就贴在段首之前——无可腾挪空间，保持原样不动。
+                return [:]
+            }
+            // 收尾：整段必须放得下。
+            let needed = step * (count - 1)
+            if base + needed > room {
+                base = max(room - needed, 0)
+            }
+        }
+        base = min(base, lo)
+
+        var result: [String: Int] = [:]
+        for (index, id) in stableIds.enumerated() {
+            let target = base + step * index
+            if let row = knownById[id] {
+                // 已存在行：只在序号真的变了才写（幂等零写入）。
+                if row.sortOrder != target { result[id] = target }
+            } else {
+                // 新行：必须写。
+                result[id] = target
+            }
+        }
+        return result
+    }
+
     /// 校准事务的最终行序列（`ChatStore.replaceRemoteHistory` 第 3 步 renumber
     /// 的定序来源）。抽成纯函数以便单测——DB 事务本身依赖 sqlite，但
     /// "哪些行排前/排后"的规则是纯逻辑，pp 真机两轮乱序（07:06 user 气泡
