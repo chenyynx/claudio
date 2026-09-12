@@ -707,24 +707,17 @@ final class RemoteHistoryBackfill {
                 lastTurnFinished: lastTurnFinished,
                 supersededLegacyIds: mergedLegacy)
 
-            // 3) 稠密等距排序号（单一分配器，消除撞号）
-            let currentOrders = Dictionary(
-                dbRows.map { ($0.id, $0.sortOrder) },
-                uniquingKeysWith: { a, _ in a })
-            let sortOrders = RemoteSortOrderAllocator.allocate(
-                orderedIds: turnPlan.orderedIds, currentOrders: currentOrders)
-
-            // 4) 体检（落库前）
+            // 3) 体检（落库前）
             let preReport = RemoteHistoryDiagnostics.inspect(
                 sessionId: sessionId, rows: dbRows)
             RemoteHistoryDiagnostics.log(preReport, stage: "pre-turnReconcile") {
                 logger.info($0)
             }
 
-            // 5) 落库（单事务：删除 + 插入 + 排序号重写）
+            // 4) 落库（单事务：删除 + 插入 + 排序号事务内分配）
             let applied = await ChatStore.shared.applyTurnReconcile(
-                sessionId: sessionId, plan: turnPlan, sortOrders: sortOrders)
-            if !applied {
+                sessionId: sessionId, plan: turnPlan)
+            if !applied.ok {
                 RemoteHistoryCursorStore.clear(sessionId: sessionId)
                 logger.error("[HistorySync] session=\(sessionId.prefix(8)) turnReconcile apply FAILED — cursor cleared")
                 return RemoteHistorySyncOutcome(
@@ -759,9 +752,9 @@ final class RemoteHistoryBackfill {
             }
             if !isDelta { markOrderSealed(sessionId: sessionId, bridgeId: bridgeId) }
 
-            let changed = !turnPlan.inserts.isEmpty || !turnPlan.deleteIds.isEmpty
+            let changed = !turnPlan.inserts.isEmpty || !turnPlan.deleteIds.isEmpty || applied.orderWrites > 0
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
-            logger.info("[HistorySync] session=\(sessionId.prefix(8)) turnReconcile done in \(String(format: "%.0f", elapsedMs))ms inserts=\(turnPlan.inserts.count) deletes=\(turnPlan.deleteIds.count) absorbed=\(turnPlan.absorbedLiveIds.count) repaired=\(repairIds.count) ordered=\(turnPlan.orderedIds.count)")
+            logger.info("[HistorySync] session=\(sessionId.prefix(8)) turnReconcile done in \(String(format: "%.0f", elapsedMs))ms inserts=\(turnPlan.inserts.count) deletes=\(turnPlan.deleteIds.count) absorbed=\(turnPlan.absorbedLiveIds.count) repaired=\(repairIds.count) orderWrites=\(applied.orderWrites) ordered=\(turnPlan.orderedIds.count)")
 
             return RemoteHistorySyncOutcome(
                 changed: changed, lastWireType: lastWireType,

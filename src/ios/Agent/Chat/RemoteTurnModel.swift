@@ -30,9 +30,19 @@ struct RemoteTurn: Equatable {
     /// 是否被服务端"终结"：其后已开始新回合，或本次快照末条是终态帧（result/status）。
     /// 未终结 = 回合仍在进行中 → live 行不得吸收（否则流式内容瞬间消失）。
     var isFinished: Bool
+    /// 本回合的服务端行里**非回合边界**（非 user 输入）的行数。
+    ///
+    /// ⚠️ 为什么必须单独记：判定"回合已被服务端承载"时**不能**只看
+    /// `serverRowIds.isEmpty`。user 输入行本身也是服务端行——若该回合只有
+    /// user 输入行（助手帧尚未回放 / 被 trim / 用户发完就停），
+    /// `serverRowIds` 非空但**助手内容一条都没有**，此时吸收 live 聚合行
+    /// = 用户看到"提问没有回答"且不可逆（DB 已删，服务端也没内容补位）。
+    var nonBoundaryRowCount: Int = 0
 
-    /// 本回合是否已被服务端承载（至少一条服务端行）
-    var isCarriedByServer: Bool { !serverRowIds.isEmpty }
+    /// 本回合是否已被服务端**内容**承载（至少一条非边界行 = 助手/工具内容）。
+    ///
+    /// 语义刻意收紧到"非边界行"而非"任意行"——见 `nonBoundaryRowCount` 注释。
+    var isCarriedByServer: Bool { nonBoundaryRowCount > 0 }
 }
 
 enum RemoteTurnModel {
@@ -79,9 +89,12 @@ enum RemoteTurnModel {
                 // 窗口从回合中间开始（trim 掉了前面的 user 输入）：这一截属于
                 // 窗口外更早的回合，用哨兵键承载——它不与任何 live 行的
                 // turnKey 相等，故不会触发吸收（保守：宁可不删）。
-                turns.append(RemoteTurn(key: headOrphanKey, serverRowIds: [row.id], isFinished: false))
+                turns.append(RemoteTurn(
+                    key: headOrphanKey, serverRowIds: [row.id],
+                    isFinished: false, nonBoundaryRowCount: 1))
             } else {
                 turns[turns.count - 1].serverRowIds.append(row.id)
+                turns[turns.count - 1].nonBoundaryRowCount += 1
             }
         }
         guard !turns.isEmpty else { return turns }

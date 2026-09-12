@@ -2720,6 +2720,7 @@ actor ChatStore {
                 bindOptionalText(stmt, index: 15, value: message.providerType)
                 bindOptionalText(stmt, index: 16, value: message.providerInstanceId)
                 bindOptionalText(stmt, index: 17, value: message.clientMessageId)
+                bindOptionalText(stmt, index: 18, value: message.remoteTurnKey)
                 if sqlite3_step(stmt) != SQLITE_DONE {
                     logger.error("[Store] stable INSERT failed sid=\(sessionId.prefix(8)) mid=\(message.id.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
                     writeFailed = true
@@ -2780,15 +2781,22 @@ actor ChatStore {
     /// 与 `applyStableHistoryReplace` 的区别：后者只改 stable 段、不碰 live 行
     /// （= 重复渲染的病根）；本方法把**全部存活行**的排序号统一重写为稠密
     /// 等距序号（`RemoteSortOrderAllocator`），消除两套算术撞号。
+    ///
+    /// **排序号在事务内分配**（不是在调用方算好传进来）：`loadMessages` 与本
+    /// 方法是两次 `await`，两者之间可能有流式行落库（本 actor 可重入）。若用
+    /// 调用方算好的号，那行不在计划里 → 保留旧的 `MAX+1` → 与新分配的 1000+
+    /// 序列错位，用户刚发的消息会被顶到会话开头。事务内重新读取当前行，把
+    /// 计划外的行并入权威序尾部再分配，即可消除该窗口。
+    ///
+    /// - Returns: (成功, 实际写入的排序号数量)。失败时第二值为 0。
     @discardableResult
     func applyTurnReconcile(
         sessionId: String,
-        plan: RemoteTurnReconcilePlan,
-        sortOrders: [String: Int]
-    ) -> Bool {
+        plan: RemoteTurnReconcilePlan
+    ) -> (ok: Bool, orderWrites: Int) {
         invalidateSessionListCache()
         let dbOK = (db != nil)
-        logger.info("[Store] applyTurnReconcile enter sid=\(sessionId.prefix(8)) inserts=\(plan.inserts.count) deletes=\(plan.deleteIds.count) orderWrites=\(sortOrders.count) dbOpen=\(dbOK)")
+        logger.info("[Store] applyTurnReconcile enter sid=\(sessionId.prefix(8)) inserts=\(plan.inserts.count) deletes=\(plan.deleteIds.count) dbOpen=\(dbOK)")
 
         exec("BEGIN TRANSACTION")
         var writeFailed = false
@@ -2834,7 +2842,7 @@ actor ChatStore {
                 let usageJSON: String? = message.tokenUsage.flatMap {
                     (try? JSONEncoder().encode($0)).flatMap { String(data: $0, encoding: .utf8) }
                 }
-                let targetOrder = sortOrders[message.id] ?? 0
+                let targetOrder = 0  // 临时占位，步骤 3 事务内统一分配
                 var stmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, insertSQL, -1, &stmt, nil) == SQLITE_OK {
                     sqlite3_bind_text(stmt, 1, (message.id as NSString).utf8String, -1, nil)
@@ -2868,36 +2876,73 @@ actor ChatStore {
             }
         }
 
-        // 3. 排序号重写（全部存活行——稠密等距，消除撞号）
-        if !writeFailed && !sortOrders.isEmpty {
-            let updateSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
-            for (rowId, order) in sortOrders {
-                var stmt: OpaquePointer?
-                if sqlite3_prepare_v2(db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
-                    sqlite3_bind_int64(stmt, 1, Int64(order))
-                    sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
-                    sqlite3_bind_text(stmt, 3, (rowId as NSString).utf8String, -1, nil)
-                    if sqlite3_step(stmt) != SQLITE_DONE {
-                        logger.error("[Store] turnReconcile ORDER failed mid=\(rowId.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
-                        writeFailed = true
-                    } else if sqlite3_changes(db) > 0 {
-                        markDirty(recordType: "Message", recordId: rowId)
-                    }
-                } else {
-                    writeFailed = true
+        // 3. 排序号重写（事务内分配——消除 loadMessages 与本方法之间的可重入窗口）
+        //
+        // 不能用调用方算好的号：loadMessages 与本方法是两次 await，其间可能有
+        // 流式行落库（MAX+1 → 与 1000+ 序列错位）。事务内重新读取当前全量行，
+        // 把计划外的行并入权威序尾部再分配。
+        var orderWrites = 0
+        if !writeFailed {
+            // 3a. 读取当前 DB 全量行（事务内，含刚插入的行）
+            let querySQL = "SELECT id, sort_order FROM messages WHERE session_id = ?"
+            var queryStmt: OpaquePointer?
+            var currentOrders: [String: Int] = [:]
+            var dbIds: [String] = []
+            if sqlite3_prepare_v2(db, querySQL, -1, &queryStmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(queryStmt, 1, (sessionId as NSString).utf8String, -1, nil)
+                while sqlite3_step(queryStmt) == SQLITE_ROW {
+                    let id = String(cString: sqlite3_column_text(queryStmt, 0))
+                    let order = Int(sqlite3_column_int64(queryStmt, 1))
+                    currentOrders[id] = order
+                    dbIds.append(id)
                 }
-                sqlite3_finalize(stmt)
+            }
+            sqlite3_finalize(queryStmt)
+
+            // 3b. 权威序 = plan.orderedIds + 计划外的 DB 行（按现有序号补尾部）
+            let planned = Set(plan.orderedIds)
+            var orderedIds = plan.orderedIds
+            let leftovers = dbIds
+                .filter { !planned.contains($0) }
+                .sorted { (currentOrders[$0] ?? 0) < (currentOrders[$1] ?? 0) }
+            orderedIds.append(contentsOf: leftovers)
+
+            // 3c. 分配并写入
+            let sortOrders = RemoteSortOrderAllocator.allocate(
+                orderedIds: orderedIds,
+                currentOrders: currentOrders
+            )
+            orderWrites = sortOrders.count
+            if !sortOrders.isEmpty {
+                let updateSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
+                for (rowId, order) in sortOrders {
+                    var stmt: OpaquePointer?
+                    if sqlite3_prepare_v2(db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
+                        sqlite3_bind_int64(stmt, 1, Int64(order))
+                        sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
+                        sqlite3_bind_text(stmt, 3, (rowId as NSString).utf8String, -1, nil)
+                        if sqlite3_step(stmt) != SQLITE_DONE {
+                            logger.error("[Store] turnReconcile ORDER failed mid=\(rowId.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                            writeFailed = true
+                        } else if sqlite3_changes(db) > 0 {
+                            markDirty(recordType: "Message", recordId: rowId)
+                        }
+                    } else {
+                        writeFailed = true
+                    }
+                    sqlite3_finalize(stmt)
+                }
             }
         }
 
         if writeFailed {
             exec("ROLLBACK")
             logger.error("[Store] applyTurnReconcile ROLLBACK sid=\(sessionId.prefix(8)) — write failed, DB untouched")
-            return false
+            return (false, 0)
         }
         exec("COMMIT")
-        logger.info("[Store] applyTurnReconcile COMMIT sid=\(sessionId.prefix(8))")
-        return true
+        logger.info("[Store] applyTurnReconcile COMMIT sid=\(sessionId.prefix(8)) orderWrites=\(orderWrites)")
+        return (true, orderWrites)
     }
 
     @discardableResult

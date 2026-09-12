@@ -78,6 +78,14 @@ enum RemoteHistoryRepair {
             }
             var counts: [String: Int] = [:]
             for raw in serverRaws where serverIdByTurn[index].contains(raw.id) {
+                // ⚠️ 覆盖集**必须剔除 user 输入行**（回合边界）。
+                //
+                // 不剔除的话：用户说「继续」、助手也回「继续」时，live 聚合行
+                // 的 `t:继续` 会被 user 输入行自己的文本覆盖 → 判定"内容已被
+                // 服务端承载" → 助手的 live 行被删。用户与助手的文本相同是
+                // 极常见的对话形态（"好"/"继续"/"ok"/复述），误删率不低。
+                // 助手内容的承载证明只能来自**非边界**的服务端行。
+                guard !RemoteTurnModel.isUserInputBoundary(raw) else { continue }
                 for part in raw.parts {
                     counts[partKey(part), default: 0] += 1
                 }
@@ -92,6 +100,16 @@ enum RemoteHistoryRepair {
             guard row.role != .user else { continue }
             guard !row.parts.isEmpty else { continue }
             guard row.errorInfo == nil else { continue }
+            // ⚠️ 跨回合误匹配防线：本模块按"内容完全覆盖"判定，不依赖位置，
+            // 所以同一条 live 行可能被**不是它所属回合**的服务端内容覆盖命中
+            // （例：live 行是 turn5 的「继续」，服务端尚未回放 turn5，而 turn1
+            // 恰好也有「继续」→ 误删 = turn5 内容永久丢失）。
+            //
+            // 化解：要求 live 行带**强身份** part（toolUse/toolResult，id 是
+            // UUID，跨回合重复概率为 0），或 parts ≥ 2。单行纯文本的老重复
+            // 因此保守保留（不自愈）——它们不造成工具回合那种成片重复，且
+            // 稳态路径（有 turnKey 的新行）会精确处理后续所有重复。
+            guard hasStrongIdentity(row.parts) else { continue }
 
             var needed: [String: Int] = [:]
             for part in row.parts { needed[partKey(part), default: 0] += 1 }
@@ -102,6 +120,23 @@ enum RemoteHistoryRepair {
             }
         }
         return result
+    }
+
+    /// 是否含"强身份" part：**工具身份**（toolUseId 是 UUID，跨回合重复概率
+    /// 为 0）或多 part（多个文本同时对齐的偶然性极低）。
+    ///
+    /// 纯单行文本的 live 行返回 false → 保守保留，不自愈。见
+    /// `redundantLegacyLiveIds` 里的跨回合误匹配说明。
+    static func hasStrongIdentity(_ parts: [ContentPart]) -> Bool {
+        guard !parts.isEmpty else { return false }
+        if parts.count >= 2 { return true }
+        for part in parts {
+            switch part {
+            case .toolUse, .toolResult: return true
+            case .text, .mediaRef: continue
+            }
+        }
+        return false
     }
 
     /// 多重集覆盖：`by` 中每个键的数量都 ≥ `needed`。空 `needed` 恒不覆盖

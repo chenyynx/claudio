@@ -172,7 +172,7 @@ enum RemoteTurnReconciler {
             guard let floor = replayFloor else { return false }
             return row.sortOrder <= floor
         }
-        var orderedIds: [String] = headRows.sorted { $0.sortOrder < $1.sortOrder }.map { $0.id }
+        var orderedIds: [String] = headRows.sorted(by: Self.stableOrder).map { $0.id }
 
         // 4b. 主体：逐回合（服务端行按服务端序 + 本回合存活的 live 行）
         let headIdSet = Set(orderedIds)
@@ -183,7 +183,7 @@ enum RemoteTurnReconciler {
             }
             let survivors = (survivorsByTurn[index] ?? [])
                 .filter { !headIdSet.contains($0.id) }
-                .sorted { $0.sortOrder < $1.sortOrder }
+                .sorted(by: Self.stableOrder)
             for row in survivors where !deleteIdSet.contains(row.id) {
                 orderedIds.append(row.id)
             }
@@ -197,7 +197,7 @@ enum RemoteTurnReconciler {
                 guard let floor = replayFloor else { return true }
                 return row.sortOrder > floor
             }
-            .sorted { $0.sortOrder < $1.sortOrder }
+            .sorted(by: Self.stableOrder)
         for row in tailRows where !deleteIdSet.contains(row.id) {
             orderedIds.append(row.id)
         }
@@ -208,7 +208,7 @@ enum RemoteTurnReconciler {
         let orderedIdSet = Set(orderedIds)
         let leftovers = dbRows
             .filter { !deleteIdSet.contains($0.id) && !orderedIdSet.contains($0.id) }
-            .sorted { $0.sortOrder < $1.sortOrder }
+            .sorted(by: Self.stableOrder)
             .map { $0.id }
         orderedIds.append(contentsOf: leftovers)
 
@@ -218,5 +218,20 @@ enum RemoteTurnReconciler {
             orderedIds: orderedIds,
             absorbedLiveIds: absorbedLiveIds
         )
+    }
+
+    /// 稳定排序：与 `loadMessages` 的 SQL `ORDER BY sort_order, created_at, id`
+    /// 完全一致的三级 tiebreak。
+    ///
+    /// ⚠️ 为什么不能用 `sorted { $0.sortOrder < $1.sortOrder }`：Swift 的
+    /// `sorted` **不保证稳定**，比较器返回 false 的等价元素（同 sort_order）
+    /// 相对顺序未定义。脏库自愈的第一帧正是"若干行共享同一个 sort_order"
+    /// （真机 `head: 1,1,1001,...`）——若排序不稳定，自愈当帧就把这些行的
+    /// 相对顺序随机化一次，**本次要根治的症状在修复自己的过程中复现**。
+    /// 三级 tiebreak 让"同号行"也有确定顺序，与 SQL 读取序对齐。
+    private static func stableOrder(_ lhs: RawMessage, _ rhs: RawMessage) -> Bool {
+        if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+        if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+        return lhs.id < rhs.id
     }
 }
