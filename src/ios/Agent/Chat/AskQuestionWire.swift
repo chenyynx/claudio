@@ -56,7 +56,11 @@ struct AskWireQuestion: Identifiable, Equatable {
     }
 
     init?(dict: [String: Any]) {
-        guard let question = dict["question"] as? String, !question.isEmpty else { return nil }
+        // [对抗审查 A4] 题面必须与桥 extractQuestionTexts 同规则：trim 后非空。
+        // 桥对纯空白题会丢弃（answer() could not resolve AskUserQuestion text），
+        // iOS 若放行就渲染出一张"答了等于没答"的死卡。
+        guard let question = dict["question"] as? String,
+              !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         self.id = question
         self.question = question
         self.header = dict["header"] as? String
@@ -99,6 +103,11 @@ struct AskWirePayload: Equatable {
         // 全有或全无：丢题会让 envelope 的题目序列与桥侧原始 input 错位，
         // 桥按「长度+顺序一致」校验，错位即整包答案被丢弃（比不答更糟）。
         guard parsed.count == arr.count else { return nil }
+        // [对抗审查 A1] answers 以**题面文本**为 key（桥按 questionTexts 查表），
+        // 重复题面在契约上不可表达：两题共用一个槽，前一题答案会被静默覆盖，
+        // 桥也只回一条（并告警 duplicate question text）。故整帧放弃 → 降级工具卡。
+        let texts = parsed.map { $0.answerKey }
+        guard Set(texts).count == texts.count else { return nil }
         let questions = parsed
         return AskWirePayload(toolUseId: toolUseId, questions: questions)
     }
