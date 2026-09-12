@@ -1698,6 +1698,62 @@ extension AIChatViewModel {
         }
     }
 
+    // MARK: - [batch1.8 2026-09-12] 输入即答路由（替代已删除的「跳过」）
+
+    /// 可被「打字回答」的目标：最近的 pending 问题卡里，第一道还没有草稿的题。
+    ///
+    /// 隔离依据：结构上要求会话里存在 questionCard 块 —— 该块只在
+    /// RemoteAgentProvider 的 permission_request 分支产生，本地 agent 不产生，
+    /// 所以本地会话恒 nil → gate 恒 false → 本地发送路径逐字节不变。
+    /// 从后往前扫（pending 卡必在最近处），ReversedCollection 不复制数组。
+    var pendingAskAnswerTarget: (block: AssistantBlock, payload: AskWirePayload,
+                                 question: AskWireQuestion, index: Int, total: Int)? {
+        guard lastAgentProviderIsRemote else { return nil }
+        for message in messages.reversed() {
+            for block in message.blocks {
+                guard block.kind == .questionCard, block.askStatus.isPending,
+                      let payload = block.askPayload,
+                      !payload.questions.isEmpty else { continue }
+                // askDraft 的值是 Set<String>（多选）：nil 或空集 = 该题未答。
+                for (offset, question) in payload.questions.enumerated()
+                where block.askDraft[question.answerKey]?.isEmpty ?? true {
+                    return (block, payload, question, offset + 1, payload.questions.count)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// 输入栏占位符的 answer 模式文案；nil = 不接管（走原 "Message …" 文案）。
+    var pendingAskPlaceholder: String? {
+        guard let target = pendingAskAnswerTarget else { return nil }
+        if target.total == 1 {
+            return "直接输入即为回答 · 发送后 Claude 继续"
+        }
+        let label = target.question.header.flatMap { $0.isEmpty ? nil : $0 }
+            ?? String(target.question.question.prefix(12))
+        return "回答第 \(target.index)/\(target.total) 题 · \(label)"
+    }
+
+    /// 把输入栏文字作为答案回传。返回 true = 已消费，调用方不得再走发送/排队。
+    ///
+    /// 边界：①带附件不接管（answer wire 承载不了附件，让它走原路径）
+    ///      ②多题只答第一道未答题，已勾的草稿一并带上 —— 否则打字会把草稿冲掉
+    ///      ③无 pending 卡 / 本地会话 → false，行为不变
+    /// 契约（现读桥 sdk-process.ts:273-366）：单题走纯文本兜底，多题走 envelope，
+    /// envelope 里缺的 questionText 不写入 answers ⇒ **部分答案合法可表达**。
+    func routeTypedTextToPendingAsk(_ raw: String) -> Bool {
+        guard let target = pendingAskAnswerTarget else { return false }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, attachments.isEmpty else { return false }
+        var answers = target.payload.answers(fromDraft: target.block.askDraft)
+        answers[target.question.answerKey] = text
+        submitAskAnswer(blockId: target.block.id, answers: answers)
+        inputText = ""
+        logger.info("[AskAnswer] 输入即答 sid=\(sessionId?.prefix(8) ?? "nil") q=\(target.index)/\(target.total) text=\(text.count)ch")
+        return true
+    }
+
     /// [batch1.6] 桥回 error（answer/approve 未被接受）的**统一处理入口**：
     ///  ① 该 toolUseId 仍 pending 的问题卡 → expired（已定格 answered 的不回头改）
     ///  ② 该 toolUseId 正挂着的审批弹窗 → 关闭（弹窗无 askStatus，靠 id 匹配）

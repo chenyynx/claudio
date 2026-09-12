@@ -368,7 +368,7 @@ final class AssistantBlock: Identifiable, ObservableObject {
     // MARK: [AskCard 2026-09-12] AskUserQuestion 流内卡片（kind == .questionCard 时有效）
     /// 问题载荷（questions + toolUseId）；nil = 非 question 块，历史回放前无值。
     @Published var askPayload: AskWirePayload?
-    /// 生命周期四态（pending / answered / skipped / expired）。状态外提原则：
+    /// 生命周期三态（pending / answered / expired；batch1.7 已删 skipped）。状态外提原则：
     /// 本字段由帧事件与回放写，视图只读（cell 复用安全）。
     @Published var askStatus: AskCardStatus = .pending
     /// 待提交草稿（answerKey → 已选 label 集合）。存 Store 侧而非视图 @State：

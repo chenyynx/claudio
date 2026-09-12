@@ -2320,6 +2320,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // Image-inlining still uses the original cacheURL bytes (read before
         // cleanup), matching the previous behaviour bit-for-bit.
         remote.pendingPayloads = []
+        // [batch1.8] 输入即答路由：远端会话挂着 pending 问题卡时，这一行文字是
+        // **答案**而不是新消息。必须判在 `!isProcessing` guard 之前 —— 问题挂着时
+        // 回合必然在跑，走不到下面的发送路径（今天它会掉进 enqueuePrompt 排队）。
+        // 附件非空时 helper 内部自行放行，不改本行语义。
+        if routeTypedTextToPendingAsk(text) { return }
         #if DEBUG
         logger.info("🔑DRAFT [vm=\(self.vmInstanceId)] send() text=\(text.count)ch attachments=\(pendingAttachments.count) isProcessing=\(self.isProcessing) sessionId=\(self.sessionId ?? "nil") draftId=\(self.draftId ?? "nil") inputText='\(String(self.inputText.prefix(30)))'")
         #else

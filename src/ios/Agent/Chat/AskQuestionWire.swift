@@ -116,9 +116,21 @@ struct AskWirePayload: Equatable {
         ["questions": questions.map { $0.asDict }]
     }
 
-    /// 单选（所有题都单选且只有一题）→ 选中即答；否则需要确认键。
-    var isSingleTap: Bool {
-        questions.count == 1 && !questions[0].multiSelect
+    /// 草稿（answerKey → 已选 label 集合）→ 提交用 answers：按题内选项**原顺序**
+    /// 输出（不按字母序），multiSelect join ", "（与 AskResultCodec 的拆分规则互逆）。
+    ///
+    /// 单一转换点：卡片「提交答案」与 batch1.8「输入即答」都走这里 —— 两条路径
+    /// 各拼一份 answers 迟早漂移（batch1.6 把审批与答案收进同一个错误处理入口同理）。
+    func answers(fromDraft draft: [String: Set<String>]) -> [String: String] {
+        var out: [String: String] = [:]
+        for question in questions {
+            guard let set = draft[question.answerKey], !set.isEmpty else { continue }
+            out[question.answerKey] = question.options
+                .filter { set.contains($0.label) }
+                .map { $0.label }
+                .joined(separator: ", ")
+        }
+        return out
     }
 }
 

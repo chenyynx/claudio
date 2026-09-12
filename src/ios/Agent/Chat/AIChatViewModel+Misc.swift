@@ -61,6 +61,9 @@ extension AIChatViewModel {
     /// The message immediately appears in the chat with a dashed border (isQueued=true).
     func enqueuePrompt() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // [batch1.8] 「排队」在有问题卡挂着时就是回答（与 send() 同一个 helper，
+        // 不写第二份实现）。返回 true 时输入栏已被清空，绝不落进 promptQueue。
+        if routeTypedTextToPendingAsk(text) { return }
         guard !text.isEmpty || !attachments.isEmpty, isProcessing else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         let pendingAttachments = attachments

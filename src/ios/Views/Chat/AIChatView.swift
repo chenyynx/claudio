@@ -3476,8 +3476,12 @@ struct AIChatView: View {
                     .foregroundStyle(ChatColors.sendButton)
             }
             .keyboardShortcut(.return, modifiers: .command)
-            .accessibilityLabel(Text("Add to queue", comment: "VoiceOver label for the send button while a reply is generating"))
-            .accessibilityHint(Text("Queues this message to send after the current reply finishes", comment: "VoiceOver hint for the queue button"))
+            .accessibilityLabel(vm.pendingAskAnswerTarget == nil
+                ? Text("Add to queue", comment: "VoiceOver label for the send button while a reply is generating")
+                : Text("Answer the question", comment: "VoiceOver label when typed text becomes an AskUserQuestion answer"))
+            .accessibilityHint(vm.pendingAskAnswerTarget == nil
+                ? Text("Queues this message to send after the current reply finishes", comment: "VoiceOver hint for the queue button")
+                : Text("Sends this text as the answer to the pending question", comment: "VoiceOver hint for the answer button"))
         } else if vm.isProcessing {
             Button { vm.cancel() } label: {
                 Image(systemName: "stop.circle.fill")
@@ -3579,7 +3583,10 @@ struct AIChatView: View {
             // `%@` form ("Message %@ (@ to mention files)") as the lookup
             // key in Localizable.xcstrings, so translators get one
             // parameterized entry per locale instead of one per soul name.
-            placeholder: AppLocalized("Message \(soulName) (@ to mention files)"),
+            // [batch1.8] answer 模式：有 pending 问题卡时占位符直接说明"这行字
+            // 是答案"，多题还会点名是哪一道。nil 时逐字节走原文案。
+            placeholder: vm.pendingAskPlaceholder
+                ?? AppLocalized("Message \(soulName) (@ to mention files)"),
             onPasteImage: { image in vm.addImageAttachment(image) },
             onPasteFile: { url in vm.addFileAttachment(from: url) },
             onReturnKey: handleReturnKey,

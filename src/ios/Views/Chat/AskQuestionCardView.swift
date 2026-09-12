@@ -147,14 +147,9 @@ struct AskQuestionCardView: View {
     }
 
     private var collectedAnswers: [String: String] {
-        var out: [String: String] = [:]
-        for q in payload.questions {
-            guard let set = block.askDraft[q.answerKey], !set.isEmpty else { continue }
-            // 按选项原顺序输出，不按字母序（多选答案顺序应尊重模型给的顺序）
-            let ordered = q.options.filter { set.contains($0.label) }.map { $0.label }
-            out[q.answerKey] = ordered.joined(separator: ", ")
-        }
-        return out
+        // 转换逻辑已上提到 AskWirePayload.answers(fromDraft:)：卡片提交与
+        // batch1.8 输入即答共用一处实现。
+        payload.answers(fromDraft: block.askDraft)
     }
 
     private var allAnswered: Bool {
