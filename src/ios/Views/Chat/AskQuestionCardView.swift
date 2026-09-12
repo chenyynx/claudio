@@ -47,6 +47,8 @@ struct AskQuestionCardView: View {
                         index: idx,
                         total: payload.questions.count,
                         status: status,
+                        livePick: picks[q.answerKey],
+                        liveMultiPicks: multiPicks[q.answerKey] ?? [],
                         palette: palette,
                         onPick: { label in pick(idx: idx, question: q, label: label) },
                         onToggle: { label in toggle(idx: idx, question: q, label: label) },
@@ -112,8 +114,8 @@ struct AskQuestionCardView: View {
 
     /// 页高：选项行 ~58pt（含说明一行）+ 题头 ~34pt + 间距。multiSelect 确认键 +40。
     private var pageSize: Double {
-        let base = maxPageOptionCount * 58 + 104
-        let confirm = hasMultiSelect ? 40.0 : 0.0
+        let base = Double(maxPageOptionCount * 58 + 104)
+        let confirm: Double = hasMultiSelect ? 40.0 : 0.0
         return base + confirm
     }
 
@@ -176,6 +178,9 @@ private struct AskQuestionPage: View {
     let index: Int
     let total: Int
     let status: AskCardStatus
+    /// pending 期的选中态由父视图本地态驱动（status 只有终态才带答案）。
+    let livePick: String?
+    let liveMultiPicks: Set<String>
     let palette: AskPalette
     let onPick: (String) -> Void
     let onToggle: (String) -> Void
@@ -224,7 +229,7 @@ private struct AskQuestionPage: View {
             }
 
             if question.multiSelect && status.isPending {
-                AskConfirmCapsule(palette: palette) { onConfirm() }
+                AskConfirmCapsule(armed: !liveMultiPicks.isEmpty, palette: palette) { onConfirm() }
             }
         }
         .padding(.horizontal, 2)
@@ -239,10 +244,15 @@ private struct AskQuestionPage: View {
     }
 
     private func isSelected(_ opt: AskWireQuestion.AskWireOption) -> Bool {
+        if status.isPending {
+            return question.multiSelect
+                ? liveMultiPicks.contains(opt.label)
+                : livePick == opt.label
+        }
         if question.multiSelect {
             return (multiSetFromStatus)?.contains(opt.label) ?? false
         }
-        return (pickedLabelFromStatus) == opt.label
+        return pickedLabelFromStatus == opt.label
     }
 
     /// 定格态从 answers 反推选中（回放/已答卡显示答案）；pending 态由父视图本地态驱动。
@@ -339,7 +349,7 @@ private struct AskRadio: View {
             }
         }
         .frame(width: 17, height: 17)
-        .animation(.spring(response: 0.3, dampingRatio: 0.6), value: selected)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: selected)
     }
 }
 
@@ -361,13 +371,15 @@ private struct AskCheckbox: View {
             }
         }
         .frame(width: 17, height: 17)
-        .animation(.spring(response: 0.3, dampingRatio: 0.6), value: selected)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: selected)
     }
 }
 
 /// multiSelect 确认胶囊（Claude 版视觉：全宽、armed 前 35% 灰）。
 /// armed 状态由外部 computed 传入（选了东西就亮）。
 private struct AskConfirmCapsule: View {
+    /// armed = 已有选择（v3：未选时 35% 灰且不可点）。
+    let armed: Bool
     let palette: AskPalette
     let action: () -> Void
 
@@ -380,11 +392,14 @@ private struct AskConfirmCapsule: View {
                 .frame(height: 32)
                 .background(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(palette.ink)
+                        .fill(armed ? palette.accent : palette.ink)
                 )
         }
         .buttonStyle(.plain)
+        .opacity(armed ? 1 : 0.35)
+        .disabled(!armed)
         .padding(.top, 2)
+        .animation(.easeInOut(duration: 0.2), value: armed)
     }
 }
 

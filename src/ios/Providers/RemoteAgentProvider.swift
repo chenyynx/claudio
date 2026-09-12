@@ -496,7 +496,7 @@ final class RemoteAgentProvider: AgentProvider {
                 var raw: [String: Any] = [:]
                 if let input = message.input {
                     for (k, v) in input {
-                        raw[k] = CCPocketProtocol.ServerMessage.JSONValue.any(from: v)
+                        raw[k] = CCPocketProtocol.JSONValue.any(from: v)
                     }
                 }
                 args = raw
@@ -871,7 +871,7 @@ final class RemoteAgentProvider: AgentProvider {
     private static func jsonArgs(name: String?, from input: [String: CCPocketProtocol.JSONValue]?) -> [String: Any] {
         guard let input else { return [:] }
         if name == "AskUserQuestion" {
-            return input.mapValues { CCPocketProtocol.ServerMessage.JSONValue.any(from: $0) }
+            return input.mapValues { CCPocketProtocol.JSONValue.any(from: $0) }
         }
         return input.compactMapValues { value -> Any? in
             switch value {
