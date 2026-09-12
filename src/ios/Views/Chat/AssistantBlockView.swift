@@ -318,7 +318,7 @@ struct ToolCapsuleView: View {
         case .browserTool:   toolName = "browser_use"
         case .readImageTool: toolName = "read_image"
         case .memoryTool:    toolName = "memory"
-        case .text, .thinking, .info: toolName = "unknown"
+        case .text, .thinking, .info, .questionCard: toolName = "unknown"
         }
 
         // Pretty-print the input JSON when possible; otherwise emit raw.
