@@ -3624,10 +3624,21 @@ export class BridgeWebSocketServer {
         });
 
         if (shouldInterrupt) {
-          console.log(
-            `[ws] Agent is busy — will queue input and interrupt current turn`,
-          );
-          claudeProc.interrupt();
+          // [D3 2026-09-12] 打断语义 gate：pending 的 AskUserQuestion 等待
+          // 不被新消息打断（interrupt 会连带给那卡片广播 permission_aborted，
+          // 用户正要答题却被废掉）。竞态窗口（running 状态却挂着 Ask 权限）
+          // 极小，但 gate 成本为零；正常 waiting_approval 状态本来就不会
+          // 走进 shouldInterrupt（dispatchInput 已排除）。
+          if (claudeProc.hasPendingAskQuestion()) {
+            console.log(
+              "[ws] Pending AskUserQuestion — queueing input without interrupt",
+            );
+          } else {
+            console.log(
+              `[ws] Agent is busy — will queue input and interrupt current turn`,
+            );
+            claudeProc.interrupt();
+          }
         }
         break;
       }

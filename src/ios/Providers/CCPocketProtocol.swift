@@ -556,7 +556,10 @@ enum CCPocketProtocol {
         /// (mirrors `userMessageUuid` on user_input / tool_result frames).
         /// Sourced from the CLI transcript UUID by the bridge. `nil` when the
         /// bridge predates the capability.
-        let messageUuid: String?
+        /// [Phase5 · var] 扁平化点（requestHistory / fetchRemoteHistory）会把
+        /// entry 层的 messageUuid 注回 wire 帧本体（缺失才注入）——字段必须
+        /// 可变。消费链不变：rawMessageId() 的 `bm-{uuid}` 稳定 id 分支。
+        var messageUuid: String?
         let clientMessageId: String?
         let baseSeq: Int?
         // system/supported_commands — 远端(服务器)技能清单

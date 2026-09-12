@@ -76,6 +76,7 @@ extension AIChatViewModel {
         case .remoteFileAttached(let toolUseId, _): return "remoteFileAttached(\(toolUseId.prefix(12)))"
         case .permissionRequest(_, let name, _): return "permissionRequest(\(name))"
         case .remoteServerError(let id): return "remoteServerError(\(id.prefix(12)))"
+        case .permissionAborted(let id): return "permissionAborted(\(id.prefix(12)))"
         case .remoteCompactingStarted: return "remoteCompactingStarted"
         case .reasoningContent: return "reasoningContent"
         case .reasoningEcho: return "reasoningEcho"
@@ -482,6 +483,15 @@ extension AIChatViewModel {
                 // 对应审批弹窗，杜绝"显示已回答/已批准但模型没收到"。
                 await MainActor.run {
                     handleRemoteServerError(toolUseId: toolUseId)
+                }
+
+            case .permissionAborted(let toolUseId):
+                // [D2/D10 2026-09-12] 桥把 pending 权限广播为 aborted（interrupt
+                // 收场的定向通知）。即时收口：不等 expireStaleRemoteRequests 的
+                // 批量 tick——用户点停止的瞬间卡片就该置灰，否则出现"回合已死、
+                // 卡片还能点"的窗口（真机实证：卡片悬空 → 用户被迫杀后台重进）。
+                await MainActor.run {
+                    abortRemoteRequest(toolUseId: toolUseId)
                 }
 
             case .permissionRequest(let id, let toolName, let input):
@@ -1673,6 +1683,26 @@ extension AIChatViewModel {
         // 审批弹窗：回合已结束，pending 的请求在桥侧必然已不存在（再点必失败），
         // 故关闭。桥若拒过，error 帧已把原因显示在本回合（finish(throwing:) 路径）。
         if remote.pendingPermission != nil {
+            remote.pendingPermission = nil
+        }
+    }
+
+    /// [D10 2026-09-12] 桥 `permission_aborted` 帧的**单点定向收口**：
+    /// 按 toolUseId 把匹配的流内问题卡置 expired、清掉同 id 的审批弹窗。
+    /// 与 `expireStaleRemoteRequests` 的分工：本函数吃桥的权威定向通知
+    /// （Phase 3 `abortPendingPermissions` 广播，先于 result/error 帧到达），
+    /// 即时、精确；批量收口是本地兜底（回合收场时扫全会话）。找不到匹配
+    /// 即忽略（幂等——弹窗路径的卡片可能早已被 error 帧回滚）。
+    @MainActor
+    func abortRemoteRequest(toolUseId: String) {
+        for m in messages {
+            for blk in m.blocks where blk.kind == .questionCard && blk.askStatus.isPending {
+                if blk.toolUseId == toolUseId {
+                    blk.askStatus = .expired
+                }
+            }
+        }
+        if remote.pendingPermission?.id == toolUseId {
             remote.pendingPermission = nil
         }
     }

@@ -1591,3 +1591,59 @@ describe("SessionManager claude UUID backfill", () => {
     ).toBe("user-uuid-fallback");
   });
 });
+
+// [stable history ids · Phase5] compacted snapshot 拼装时把 entry 层 uuid
+// 钉回 message 本体（iOS 扁平化只读帧本体的 uuid 字段——不钉回则 resumed
+// 全量行拿不到稳定 id，与 live 行主键不一致 → 重复渲染）。
+describe("SessionManager.pinMessageUuidOnBody", () => {
+  it("pins assistant frame uuid onto the message body", () => {
+    const manager = new SessionManager(() => {});
+    const msg = {
+      type: "assistant",
+      message: { id: "msg-1", role: "assistant", content: [], model: "m" },
+    } as unknown as ServerMessage;
+
+    const pinned = (manager as any).pinMessageUuidOnBody(
+      msg,
+      "uuid-assist-1",
+    ) as any;
+
+    expect(pinned.messageUuid).toBe("uuid-assist-1");
+    expect(pinned).toBe(msg, "同一对象原地补齐，snapshot 引用不变");
+  });
+
+  it("pins userMessageUuid onto user_input / tool_result frames", () => {
+    const manager = new SessionManager(() => {});
+    const userInput = { type: "user_input", text: "hi" } as unknown as ServerMessage;
+    const toolResult = { type: "tool_result", toolUseId: "t1" } as unknown as ServerMessage;
+
+    expect(((manager as any).pinMessageUuidOnBody(userInput, "u-1") as any).userMessageUuid).toBe("u-1");
+    expect(((manager as any).pinMessageUuidOnBody(toolResult, "u-2") as any).userMessageUuid).toBe("u-2");
+    // assistant 不得写 userMessageUuid，user_input 不得写 messageUuid。
+    expect((userInput as any).messageUuid).toBeUndefined();
+  });
+
+  it("never overwrites an existing uuid on the body (idempotent)", () => {
+    const manager = new SessionManager(() => {});
+    const msg = {
+      type: "assistant",
+      messageUuid: "original",
+      message: { id: "msg-1", role: "assistant", content: [], model: "m" },
+    } as unknown as ServerMessage;
+
+    const pinned = (manager as any).pinMessageUuidOnBody(
+      msg,
+      "entry-layer-different",
+    ) as any;
+
+    expect(pinned.messageUuid).toBe("original");
+  });
+
+  it("returns the message untouched when the entry has no uuid", () => {
+    const manager = new SessionManager(() => {});
+    const msg = { type: "status", status: "idle" } as unknown as ServerMessage;
+
+    expect((manager as any).pinMessageUuidOnBody(msg, undefined)).toBe(msg);
+    expect((manager as any).pinMessageUuidOnBody(msg, "")).toBe(msg);
+  });
+});

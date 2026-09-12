@@ -1083,7 +1083,10 @@ export class SessionManager {
       }
       merged.push({
         seq: record.seq,
-        message: record.message as ServerMessage,
+        message: this.pinMessageUuidOnBody(
+          record.message as ServerMessage,
+          record.messageUuid,
+        ),
         messageUuid: record.messageUuid,
         createdAt: record.createdAt,
       });
@@ -1105,6 +1108,29 @@ export class SessionManager {
       entries: merged,
       reason: "compacted",
     };
+  }
+
+  /**
+   * [stable history ids · Phase5] 归档记录拼进 compacted snapshot 时，把
+   * entry 层的 messageUuid 写回 message 本体对应的协议字段
+   * （assistant → `messageUuid`，user_input / tool_result → `userMessageUuid`）。
+   *
+   * iOS 的实时扁平化（RemoteAgentProvider）读的是 wire 帧本体的 uuid 字段；
+   * snapshot 若只带 entry 层 uuid，resumed 全量行拿不到稳定 id，与 live 行
+   * id 不一致 → 同一条消息渲染两次（D12）。已有值不覆盖（幂等）。
+   */
+  private pinMessageUuidOnBody(
+    msg: ServerMessage,
+    uuid: string | undefined,
+  ): ServerMessage {
+    if (!uuid) return msg;
+    const body = msg as Record<string, unknown>;
+    if (msg.type === "assistant") {
+      if (!body.messageUuid) body.messageUuid = uuid;
+    } else if (msg.type === "user_input" || msg.type === "tool_result") {
+      if (!body.userMessageUuid) body.userMessageUuid = uuid;
+    }
+    return msg;
   }
 
   list(): SessionSummary[] {

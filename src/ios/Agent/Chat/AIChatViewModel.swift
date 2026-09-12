@@ -4176,6 +4176,22 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             foregroundObserver = nil
         }
         userDidCancel = true
+        // [D3 2026-09-12] 显式停止打标：cancel() 的全部 View 触发源（停止按钮
+        // / Stop&New Chat）都是用户主动意图。必须在 currentTask?.cancel() 之前
+        // 置位——onTermination 的 .cancelled 会同步触发，晚了就错过时序。
+        // 解析链与 stopRemoteSession 相同（单实例假设），existingClient 是
+        // MainActor 同步调用，无 await。
+        // 生命周期类 Task 取消不经过 cancel()，不置位 → interruptIfExplicit
+        // 抑制，桥侧待答的 AskUserQuestion 不会被误杀。
+        if lastAgentProviderIsRemote {
+            let instances = ProviderConfigStore.shared.enabledInstances(for: .remoteAgent)
+            if instances.count == 1, let instance = instances.first {
+                RemoteAgentStore.shared.existingClient(
+                    instanceID: instance.id,
+                    chatSessionID: sessionId
+                )?.markExplicitStop()
+            }
+        }
         currentTask?.cancel()
         currentTask = nil
         autoRetryAttempt = 0

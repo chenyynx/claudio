@@ -958,11 +958,52 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
       console.log("[sdk-process] Interrupting query");
       // NOTE: Do NOT clear pendingInputQueue here — queued messages should
       // survive an interrupt so they are delivered on the next turn.
+      //
+      // [D2 2026-09-12] interrupt 会终止整个 query，SDK 侧 abort canUseTool
+      // 的 signal 后 pending 权限就地蒸发——客户端已渲染的 Ask 卡片永远
+      // 悬空（真机实证：用户被迫杀后台重进）。必须先把每个 pending 权限
+      // 广播为 permission_aborted 再清理，客户端才能把卡片置为 aborted 态。
+      // 广播在 queryInstance.interrupt() 之前：事件按序到达，aborted 帧
+      // 不会被回合终止的 result/error 帧淹没。
+      this.abortPendingPermissions("interrupted");
       this.queryInstance.interrupt().catch((err) => {
         console.error("[sdk-process] Interrupt error:", err);
       });
-      this.pendingPermissions.clear();
     }
+  }
+
+  /**
+   * [D2 2026-09-12] 把所有 pending 权限广播为 permission_aborted 并清空。
+   *
+   * 客户端按 toolUseId 定位既有卡片置为 aborted 态；找不到即忽略（幂等）。
+   * pending 的 resolve 不在此处调用——SDK abort signal 的 listener 会
+   * resolve deny（waitForPermission 内注册），此处不重复 resolve。
+   */
+  private abortPendingPermissions(reason: "interrupted"): void {
+    if (this.pendingPermissions.size === 0) return;
+    for (const [toolUseId, pending] of this.pendingPermissions) {
+      this.emitMessage({
+        type: "permission_aborted",
+        toolUseId,
+        toolName: pending.toolName,
+        reason,
+      });
+    }
+    this.pendingPermissions.clear();
+  }
+
+  /**
+   * [D3 2026-09-12] 是否存在待答的 AskUserQuestion 权限。
+   *
+   * 发新消息路径（websocket "user_message"）据此决定是否跳过 interrupt：
+   * 用户在等待提问卡片时发来新消息应排队，不打断提问等待——打断会连
+   * 带终止整回合，且 abortPendingPermissions 会把用户正要答的卡片废掉。
+   */
+  hasPendingAskQuestion(): boolean {
+    for (const pending of this.pendingPermissions.values()) {
+      if (pending.toolName === "AskUserQuestion") return true;
+    }
+    return false;
   }
 
   /**
@@ -974,6 +1015,25 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
     return this.pendingInputQueue.length > 0;
   }
 
+  /**
+   * 把用户输入派发给 SDK 流。返回 `{ queued, shouldInterrupt }`。
+   *
+   * [D17 2026-09-12] 三态语义（按 `_status` 分派）：
+   *  - `starting` / `idle`：SDK generator 正在等下一条 user message
+   *    （`userMessageResolve` 挂着）→ **直接投递**，返回
+   *    `{queued:false, shouldInterrupt:false}`。
+   *  - `running` / `compacting`：回合进行中 → **排队**并把
+   *    `shouldInterrupt=true` 报给调用方（websocket.ts "user_message"）。
+   *    是否真的 interrupt 由调用方 gate（[D3] `hasPendingAskQuestion()`
+   *    时不打断）——本函数从不自己打断，只报信号。
+   *  - `waiting_approval`：等权限/答题 → **排队、不打断**
+   *    （`shouldInterrupt=false`）——打断会连带废掉用户正要答的卡片
+   *    （interrupt → abortPendingPermissions 广播）。
+   *
+   * 排队的消息由 `createUserMessageStream` 每次迭代 drain，在 SDK 下一
+   * 回合开头按 FIFO 投递。注意 `pendingInputQueue` 在 `interrupt()` 里被
+   * 刻意保留——排队消息必须活得比当前回合长（见 interrupt 注释）。
+   */
   dispatchInput(text: string): { queued: boolean; shouldInterrupt: boolean } {
     const shouldInterrupt =
       this._status === "running" || this._status === "compacting";

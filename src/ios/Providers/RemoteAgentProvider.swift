@@ -265,17 +265,24 @@ final class RemoteAgentProvider: AgentProvider {
             // and the Bridge has no idle guard: a late interrupt would kill
             // the next turn mid-generation. This stops the agent from
             // burning tokens on the machine after the user stopped.
+            // [D3 2026-09-12] interruptIfExplicit（而非无条件 interrupt）：
+            // 只有用户显式点停止（cancel() 路径已 markExplicitStop）才向桥发
+            // interrupt；视图重挂载 / 后台等生命周期类取消被抑制——不再误杀
+            // 桥侧正在等待的 AskUserQuestion（真机实证 21:33:08 AbortError）。
             continuation.onTermination = { [weak self] termination in
                 guard let self else { return }
                 if case .cancelled = termination {
-                    Task { await self.client.interrupt() }
+                    Task { await self.client.interruptIfExplicit() }
                 }
             }
-            self.client.onMessage = { [weak self] message in
+            // [D1 2026-09-12] installMessageHandler（而非直接赋值 onMessage）：
+            // 安装即重放回合间隙缓冲的关键帧（permission_request / tool_result），
+            // 修复「卡片帧在 handler 未装窗口内到达→静默丢失→卡片从未建立」。
+            self.client.installMessageHandler { [weak self] message in
                 guard let self else { return }
                 let finished = self.handle(message, continuation: continuation)
                 if finished {
-                    self.client.onMessage = nil
+                    self.client.clearMessageHandler()
                     // Turn ended — persist the session mapping so a relaunch
                     // resumes this conversation.
                     self.client.saveMapping(instanceID: self.instanceID, chatSessionID: self.chatSessionID)
@@ -512,6 +519,17 @@ final class RemoteAgentProvider: AgentProvider {
             }
             continuation.yield(.permissionRequest(id: toolId, toolName: toolName, input: args))
 
+        case "permission_aborted":
+            // [D2/D10 2026-09-12] 桥 interrupt 时对每个 pending 权限广播
+            // aborted（sdk-process.ts abortPendingPermissions，广播先于
+            // query 终止 → 本帧不会被 result/error 帧淹没）。按 toolUseId
+            // 定位既有卡片即时置灰；找不到即忽略（幂等）。payload 的
+            // toolUseId 字段名与 permission_request 一致，toolName/reason
+            // 无消费者、不解码。
+            if let toolUseId = message.toolUseId {
+                continuation.yield(.permissionAborted(toolUseId: toolUseId))
+            }
+
         case "stream_delta":
             if let text = message.text, !text.isEmpty {
                 openTextBlockIfNeeded(continuation)
@@ -553,13 +571,14 @@ final class RemoteAgentProvider: AgentProvider {
                     case "tool_use":
                         let toolName = block.name ?? "unknown"
                         let toolId = block.id ?? UUID().uuidString
-                        let args: [String: Any] = (block.input ?? [:]).compactMapValues { value in
-                            switch value {
-                            case .string(let s): return s
-                            case .number(let n): return n
-                            case .bool(let b): return b
-                            default: return nil
-                            }
+                        // [D8/D15 2026-09-12] args 必须递归转换：原
+                        // compactMapValues 只保留标量，AskUserQuestion 的
+                        // questions 数组被剥空（真机实证 args=[] → 卡片
+                        // fallback 成 memoryTool）。.any(from:) 对标量是
+                        // 恒等变换，嵌套结构完整保留，与 permission_request
+                        // 的 AskUserQuestion 分支同构。
+                        let args: [String: Any] = (block.input ?? [:]).mapValues {
+                            CCPocketProtocol.JSONValue.any(from: $0)
                         }
                         continuation.yield(.contentBlockStart(.toolUse(id: toolId, name: toolName)))
                         // [Fix] After tool_use the engine resets its text block index and waits for
@@ -912,24 +931,17 @@ final class RemoteAgentProvider: AgentProvider {
     }
 
     /// Same conversion rules as the live `assistant` case in
-    /// `handle(_:continuation:)`: only string / number / bool survive as
-    /// tool input args (nested shapes dropped — the live path does the same).
-    /// [AskCard 2026-09-12] 例外：AskUserQuestion 的 `questions` 嵌套结构必须
-    /// 存活（toolInputArgs 持久化 → 回放 makeToolBlock 重建卡需要 options）。
-    /// 其他工具保持扁平化语义不变（隔离）。
+    /// `handle(_:continuation:)`. [D8/D15 2026-09-12] 统一递归转换：嵌套
+    /// 结构（AskUserQuestion 的 `questions`、MultiEdit 的 `edits` 等）完整
+    /// 存活（toolInputArgs 持久化 → 回放 makeToolBlock 重建卡需要 options）；
+    /// `.any(from:)` 对标量恒等，只读标量 key 的下游不受影响。
     private static func jsonArgs(name: String?, from input: [String: CCPocketProtocol.JSONValue]?) -> [String: Any] {
+        // [D8/D15 2026-09-12] 统一递归转换（历史恢复 / 磁盘恢复路径共用）：
+        // 原来非 AskUserQuestion 工具走标量裁剪，嵌套字段（questions、
+        // MultiEdit 的 edits 等）被剥碎，Ask 卡片在历史重放时同样 fallback。
+        // .any(from:) 对标量恒等，下游只读标量 key 的消费者不受影响。
         guard let input else { return [:] }
-        if name == "AskUserQuestion" {
-            return input.mapValues { CCPocketProtocol.JSONValue.any(from: $0) }
-        }
-        return input.compactMapValues { value -> Any? in
-            switch value {
-            case .string(let s): return s
-            case .number(let n): return n
-            case .bool(let b): return b
-            default: return nil
-            }
-        }
+        return input.mapValues { CCPocketProtocol.JSONValue.any(from: $0) }
     }
 
     /// Legacy signature kept for any call sites not yet migrated.

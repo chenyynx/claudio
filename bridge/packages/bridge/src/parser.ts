@@ -731,6 +731,15 @@ export type ServerMessage =
       input: Record<string, unknown>;
     }
   | { type: "permission_resolved"; toolUseId: string }
+  // [D2 2026-09-12] pending 权限因回合被终止而消失时广播（interrupt /
+  // close 前清理）。客户端按 toolUseId 定位既有卡片置为 aborted 态；
+  // 找不到即忽略（幂等）。reason 目前只有 "interrupted"。
+  | {
+      type: "permission_aborted";
+      toolUseId: string;
+      toolName: string;
+      reason: string;
+    }
   | { type: "stream_delta"; text: string }
   | { type: "thinking_delta"; text: string }
   | {

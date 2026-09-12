@@ -511,6 +511,14 @@ enum RemoteHistorySyncCore {
         var step = max(defaultStep, 1)
         // 平移后的 base：优先保持段首位置，空间不足时下移。
         var base = lo
+        // [D14] 段外行贴在段首**之前**（room ≤ 0 ⇒ bound ≤ 1 且 lo < bound，
+        // 即 stable 现有行序号 ≤ 0 的烂状态）。旧实现 `return [:]` 直接放弃
+        // 整形——新行落位丢失（stableSortOrders 的初值把它们排到 dbMax 之后
+        // = 快照头部历史渲染在最后，顺序塌方）。改为**整体向上平移**：段从
+        // 最小可行位置 1 起按 step 等距铺开，允许与那个 ≤ 1 的烂段外行撞号
+        // （它是序号溃败的源头，恢复递增序优先）；跳过末尾的 `min(base, lo)`
+        // 钳制——平移方向本来就该向上。
+        var forceShiftUp = false
         if let bound = upperBound {
             // 段内 n 行必须都严格小于 bound。
             let room = bound - 1 // 可用的最大序号
@@ -519,16 +527,24 @@ enum RemoteHistorySyncCore {
                 let maxStep = max(room / (count - 1), 1)
                 step = min(step, maxStep)
             } else if room <= 0 {
-                // 段外行就贴在段首之前——无可腾挪空间，保持原样不动。
-                return [:]
+                // [D14] 无可用空间——整体平移而非放弃整形。
+                forceShiftUp = true
             }
-            // 收尾：整段必须放得下。
-            let needed = step * (count - 1)
-            if base + needed > room {
-                base = max(room - needed, 0)
+            if !forceShiftUp {
+                // 收尾：整段必须放得下。
+                let needed = step * (count - 1)
+                if base + needed > room {
+                    base = max(room - needed, 0)
+                }
             }
         }
-        base = min(base, lo)
+        if forceShiftUp {
+            // [D14] 从 1 起（永不塌 0：序号低于 1 的区间不碰——0 是 DB 合法
+            // 默认值，撞它 = 与 live/旧行顺序不定）。同输入同输出，幂等。
+            base = 1
+        } else {
+            base = min(base, lo)
+        }
 
         var result: [String: Int] = [:]
         for (index, id) in stableIds.enumerated() {

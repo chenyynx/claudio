@@ -257,10 +257,20 @@ extension AIChatViewModel {
             return nil
         }
         // entries → flat wire 序列（message 已注入 historySeq，seq 序展开）。
+        // [stable history ids · Phase5] 扁平化时把 entry 层 messageUuid 注回
+        // wire 帧本体（缺失才注入）：下游 historyAgentMessagesWithWire 只读
+        // `m.messageUuid`。增量 delta / compacted snapshot 只在 entry 层带
+        // uuid 时，不注回 → 行拿不到 `bm-` 稳定 id，与 live 落库行主键
+        // 不一致 → 重复渲染（D12）。
         var flat: [CCPocketProtocol.ServerMessage] = []
         if let entries = envelope.deltaEntries {
             for entry in entries {
-                if let m = entry.message { flat.append(m) }
+                guard var m = entry.message else { continue }
+                if m.messageUuid == nil,
+                   let entryUuid = entry.messageUuid, !entryUuid.isEmpty {
+                    m.messageUuid = entryUuid
+                }
+                flat.append(m)
             }
         }
         logger.info("[HistoryDelta] bridge=\(cursor.bridgeId.prefix(8)) kind=\(envelope.type ?? "?") from=\(envelope.fromSeq ?? -1) to=\(envelope.toSeq ?? -1) flat=\(flat.count)")

@@ -148,6 +148,17 @@ struct AgentMessage: @unchecked Sendable {
     /// [stable history ids · C6] 桥为这条消息注入的**稳定 id**（CLI transcript
     /// UUID，由桥的 `resolveMessageUuid` 得出并在 history 条目里带回）。
     ///
+    /// [Phase5 · 来源链] 赋值点（RemoteAgentProvider）读的是 wire 帧本体的
+    /// `messageUuid`；该字段现在有三条注入来源：
+    /// 1. 桥 append 时直接写在帧本体（live / 新桥全量 `messages[]` 形态）；
+    /// 2. **entry 层注回**——扁平化点（`requestHistory` / `fetchRemoteHistory`
+    ///    的 entries/deltaEntries 展开）把桥 `HistoryEntry.messageUuid` 注回
+    ///    帧本体（缺失才注入）。旧桥 compacted snapshot 只在 entry 层带 uuid，
+    ///    不注回则 resumed 全量行拿不到稳定 id → 与 live 行主键不一致 → 重复
+    ///    渲染（D12）；
+    /// 3. 磁盘 raw 消息（`agentMessage(fromServer:)` 的 past- 路径，桥按
+    ///    transcript 回填）。
+    ///
     /// 与 `clientMessageId` 的分工：
     /// - `clientMessageId` = **客户端生成**、随 input 上行，桥原样存回的回合
     ///   身份；用于"本地 live 行 ↔ 回放行"的协议对账（v1.14.30 引入）。
@@ -259,6 +270,13 @@ enum AgentStreamEvent: @unchecked Sendable {
     /// "No matching pending tool action."）。**仅远端发射**——本地 provider
     /// 无此帧。iOS 用它把"已提交但没送达"的问题卡回滚为不可答，避免假成功。
     case remoteServerError(toolUseId: String)
+    /// Bridge `permission_aborted` — 回合被 interrupt 终止时，桥对每个
+    /// pending 权限广播的定向终止通知（D2 修复的客户端半环，sdk-process.ts
+    /// abortPendingPermissions）。**仅远端发射**——本地 provider 无此帧。
+    /// 消费者按 toolUseId 把流内问题卡/审批弹窗**即时**置灰，不等
+    /// expireStaleRemoteRequests 的批量收口 tick（用户点停止的瞬间卡片就
+    /// 该死掉，不留"回合已死、卡片还能点"的窗口）。找不到匹配即忽略（幂等）。
+    case permissionAborted(toolUseId: String)
     /// Bridge `status:"compacting"` — the remote Claude Code session is
     /// auto-compacting its context (Bridge relays the SDK's
     /// `compact_boundary` event). Emitted ONLY by RemoteAgentProvider;

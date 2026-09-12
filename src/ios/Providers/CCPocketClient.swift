@@ -123,7 +123,84 @@ final class CCPocketClient: @unchecked Sendable {
     /// serialises turns (one turn at a time); a turn ends when the handler
     /// sees a `result` (or error). The provider installs the handler before
     /// sending input so no event is lost in the window.
+    ///
+    /// [D1 2026-09-12] 上句「窗口内不丢帧」的假设被真机证伪（会话 E1AE859F）：
+    /// `permission_request` 在 handler 未安装的窗口内到达后被 nil no-op 吞掉，
+    /// AskUserQuestion 卡片从未建立。现在窗口内到达的关键帧进 `orphanBuffer`
+    /// （见 `OrphanFrameBuffer`），下次 install 时按序重放。
     var onMessage: ((CCPocketProtocol.ServerMessage) -> Void)?
+
+    /// [D1] 回合间隙帧缓冲 + 互斥锁。读写都必须持锁（receive loop 与
+    /// install/clear 调用方不在同一线程）。
+    private var orphanBuffer = OrphanFrameBuffer<CCPocketProtocol.ServerMessage>(
+        limit: 200,
+        shouldBuffer: { msg in
+            // 刻意只缓冲「按 toolUseId 定位既有块、找不到即丢弃」的两类帧
+            // —— 重放副作用幂等。assistant/result/stream_delta 等会污染
+            // 新回合状态机，绝不缓冲（详见 OrphanFrameBuffer 头注释）。
+            switch msg.type ?? "" {
+            case "permission_request", "tool_result": return true
+            default: return false
+            }
+        }
+    )
+    private let orphanLock = NSLock()
+
+    /// [D1] 安装回合 handler 并重放缓冲帧。锁内**先装 handler 再 drain**：
+    /// 装 handler 之后新到的帧直接进新 handler（不会被二次缓冲），buffer 里
+    /// 只可能剩下装之前的帧 —— 消除「drain 与 install 之间新帧滞留」的窗口。
+    func installMessageHandler(_ handler: @escaping (CCPocketProtocol.ServerMessage) -> Void) {
+        orphanLock.lock()
+        onMessage = handler
+        let pending = orphanBuffer.drain()
+        orphanLock.unlock()
+        for msg in pending {
+            logger.info("[CCPocket] replaying orphan frame type=\(msg.type ?? "?")")
+            handler(msg)
+        }
+    }
+
+    /// [D1] 卸载回合 handler（回合正常收尾时调用；缓冲保留，
+    /// 供下一次 install 重放）。
+    func clearMessageHandler() {
+        onMessage = nil
+    }
+
+    // MARK: - [D3 2026-09-12] 显式停止语义
+
+    /// 用户显式停止标记。**只有用户主动点停止**（停止按钮 / Stop&New Chat，
+    /// 两条路都汇入 `AIChatViewModel.cancel()`）才置位；视图重挂载、app 进
+    /// 后台等生命周期类 Task 取消不置位 → `interruptIfExplicit` 抑制，
+    /// 不再误杀桥侧正在等待的 AskUserQuestion / 进行中的回合。
+    /// 真机实证（会话 E1AE859F）：21:33:08 显式停止 → interrupt → 桥
+    /// `pendingPermissions.clear()` 静默丢弃待答卡片（AbortError 收尸帧）。
+    private var explicitStopFlag = ExplicitStopFlag()
+    private let explicitStopLock = NSLock()
+
+    /// 标记「下一次流取消来自用户显式停止」。cancel() 在取消 Task **之前**调用
+    /// （时序要求：标记必须先于 onTermination 的 .cancelled）。
+    func markExplicitStop() {
+        explicitStopLock.lock()
+        explicitStopFlag.mark()
+        explicitStopLock.unlock()
+    }
+
+    /// 取走标记（一次性消费），供 interruptIfExplicit 判定。
+    private func consumeExplicitStop() -> Bool {
+        explicitStopLock.lock()
+        defer { explicitStopLock.unlock() }
+        return explicitStopFlag.consume()
+    }
+
+    /// 仅当本次流取消来自用户显式停止时才向桥发 interrupt。
+    /// 生命周期类取消（视图重挂载 / 后台 / 系统取消 Task）在此被抑制。
+    func interruptIfExplicit() async {
+        guard consumeExplicitStop() else {
+            logger.info("[CCPocket] interrupt suppressed (stream cancelled without explicit stop)")
+            return
+        }
+        await interrupt()
+    }
 
     /// Messages whose send failed (socket died). Replayed in order after a
     /// successful reconnect so no user message is lost.
@@ -636,11 +713,26 @@ final class CCPocketClient: @unchecked Sendable {
         }
         // Build flat [ServerMessage] from both the flat form (history with
         // messages[]) AND the old entries form (history_snapshot/delta).
+        // [stable history ids · Phase5] entries 形态扁平化时把 entry 层
+        // messageUuid 注回 wire 帧本体（缺失才注入，已有值不覆盖）：下游
+        // historyAgentMessagesWithWire / rawMessageId 只读 `m.messageUuid`。
+        // 旧桥的 compacted snapshot 只在 entry 层带 uuid，不注回 → resumed
+        // 全量行拿不到 `bm-` 稳定 id，与 live 落库行主键不一致 → 同一条
+        // 消息渲染两次（D12）。
         var flat: [CCPocketProtocol.ServerMessage] = []
         for msg in result {
             if let msgs = msg.messages { flat.append(contentsOf: msgs) }
             if let past = msg.pastMessages { flat.append(contentsOf: past) }
-            if let entries = msg.entries { flat.append(contentsOf: entries.compactMap { $0.message }) }
+            if let entries = msg.entries {
+                for entry in entries {
+                    guard var m = entry.message else { continue }
+                    if m.messageUuid == nil,
+                       let entryUuid = entry.messageUuid, !entryUuid.isEmpty {
+                        m.messageUuid = entryUuid
+                    }
+                    flat.append(m)
+                }
+            }
         }
         // [A-方案 09-05] 桥端 splitPastHistoryMessages 永远把非 tool_result 推
         // pastMessages（bridge/websocket.ts:1846-1892），historyMessages 永远空。
@@ -937,7 +1029,14 @@ final class CCPocketClient: @unchecked Sendable {
             return
         }
 
-        onMessage?(message)
+        // [D1 2026-09-12] Handler 未安装（回合间隙）时，关键帧进缓冲而非
+        // 被 nil no-op 静默吞掉。真机实证：permission_request 丢失导致
+        // AskUserQuestion 卡片从未建立（会话 E1AE859F，21:33:08）。
+        if let handler = onMessage {
+            handler(message)
+        } else if orphanBuffer.buffer(message) {
+            logger.warning("[CCPocket] buffered orphan frame type=\(message.type ?? "?") (handler not installed)")
+        }
     }
 
     /// Capture the Bridge session id and the Claude session id from incoming
@@ -1621,6 +1720,12 @@ final class CCPocketClient: @unchecked Sendable {
         // [Fix] Deliberately keep `onMessage`: a mid-turn reconnect must not
         // drop the stream handler (the turn's `result` would be lost and the
         // stream would hang). The provider clears it when the turn finishes.
+        // [D1] Deliberate teardown also drops buffered orphan frames — they
+        // belong to the old connection/session and must never be replayed
+        // into a new one.
+        orphanLock.lock()
+        orphanBuffer.removeAll()
+        orphanLock.unlock()
         started = false
         sessionId = nil
     }

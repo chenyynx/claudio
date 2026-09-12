@@ -184,6 +184,8 @@ vi.mock("./session.js", () => ({
         answer: vi.fn(),
         installToolSuggestion: vi.fn(async () => {}),
         interrupt: vi.fn(),
+        // [D3 2026-09-12] websocket.ts 的 busy→interrupt gate 调用点
+        hasPendingAskQuestion: vi.fn(() => false),
         getPendingPermission: vi.fn(() => undefined),
       };
       this.sessions.set(id, {
@@ -433,6 +435,7 @@ vi.mock("./session.js", () => ({
         answer: vi.fn(),
         installToolSuggestion: vi.fn(async () => {}),
         interrupt: vi.fn(),
+        hasPendingAskQuestion: vi.fn(() => false),
         getPendingPermission: vi.fn(() => undefined),
       };
       this.sessions.set(newId, {

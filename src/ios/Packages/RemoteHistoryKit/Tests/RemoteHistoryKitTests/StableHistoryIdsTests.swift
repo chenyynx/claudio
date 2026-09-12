@@ -462,3 +462,83 @@ final class StableHistoryIdsTests: XCTestCase {
         XCTAssertFalse(plan.deleteIds.contains("past-ns-disk-3"))
     }
 }
+
+// MARK: - [D14 2026-09-12] room ≤ 0 不得放弃整形
+
+extension StableHistoryIdsTests {
+
+    /// 构造"序号溃败"现场：stable 现有行 sortOrder=0（烂），段外行 sortOrder=1
+    /// → upperBound=1 → room=0。旧实现 `return [:]` 放弃整形 → 新行落位丢失
+    /// （初值把它们排到 dbMax 之后 = 快照头部历史渲染在最后）。修复后必须
+    /// 整体平移：段从 1 起等距铺开、段内递增、不塌到 0 以下。
+    func test_segmentRenumber_roomExhausted_shiftsUpInsteadOfGivingUp() {
+        // 段内：一个烂序号已有行（0）+ 一个新行（初值 9999=末尾）。
+        let dbRows = [
+            makeRaw(id: bm("a"), sortOrder: 0),
+            makeRaw(id: "live-local-1", role: .user, sortOrder: 1),
+        ]
+        let result = RemoteHistorySyncCore.stableSegmentRenumber(
+            orderedStableIds: [bm("a"), bm("b")],
+            newRowOrders: [bm("b"): 9999],
+            dbRows: dbRows
+        )
+        // 旧实现返回 [:]（放弃）→ 新行丢落位。修复后两行都被赋值。
+        XCTAssertEqual(result[bm("a")], 1, "烂序号 0 的已有行被平移到 1")
+        XCTAssertEqual(result[bm("b")], 1 + 1000, "新行紧跟其后，不落 dbMax 之后")
+        // 新行不得塌到 0 以下 / 0。
+        XCTAssertGreaterThanOrEqual(result[bm("b")]!, 2)
+    }
+
+    /// 平移后重复跑（第一次结果已落库）→ 输出不变 = 零写入，幂等成立。
+    func test_segmentRenumber_roomExhausted_isIdempotentAfterShift() {
+        let dbRows1 = [
+            makeRaw(id: bm("a"), sortOrder: 0),
+            makeRaw(id: "live-local-1", role: .user, sortOrder: 1),
+        ]
+        let first = RemoteHistorySyncCore.stableSegmentRenumber(
+            orderedStableIds: [bm("a"), bm("b")],
+            newRowOrders: [bm("b"): 9999],
+            dbRows: dbRows1
+        )
+        // 模拟第一次结果落库后的 DB。
+        let dbRows2 = [
+            makeRaw(id: bm("a"), sortOrder: first[bm("a")]!),
+            makeRaw(id: bm("b"), sortOrder: first[bm("b")]!),
+            makeRaw(id: "live-local-1", role: .user, sortOrder: 1),
+        ]
+        let second = RemoteHistorySyncCore.stableSegmentRenumber(
+            orderedStableIds: [bm("a"), bm("b")],
+            newRowOrders: [:],
+            dbRows: dbRows2
+        )
+        // 段内已是等距且无新行 → 零写入。
+        XCTAssertTrue(second.isEmpty, "幂等：第二次整形不应产生任何写入")
+    }
+
+    /// [D13 防御] 无锚点新行（快照头部补历史）的初值取"段外上界"
+    /// （dbMaxSortOrder）级联递增——永不塌 0：DB 全空时从 step 起步而非 0。
+    func test_sortOrders_noAnchor_startsFromStepWhenDbEmpty() {
+        let raws = [
+            makeRaw(id: bm("a"), sortOrder: 0),
+            makeRaw(id: bm("b"), sortOrder: 0),
+        ]
+        let plan = RemoteHistorySyncCore.planStableReplace(
+            stableRaws: raws,
+            dbRows: []
+        )
+        let orders = RemoteHistorySyncCore.stableSortOrders(plan: plan, dbRows: [])
+        XCTAssertEqual(orders[bm("a")], 1000)
+        XCTAssertEqual(orders[bm("b")], 2000)
+        // 段内有 live 行时：无锚点行取 dbMax 之后（段外上界）级联。
+        let dbWithLive = [
+            makeRaw(id: "live-local-1", role: .user, sortOrder: 5000),
+        ]
+        let plan2 = RemoteHistorySyncCore.planStableReplace(
+            stableRaws: raws,
+            dbRows: dbWithLive
+        )
+        let orders2 = RemoteHistorySyncCore.stableSortOrders(plan: plan2, dbRows: dbWithLive)
+        XCTAssertEqual(orders2[bm("a")], 6000, "无锚点 → 段外上界 5000 + step")
+        XCTAssertEqual(orders2[bm("b")], 7000, "级联递增，不塌 0")
+    }
+}

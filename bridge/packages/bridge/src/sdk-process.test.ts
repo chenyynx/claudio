@@ -2269,3 +2269,119 @@ describe("SdkProcess.setPermissionMode", () => {
     expect(proc.permissionMode).toBe("default");
   });
 });
+
+// [D2/D3 2026-09-12] interrupt 不得静默吞掉 pending 权限：广播
+// permission_aborted 再清理；发新消息不打断 pending 的 AskUserQuestion。
+describe("SdkProcess interrupt permission abort", () => {
+  function setupWithPendings(
+    entries: Array<{
+      toolUseId: string;
+      toolName: string;
+    }>,
+  ) {
+    const proc = new SdkProcess();
+    const internal = proc as any;
+    internal.queryInstance = {
+      interrupt: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const messages: ServerMessage[] = [];
+    proc.on("message", (msg) => messages.push(msg));
+
+    for (const { toolUseId, toolName } of entries) {
+      internal.pendingPermissions.set(toolUseId, {
+        resolve: vi.fn(),
+        toolName,
+        input: {},
+      });
+    }
+
+    return { proc, internal, messages };
+  }
+
+  it("broadcasts permission_aborted for every pending permission before clearing", () => {
+    const { proc, internal, messages } = setupWithPendings([
+      { toolUseId: "ask-1", toolName: "AskUserQuestion" },
+      { toolUseId: "bash-1", toolName: "Bash" },
+    ]);
+
+    proc.interrupt();
+
+    const aborted = messages.filter(
+      (m) => (m as any).type === "permission_aborted",
+    ) as Array<{
+      type: "permission_aborted";
+      toolUseId: string;
+      toolName: string;
+      reason: string;
+    }>;
+
+    expect(aborted).toHaveLength(2);
+    expect(aborted.map((m) => m.toolUseId).sort()).toEqual([
+      "ask-1",
+      "bash-1",
+    ]);
+    const ask = aborted.find((m) => m.toolUseId === "ask-1")!;
+    expect(ask.toolName).toBe("AskUserQuestion");
+    expect(ask.reason).toBe("interrupted");
+    expect(internal.pendingPermissions.size).toBe(0);
+    expect(internal.queryInstance.interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it("emits no aborted frames when no permission is pending", () => {
+    const { proc, messages } = setupWithPendings([]);
+
+    proc.interrupt();
+
+    expect(
+      messages.filter((m) => (m as any).type === "permission_aborted"),
+    ).toHaveLength(0);
+  });
+
+  it("keeps the pending resolver owned by the SDK abort listener (no double resolve)", () => {
+    const proc = new SdkProcess();
+    const internal = proc as any;
+    internal.queryInstance = {
+      interrupt: vi.fn().mockResolvedValue(undefined),
+    };
+    const resolve = vi.fn();
+    internal.pendingPermissions.set("ask-1", {
+      resolve,
+      toolName: "AskUserQuestion",
+      input: {},
+    });
+
+    proc.interrupt();
+
+    // abortPendingPermissions 只广播 + 清 map，不调 resolve——resolve 归
+    // waitForPermission 里注册的 signal abort listener。
+    expect(resolve).not.toHaveBeenCalled();
+    expect(internal.pendingPermissions.has("ask-1")).toBe(false);
+  });
+});
+
+describe("SdkProcess.hasPendingAskQuestion", () => {
+  it("returns true only while an AskUserQuestion permission is pending", () => {
+    const proc = new SdkProcess();
+    const internal = proc as any;
+
+    expect(proc.hasPendingAskQuestion()).toBe(false);
+
+    internal.pendingPermissions.set("bash-1", {
+      resolve: vi.fn(),
+      toolName: "Bash",
+      input: {},
+    });
+    expect(proc.hasPendingAskQuestion()).toBe(false);
+
+    internal.pendingPermissions.set("ask-1", {
+      resolve: vi.fn(),
+      toolName: "AskUserQuestion",
+      input: {},
+    });
+    expect(proc.hasPendingAskQuestion()).toBe(true);
+
+    internal.pendingPermissions.delete("ask-1");
+    expect(proc.hasPendingAskQuestion()).toBe(false);
+  });
+});
