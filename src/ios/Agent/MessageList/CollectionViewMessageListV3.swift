@@ -2144,6 +2144,28 @@ extension CollectionViewMessageListV3 {
                     if shouldScroll {
                         self.scheduleCoalescedScroll()
                     }
+
+                    // [AskCard 2026-09-13] 高度剧变（pending大卡↔skipped摘要）一次性发生：
+                    // reconfigure 复用同一 cell，但 SwiftUI 内容是异步重渲的——同步
+                    // self-size 测到的是 reconfigure 之前的 stale 旧高度，于是
+                    // invalidationContext 算出 delta≈0、不触发 pendingFooterReflow、
+                    // prepare() 不重排，cell N 下方所有 cell 的 frame.origin.y 停在旧值
+                    // （MessageListLayout.swift:582-585 注释精确描述的 artifact）。
+                    // 表现为两种症状：① 卡片高度不足 → 滚到底时底部被输入栏盖住；
+                    // ② 收场变矮后下方不跟进 → 上下大片留白。
+                    // 修法：延迟一帧（displayLink 已提交 SwiftUI 渲染）再 invalidateLayout，
+                    // 令 prepare() 用真实新高度全量重排；首帧 self-size 测到新高度后
+                    // 还会经 pendingFooterReflow 二次重排收口。shouldScroll 仅填充到达为
+                    // true，故强制滚到底只在「新卡进入视野」时生效，收场态(skip/expired)
+                    // 不拽用户（与 text 流 autoScrolling 语义一致）。
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                        guard let self else { return }
+                        self.viewController?.messageListLayout?.invalidateHeight(at: idx)
+                        self.viewController?.messageListLayout?.invalidateLayout()
+                        if shouldScroll {
+                            self.scrollToBottomNow()
+                        }
+                    }
                 }
                 .store(in: &subscriptions)
 
