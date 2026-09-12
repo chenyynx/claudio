@@ -219,6 +219,10 @@ enum AgentStreamEvent: @unchecked Sendable {
     /// approval dialog and answers with approve / approve_always / reject
     /// (official PermissionRequestMessage + ApprovalBar).
     case permissionRequest(id: String, toolName: String, input: [String: Any])
+    /// Bridge `type:"error"` 帧携带的 toolUseId（answer/approve 被拒：
+    /// "No matching pending tool action."）。**仅远端发射**——本地 provider
+    /// 无此帧。iOS 用它把"已提交但没送达"的问题卡回滚为不可答，避免假成功。
+    case remoteServerError(toolUseId: String)
     /// Bridge `status:"compacting"` — the remote Claude Code session is
     /// auto-compacting its context (Bridge relays the SDK's
     /// `compact_boundary` event). Emitted ONLY by RemoteAgentProvider;

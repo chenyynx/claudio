@@ -646,6 +646,12 @@ final class RemoteAgentProvider: AgentProvider {
                 logger.warning("[RemoteAgent] session gone — resetting for next turn")
                 sessionStarted = false
             }
+            // [batch1.5] 错误帧若带 toolUseId（answer/approve 被桥拒），先把它
+            // 发给 UI 再终止流——否则问题卡会停在"已回答"而模型其实没收到答案。
+            if let tuId = message.toolUseId, !tuId.isEmpty {
+                logger.warning("[RemoteAgent] server error for toolUseId=\(tuId.prefix(20)) — surfacing for card rollback")
+                continuation.yield(.remoteServerError(toolUseId: tuId))
+            }
             continuation.finish(throwing: CCPocketError.server(detailText))
             return true
 

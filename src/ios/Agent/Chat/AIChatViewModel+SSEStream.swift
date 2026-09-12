@@ -75,6 +75,7 @@ extension AIChatViewModel {
         case .toolResult(let id, let name, _, _): return "toolResult(\(name):\(id.prefix(12)))"
         case .remoteFileAttached(let toolUseId, _): return "remoteFileAttached(\(toolUseId.prefix(12)))"
         case .permissionRequest(_, let name, _): return "permissionRequest(\(name))"
+        case .remoteServerError(let id): return "remoteServerError(\(id.prefix(12)))"
         case .remoteCompactingStarted: return "remoteCompactingStarted"
         case .reasoningContent: return "reasoningContent"
         case .reasoningEcho: return "reasoningEcho"
@@ -337,6 +338,9 @@ extension AIChatViewModel {
         let stallTimeoutSeconds: TimeInterval = 120
         var _streamError: Error? = nil
         let iterBox = StreamIteratorBox(stream)
+        // [batch1.5] 新一轮开始：上一轮遗留的 pending 问题卡一律过期
+        // （异常收场/用户直接发新消息时，旧卡不能再被点）。
+        await MainActor.run { expirePendingAskCards() }
         // [StreamDiag] (#181) Diagnostics for the "No response from the server
         // for 120 seconds" stall. Three hypotheses are still live and this
         // instrumentation is what separates them:
@@ -470,6 +474,14 @@ extension AIChatViewModel {
                     statusMsg.isCompactLoading = true
                     messages.append(statusMsg)
                     scrollToBottomSignal.send()
+                }
+
+            case .remoteServerError(let toolUseId):
+                // [batch1.5] 桥拒了这次 answer/approve：把该 toolUseId 仍 pending
+                // 的问题卡回滚为 expired（灰态、不可再点），杜绝"显示已回答但
+                // 模型没收到"。普通审批弹窗不受影响（它不用 askStatus）。
+                await MainActor.run {
+                    rollbackAskCardOnReject(toolUseId: toolUseId)
                 }
 
             case .permissionRequest(let id, let toolName, let input):
@@ -1047,12 +1059,16 @@ extension AIChatViewModel {
                         if case .streaming = blk.toolStatus { return true }
                         return false
                     }
+                    // [batch1.5] 精确 id 命中优先（答案送达后桥会发本工具的
+                    // tool_result，配对到问题卡是正确行为）；但**兜底三级**必须
+                    // 排除 questionCard——未配对的其它工具 result 不该写进问题卡。
+                    let notAsk: (AssistantBlock) -> Bool = { $0.kind != .questionCard }
                     let blockIdx: Int? =
                         blocks.firstIndex(where: { $0.toolUseId == id && !isPending($0) })
                         ?? blocks.firstIndex(where: { $0.toolUseId == id })
-                        ?? blocks.firstIndex(where: { $0.toolUseId == nil && $0.toolStatus != nil })
-                        ?? blocks.firstIndex(where: isPending)
-                        ?? blocks.indices.last(where: { blocks[$0].toolStatus != nil })
+                        ?? blocks.firstIndex(where: { $0.toolUseId == nil && $0.toolStatus != nil && notAsk($0) })
+                        ?? blocks.firstIndex(where: { isPending($0) && notAsk($0) })
+                        ?? blocks.indices.last(where: { blocks[$0].toolStatus != nil && notAsk(blocks[$0]) })
                     guard let blockIdx else { return }
                     let block = messages[msgIdx].blocks[blockIdx]
                     if block.toolUseId == nil {
@@ -1193,7 +1209,7 @@ extension AIChatViewModel {
                 // 问题卡置 expired（置灰定格，不可再答；跳过的走 skipped）。
                 // gate：只动 questionCard 块，普通工具块零影响。
                 await MainActor.run {
-                    expirePendingAskCards(msgIdx: msgIdx)
+                    expirePendingAskCards()
                 }
             }
         }
@@ -1202,6 +1218,8 @@ extension AIChatViewModel {
         // the caller never receives a half-parsed StreamResult.
         try Task.checkCancellation()
         } catch is CancellationError {
+            // [batch1.5] 取消/中断收场：pending 问题卡过期（否则永久可点）。
+            await MainActor.run { expirePendingAskCards() }
             // Flush any throttled text to the block before propagating cancellation,
             // so handleUserCancelledCleanup sees the full streamed content.
             if let blockIdx = currentTextBlockIdx, !result.assistantText.isEmpty {
@@ -1221,6 +1239,8 @@ extension AIChatViewModel {
         } catch {
             result.isStreamInterrupted = true
             _streamError = error
+            // [batch1.5] 流以错误终止：pending 问题卡过期。
+            await MainActor.run { expirePendingAskCards() }
         }
         if let err = _streamError { throw err }
         // Stream ended cleanly. First drain any un-extracted tail past
@@ -1591,34 +1611,59 @@ extension AIChatViewModel {
 
 extension AIChatViewModel {
 
-    /// permissionRequest(toolName == AskUserQuestion) 到达：把当前回合里同
-    /// toolUseId 的工具块升级成 questionCard（单卡不重复）；块不存在（历史
-    /// 回放竞态）则追加。载荷解码失败（帧形状异常）降级为普通 tool 卡不弹窗。
+    /// permissionRequest(toolName == AskUserQuestion) 到达：把同 toolUseId 的工具块
+    /// 升级成 questionCard（单卡不重复）；找不到则追加。解码失败（形状不合契约）
+    /// 直接放弃 → 保持普通工具卡形态（不渲染答不了的卡）。
+    /// [batch1.5] 两处加固：
+    ///  - 跨消息查找（回合可能跨多个 assistant 行），并按 dedupeToolStartId 的
+    ///    "id-2"/"id-3" 改名形态一并匹配，避免追加出第二张卡；
+    ///  - 已存在同 toolUseId 的 questionCard 时只刷新载荷，绝不新增（重连重发幂等）。
     @MainActor
     func attachAskCard(id: String, input: [String: Any]) {
         guard let payload = AskWirePayload.decode(toolUseId: id, input: input) else { return }
-        guard let msg = messages.last, msg.role == .assistant else { return }
-        if let idx = msg.blocks.lastIndex(where: { $0.toolUseId == id }) {
-            let blk = msg.blocks[idx]
-            blk.kind = .questionCard
-            blk.askPayload = payload
-            blk.askStatus = .pending
-            blk.toolStatus = .running
-        } else {
-            let blk = AssistantBlock(kind: .questionCard, content: "", toolStatus: .running, toolUseId: id)
-            blk.askPayload = payload
-            blk.askStatus = .pending
-            msg.blocks.append(blk)
+        // 该 id 是否已有问题卡（含改名形态）——有则就地刷新，不新增。
+        func existingCard(_ m: ChatMessage) -> Int? {
+            m.blocks.lastIndex(where: {
+                $0.kind == .questionCard && $0.askPayload?.toolUseId == id
+            })
         }
+        // 目标工具块：同 id 或 dedupe 改名后的 "id-" 前缀。
+        func targetToolBlock(_ m: ChatMessage) -> Int? {
+            m.blocks.lastIndex(where: {
+                $0.toolUseId == id || ($0.toolUseId?.hasPrefix(id + "-") ?? false)
+            })
+        }
+        for m in messages.reversed() where m.role == .assistant {
+            if let bi = existingCard(m) {
+                let blk = m.blocks[bi]
+                blk.askPayload = payload
+                if blk.askStatus.isPending { blk.askStatus = .pending }
+                return
+            }
+            if let bi = targetToolBlock(m) {
+                let blk = m.blocks[bi]
+                blk.kind = .questionCard
+                blk.askPayload = payload
+                blk.askStatus = .pending
+                blk.toolStatus = .running
+                return
+            }
+        }
+        guard let msg = messages.last, msg.role == .assistant else { return }
+        let blk = AssistantBlock(kind: .questionCard, content: "", toolStatus: .running, toolUseId: id)
+        blk.askPayload = payload
+        blk.askStatus = .pending
+        msg.blocks.append(blk)
     }
 
-    /// 回合结束：把仍 pending 的问题卡置 expired（灰态定格）。
-    /// 只扫 questionCard 块——普通工具块的 cancelled 收尾路径零变化。
+    /// 把**全会话**仍 pending 的问题卡置 expired（灰态定格，不可再答）。
+    /// [batch1.5] 不再只扫单条消息：回合可跨多 assistant 行，且异常收场路径
+    /// （抛错 / 取消 / 断线）也要清，否则卡片变成永久死按钮。
+    /// 只动 questionCard 块——普通工具块的 cancelled 收尾路径零变化。
     @MainActor
-    func expirePendingAskCards(msgIdx: Int) {
-        guard msgIdx < messages.count else { return }
-        for blk in messages[msgIdx].blocks where blk.kind == .questionCard {
-            if blk.askStatus.isPending {
+    func expirePendingAskCards() {
+        for m in messages {
+            for blk in m.blocks where blk.kind == .questionCard && blk.askStatus.isPending {
                 blk.askStatus = .expired
             }
         }
@@ -1640,6 +1685,19 @@ extension AIChatViewModel {
                    let bi = self.messages[i].blocks.firstIndex(where: { $0.id == blockId }) {
                     self.messages[i].blocks[bi].askStatus = .answered(answers: answers)
                 }
+            }
+        }
+    }
+
+    /// [batch1.5] 桥回 error（answer 未被接受）→ 该卡回滚为 expired。
+    /// 只动 pending 的卡：已定格 answered 的说明答案当时已被接受，不回头改。
+    @MainActor
+    func rollbackAskCardOnReject(toolUseId: String) {
+        for m in messages {
+            for blk in m.blocks where blk.kind == .questionCard
+                && blk.askPayload?.toolUseId == toolUseId
+                && blk.askStatus.isPending {
+                blk.askStatus = .expired
             }
         }
     }
