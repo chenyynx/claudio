@@ -450,6 +450,11 @@
 		C0DE20260911A1B2C3D4E5AA /* ReplayRowId.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829304153 /* ReplayRowId.swift */; };
 		C0DE20260911A1B2C3D4E5AB /* RemoteHistoryIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829304154 /* RemoteHistoryIdentity.swift */; };
 		C0DE20260911A1B2C3D4E5AC /* RemoteSyncSegmentRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829304155 /* RemoteSyncSegmentRegistry.swift */; };
+		F1A009130101000000000001 /* RemoteTurnModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A009130101000000000011 /* RemoteTurnModel.swift */; };
+		F1A009130101000000000002 /* RemoteSortOrderAllocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A009130101000000000012 /* RemoteSortOrderAllocator.swift */; };
+		F1A009130101000000000003 /* RemoteTurnReconciler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A009130101000000000013 /* RemoteTurnReconciler.swift */; };
+		F1A009130101000000000004 /* RemoteHistoryRepair.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A009130101000000000014 /* RemoteHistoryRepair.swift */; };
+		F1A009130101000000000005 /* RemoteHistoryDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A009130101000000000015 /* RemoteHistoryDiagnostics.swift */; };
 		E5VMA0005 /* AIChatViewModel+MemoryTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5VMA0015 /* AIChatViewModel+MemoryTools.swift */; };
 		E5VMA0006 /* AIChatViewModel+ProviderFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5VMA0016 /* AIChatViewModel+ProviderFactory.swift */; };
 		E5VMA0007 /* AIChatViewModel+ToolDefinitions.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5VMA0017 /* AIChatViewModel+ToolDefinitions.swift */; };
@@ -1173,6 +1178,11 @@
 		A1B2C3D4E5F6071829304153 /* ReplayRowId.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ReplayRowId.swift"; sourceTree = "<group>"; };
 		A1B2C3D4E5F6071829304154 /* RemoteHistoryIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteHistoryIdentity.swift"; sourceTree = "<group>"; };
 		A1B2C3D4E5F6071829304155 /* RemoteSyncSegmentRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteSyncSegmentRegistry.swift"; sourceTree = "<group>"; };
+		F1A009130101000000000011 /* RemoteTurnModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteTurnModel.swift"; sourceTree = "<group>"; };
+		F1A009130101000000000012 /* RemoteSortOrderAllocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteSortOrderAllocator.swift"; sourceTree = "<group>"; };
+		F1A009130101000000000013 /* RemoteTurnReconciler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteTurnReconciler.swift"; sourceTree = "<group>"; };
+		F1A009130101000000000014 /* RemoteHistoryRepair.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteHistoryRepair.swift"; sourceTree = "<group>"; };
+		F1A009130101000000000015 /* RemoteHistoryDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteHistoryDiagnostics.swift"; sourceTree = "<group>"; };
 		E5VMA0015 /* AIChatViewModel+MemoryTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AIChatViewModel+MemoryTools.swift"; sourceTree = "<group>"; };
 		E5VMA0016 /* AIChatViewModel+ProviderFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AIChatViewModel+ProviderFactory.swift"; sourceTree = "<group>"; };
 		E5VMA0017 /* AIChatViewModel+ToolDefinitions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AIChatViewModel+ToolDefinitions.swift"; sourceTree = "<group>"; };
@@ -2137,6 +2147,11 @@
 				A1B2C3D4E5F6071829304153 /* ReplayRowId.swift */,
 				A1B2C3D4E5F6071829304154 /* RemoteHistoryIdentity.swift */,
 				A1B2C3D4E5F6071829304155 /* RemoteSyncSegmentRegistry.swift */,
+				F1A009130101000000000011 /* RemoteTurnModel.swift */,
+				F1A009130101000000000012 /* RemoteSortOrderAllocator.swift */,
+				F1A009130101000000000013 /* RemoteTurnReconciler.swift */,
+				F1A009130101000000000014 /* RemoteHistoryRepair.swift */,
+				F1A009130101000000000015 /* RemoteHistoryDiagnostics.swift */,
 				E5VMA0015 /* AIChatViewModel+MemoryTools.swift */,
 				E5VMA0016 /* AIChatViewModel+ProviderFactory.swift */,
 				E5VMA0017 /* AIChatViewModel+ToolDefinitions.swift */,
@@ -2891,6 +2906,11 @@
 				C0DE20260911A1B2C3D4E5AA /* ReplayRowId.swift in Sources */,
 				C0DE20260911A1B2C3D4E5AB /* RemoteHistoryIdentity.swift in Sources */,
 				C0DE20260911A1B2C3D4E5AC /* RemoteSyncSegmentRegistry.swift in Sources */,
+				F1A009130101000000000001 /* RemoteTurnModel.swift in Sources */,
+				F1A009130101000000000002 /* RemoteSortOrderAllocator.swift in Sources */,
+				F1A009130101000000000003 /* RemoteTurnReconciler.swift in Sources */,
+				F1A009130101000000000004 /* RemoteHistoryRepair.swift in Sources */,
+				F1A009130101000000000005 /* RemoteHistoryDiagnostics.swift in Sources */,
 				E5VMA0005 /* AIChatViewModel+MemoryTools.swift in Sources */,
 				E5VMA0006 /* AIChatViewModel+ProviderFactory.swift in Sources */,
 				E5VMA0007 /* AIChatViewModel+ToolDefinitions.swift in Sources */,
@@ -3650,7 +3670,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/../../deps/libs";
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../deps/libs-sim";
-				MARKETING_VERSION = 1.14.32;
+				MARKETING_VERSION = 1.14.33;
 				OTHER_LDFLAGS = (
 					"-lish_emu",
 					"-lish",
@@ -3705,7 +3725,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/../../deps/libs";
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../deps/libs-sim";
-				MARKETING_VERSION = 1.14.32;
+				MARKETING_VERSION = 1.14.33;
 				OTHER_LDFLAGS = (
 					"-lish_emu",
 					"-lish",
@@ -3738,7 +3758,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.32;
+				MARKETING_VERSION = 1.14.33;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.ShareExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3765,7 +3785,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.32;
+				MARKETING_VERSION = 1.14.33;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.ShareExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3792,7 +3812,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.32;
+				MARKETING_VERSION = 1.14.33;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.FileProvider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3819,7 +3839,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.32;
+				MARKETING_VERSION = 1.14.33;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.FileProvider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3846,7 +3866,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.32;
+				MARKETING_VERSION = 1.14.33;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.AgentWidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -3873,7 +3893,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.14.32;
+				MARKETING_VERSION = 1.14.33;
 				PRODUCT_BUNDLE_IDENTIFIER = com.claudio.app.AgentWidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;

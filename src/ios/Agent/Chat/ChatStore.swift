@@ -427,6 +427,11 @@ actor ChatStore {
         // 不进 iCloud 同步载荷（mergeRemoteMessage 显式列清单里没有它），
         // 本地 agent 行恒 NULL。幂等加列。
         addColumnIfMissing(table: "messages", column: "client_message_id", definition: "TEXT")
+        // [Fix v1.14.33] 远端回合键（= 该回合 user 输入的 clientMessageId）。
+        // device-local 语义（与 client_message_id 一致）：不进 iCloud 同步载荷，
+        // 本地 agent 行恒 NULL。nil = 本列新增前的老数据（由 RemoteHistoryRepair
+        // 的内容覆盖匹配兜底，不阻塞自愈）。幂等加列。
+        addColumnIfMissing(table: "messages", column: "remote_turn_key", definition: "TEXT")
 
         // One-shot cleanup: drop legacy v1 dirty rows that have a v2
         // counterpart. Under the V2 engine these have no consumer (the
@@ -2491,8 +2496,8 @@ actor ChatStore {
         logger.info("[Store] appendMessages enter count=\(messages.count) dbOpen=\(dbOK) sid=\(firstSid)")
 
         let sql = """
-            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id, client_message_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id, client_message_id, remote_turn_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
         exec("BEGIN TRANSACTION")
@@ -2544,6 +2549,8 @@ actor ChatStore {
                 bindOptionalText(stmt, index: 16, value: message.providerInstanceId)
                 // [Fix v1.14.30] 协议身份列（仅远端回合的 user 行非 nil）
                 bindOptionalText(stmt, index: 17, value: message.clientMessageId)
+                // [Fix v1.14.33] 远端回合键（仅远端行非 nil）
+                bindOptionalText(stmt, index: 18, value: message.remoteTurnKey)
                 let stepRC = sqlite3_step(stmt)
                 if stepRC != SQLITE_DONE {
                     let errMsg = String(cString: sqlite3_errmsg(db))
@@ -2671,8 +2678,8 @@ actor ChatStore {
 
         // 1. 插入新行（INSERT OR IGNORE：bm- id 是稳定身份，重复到达 = 幂等跳过）。
         let insertSQL = """
-            INSERT OR IGNORE INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id, client_message_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id, client_message_id, remote_turn_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         for message in inserts {
             let partsJSON: String
@@ -2767,6 +2774,132 @@ actor ChatStore {
         return true
     }
 
+    /// [Fix v1.14.33] 回合对账落库：在单事务内执行 `RemoteTurnReconcilePlan`
+    /// 的插入 + 删除 + 排序号重写。
+    ///
+    /// 与 `applyStableHistoryReplace` 的区别：后者只改 stable 段、不碰 live 行
+    /// （= 重复渲染的病根）；本方法把**全部存活行**的排序号统一重写为稠密
+    /// 等距序号（`RemoteSortOrderAllocator`），消除两套算术撞号。
+    @discardableResult
+    func applyTurnReconcile(
+        sessionId: String,
+        plan: RemoteTurnReconcilePlan,
+        sortOrders: [String: Int]
+    ) -> Bool {
+        invalidateSessionListCache()
+        let dbOK = (db != nil)
+        logger.info("[Store] applyTurnReconcile enter sid=\(sessionId.prefix(8)) inserts=\(plan.inserts.count) deletes=\(plan.deleteIds.count) orderWrites=\(sortOrders.count) dbOpen=\(dbOK)")
+
+        exec("BEGIN TRANSACTION")
+        var writeFailed = false
+
+        // 1. 删除（吸收的 live 行 + 冗余回放行 + 旧形态副本）
+        if !plan.deleteIds.isEmpty {
+            let deleteSQL = "DELETE FROM messages WHERE session_id = ? AND id = ?"
+            for rowId in plan.deleteIds {
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, deleteSQL, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, (sessionId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(stmt, 2, (rowId as NSString).utf8String, -1, nil)
+                    if sqlite3_step(stmt) != SQLITE_DONE {
+                        logger.error("[Store] turnReconcile DELETE failed sid=\(sessionId.prefix(8)) mid=\(rowId.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                        writeFailed = true
+                    } else {
+                        markDirty(recordType: "Message", recordId: rowId, operation: "delete")
+                    }
+                } else {
+                    writeFailed = true
+                }
+                sqlite3_finalize(stmt)
+            }
+        }
+
+        // 2. 插入新行
+        if !writeFailed && !plan.inserts.isEmpty {
+            let insertSQL = """
+                INSERT OR IGNORE INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id, client_message_id, remote_turn_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            for message in plan.inserts {
+                let partsJSON: String
+                do {
+                    let data = try JSONEncoder().encode(message.parts)
+                    partsJSON = String(data: data, encoding: .utf8) ?? "[]"
+                } catch {
+                    logger.error("[Store] turnReconcile INSERT encode failed mid=\(message.id.prefix(8)) err=\(error)")
+                    writeFailed = true
+                    continue
+                }
+                let partFlags = Self.partFlags(for: message.parts)
+                let usageJSON: String? = message.tokenUsage.flatMap {
+                    (try? JSONEncoder().encode($0)).flatMap { String(data: $0, encoding: .utf8) }
+                }
+                let targetOrder = sortOrders[message.id] ?? 0
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, insertSQL, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, (message.id as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(stmt, 2, (message.sessionId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(stmt, 3, (message.role.rawValue as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(stmt, 4, (partsJSON as NSString).utf8String, -1, nil)
+                    sqlite3_bind_double(stmt, 5, message.createdAt.timeIntervalSince1970)
+                    bindOptionalText(stmt, index: 6, value: usageJSON)
+                    sqlite3_bind_int64(stmt, 7, Int64(targetOrder))
+                    bindOptionalText(stmt, index: 8, value: message.reasoningContent)
+                    sqlite3_bind_int64(stmt, 9, Int64(message.streamInterruptCount))
+                    sqlite3_bind_double(stmt, 10, message.createdAt.timeIntervalSince1970)
+                    bindOptionalText(stmt, index: 11, value: message.errorInfo)
+                    sqlite3_bind_int64(stmt, 12, Int64(partFlags))
+                    bindOptionalText(stmt, index: 13, value: message.modelId)
+                    bindOptionalText(stmt, index: 14, value: message.modelDisplayName)
+                    bindOptionalText(stmt, index: 15, value: message.providerType)
+                    bindOptionalText(stmt, index: 16, value: message.providerInstanceId)
+                    bindOptionalText(stmt, index: 17, value: message.clientMessageId)
+                    bindOptionalText(stmt, index: 18, value: message.remoteTurnKey)
+                    if sqlite3_step(stmt) != SQLITE_DONE {
+                        logger.error("[Store] turnReconcile INSERT failed mid=\(message.id.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                        writeFailed = true
+                    } else if sqlite3_changes(db) > 0 {
+                        markDirty(recordType: "Message", recordId: message.id)
+                    }
+                } else {
+                    writeFailed = true
+                }
+                sqlite3_finalize(stmt)
+            }
+        }
+
+        // 3. 排序号重写（全部存活行——稠密等距，消除撞号）
+        if !writeFailed && !sortOrders.isEmpty {
+            let updateSQL = "UPDATE messages SET sort_order = ? WHERE session_id = ? AND id = ?"
+            for (rowId, order) in sortOrders {
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_int64(stmt, 1, Int64(order))
+                    sqlite3_bind_text(stmt, 2, (sessionId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(stmt, 3, (rowId as NSString).utf8String, -1, nil)
+                    if sqlite3_step(stmt) != SQLITE_DONE {
+                        logger.error("[Store] turnReconcile ORDER failed mid=\(rowId.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
+                        writeFailed = true
+                    } else if sqlite3_changes(db) > 0 {
+                        markDirty(recordType: "Message", recordId: rowId)
+                    }
+                } else {
+                    writeFailed = true
+                }
+                sqlite3_finalize(stmt)
+            }
+        }
+
+        if writeFailed {
+            exec("ROLLBACK")
+            logger.error("[Store] applyTurnReconcile ROLLBACK sid=\(sessionId.prefix(8)) — write failed, DB untouched")
+            return false
+        }
+        exec("COMMIT")
+        logger.info("[Store] applyTurnReconcile COMMIT sid=\(sessionId.prefix(8))")
+        return true
+    }
+
     @discardableResult
     func replaceRemoteHistory(sessionId: String, plan: RemoteHistoryReplacePlan, finalOrder: [RawMessage], renumber: Bool) -> Bool {
         invalidateSessionListCache()
@@ -2802,8 +2935,8 @@ actor ChatStore {
         // 2. Insert missing rows with explicit sort_order (appendMessages uses
         //    trailing nextSortOrder — unusable for mid-sequence inserts).
         let insertSQL = """
-            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id, client_message_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, session_id, role, parts_json, created_at, token_usage, sort_order, reasoning_content, stream_interrupt_count, updated_at, error_info, part_flags, model_id, model_display_name, provider_type, provider_instance_id, client_message_id, remote_turn_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         for message in plan.inserts {
             let partsJSON: String
@@ -2852,6 +2985,7 @@ actor ChatStore {
                 // 本地承载行（如别的设备发的），它的 clientMessageId 会成为
                 // 后续校准的对账依据。
                 bindOptionalText(stmt, index: 17, value: message.clientMessageId)
+                bindOptionalText(stmt, index: 18, value: message.remoteTurnKey)
                 if sqlite3_step(stmt) != SQLITE_DONE {
                     logger.error("[Store] replace INSERT failed sid=\(sessionId.prefix(8)) mid=\(message.id.prefix(8)) err=\(String(cString: sqlite3_errmsg(db)))")
                     writeFailed = true
@@ -3237,7 +3371,7 @@ actor ChatStore {
     func loadMessages(sessionId: String, orderDiagnostics: Bool = true) -> [RawMessage] {
         let totalStart = CFAbsoluteTimeGetCurrent()
         let sql = """
-            SELECT id, session_id, role, parts_json, created_at, token_usage, reasoning_content, stream_interrupt_count, sort_order, error_info, model_id, model_display_name, provider_type, provider_instance_id, client_message_id
+            SELECT id, session_id, role, parts_json, created_at, token_usage, reasoning_content, stream_interrupt_count, sort_order, error_info, model_id, model_display_name, provider_type, provider_instance_id, client_message_id, remote_turn_key
             FROM messages WHERE session_id = ? ORDER BY sort_order ASC, created_at ASC, id ASC
         """
         var stmt: OpaquePointer?
@@ -3297,6 +3431,8 @@ actor ChatStore {
                 // [Fix v1.14.30] 协议身份列（老库无此列时 addColumnIfMissing
                 // 已补空列 → NULL → clientMessageId 保持 nil，走文本兜底）。
                 msg.clientMessageId = sqlite3_column_text(stmt, 14).map { String(cString: $0) }
+                // [Fix v1.14.33] 回合键列（同上：老库 addColumnIfMissing 已补 NULL）。
+                msg.remoteTurnKey = sqlite3_column_text(stmt, 15).map { String(cString: $0) }
                 messages.append(msg)
             }
         } else {

@@ -82,6 +82,17 @@ final class RemoteAgentSessionState: ObservableObject {
     /// gate：本地 agent 回合恒 nil（隔离铁律）。
     var pendingClientMessageId: String?
 
+    /// [Fix v1.14.33] 本轮远端**回合键**（= clientMessageId）。
+    ///
+    /// 与 `pendingClientMessageId` 的分工：后者被 provider 消费后即清空，
+    /// 但 assistant 落库发生在流式完成之后（provider 已消费）—— `buildRawMessage`
+    /// 需要一个仍然存活的引用来写入 `RawMessage.remoteTurnKey`。本字段在
+    /// `runAgentLoop` 开始时设置，下一轮覆盖（或本地回合 gate 后恒 nil）。
+    ///
+    /// 校准期 `RemoteTurnReconciler` 按此字段判定"哪条 live 聚合行是哪个
+    /// 回合的临时占位"→ 回合被服务端承载且已终结 → 吸收删除（重复渲染根治）。
+    var currentRemoteTurnKey: String?
+
     // MARK: - 远端压缩指示
 
     /// 远端 compacting 进行中（SSEStream .remoteCompactingStarted 写）。

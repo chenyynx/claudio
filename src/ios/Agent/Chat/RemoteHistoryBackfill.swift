@@ -45,6 +45,20 @@ enum RemoteHistorySyncConfig {
 
     /// 桥能力名字符串（与 bridge `protocol-version.ts` 的常量一致）。
     static let stableHistoryIdsCapability = "stable_history_ids"
+
+    /// [Fix v1.14.33] 回合对账总闸（重复渲染 + 乱序根治）。
+    /// 开 = 走 `RemoteTurnReconciler` + `RemoteSortOrderAllocator` +
+    /// `RemoteHistoryRepair` 新路径（回合级吸收 + 稠密等距排序号 + 自愈）。
+    /// 关 = 回退到 `planStableReplace` + `stableSegmentRenumber` 旧路径
+    /// （v1.14.32 行为，保留作回滚通道）。
+    static var turnReconcile: Bool {
+        if let override = UserDefaults.standard.object(forKey: turnReconcileDefaultsKey) as? Bool {
+            return override
+        }
+        return true
+    }
+
+    static let turnReconcileDefaultsKey = "claudio.remoteHistory.turnReconcile"
 }
 
 /// 校准结果（供 UI 层决策）。
@@ -194,7 +208,7 @@ final class RemoteHistoryBackfill {
                 if deltaUsable, !isSnapshot, !emptyDelta {
                     let dbRowsProbe = await ChatStore.shared.loadMessages(sessionId: sessionId)
                     let hasBaseline = dbRowsProbe.contains {
-                        $0.role != .user && $0.id.hasPrefix("bridge-")
+                        $0.role != .user && ReplayRowId.isReplayRow($0.id)
                     }
                     if !hasBaseline {
                         logger.warning("[HistorySync] session=\(sessionId.prefix(8)) delta hit but DB has no bridge baseline — fallback full")
@@ -672,6 +686,91 @@ final class RemoteHistoryBackfill {
                 }
             }
         }
+        // [Fix v1.14.33] 回合对账路径（重复渲染 + 乱序根治）。
+        // 开 = 走 RemoteTurnReconciler + RemoteSortOrderAllocator + RemoteHistoryRepair；
+        // 关 = 回退到 planStableReplace + stableSegmentRenumber（v1.14.32 行为）。
+        let lastWireType = wireMessages.last?.type
+        let lastTurnFinished = !RemoteHistorySyncCore.isTurnInProgress(lastWireType: lastWireType)
+
+        if RemoteHistorySyncConfig.turnReconcile {
+            // ---- 新路径 ----
+            // 1) 老数据自愈：无 turnKey 的 live 聚合行，若内容被服务端完全覆盖
+            //    → 冗余副本，加入删除集（幂等：删完不再命中）。
+            let repairIds = RemoteHistoryRepair.redundantLegacyLiveIds(
+                dbRows: dbRows, serverRaws: stableRaws, lastTurnFinished: lastTurnFinished)
+            var mergedLegacy = supersededLegacyIds
+            for id in repairIds { mergedLegacy.insert(id) }
+
+            // 2) 回合对账计划
+            let turnPlan = RemoteTurnReconciler.plan(
+                serverRaws: stableRaws, dbRows: dbRows,
+                lastTurnFinished: lastTurnFinished,
+                supersededLegacyIds: mergedLegacy)
+
+            // 3) 稠密等距排序号（单一分配器，消除撞号）
+            let currentOrders = Dictionary(
+                dbRows.map { ($0.id, $0.sortOrder) },
+                uniquingKeysWith: { a, _ in a })
+            let sortOrders = RemoteSortOrderAllocator.allocate(
+                orderedIds: turnPlan.orderedIds, currentOrders: currentOrders)
+
+            // 4) 体检（落库前）
+            let preReport = RemoteHistoryDiagnostics.inspect(
+                sessionId: sessionId, rows: dbRows)
+            RemoteHistoryDiagnostics.log(preReport, stage: "pre-turnReconcile") {
+                logger.info($0)
+            }
+
+            // 5) 落库（单事务：删除 + 插入 + 排序号重写）
+            let applied = await ChatStore.shared.applyTurnReconcile(
+                sessionId: sessionId, plan: turnPlan, sortOrders: sortOrders)
+            if !applied {
+                RemoteHistoryCursorStore.clear(sessionId: sessionId)
+                logger.error("[HistorySync] session=\(sessionId.prefix(8)) turnReconcile apply FAILED — cursor cleared")
+                return RemoteHistorySyncOutcome(
+                    changed: false, lastWireType: lastWireType,
+                    insertedCount: 0, deletedCount: 0, historyCount: stableRaws.count)
+            }
+
+            // 6) 体检（落库后）
+            let postRows = await ChatStore.shared.loadMessages(sessionId: sessionId)
+            let postReport = RemoteHistoryDiagnostics.inspect(
+                sessionId: sessionId, rows: postRows)
+            RemoteHistoryDiagnostics.log(postReport, stage: "post-turnReconcile") {
+                logger.info($0)
+            }
+            if !postReport.isHealthy {
+                logger.error("[HistorySync] session=\(sessionId.prefix(8)) post-turnReconcile ANOMALY persists: dup=\(postReport.duplicateOrderCount) nonInc=\(postReport.nonIncreasingCount)")
+            }
+
+            // 7) 游标 + 封版（与旧路径语义一致）
+            if let currentBridgeId = bridgeId {
+                let lastSeq: Int?
+                if isDelta, let toSeq = deltaToSeq, toSeq >= 0 {
+                    lastSeq = toSeq
+                } else {
+                    lastSeq = wireMessages.compactMap { $0.historySeq }.max()
+                }
+                if let lastSeq {
+                    RemoteHistoryCursorStore.write(
+                        RemoteHistoryCursor(bridgeId: currentBridgeId, lastSeq: lastSeq),
+                        sessionId: sessionId)
+                }
+            }
+            if !isDelta { markOrderSealed(sessionId: sessionId, bridgeId: bridgeId) }
+
+            let changed = !turnPlan.inserts.isEmpty || !turnPlan.deleteIds.isEmpty
+            let elapsedMs = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
+            logger.info("[HistorySync] session=\(sessionId.prefix(8)) turnReconcile done in \(String(format: "%.0f", elapsedMs))ms inserts=\(turnPlan.inserts.count) deletes=\(turnPlan.deleteIds.count) absorbed=\(turnPlan.absorbedLiveIds.count) repaired=\(repairIds.count) ordered=\(turnPlan.orderedIds.count)")
+
+            return RemoteHistorySyncOutcome(
+                changed: changed, lastWireType: lastWireType,
+                insertedCount: turnPlan.inserts.count,
+                deletedCount: turnPlan.deleteIds.count,
+                historyCount: stableRaws.count)
+        }
+
+        // ---- 旧路径（v1.14.32，回滚通道）----
         let plan = RemoteHistorySyncCore.planStableReplace(
             stableRaws: stableRaws,
             dbRows: dbRows,

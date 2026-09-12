@@ -248,6 +248,20 @@ struct RawMessage: Identifiable, Codable, Hashable {
     /// 行恒 nil。
     var clientMessageId: String? = nil
 
+    /// [Fix v1.14.33] 本行归属的**远端回合键**（= 该回合 user 输入的
+    /// clientMessageId）。
+    ///
+    /// 重复渲染的病根：live 聚合行（1 行 N parts）与服务端回放行（N 行各
+    /// 1 part）粒度不同，任何逐行 uuid/正文对账都配不上。回合键把"这条
+    /// live 行是哪一轮对话的临时占位"变成**查表**——回合被服务端承载且已
+    /// 终结 ⇒ live 行是冗余副本 ⇒ 吸收删除
+    /// （见 `RemoteTurnModel.shouldAbsorb` / `RemoteTurnReconciler`）。
+    ///
+    /// device-local 语义（与 clientMessageId 一致）：本地 agent 行恒 nil，
+    /// 不进 iCloud 同步载荷。nil = 本列新增前的老数据 —— 不阻塞自愈：
+    /// `RemoteHistoryRepair` 用内容覆盖匹配兜底。
+    var remoteTurnKey: String? = nil
+
     /// [T-token-attribution-snapshot] The model that ACTUALLY produced this
     /// message, snapshotted when it was written.
     ///
@@ -284,6 +298,7 @@ struct RawMessage: Identifiable, Codable, Hashable {
             sortOrder: sortOrder,
             errorInfo: errorInfo,
             clientMessageId: clientMessageId,
+            remoteTurnKey: remoteTurnKey,
             modelId: modelId,
             modelDisplayName: modelDisplayName,
             providerType: providerType,

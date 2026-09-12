@@ -5149,6 +5149,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                     logger.info("[Persist] F1b retry reuses identity row=\(rowTag) cmid=\(existingCid.prefix(8))")
                 }
             }
+            // [Fix v1.14.33] 记录本轮回合键，供 buildRawMessage 写入 assistant
+            // 行的 remoteTurnKey。pendingClientMessageId 会被 provider 消费清空，
+            // 但回合键需要持续到 assistant 落库（流式完成后才 persist）。
+            remote.currentRemoteTurnKey = remoteProvider.pendingClientMessageId
             remote.activeProvider = remoteProvider
             // [Plan B3] Tool-observed paths augment the list_files suffix set.
             remoteProvider.onFilePathsObserved = { [weak self] paths in

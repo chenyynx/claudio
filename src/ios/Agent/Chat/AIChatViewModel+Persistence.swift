@@ -1700,6 +1700,16 @@ extension AIChatViewModel {
             clientMessageId: msg.clientMessageId
         )
 
+        // [Fix v1.14.33] 远端回合键：user 行 = 自身 cmid；assistant 行 =
+        // 本轮 cmid（remote.currentRemoteTurnKey）。落库后校准期按此字段
+        // 判定"哪条 live 聚合行是哪个回合的临时占位"→ 吸收删除（根治重复渲染）。
+        // gate：本地 agent 回合 currentRemoteTurnKey 恒 nil → remoteTurnKey 恒 nil。
+        if raw.role == .user {
+            raw.remoteTurnKey = raw.clientMessageId
+        } else {
+            raw.remoteTurnKey = remote.currentRemoteTurnKey
+        }
+
         // [T-token-attribution-snapshot] Resolved from the entry the caller
         // says served this turn — the provider TYPE is stored as its rawValue
         // so grouping never depends on a localized display string.
