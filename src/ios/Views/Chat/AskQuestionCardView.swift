@@ -29,61 +29,72 @@ struct AskQuestionCardView: View {
     /// 草稿选中存这儿（cell 复用安全），视图只读写这一个字段。
     @ObservedObject var block: AssistantBlock
     let onSubmit: ([String: String]) -> Void
+    let onSkip: (() -> Void)?
 
     @Environment(\.colorScheme) private var scheme
     private var palette: AskPalette { .init(scheme: scheme) }
 
     private var isLive: Bool { status.isPending }
 
+    /// 进入动画：卡片流式到达时从轻微缩放+淡入，消除"突然弹出"的割裂感。
+    /// 注意 cell 外层有 `.transaction { $0.disablesAnimations = true }`，这里
+    /// 用 `onAppear` 主动触发一次 withAnimation 绕开该抑制（该 transaction
+    /// 只禁用隐式动画，显式 withAnimation 仍生效）。
+    @State private var appeared = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             metaLine
             ForEach(payload.questions) { question in
                 questionSection(question)
             }
             submitBar
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 18)
-        .padding(.bottom, 14)
-        .glassSurface(radius: 28, dark: scheme == .dark)
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+        .glassSurface(radius: 24, dark: scheme == .dark)
         .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(palette.cardBorder, lineWidth: 1)
         )
-        .shadow(color: .black.opacity(scheme == .dark ? 0.30 : 0.10), radius: 20, x: 0, y: 8)
+        .shadow(color: .black.opacity(scheme == .dark ? 0.30 : 0.10), radius: 16, x: 0, y: 6)
+        .opacity(appeared ? 1 : 0)
+        .scaleEffect(appeared ? 1 : 0.96, anchor: .top)
+        .onAppear {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                appeared = true
+            }
+        }
     }
 
     // MARK: - 片段
 
-    /// 活性行：呼吸橙点 + 状态提示（无 ASK 标签、无「？」徽 —— 标题自己就是身份）
+    /// 活性行：呼吸橙点（无文案——卡片本身已是问题身份，文案冗余且占高）。
     private var metaLine: some View {
         HStack(spacing: 7) {
             if isLive { AskLiveDot(palette: palette) }
-            Text(isLive ? "回合已暂停 · 选完提交" : "已回答")
-                .font(.system(size: 11))
-                .foregroundStyle(palette.ink3)
             Spacer(minLength: 0)
         }
     }
 
     @ViewBuilder
     private func questionSection(_ question: AskWireQuestion) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             if let header = question.header, !header.isEmpty {
                 Text(header)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 10.5, weight: .semibold))
                     .tracking(0.3)
                     .foregroundStyle(palette.ink2)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
                     .background(
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
                             .fill(palette.chip)
                     )
             }
             Text(question.question)
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(size: 14, weight: .medium))
                 .lineSpacing(3)
                 .foregroundStyle(palette.ink)
                 .fixedSize(horizontal: false, vertical: true)
@@ -102,21 +113,36 @@ struct AskQuestionCardView: View {
         }
     }
 
-    /// 提交键常驻（Happy 同款：右对齐窄版，不是全宽胶囊）。
+    /// 提交键 + 跳过键（跳过 = 发 reject，让 Claude 继续而不带答案）。
     private var submitBar: some View {
-        HStack {
+        HStack(spacing: 12) {
+            // 跳过：次要文字按钮，不抢提交键视觉重点。
+            Button {
+                guard isLive else { return }
+                onSkip?()
+            } label: {
+                Text("跳过")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(palette.inkSoft)
+                    .padding(.horizontal, 10)
+                    .frame(height: 36)
+            }
+            .buttonStyle(.plain)
+            .disabled(!isLive)
+
             Spacer()
+
             Button {
                 guard allAnswered else { return }
                 onSubmit(collectedAnswers)
             } label: {
                 Text("提交答案")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(palette.onInk)
-                    .padding(.horizontal, 20)
-                    .frame(height: 40)
+                    .padding(.horizontal, 16)
+                    .frame(height: 36)
                     .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
                             .fill(palette.ink)
                     )
             }
@@ -169,21 +195,21 @@ private struct AskOptionRow: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 if showTopLine {
                     palette.hairline
                         .frame(height: 1)
-                        .padding(.bottom, 9)
+                        .padding(.bottom, 7)
                 }
-                HStack(alignment: .top, spacing: 11) {
-                    VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .top, spacing: 9) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(option.label)
-                            .font(.system(size: 14, weight: selected ? .semibold : .medium))
+                            .font(.system(size: 13, weight: selected ? .semibold : .medium))
                             .foregroundStyle(selected ? palette.ink : palette.inkSoft)
                             .fixedSize(horizontal: false, vertical: true)
                         if let desc = option.description, !desc.isEmpty {
                             Text(desc)
-                                .font(.system(size: 12.5))
+                                .font(.system(size: 12))
                                 .lineSpacing(2)
                                 .foregroundStyle(palette.ink3)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -191,12 +217,12 @@ private struct AskOptionRow: View {
                     }
                     Spacer(minLength: 8)
                     Image(systemName: "checkmark")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(palette.ink)
-                        .frame(width: 18)
+                        .frame(width: 16)
                         .opacity(selected ? 1 : 0)
                 }
-                .padding(.vertical, 11)
+                .padding(.vertical, 9)
             }
             .contentShape(Rectangle())
         }
@@ -273,7 +299,7 @@ struct AskPalette {
     ])
     return ScrollView {
         VStack(spacing: 16) {
-            AskQuestionCardView(payload: block.askPayload!, status: .pending, block: block, onSubmit: { _ in })
+            AskQuestionCardView(payload: block.askPayload!, status: .pending, block: block, onSubmit: { _ in }, onSkip: nil)
         }
         .padding(16)
     }

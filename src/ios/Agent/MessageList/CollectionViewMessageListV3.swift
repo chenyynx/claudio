@@ -330,6 +330,7 @@ private struct BridgedAssistantBlockV3: View {
             browserPool: bridge.browserPool,
             toolSnapshots: bridge.toolSnapshots,
             onAskSubmit: bridge.onAskSubmit,
+            onAskSkip: bridge.onAskSkip,
             highlightedBlockId: .constant(nil),
             detailBlock: $bridge.detailBlock
         )
@@ -1493,6 +1494,10 @@ extension CollectionViewMessageListV3 {
             // askStatus 非 pending 直接 return（防重复提交/迟到帧）。
             bridge.onAskSubmit = { [weak vm] blockId, answers in
                 vm?.submitAskAnswer(blockId: blockId, answers: answers)
+            }
+            // [AskCard 2026-09-13] 跳过回答回调 → VM（发 reject，卡片置 skipped）。
+            bridge.onAskSkip = { [weak vm] blockId in
+                vm?.skipAskAnswer(blockId: blockId)
             }
             bridge.onReadAloud = (message.role == .assistant)
                 ? { [weak vm] in vm?.readReplyFromStart(message) }
@@ -3826,8 +3831,8 @@ extension CollectionViewMessageListV3 {
                 //   终态摘要 = headline 14 + 每题两列行 26 + 分隔线/脚注 46 + 内边距 28
                 case .questionCard:
                     guard let payload = block.askPayload else { return 120 }
-                    let innerWidth = max(width - 40, 120)
-                    let cpl = max(1, innerWidth / 8)              // 15pt 中文约 8pt/字
+                    let innerWidth = max(width - 28, 120)          // padding 水平 14×2
+                    let cpl = max(1, innerWidth / 8)              // 14pt 中文约 8pt/字
                     func wrappedHeight(_ text: String, perChar: CGFloat, lineH: CGFloat) -> CGFloat {
                         var h: CGFloat = 0
                         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -3838,16 +3843,18 @@ extension CollectionViewMessageListV3 {
                     if !block.askStatus.isPending {
                         return 14 + 46 + CGFloat(payload.questions.count) * 26 + 28
                     }
-                    var total: CGFloat = 14 + 40 + 32
+                    // [Fix v1.14.33 · 缩 22%] metaLine 6（仅呼吸点）+ 提交/跳过键 36
+                    // + 上下内边距 22 + 段间距 12。选项行 35（13pt+9×2 内边距）。
+                    var total: CGFloat = 6 + 36 + 22
                     for (qi, question) in payload.questions.enumerated() {
-                        if qi > 0 { total += 16 }
-                        if let header = question.header, !header.isEmpty { total += 21 }
-                        total += wrappedHeight(question.question, perChar: cpl, lineH: 21) + 8
+                        if qi > 0 { total += 12 }
+                        if let header = question.header, !header.isEmpty { total += 20 }
+                        total += wrappedHeight(question.question, perChar: cpl, lineH: 20) + 6
                         for (oi, option) in question.options.enumerated() {
-                            total += 39 + (oi > 0 ? CGFloat(10) : CGFloat(0))  // 显式 CGFloat：三元字面量会被推成 Int（batch1 同类编译错）
+                            total += 35 + (oi > 0 ? CGFloat(7) : CGFloat(0))
                             if let desc = option.description, !desc.isEmpty {
-                                // 12.5pt 描述行（行距 2），封顶 2 行防极端长文案撑爆估算
-                                total += 3 + min(wrappedHeight(desc, perChar: cpl * 1.2, lineH: 18), 36)
+                                // 12pt 描述行（行距 2），封顶 2 行
+                                total += 2 + min(wrappedHeight(desc, perChar: cpl * 1.2, lineH: 16), 32)
                             }
                         }
                     }

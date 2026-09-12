@@ -7,9 +7,15 @@ import Combine
 
 /// [AskCard] 宿主：持翻页 @State（A 分页）。cell 复用安全——page 状态
 /// 丢失只影响翻页位置，答案状态在 block.askStatus（Store 侧）。
+///
+/// [Fix v1.14.33 · 选中态] block 必须是 @ObservedObject 而非 let —— 之前用
+/// `let` 导致观察链在此断裂：block.askDraft / askStatus 变化时本宿主不重求值，
+/// 问题卡的勾选态与 pending→answered 切换都要等 cell 滚出再滚回（重新配置）
+/// 才刷新。改 @ObservedObject 后变化即时驱动子树重建。
 private struct AskCardHost: View {
-    let block: AssistantBlock
+    @ObservedObject var block: AssistantBlock
     let onAskSubmit: ((UUID, [String: String]) -> Void)?
+    let onAskSkip: ((UUID) -> Void)?
 
     var body: some View {
         if let payload = block.askPayload {
@@ -18,7 +24,8 @@ private struct AskCardHost: View {
                     payload: payload,
                     status: block.askStatus,
                     block: block,
-                    onSubmit: { answers in onAskSubmit?(block.id, answers) }
+                    onSubmit: { answers in onAskSubmit?(block.id, answers) },
+                    onSkip: { onAskSkip?(block.id) }
                 )
             } else {
                 AskQuestionSummaryView(payload: payload, status: block.askStatus)
@@ -32,6 +39,7 @@ extension AssistantBlockView {
         AskCardHost(
             block: block,
             onAskSubmit: onAskSubmit,
+            onAskSkip: onAskSkip
         )
     }
 }
@@ -59,6 +67,8 @@ struct AssistantBlockView: View {
     /// [AskCard 2026-09-12] 流内问题卡答题回调（nil = 只读渲染——历史回放/
     /// 其他入口）。submit/skip 由 ChatMessageRow 注入 VM。
     var onAskSubmit: ((UUID, [String: String]) -> Void)?
+    /// [AskCard 2026-09-13] 跳过回答回调（发 reject，卡片置 skipped）。
+    var onAskSkip: ((UUID) -> Void)?
     @Binding var highlightedBlockId: UUID?
     @Binding var detailBlock: AssistantBlock?
     private var isHighlighted: Bool { highlightedBlockId == block.id }

@@ -1728,6 +1728,25 @@ extension AIChatViewModel {
         }
     }
 
+    /// [AskCard 2026-09-13] 跳过回答：发 reject（桥侧 deny → Claude 继续），
+    /// 卡片置 skipped。防重：askStatus 非 pending 直接 return。
+    func skipAskAnswer(blockId: UUID) {
+        guard let blk = RemoteAgentSessionState.findBlock(in: messages, byId: blockId),
+              case .questionCard = blk.kind,
+              blk.askStatus.isPending,
+              let payload = blk.askPayload else { return }
+        remote.skipQuestion(toolUseId: payload.toolUseId, sessionId: sessionId) { [weak self] ok in
+            Task { @MainActor in
+                guard let self, ok else { return }
+                if let i = self.messages.lastIndex(where: { m in m.blocks.contains { $0.id == blockId } }),
+                   let bi = self.messages[i].blocks.firstIndex(where: { $0.id == blockId }) {
+                    self.messages[i].blocks[bi].askStatus = .skipped
+                    self.messages[i].blocks[bi].askDraft = [:]
+                }
+            }
+        }
+    }
+
     // MARK: - [batch1.8 2026-09-12] 输入即答路由（替代已删除的「跳过」）
 
     /// 可被「打字回答」的目标：最近的 pending 问题卡里，第一道还没有草稿的题。

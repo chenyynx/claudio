@@ -141,6 +141,8 @@ enum AskCardStatus: Equatable {
     case pending
     /// 答案已回传（answers 按题的 answerKey 索引；multiSelect 为 join 后字符串）。
     case answered(answers: [String: String])
+    /// 用户主动跳过（发 reject，Claude 不带答案继续）。
+    case skipped
     /// 回合收场（STALL/超时/断连）时仍未答——置灰定格。
     case expired
     var isPending: Bool {

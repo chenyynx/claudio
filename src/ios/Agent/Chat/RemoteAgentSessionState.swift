@@ -148,6 +148,28 @@ final class RemoteAgentSessionState: ObservableObject {
             await MainActor.run { onDone(true) }
         }
     }
+
+    /// [AskCard 2026-09-13] 跳过回答：发 `reject`（桥侧 SdkProcess.reject 会
+    /// 把 pending AskUserQuestion resolve 为 deny → Claude 不带答案继续）。
+    /// 复用现有 reject wire，桥侧零改动。成功回调 onDone(true) 由调用方置卡
+    /// skipped。
+    func skipQuestion(
+        toolUseId: String,
+        sessionId: String?,
+        onDone: @escaping (Bool) -> Void
+    ) {
+        guard let entry = resolveEntryForAsk() else { onDone(false); return }
+        guard let client = RemoteAgentStore.shared.existingClient(
+            instanceID: entry.providerInstanceId,
+            chatSessionID: sessionId
+        ) else { onDone(false); return }
+        Task {
+            await client.sendPermissionResponse(
+                kind: "reject", id: toolUseId, message: "User skipped the question")
+            await MainActor.run { onDone(true) }
+        }
+    }
+
     private func resolveEntryForAsk() -> ModelEntry? {
         askEntryResolver?()
     }

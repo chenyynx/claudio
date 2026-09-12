@@ -57,6 +57,7 @@ struct AskQuestionSummaryView: View {
         switch status {
         case .pending: "待回答"
         case .answered: "已回答"
+        case .skipped: "已跳过"
         case .expired: "回合已结束 · 未回答"
         }
     }
@@ -96,6 +97,7 @@ struct AskQuestionSummaryView: View {
         switch status {
         case .pending: "等待选择"
         case .answered: "答案已回传 · Claude 继续执行"
+        case .skipped: "已跳过 · Claude 继续执行"
         case .expired: "未回答 · 该问题已失效"
         }
     }
