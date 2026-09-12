@@ -1648,6 +1648,7 @@ extension AIChatViewModel {
                 let blk = m.blocks[bi]
                 blk.askPayload = payload
                 if blk.askStatus.isPending { blk.askStatus = .pending }
+                askCardChangedSignal.send((messageId: m.id, blockId: blk.id, shouldScroll: true))
                 return
             }
             if let bi = targetToolBlock(m) {
@@ -1656,6 +1657,7 @@ extension AIChatViewModel {
                 blk.askPayload = payload
                 blk.askStatus = .pending
                 blk.toolStatus = .running
+                askCardChangedSignal.send((messageId: m.id, blockId: blk.id, shouldScroll: true))
                 return
             }
         }
@@ -1664,6 +1666,9 @@ extension AIChatViewModel {
         blk.askPayload = payload
         blk.askStatus = .pending
         msg.blocks.append(blk)
+        // 新 append 的 block 走 snapshot 重建路径（cell 首次配置即读到 payload），
+        // 信号此刻多半找不到 item——仍发，幂等兜底 snapshot 竞态。
+        askCardChangedSignal.send((messageId: msg.id, blockId: blk.id, shouldScroll: true))
     }
 
     /// [batch1.6] 远端「等待用户输入」类请求的**统一终局出口**：
@@ -1678,6 +1683,7 @@ extension AIChatViewModel {
         for m in messages {
             for blk in m.blocks where blk.kind == .questionCard && blk.askStatus.isPending {
                 blk.askStatus = .expired
+                askCardChangedSignal.send((messageId: m.id, blockId: blk.id, shouldScroll: false))
             }
         }
         // 审批弹窗：回合已结束，pending 的请求在桥侧必然已不存在（再点必失败），
@@ -1699,6 +1705,7 @@ extension AIChatViewModel {
             for blk in m.blocks where blk.kind == .questionCard && blk.askStatus.isPending {
                 if blk.toolUseId == toolUseId {
                     blk.askStatus = .expired
+                    askCardChangedSignal.send((messageId: m.id, blockId: blk.id, shouldScroll: false))
                 }
             }
         }
@@ -1723,6 +1730,8 @@ extension AIChatViewModel {
                    let bi = self.messages[i].blocks.firstIndex(where: { $0.id == blockId }) {
                     self.messages[i].blocks[bi].askStatus = .answered(answers: answers)
                     self.messages[i].blocks[bi].askDraft = [:]
+                    // 卡片从答题态收缩成摘要态——高度失效，否则 cell 保持旧高上下留白。
+                    self.askCardChangedSignal.send((messageId: self.messages[i].id, blockId: blockId, shouldScroll: false))
                 }
             }
         }
@@ -1742,6 +1751,7 @@ extension AIChatViewModel {
                    let bi = self.messages[i].blocks.firstIndex(where: { $0.id == blockId }) {
                     self.messages[i].blocks[bi].askStatus = .skipped
                     self.messages[i].blocks[bi].askDraft = [:]
+                    self.askCardChangedSignal.send((messageId: self.messages[i].id, blockId: blockId, shouldScroll: false))
                 }
             }
         }
@@ -1814,6 +1824,7 @@ extension AIChatViewModel {
                 && blk.askPayload?.toolUseId == toolUseId
                 && blk.askStatus.isPending {
                 blk.askStatus = .expired
+                askCardChangedSignal.send((messageId: m.id, blockId: blk.id, shouldScroll: false))
             }
         }
         if remote.pendingPermission?.id == toolUseId {

@@ -2113,6 +2113,40 @@ extension CollectionViewMessageListV3 {
                 }
                 .store(in: &subscriptions)
 
+            // [AskCard 2026-09-13] 问题卡 askPayload 填充 / askStatus 变化 → text-block
+            // 同款四步失效链（invalidateHeight + clearCachedHeight + reconfigure + apply）。
+            // ask 卡生命周期内高度剧变：占位(≈120pt) → pending 完整卡 → 收场摘要卡。
+            // 没有这条链，cell 高停在旧值——填充时内容溢出视口（藏到输入栏下），
+            // 收场后内容缩小、cell 上下大片留白（用户实测截图确认的两个症状）。
+            // shouldScroll 仅填充时 true：scheduleCoalescedScroll 自带
+            // scrollMode/isTracking 双保护，用户上翻历史时不会被拽回底部。
+            vm.askCardChangedSignal
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] (messageId, blockId, shouldScroll) in
+                    guard let self,
+                          let ds = self.dataSource else { return }
+                    let item = MessageListItem.assistantBlock(messageId, blockId)
+                    var snapshot = ds.snapshot()
+                    guard let idx = snapshot.itemIdentifiers.firstIndex(of: item) else { return }
+
+                    // 与 text 路径同序：先清 layout 侧高度缓存再 reconfigure，
+                    // 防止中间布局 pass 答出旧高。
+                    self.viewController?.messageListLayout?.invalidateHeight(at: idx)
+
+                    if let cv = self.viewController?.collectionView {
+                        let ip = IndexPath(item: idx, section: 0)
+                        (cv.cellForItem(at: ip) as? SelfSizingCell)?.clearCachedHeight()
+                    }
+
+                    snapshot.reconfigureItems([item])
+                    ds.apply(snapshot, animatingDifferences: false)
+
+                    if shouldScroll {
+                        self.scheduleCoalescedScroll()
+                    }
+                }
+                .store(in: &subscriptions)
+
             // Re-snapshot when toggleUsage inserts/removes a footer cell.
             //
             // [T-ios-plaf-cache-footer-staleness] `applySnapshot` alone is only

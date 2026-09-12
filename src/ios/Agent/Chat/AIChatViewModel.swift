@@ -858,6 +858,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// re-measures its height (UIKit doesn't always trigger preferredLayoutAttributesFitting
     /// reliably when the SwiftUI body changes inside a UIHostingConfiguration).
     let blockContentFilledSignal = PassthroughSubject<(messageId: UUID, blockId: UUID), Never>()
+    /// [AskCard 2026-09-13] 问题卡 askPayload 填充 / askStatus 变化（answered/
+    /// skipped/expired）信号。coordinator 据此走 text-block 同款四步失效链
+    /// （invalidateHeight + clearCachedHeight + reconfigureItems），shouldScroll
+    /// 时追加滚动跟进。没有它 cell 高度停在旧值：填充时卡片溢出视口，状态
+    /// 切换后上下留白（cell 高 = pending 态旧高，内容已收缩）。
+    let askCardChangedSignal = PassthroughSubject<(messageId: UUID, blockId: UUID, shouldScroll: Bool), Never>()
     /// Content offset Y published on each scroll event (for debug jitter monitoring).
     let contentOffsetYSignal = PassthroughSubject<CGFloat, Never>()
     /// Content size height delta signal (for debug jitter monitoring).
