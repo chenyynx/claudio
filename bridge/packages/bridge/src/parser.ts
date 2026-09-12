@@ -153,6 +153,11 @@ export type ClientMessage =
       text: string;
       sessionId?: string;
       clientMessageId?: string;
+      // [Fix v1.14.33 · user 行重复] 客户端上行时把 clientMessageId 同时作为
+      // userMessageUuid 发送（CCPocketClient.sendInput）。此前 input 类型未声明
+      // 此字段 → websocket.ts 读不到 → Claude user_input 不带 userMessageUuid
+      // → resolveMessageUuid 生成随机 UUID → 回放行 id 与 live 行 id 分裂 → 重复。
+      userMessageUuid?: string;
       baseSeq?: number;
       images?: Array<{ base64: string; mimeType: string }>;
       imageId?: string;

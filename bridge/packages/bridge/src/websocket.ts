@@ -3227,6 +3227,12 @@ export class BridgeWebSocketServer {
         }
         const text = msg.text;
         const clientMessageId = msg.clientMessageId;
+        // [Fix v1.14.33 · user 行重复] 客户端上行时把 clientMessageId 同时作为
+        // userMessageUuid 发送（两者等值）。此前只读了 clientMessageId、丢了
+        // userMessageUuid，导致下方 Claude 分支创建 user_input 时不带
+        // userMessageUuid → resolveMessageUuid 生成随机 UUID → 回放行 id 与
+        // live 行 id 分裂 → user 消息重复渲染。
+        const userMessageUuid = msg.userMessageUuid;
         const baseSeq = msg.baseSeq;
         const codexSkills = msg.skills ?? (msg.skill ? [msg.skill] : []);
         const codexMentions = msg.mentions ?? [];
@@ -3369,7 +3375,9 @@ export class BridgeWebSocketServer {
           text,
           ...(session.provider === "codex"
             ? { userMessageUuid: nextCodexUserTurnUuid(session) }
-            : {}),
+            : userMessageUuid
+              ? { userMessageUuid }
+              : {}),
           ...(clientMessageId ? { clientMessageId } : {}),
           timestamp: new Date().toISOString(),
           ...(images.length > 0 ? { imageCount: images.length } : {}),
