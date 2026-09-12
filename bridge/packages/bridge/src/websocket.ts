@@ -44,8 +44,10 @@ import {
   type ServerMessage,
 } from "./parser.js";
 import {
+  BRIDGE_PROTOCOL_CAPABILITIES,
   BRIDGE_PROTOCOL_MAX_VERSION,
   BRIDGE_PROTOCOL_MIN_VERSION,
+  CAPABILITY_STABLE_HISTORY_IDS,
   clientProtocolRange,
   negotiateProtocolVersion,
 } from "./protocol-version.js";
@@ -866,6 +868,12 @@ export class BridgeWebSocketServer {
   private platform: NodeJS.Platform;
   private clientSupportedServerMessages = new WeakMap<WebSocket, Set<string>>();
   private clientProtocolVersions = new WeakMap<WebSocket, number>();
+  /**
+   * [stable history ids · B3b] Capabilities the client advertised via
+   * `client_capabilities`. Used to gate additive behaviour so old clients see
+   * byte-identical responses.
+   */
+  private clientCapabilities = new WeakMap<WebSocket, Set<string>>();
   private rejectedProtocolClients = new WeakSet<WebSocket>();
   private pendingClaudeResumeInputs = new WeakMap<
     WebSocket,
@@ -2804,6 +2812,14 @@ export class BridgeWebSocketServer {
     });
   }
 
+  /**
+   * [stable history ids · B3b] Whether the client on this socket advertised a
+   * given capability during `client_capabilities` negotiation.
+   */
+  private clientAdvertisedCapability(ws: WebSocket, capability: string): boolean {
+    return this.clientCapabilities.get(ws)?.has(capability) ?? false;
+  }
+
   private refreshConnectionMetadata(now = Date.now()): void {
     const lastRefreshAt = this.lastConnectMetadataRefreshAt;
     if (
@@ -2847,6 +2863,8 @@ export class BridgeWebSocketServer {
         ws,
         new Set(msg.supportedServerMessages ?? []),
       );
+      // [stable history ids · B3b] Record advertised capabilities.
+      this.clientCapabilities.set(ws, new Set(msg.capabilities ?? []));
       this.sendPromptHistoryStatus(ws);
       return;
     }
@@ -5169,6 +5187,15 @@ export class BridgeWebSocketServer {
           const result = this.sessionManager.getHistorySince(
             msg.sessionId,
             msg.sinceSeq,
+            // [stable history ids · B3b] Only clients that advertised the
+            // capability get the archive-backed full-history snapshot; old
+            // clients keep receiving the window-only snapshot unchanged.
+            {
+              stableHistoryIds: this.clientAdvertisedCapability(
+                ws,
+                CAPABILITY_STABLE_HISTORY_IDS,
+              ),
+            },
           );
           if (!result) {
             this.send(ws, {
@@ -8307,10 +8334,7 @@ export class BridgeWebSocketServer {
       bridgeVersion: getPackageVersion(),
       protocolVersion: BRIDGE_PROTOCOL_MAX_VERSION,
       minimumProtocolVersion: BRIDGE_PROTOCOL_MIN_VERSION,
-      protocolCapabilities: [
-        "project_request_correlation_v1",
-        "session_context_v1",
-      ],
+      protocolCapabilities: [...BRIDGE_PROTOCOL_CAPABILITIES],
     });
   }
 
@@ -8352,10 +8376,7 @@ export class BridgeWebSocketServer {
       bridgeVersion: getPackageVersion(),
       protocolVersion: BRIDGE_PROTOCOL_MAX_VERSION,
       minimumProtocolVersion: BRIDGE_PROTOCOL_MIN_VERSION,
-      protocolCapabilities: [
-        "project_request_correlation_v1",
-        "session_context_v1",
-      ],
+      protocolCapabilities: [...BRIDGE_PROTOCOL_CAPABILITIES],
     });
   }
 

@@ -105,6 +105,13 @@ export type ClientMessage =
       protocolVersion?: number;
       minimumProtocolVersion?: number;
       supportedServerMessages?: string[];
+      /**
+       * Additive behaviour flags the client opts into, echoing entries from the
+       * Bridge's `protocolCapabilities` (e.g. "stable_history_ids").  Unknown
+       * values are ignored, so a newer client talking to an older Bridge — or
+       * the reverse — degrades gracefully.
+       */
+      capabilities?: string[];
     }
   | {
       type: "start";
@@ -1328,6 +1335,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
               (type) => typeof type !== "string",
             )
           )
+            return null;
+        }
+        if (msg.capabilities !== undefined) {
+          if (!Array.isArray(msg.capabilities)) return null;
+          if (msg.capabilities.some((cap) => typeof cap !== "string"))
             return null;
         }
         break;

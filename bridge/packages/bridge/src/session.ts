@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { HistoryArchive, historyArchive } from "./history-archive.js";
 import {
   pathToSlug,
   codexUserTurnUuid,
@@ -118,14 +119,34 @@ export interface SessionInfo {
   isUserNamed?: boolean;
   /** [Model self-title] Timestamp of the last model-applied title (throttle). */
   lastModelTitleChangeAt?: number;
+  /**
+   * [stable history ids · A-6] Random id of *this bridge session*.
+   *
+   * `seq` (`historyRevision`) is per-bridge-session and restarts at 0 on every
+   * `create()`, while the on-disk history archive is keyed by the shared
+   * `claudeSessionId`.  Tagging archived records with this segment lets the
+   * reader separate concurrent/repeated bridge sessions that resume the same
+   * Claude transcript, instead of interleaving two unrelated seq spaces.
+   *
+   * Never reused across sessions and never derived from user input.
+   */
+  bridgeSegment: string;
 }
 
 export interface HistoryEntry {
   seq: number;
   message: ServerMessage;
-}
-
-export type HistoryDeltaResult =
+  /**
+   * [stable history ids] Per-entry stable identity, reused across compaction,
+   * bridge restarts and session re-binding.  Sourced from the Claude CLI
+   * transcript UUID when available (see `resolveEntryMessageUuid`), otherwise
+   * a bridge-generated UUID.  Clients opt in via the `stable_history_ids`
+   * protocol capability; additive field, old clients ignore it.
+   */
+  messageUuid?: string;
+  /** [stable history ids] Server-side creation time (ISO-8601), when known. */
+  createdAt?: string;
+}export type HistoryDeltaResult =
   | {
       kind: "delta";
       fromSeq: number;
@@ -139,6 +160,122 @@ export type HistoryDeltaResult =
       entries: HistoryEntry[];
       reason: "compacted" | "reset";
     };
+
+/**
+ * [stable history ids] Resolve a server-side creation timestamp for a history
+ * entry.  Reuses whatever the message already carries (the transcript
+ * `timestamp` on restored rows, or an explicit `createdAt`) and falls back to
+ * "now" — never leaves the field undefined so clients can rely on it for
+ * stable ordering metadata.
+ */
+function resolveMessageTimestamp(msg: ServerMessage): string {
+  const record = msg as Record<string, unknown>;
+  const candidates = [record.timestamp, record.createdAt];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.length > 0) return value;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return new Date(value).toISOString();
+    }
+  }
+  return new Date().toISOString();
+}
+
+/**
+ * [stable history ids · B1b] Index the Claude CLI transcript by identity so
+ * in-memory rows can be matched back to their authoritative uuid.
+ *
+ * The transcript is JSONL, one entry per line, each carrying `uuid` plus
+ * `message.content`.  We index three ways:
+ *   - user text           -> ordered uuid queue (duplicates matched in order)
+ *   - tool_use id         -> uuid of the transcript row carrying it
+ *   - assistant message id-> uuid
+ * Anything left over (a tool_result whose tool_use we never saw) goes into an
+ * ordered fallback queue.
+ */
+interface DiskUuidIndex {
+  userByText: Map<string, string[]>;
+  toolResultByToolUseId: Map<string, string>;
+  assistantByMessageId: Map<string, string>;
+  orphanToolResultUuids: string[];
+}
+
+function collectDiskUuids(lines: string[]): DiskUuidIndex {
+  const index: DiskUuidIndex = {
+    userByText: new Map(),
+    toolResultByToolUseId: new Map(),
+    assistantByMessageId: new Map(),
+    orphanToolResultUuids: [],
+  };
+
+  for (const line of lines) {
+    let entry: {
+      type?: string;
+      role?: string;
+      uuid?: string;
+      message?: { id?: string; content?: unknown };
+    };
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!entry.uuid) continue;
+
+    const role = entry.type ?? entry.role;
+    const content = entry.message?.content;
+
+    if (role === "user") {
+      if (!Array.isArray(content)) continue;
+      const texts = content
+        .filter((c: unknown) => (c as Record<string, unknown>).type === "text")
+        .map((c: unknown) => (c as Record<string, unknown>).text as string);
+      if (texts.length > 0) {
+        const key = texts.join("\n");
+        const arr = index.userByText.get(key) ?? [];
+        arr.push(entry.uuid);
+        index.userByText.set(key, arr);
+      }
+      continue;
+    }
+
+    if (role === "assistant") {
+      const messageId = entry.message?.id;
+      if (typeof messageId === "string" && messageId) {
+        index.assistantByMessageId.set(messageId, entry.uuid);
+      }
+      continue;
+    }
+
+    if (role === "tool_result" || role === "tool") {
+      index.orphanToolResultUuids.push(entry.uuid);
+      continue;
+    }
+  }
+
+  // Second pass: tool_use blocks live inside assistant messages; index their
+  // ids so a matching tool_result row can be paired with the right uuid.
+  for (const line of lines) {
+    let entry: { message?: { content?: unknown } };
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const content = entry.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      const b = block as Record<string, unknown>;
+      if (b.type === "tool_use" && typeof b.id === "string" && b.id) {
+        // tool_result rows reference this id; map it to the first unused
+        // orphan uuid so ordering is preserved.
+        const uuid = index.orphanToolResultUuids.shift();
+        if (uuid) index.toolResultByToolUseId.set(b.id, uuid);
+      }
+    }
+  }
+
+  return index;
+}
 
 export interface QueuedCodexInput extends QueuedInputItem {
   userMessageUuid?: string;
@@ -414,6 +551,8 @@ export class SessionManager {
       // Pre-populate claudeSessionId for resumed sessions so that get_history
       // can return it immediately (before the SDK sends a system/result event).
       claudeSessionId: options?.sessionId,
+      // [stable history ids · A-6] Unique per bridge session; see SessionInfo.
+      bridgeSegment: randomUUID(),
     };
     if (effectiveProvider === "codex") {
       this.seedCodexPastUserTurnUuidMap(session);
@@ -844,9 +983,17 @@ export class SessionManager {
     return entry;
   }
 
+  /**
+   * @param sinceSeq  client cursor
+   * @param options.stableHistoryIds  when true (client advertised the
+   *   `stable_history_ids` capability) a `compacted` snapshot is assembled from
+   *   the on-disk archive + the in-memory window, so early turns are no longer
+   *   missing.  When false the legacy behaviour is preserved byte-for-byte.
+   */
   getHistorySince(
     sessionId: string,
     sinceSeq: number,
+    options?: { stableHistoryIds?: boolean },
   ): HistoryDeltaResult | undefined {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
@@ -864,6 +1011,12 @@ export class SessionManager {
 
     const firstSeq = entries[0].seq;
     if (sinceSeq < firstSeq - 1) {
+      // [stable history ids · B3] Opt-in clients get the archive-prefixed
+      // full history instead of a window-only snapshot.
+      const stableSnapshot = options?.stableHistoryIds
+        ? this.buildStableSnapshot(session, entries, toSeq)
+        : undefined;
+      if (stableSnapshot) return stableSnapshot;
       return {
         kind: "snapshot",
         fromSeq: firstSeq,
@@ -879,6 +1032,78 @@ export class SessionManager {
       fromSeq: deltaEntries[0]?.seq ?? toSeq + 1,
       toSeq,
       entries: deltaEntries,
+    };
+  }
+
+  /**
+   * [stable history ids · B3] Assemble a full-history snapshot from the disk
+   * archive (everything below the in-memory low watermark) plus the retained
+   * window.  Returns `undefined` when there is nothing to add — the caller then
+   * falls back to the plain window snapshot.
+   *
+   * [stable history ids · A-6] Only records tagged with **this** bridge
+   * session's segment are read.  The archive file is keyed by the shared
+   * `claudeSessionId`, but `seq` is per bridge session, so reading every record
+   * would splice an unrelated run's seq space into ours (two conversations
+   * interleaved `1,2,2,3,3,…`).  Legacy untagged records are still included:
+   * they predate segment tagging, cannot collide with a tagged run, and dropping
+   * them would lose the history of sessions resumed across the upgrade.
+   *
+   * Ordering: seq is a well-defined order *within one segment*, and archived
+   * records always sit below the in-memory window (the archive only ever
+   * receives trimmed entries), so `archived ++ window` is already ascending.
+   * The sort is kept as a cheap invariant guard.
+   */
+  private buildStableSnapshot(
+    session: SessionInfo,
+    entries: HistoryEntry[],
+    toSeq: number,
+  ): HistoryDeltaResult | undefined {
+    if (!session.claudeSessionId) return undefined;
+
+    const windowFirstSeq = entries[0]?.seq ?? toSeq + 1;
+    const archived = [
+      ...historyArchive.readUpTo(
+        session.claudeSessionId,
+        windowFirstSeq - 1,
+        session.bridgeSegment,
+      ),
+      // Legacy (pre-segment) records: unambiguous, non-colliding, keep them.
+      ...historyArchive.readUpTo(session.claudeSessionId, undefined, undefined),
+    ];
+    if (archived.length === 0) return undefined;
+
+    const merged: HistoryEntry[] = [];
+    const seenUuids = new Set<string>();
+    for (const record of archived) {
+      const uuid = record.messageUuid;
+      if (uuid) {
+        if (seenUuids.has(uuid)) continue;
+        seenUuids.add(uuid);
+      }
+      merged.push({
+        seq: record.seq,
+        message: record.message as ServerMessage,
+        messageUuid: record.messageUuid,
+        createdAt: record.createdAt,
+      });
+    }
+    for (const entry of entries) {
+      const uuid = entry.messageUuid;
+      if (uuid) {
+        if (seenUuids.has(uuid)) continue;
+        seenUuids.add(uuid);
+      }
+      merged.push(entry);
+    }
+
+    merged.sort((a, b) => a.seq - b.seq);
+    return {
+      kind: "snapshot",
+      fromSeq: merged[0]?.seq ?? windowFirstSeq,
+      toSeq,
+      entries: merged,
+      reason: "compacted",
     };
   }
 
@@ -992,9 +1217,11 @@ export class SessionManager {
     session: SessionInfo,
     msg: ServerMessage,
   ): HistoryEntry {
-    const entry = {
+    const entry: HistoryEntry = {
       seq: session.historyRevision + 1,
       message: msg,
+      messageUuid: this.resolveMessageUuid(msg),
+      createdAt: resolveMessageTimestamp(msg),
     };
     (msg as Record<string, unknown>).historySeq = entry.seq;
     session.historyRevision = entry.seq;
@@ -1005,6 +1232,41 @@ export class SessionManager {
     }
     this.trimHistory(session);
     return entry;
+  }
+
+  /**
+   * [stable history ids] Resolve the stable identity for a history entry.
+   *
+   * Preference order (rule: never invent a new field name on the wire — reuse
+   * the uuid fields the protocol already carries, see parser.ts):
+   *   1. `user_input` / `tool_result` -> `userMessageUuid`
+   *   2. `assistant`                  -> `messageUuid`
+   *   3. fall back to a bridge-generated UUID (status/system/tip frames, or
+   *      messages whose transcript UUID has not been backfilled yet).
+   *
+   * The SDK does not echo user messages, so at append time user rows usually
+   * have no uuid yet; `backfillMessageUuidsFromDisk` later rewrites both the
+   * message field and the entry's `messageUuid` in place.
+   */
+  private resolveMessageUuid(msg: ServerMessage): string {
+    const record = msg as Record<string, unknown>;
+    const fromMessage =
+      msg.type === "assistant"
+        ? (msg.messageUuid ?? (msg.message as { id?: string } | undefined)?.id)
+        : msg.type === "user_input" || msg.type === "tool_result"
+          ? msg.userMessageUuid
+          : undefined;
+    if (typeof fromMessage === "string" && fromMessage.length > 0) {
+      return fromMessage;
+    }
+    const existing = record.historyMessageUuid;
+    if (typeof existing === "string" && existing.length > 0) {
+      return existing;
+    }
+    const generated = randomUUID();
+    // Remember it on the message so repeated appends / re-broadcasts are stable.
+    record.historyMessageUuid = generated;
+    return generated;
   }
 
   private mergeUserInputIntoHistory(
@@ -1029,7 +1291,30 @@ export class SessionManager {
       const entry = session.historyEntries[i];
       if (entry) {
         (mergedMsg as Record<string, unknown>).historySeq = entry.seq;
+        // [stable history ids · A-7] Entry identity must follow the merged
+        // message.
+        //
+        // The SDK does not echo user messages, so a freshly appended
+        // `user_input` usually has no uuid and `resolveMessageUuid` mints a
+        // bridge placeholder for it.  The merge that follows (`history.ts`
+        // / websocket echo) supplies the *real* `userMessageUuid` — which is
+        // the same value the client used for its optimistic live row
+        // (`bm-<clientMessageId>`) and the same value the CLI transcript
+        // carries in the archive.  If the entry kept the placeholder, the
+        // resumed full-history row and the live row would be treated as two
+        // different messages and render twice.
+        //
+        // `mergeUserMessageUuid` already prefers the more specific uuid, so
+        // `resolveMessageUuid(mergedMsg)` returns the real one whenever one
+        // exists on either side, and only regenerates a placeholder when
+        // neither side has one.
         entry.message = mergedMsg;
+        entry.messageUuid = this.resolveMessageUuid(mergedMsg);
+        // Pin the resolved identity onto the merged message object as well, so
+        // a later merge (which builds yet another object) or a re-append can
+        // never produce a different placeholder for the same row.
+        (mergedMsg as Record<string, unknown>).historyMessageUuid =
+          entry.messageUuid;
       }
       session.history[i] = mergedMsg;
       this.clearPendingCodexUserEcho(session, current);
@@ -1272,17 +1557,30 @@ export class SessionManager {
   }
 
   private trimHistory(session: SessionInfo): void {
+    // [stable history ids · B2] Entries leaving the in-memory window are
+    // archived before being dropped, so the server can still serve the full
+    // history to clients that opt into `stable_history_ids`.
+    const dropped: HistoryEntry[] = [];
     while (session.history.length > MAX_HISTORY_PER_SESSION) {
       // Keep the retained in-memory history as a chronological tail.  The
       // mobile client renders history snapshots directly; preferentially
       // preserving user_input/system entries makes long sessions degrade into
       // a run of user bubbles after compaction.
       session.history.shift();
-      session.historyEntries.shift();
+      const entry = session.historyEntries.shift();
+      if (entry) dropped.push(entry);
     }
 
     session.historyLowWatermark =
       session.historyEntries[0]?.seq ?? session.historyRevision + 1;
+
+    if (dropped.length > 0 && session.claudeSessionId) {
+      historyArchive.append(
+        session.claudeSessionId,
+        dropped,
+        session.bridgeSegment,
+      );
+    }
   }
 
   private scheduleAutoRename(session: SessionInfo): void {
@@ -1724,56 +2022,63 @@ export class SessionManager {
       return;
     }
 
-    // Collect user message text→uuid queue from disk.
-    // Use an array per text key so duplicate messages ("yes", "ok", etc.)
-    // are matched in order rather than collapsed to one UUID.
-    const diskUuids = new Map<string, string[]>();
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line) as {
-          type?: string;
-          role?: string;
-          uuid?: string;
-          message?: { content?: unknown[] };
-        };
-        if (entry.type !== "user" && entry.role !== "user") continue;
-        if (!entry.uuid) continue;
+    const disk = collectDiskUuids(lines);
 
-        // Extract text from content array
-        const content = entry.message?.content;
-        if (!Array.isArray(content)) continue;
-        const texts = content
-          .filter(
-            (c: unknown) => (c as Record<string, unknown>).type === "text",
-          )
-          .map((c: unknown) => (c as Record<string, unknown>).text as string);
-        if (texts.length > 0) {
-          const key = texts.join("\n");
-          const arr = diskUuids.get(key) ?? [];
-          arr.push(entry.uuid);
-          diskUuids.set(key, arr);
-        }
-      } catch {
-        // skip malformed lines
-      }
+    // [stable history ids · B1b] Backfill uuid into in-memory rows that lack
+    // it, for all three message kinds the protocol carries a uuid field for:
+    //   user_input / tool_result -> `userMessageUuid`
+    //   assistant                -> `messageUuid`
+    // The CLI transcript is the authoritative source; the SDK does not echo
+    // user messages, so this is the only way those rows get a stable identity.
+    const entriesBySeq = new Map<number, HistoryEntry>();
+    for (const entry of session.historyEntries) {
+      entriesBySeq.set(entry.seq, entry);
     }
 
-    // Backfill UUIDs into in-memory history
     for (const msg of session.history) {
-      if (
-        msg.type === "user_input" &&
-        !(
-          "userMessageUuid" in msg &&
-          (msg as Record<string, unknown>).userMessageUuid
-        )
-      ) {
-        const text = (msg as { text?: string }).text;
-        const queue = text ? diskUuids.get(text) : undefined;
-        if (queue && queue.length > 0) {
-          (msg as Record<string, unknown>).userMessageUuid = queue.shift();
-          // Re-broadcast so Flutter can update UserChatEntry.messageUuid
-          this.onMessage(session.id, msg);
+      const record = msg as Record<string, unknown>;
+      const seq = typeof record.historySeq === "number" ? record.historySeq : undefined;
+      const entry = seq !== undefined ? entriesBySeq.get(seq) : undefined;
+      let resolved: string | undefined;
+
+      if (msg.type === "user_input") {
+        if (typeof record.userMessageUuid === "string" && record.userMessageUuid) {
+          resolved = record.userMessageUuid;
+        } else {
+          const text = (msg as { text?: string }).text;
+          const queue = text ? disk.userByText.get(text) : undefined;
+          resolved = queue?.shift();
+          if (resolved) record.userMessageUuid = resolved;
         }
+      } else if (msg.type === "tool_result") {
+        if (typeof record.userMessageUuid === "string" && record.userMessageUuid) {
+          resolved = record.userMessageUuid;
+        } else {
+          const toolUseId =
+            typeof record.toolUseId === "string" ? record.toolUseId : undefined;
+          resolved = toolUseId ? disk.toolResultByToolUseId.get(toolUseId) : undefined;
+          if (!resolved) resolved = disk.orphanToolResultUuids.shift();
+          if (resolved) record.userMessageUuid = resolved;
+        }
+      } else if (msg.type === "assistant") {
+        if (typeof record.messageUuid === "string" && record.messageUuid) {
+          resolved = record.messageUuid;
+        } else {
+          const msgId = (msg.message as { id?: string } | undefined)?.id;
+          resolved = msgId ? disk.assistantByMessageId.get(msgId) : undefined;
+          if (resolved) record.messageUuid = resolved;
+        }
+      }
+
+      if (!resolved) continue;
+
+      const changed = entry?.messageUuid !== resolved;
+      if (entry) entry.messageUuid = resolved;
+      // Re-broadcast so clients can update their row identities.  Only for the
+      // kinds that mutate the message body (historical behaviour), plus
+      // assistant rows which now gain `messageUuid`.
+      if (changed && (msg.type === "user_input" || msg.type === "assistant")) {
+        this.onMessage(session.id, msg);
       }
     }
   }
