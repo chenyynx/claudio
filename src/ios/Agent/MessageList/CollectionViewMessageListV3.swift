@@ -3692,7 +3692,22 @@ extension CollectionViewMessageListV3 {
             case .assistantBlock(let mid, let bid):
                 let block = msg(mid)?.blocks.first(where: { $0.id == bid })
                 let n = block?.content.count ?? 0
-                return "b:\(mid.uuidString):\(bid.uuidString):\(n)"
+                // [batch1.9] 问题卡的 content 恒为空，高度全在 askPayload / askStatus 里。
+                // 不进 key 则 pending→answered 塌缩、载荷刷新都不让高度 memo 失效，
+                // cell 复用后继续套旧高度 → 卡片与相邻文本错位（pp 报"卡片盖住文本"）。
+                // 只放**会改高度**的量：题数、选项总数、pending/answered、答案文本长度。
+                // 草稿勾选不改高度，故不入 key（避免每次点击都触发重测）。
+                // 非问题卡 askFingerprint 为空串 ⇒ key 逐字节不变（本地会话零影响）。
+                var askFingerprint = ""
+                if let payload = block?.askPayload {
+                    let optionCount = payload.questions.reduce(0) { $0 + $1.options.count }
+                    var state = block?.askStatus.isPending == true ? "p" : "d"
+                    if let status = block?.askStatus, case .answered(let answers) = status {
+                        state += "a\(answers.values.reduce(0) { $0 + $1.count })"
+                    }
+                    askFingerprint = ":ask\(payload.questions.count)x\(optionCount)\(state)"
+                }
+                return "b:\(mid.uuidString):\(bid.uuidString):\(n)\(askFingerprint)"
             }
         }
 
@@ -3802,6 +3817,41 @@ extension CollectionViewMessageListV3 {
                 // 40→36 (-4) mid-decel; the +4 growths that motivated 40 were actually
                 // collapsed THINKING blocks (handled above with headerH = 40).
                 case .readImageTool: return 36
+                // [batch1.9] 问题卡原来掉进下面的 default（36pt = 工具胶囊），而卡高随题数
+                // 与选项数线性增长（batch1.7 起多题纵向堆叠更甚），cell 又 clipsToBounds
+                // —— 预留不足就把相邻文本顶错位。几何取自 AskQuestionCardView/SummaryView：
+                //   卡 = 活性行 14 + 提交键 40 + 上下内边距 32 + 段间距 16×(段数-1)
+                //   每题 = header 胶囊 21（有则加）+ 题面（15pt/行距3，≈8pt/字折行）
+                //          + 选项（首项 39、其后各 +10 分隔线；带 description 再 +3+行高）
+                //   终态摘要 = headline 14 + 每题两列行 26 + 分隔线/脚注 46 + 内边距 28
+                case .questionCard:
+                    guard let payload = block.askPayload else { return 120 }
+                    let innerWidth = max(width - 40, 120)
+                    let cpl = max(1, innerWidth / 8)              // 15pt 中文约 8pt/字
+                    func wrappedHeight(_ text: String, perChar: CGFloat, lineH: CGFloat) -> CGFloat {
+                        var h: CGFloat = 0
+                        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+                            h += max(1, ceil(CGFloat(line.count) / perChar)) * lineH
+                        }
+                        return h
+                    }
+                    if !block.askStatus.isPending {
+                        return 14 + 46 + CGFloat(payload.questions.count) * 26 + 28
+                    }
+                    var total: CGFloat = 14 + 40 + 32
+                    for (qi, question) in payload.questions.enumerated() {
+                        if qi > 0 { total += 16 }
+                        if let header = question.header, !header.isEmpty { total += 21 }
+                        total += wrappedHeight(question.question, perChar: cpl, lineH: 21) + 8
+                        for (oi, option) in question.options.enumerated() {
+                            total += 39 + (oi > 0 ? CGFloat(10) : CGFloat(0))  // 显式 CGFloat：三元字面量会被推成 Int（batch1 同类编译错）
+                            if let desc = option.description, !desc.isEmpty {
+                                // 12.5pt 描述行（行距 2），封顶 2 行防极端长文案撑爆估算
+                                total += 3 + min(wrappedHeight(desc, perChar: cpl * 1.2, lineH: 18), 36)
+                            }
+                        }
+                    }
+                    return total
                 case .info:
                     let lineCount = max(1, block.content.components(separatedBy: "\n").count)
                     return CGFloat(20 + lineCount * 16)
