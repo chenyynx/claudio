@@ -6700,6 +6700,15 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             }
         }
 
+        // [Fix v1.14.33 · C10] 清空本轮回合键，防止跨轮复用。
+        // currentRemoteTurnKey 在 runAgentLoop 入口设置（:5155），供
+        // buildRawMessage 写入 assistant 行的 remoteTurnKey。回合结束后
+        // 必须清空——否则下一轮若 pendingClientMessageId 为 nil（重试/
+        // 注入队列消息），buildRawMessage 会读到上一轮的 turnKey →
+        // live 行被误归到旧回合 → RemoteTurnReconciler 可能误吸收。
+        // 本地 agent 回合恒 nil（gate 在入口 :5155 之前），清 nil 是 no-op。
+        remote.currentRemoteTurnKey = nil
+
     }
 
     /// Builds the final NSAttributedString for a completed text block and stores it
