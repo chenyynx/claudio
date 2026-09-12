@@ -101,7 +101,9 @@ struct AskQuestionSummaryView: View {
     }
 
     private var footnoteColor: Color {
-        if case .answered = status { return palette.done }
+        // batch1.7 定稿「纯墨」：终态不引入彩色（AskPalette.done 绿已随选中态一起删）。
+        // 已答用 ink2 比 ink3 略重一档，靠明度而不是色相区分状态。
+        if case .answered = status { return palette.ink2 }
         return palette.ink3
     }
 }
