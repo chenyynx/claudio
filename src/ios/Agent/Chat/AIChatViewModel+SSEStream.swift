@@ -1692,6 +1692,7 @@ extension AIChatViewModel {
                 if let i = self.messages.lastIndex(where: { m in m.blocks.contains { $0.id == blockId } }),
                    let bi = self.messages[i].blocks.firstIndex(where: { $0.id == blockId }) {
                     self.messages[i].blocks[bi].askStatus = .answered(answers: answers)
+                    self.messages[i].blocks[bi].askDraft = [:]
                 }
             }
         }
@@ -1712,23 +1713,6 @@ extension AIChatViewModel {
         }
         if remote.pendingPermission?.id == toolUseId {
             remote.pendingPermission = nil
-        }
-    }
-
-    /// 问题卡跳过：cancel 回合（模型收"用户没答"）+ 卡片置 skipped。
-    func skipAskQuestion(blockId: UUID) {
-        guard let blk = RemoteAgentSessionState.findBlock(in: messages, byId: blockId),
-              case .questionCard = blk.kind,
-              blk.askStatus.isPending,
-              let payload = blk.askPayload else { return }
-        remote.skipAskQuestion(toolUseId: payload.toolUseId, sessionId: sessionId) { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                if let i = self.messages.lastIndex(where: { m in m.blocks.contains { $0.id == blockId } }),
-                   let bi = self.messages[i].blocks.firstIndex(where: { $0.id == blockId }) {
-                    self.messages[i].blocks[bi].askStatus = .skipped
-                }
-            }
         }
     }
 }

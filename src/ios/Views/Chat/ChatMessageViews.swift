@@ -185,7 +185,6 @@ struct ChatMessageRow: View {
     var onCopyScreenshot: (() -> Void)?
     /// [AskCard 2026-09-12] 流内 AskUserQuestion 卡回调（nil = 只读渲染）。
     var onAskSubmit: ((UUID, [String: String]) -> Void)?
-    var onAskSkip: ((UUID) -> Void)?
     /// Read this whole reply aloud from the start (clears any in-progress TTS).
     /// Wired from AIChatView (which owns the view model). Disabled while the
     /// message is still streaming to avoid fighting the live streaming TTS.
@@ -544,7 +543,6 @@ struct ChatMessageRow: View {
                     browserPool: browserPool,
                     toolSnapshots: toolSnapshots,
                     onAskSubmit: onAskSubmit,
-                    onAskSkip: onAskSkip,
                     highlightedBlockId: $highlightedBlockId,
                     detailBlock: $detailBlock
                 )

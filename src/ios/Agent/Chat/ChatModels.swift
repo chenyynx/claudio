@@ -371,6 +371,10 @@ final class AssistantBlock: Identifiable, ObservableObject {
     /// 生命周期四态（pending / answered / skipped / expired）。状态外提原则：
     /// 本字段由帧事件与回放写，视图只读（cell 复用安全）。
     @Published var askStatus: AskCardStatus = .pending
+    /// 待提交草稿（answerKey → 已选 label 集合）。存 Store 侧而非视图 @State：
+    /// 聊天列表是 UICollectionView cell 复用，视图内 @State 滚出屏即清零，
+    /// 用户勾的选项会莫名丢失。
+    @Published var askDraft: [String: Set<String>] = [:]
     /// Serialized JSON of the tool input arguments (for introspection in SessionMemoryView, etc.).
     var toolInputArgs: String?
     /// Streaming file content for file_write tool (live content as it arrives).

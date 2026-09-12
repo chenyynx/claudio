@@ -10,8 +10,6 @@ import Combine
 private struct AskCardHost: View {
     let block: AssistantBlock
     let onAskSubmit: ((UUID, [String: String]) -> Void)?
-    let onAskSkip: ((UUID) -> Void)?
-    @State private var page = 0
 
     var body: some View {
         if let payload = block.askPayload {
@@ -19,9 +17,8 @@ private struct AskCardHost: View {
                 AskQuestionCardView(
                     payload: payload,
                     status: block.askStatus,
-                    page: $page,
-                    onSubmit: { answers in onAskSubmit?(block.id, answers) },
-                    onSkip: { onAskSkip?(block.id) }
+                    block: block,
+                    onSubmit: { answers in onAskSubmit?(block.id, answers) }
                 )
             } else {
                 AskQuestionSummaryView(payload: payload, status: block.askStatus)
@@ -35,7 +32,6 @@ extension AssistantBlockView {
         AskCardHost(
             block: block,
             onAskSubmit: onAskSubmit,
-            onAskSkip: onAskSkip
         )
     }
 }
@@ -63,7 +59,6 @@ struct AssistantBlockView: View {
     /// [AskCard 2026-09-12] 流内问题卡答题回调（nil = 只读渲染——历史回放/
     /// 其他入口）。submit/skip 由 ChatMessageRow 注入 VM。
     var onAskSubmit: ((UUID, [String: String]) -> Void)?
-    var onAskSkip: ((UUID) -> Void)?
     @Binding var highlightedBlockId: UUID?
     @Binding var detailBlock: AssistantBlock?
     private var isHighlighted: Bool { highlightedBlockId == block.id }

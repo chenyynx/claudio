@@ -137,26 +137,6 @@ final class RemoteAgentSessionState: ObservableObject {
             await MainActor.run { onDone(true) }
         }
     }
-
-    /// 问题卡跳过：向桥发 interrupt（中断本回合 → SDK abort → pendingPermissions
-    /// deny → 模型收"用户没答"）。用 interrupt 而非 reject——跳过语义 = 结束
-    /// 整个回合（桥侧 abort 监听把 pending deny 掉），与"拒绝这个答案"不同。
-    func skipAskQuestion(
-        toolUseId: String,
-        sessionId: String?,
-        onDone: @escaping () -> Void
-    ) {
-        guard let entry = resolveEntryForAsk() else { onDone(); return }
-        guard let client = RemoteAgentStore.shared.existingClient(
-            instanceID: entry.providerInstanceId,
-            chatSessionID: sessionId
-        ) else { onDone(); return }
-        Task {
-            await client.sendInterrupt()
-            await MainActor.run { onDone() }
-        }
-    }
-
     private func resolveEntryForAsk() -> ModelEntry? {
         askEntryResolver?()
     }

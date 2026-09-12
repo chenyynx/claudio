@@ -330,7 +330,6 @@ private struct BridgedAssistantBlockV3: View {
             browserPool: bridge.browserPool,
             toolSnapshots: bridge.toolSnapshots,
             onAskSubmit: bridge.onAskSubmit,
-            onAskSkip: bridge.onAskSkip,
             highlightedBlockId: .constant(nil),
             detailBlock: $bridge.detailBlock
         )
@@ -1490,13 +1489,10 @@ extension CollectionViewMessageListV3 {
             // "Read from Start": replay this whole reply via TTS. Only for assistant
             // messages; disabled while it's the actively-streaming reply.
             bridge.isStreaming = isActive
-            // [AskCard 2026-09-12] 流内问题卡回调 → VM（submitAskAnswer /
-            // skipAskQuestion）。VM 侧 gate：askStatus pending 才发 wire。
+            // [AskCard 2026-09-12] 流内问题卡提交回调 → VM。VM 侧 gate：
+            // askStatus 非 pending 直接 return（防重复提交/迟到帧）。
             bridge.onAskSubmit = { [weak vm] blockId, answers in
                 vm?.submitAskAnswer(blockId: blockId, answers: answers)
-            }
-            bridge.onAskSkip = { [weak vm] blockId in
-                vm?.skipAskQuestion(blockId: blockId)
             }
             bridge.onReadAloud = (message.role == .assistant)
                 ? { [weak vm] in vm?.readReplyFromStart(message) }

@@ -1,11 +1,15 @@
 //
 //  AskQuestionSummaryView.swift
-//  折叠摘要（v3 设计：答完塌缩成摘要卡——Claude 版 AnsweredSummaryView
-//  胶囊链的皮肤化实现）。answered / skipped 卡 + 历史（answered / skipped /
-//  expired）回放共用。
+//  问题卡终态 —— 照 Happy 的 submittedContainer：逐题「header：答案」两列行。
 //
-//  与 AskQuestionCardView 分工：pending 期渲染完整卡；终态后渲染本摘要
-//  （历史保持短——v3 ⑤ 的设计）。数据自足（payload + status），无回调。
+//  与卡片的分工：pending 渲染 AskQuestionCardView（可交互），终态渲染本视图
+//  （只读记录，占位从 ~320pt 收到 ~90pt，聊天流不涨）。
+//  皮肤同族：复用共享 glassSurface 材质，不叠第二套卡片语言。
+//
+//  [不照抄 Happy 的一处] 它的 selectedLabels 只从组件内 selections 取，
+//  而进入条件是 isSubmitted || tool.state==='completed' —— 重连/回放时
+//  selections 为空、答案栏渲染成空白。我们这里答案一律由调用方从
+//  block.askStatus（Store 侧）传入，视图不自己猜。
 //
 
 import SwiftUI
@@ -18,109 +22,104 @@ struct AskQuestionSummaryView: View {
     private var palette: AskPalette { .init(scheme: scheme) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            ForEach(Array(payload.questions.enumerated()), id: \.element.id) { _, q in
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(q.question)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(palette.ink3)
-                        .fixedSize(horizontal: false, vertical: true)
-                    chips(question: q)
-                }
+        VStack(alignment: .leading, spacing: 8) {
+            Text(headline)
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.4)
+                .foregroundStyle(palette.ink3)
+            ForEach(payload.questions) { question in
+                answerRow(question)
             }
+            Divider()
+                .overlay(palette.hairline)
+                .padding(.top, 2)
+            HStack(spacing: 6) {
+                Image(systemName: footnoteIcon)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(footnote)
+                    .font(.system(size: 11))
+            }
+            .foregroundStyle(footnoteColor)
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 11)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(palette.card)
-        )
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .glassSurface(radius: 28, dark: scheme == .dark)
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .strokeBorder(palette.cardBorder, lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.05), radius: 6, x: 0, y: 2)
+        .shadow(color: .black.opacity(scheme == .dark ? 0.28 : 0.09), radius: 18, x: 0, y: 7)
+    }
+
+    // MARK: - 片段
+
+    private var headline: String {
+        switch status {
+        case .pending: "待回答"
+        case .answered: "已回答"
+        case .expired: "回合已结束 · 未回答"
+        }
     }
 
     @ViewBuilder
-    private func chips(question: AskWireQuestion) -> some View {
+    private func answerRow(_ question: AskWireQuestion) -> some View {
+        let answer = answerText(for: question)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(question.header.flatMap { $0.isEmpty ? nil : $0 } ?? question.question)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(palette.ink3)
+                .lineLimit(1)
+            Text(answer)
+                .font(.system(size: 13))
+                .foregroundStyle(palette.ink)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func answerText(for question: AskWireQuestion) -> String {
+        guard case .answered(let answers) = status,
+              let value = answers[question.answerKey], !value.isEmpty else {
+            return "—"
+        }
+        return value
+    }
+
+    private var footnoteIcon: String {
         switch status {
-        case .answered(let answers):
-            if let joined = answers[question.answerKey], !joined.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(joined.components(separatedBy: ", "), id: \.self) { label in
-                        AskChip(text: label, palette: palette, style: .done)
-                    }
-                }
-            } else {
-                AskChip(text: "未回答", palette: palette, style: .skipped)
-            }
-        case .skipped:
-            AskChip(text: "已跳过 · 未回答", palette: palette, style: .skipped)
-        case .expired:
-            AskChip(text: "回合已结束 · 未回答", palette: palette, style: .skipped)
-        case .pending:
-            // pending 不会渲染摘要（父层 gate）；防御分支。
-            AskChip(text: "…", palette: palette, style: .skipped)
+        case .answered: "checkmark"
+        default: "circle"
         }
     }
-}
 
-/// 答案胶囊：绿=已答（done）、灰=跳过/未答（中性非状态色——跳过不是错误）。
-struct AskChip: View {
-    let text: String
-    let palette: AskPalette
-    let style: Style
-
-    enum Style { case done, skipped }
-
-    var body: some View {
-        HStack(spacing: 4) {
-            if style == .done {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            Text(text)
-                .font(.system(size: 12.5, weight: style == .done ? .semibold : .medium))
+    private var footnote: String {
+        switch status {
+        case .pending: "等待选择"
+        case .answered: "答案已回传 · Claude 继续执行"
+        case .expired: "未回答 · 该问题已失效"
         }
-        .foregroundStyle(fg)
-        .padding(.horizontal, 11)
-        .padding(.vertical, 6)
-        .background(Capsule().fill(bg))
-        .overlay(Capsule().strokeBorder(border, lineWidth: 1))
     }
 
-    private var fg: Color { style == .done ? palette.done : palette.skipText }
-    private var bg: Color {
-        style == .done
-            ? palette.done.opacity(scheme2 == .dark ? 0.12 : 0.08)
-            : (scheme2 == .dark ? Color.white.opacity(0.06) : Color(red: 0.541, green: 0.529, blue: 0.498).opacity(0.09))
+    private var footnoteColor: Color {
+        if case .answered = status { return palette.done }
+        return palette.ink3
     }
-    private var border: Color {
-        style == .done
-            ? palette.done.opacity(scheme2 == .dark ? 0.18 : 0.20)
-            : (scheme2 == .dark ? Color.white.opacity(0.10) : Color(red: 0.541, green: 0.529, blue: 0.498).opacity(0.20))
-    }
-    @Environment(\.colorScheme) private var scheme2
 }
 
 #if DEBUG
-#Preview("answered") {
-    VStack(spacing: 12) {
-        AskQuestionSummaryView(
-            payload: AskWirePayload(toolUseId: "t1", questions: [
-                AskWireQuestion(question: "发版渠道走 main？", header: nil, multiSelect: false, options: [.init(label: "是", description: nil), .init(label: "开分支", description: nil)]),
-                AskWireQuestion(question: "重启窗口现在可以吗？", header: nil, multiSelect: false, options: [.init(label: "现在可以", description: nil), .init(label: "等 10 分钟", description: nil)])
-            ]),
-            status: .answered(answers: ["发版渠道走 main？": "是", "重启窗口现在可以吗？": "现在可以"])
-        )
-        AskQuestionSummaryView(
-            payload: AskWirePayload(toolUseId: "t2", questions: [
-                AskWireQuestion(question: "顺手升级依赖吗？", header: nil, multiSelect: false, options: [.init(label: "升", description: nil), .init(label: "先不动", description: nil)])
-            ]),
-            status: .skipped
-        )
+#Preview("终态") {
+    let payload = AskWirePayload(toolUseId: "tu_s", questions: [
+        AskWireQuestion(question: "数据库迁移走哪条路？", header: "方案", multiSelect: false,
+                        options: [.init(label: "双写迁移", description: nil)]),
+        AskWireQuestion(question: "这次跑哪些回归？", header: "验证", multiSelect: true,
+                        options: [.init(label: "e2e", description: nil), .init(label: "tsc", description: nil)]),
+    ])
+    return VStack(spacing: 14) {
+        AskQuestionSummaryView(payload: payload, status: .answered(answers: [
+            "数据库迁移走哪条路？": "双写迁移",
+            "这次跑哪些回归？": "e2e, tsc",
+        ]))
+        AskQuestionSummaryView(payload: payload, status: .expired)
     }
     .padding(16)
     .background(Color(.systemGroupedBackground))

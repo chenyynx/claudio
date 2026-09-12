@@ -538,17 +538,6 @@ final class CCPocketClient: @unchecked Sendable {
         ]
         return try await sendAndWaitRPC(payload)
     }
-
-    /// [AskCard 2026-09-12] `interrupt` — stop the current turn（问题卡
-    /// "跳过"：中断本回合，桥侧 abort 监听把 pending AskUserQuestion deny
-    /// 掉，模型收"用户没答"）。与 sendStopSession（停整个 bridge 会话）
-    /// 不同语义。
-    func sendInterrupt() async {
-        guard state == .connected else { return }
-        let request = CCPocketProtocol.InterruptRequest(sessionId: sessionId)
-        try? await send(CCPocketProtocol.encode(request))
-    }
-
     /// [M3] Answer a `permission_request` (official ClientMessage.approve /
     /// approveAlways / reject / answer — messages.dart:4591). `kind` is the
     /// wire type; `id` is the toolUseId from the request.
