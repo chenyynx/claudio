@@ -59,6 +59,27 @@ enum RemoteHistorySyncConfig {
     }
 
     static let turnReconcileDefaultsKey = "claudio.remoteHistory.turnReconcile"
+
+    /// [Fix 2026-09-13 · R2] 远端长回合"回合中轻量校准"总闸（掉窗根治配套）。
+    /// 开 = 远端流式回合进行中，按 `RemoteHistorySyncCore.midTurnSyncDue` 判定
+    /// 追加触发 `scheduleRemoteHistoryBackfill()`（复用既有 delta / 空 no-op /
+    /// fastPath / fallback 全链路语义，本开关只决定"何时多触发一次"）。
+    /// 关 = 逐字回退 v1.14.34 行为（仅进场 + 回合末 B1 两个触发时点）。
+    static var midTurnSync: Bool {
+        if let override = UserDefaults.standard.object(forKey: midTurnSyncDefaultsKey) as? Bool {
+            return override
+        }
+        return true
+    }
+
+    static let midTurnSyncDefaultsKey = "claudio.remoteHistory.midTurnSync"
+
+    /// 回合中两次校准的最小间隔（秒）——delta 命中也有 1-3s 落库往返，防过密。
+    static let midTurnIntervalSeconds: TimeInterval = 60
+
+    /// 触发所需"上次校准以来新收流事件数"下限——静默回合（等审批/长工具
+    /// 执行）delta 必为空，不值得发起网络往返。
+    static let midTurnMinEvents = 15
 }
 
 /// 校准结果（供 UI 层决策）。

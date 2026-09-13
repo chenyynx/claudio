@@ -365,6 +365,11 @@ extension AIChatViewModel {
         let streamDiagModel = provider.model.id
         var lastEventAt = Date()
         var eventSeq = 0
+        // [Fix 2026-09-13 · R2] 回合中校准的触发锚点：函数局部变量 = 生命周期
+        // 即流本身，随回合自然结束，无清理任务；初值取开流时刻，首轮判定的
+        // 基线 = "本回合开始时间"。
+        var midTurnLastSyncAt = Date()
+        var midTurnLastSyncSeq = 0
         logger.info("[StreamDiag] stream open session=\(streamDiagSession) provider=\(provider.name) model=\(streamDiagModel) at=\(Self.diagTimestamp(Date()))")
         do {
         while true {
@@ -427,6 +432,26 @@ extension AIChatViewModel {
                     logger.info("[StreamDiag] event #\(eventSeq) \(Self.diagEventName(event)) gap=\(String(format: "%.2f", gap))s at=\(Self.diagTimestamp(now)) session=\(streamDiagSession)")
                 }
                 lastEventAt = now
+                // [Fix 2026-09-13 · R2] 远端长回合的回合中游标保护——根治
+                // "掉窗 → fallback 残缺快照 → live 聚合行不吸收 → 双份+甩尾"
+                // （pp 真机 10:34 日志实锤；判据与阈值语义见
+                // RemoteHistorySyncCore.midTurnSyncDue 注释）。复用既有校准
+                // 链全部语义（delta/fastPath/空 no-op/fallback），这里只多
+                // 触发一次。in-flight 防重入自带：占用时该次直接跳过，锚点
+                // 已前移、隔 interval 后再试，忙时不会连环触发。本地 provider
+                // 被首条件 gate 短路，零成本。
+                if provider.isRemoteAgent,
+                   RemoteHistorySyncCore.midTurnSyncDue(
+                       enabled: RemoteHistorySyncConfig.midTurnSync,
+                       elapsedSinceLastSync: now.timeIntervalSince(midTurnLastSyncAt),
+                       newEventsSinceLastSync: eventSeq - midTurnLastSyncSeq,
+                       intervalSeconds: RemoteHistorySyncConfig.midTurnIntervalSeconds,
+                       minEvents: RemoteHistorySyncConfig.midTurnMinEvents) {
+                    midTurnLastSyncAt = now
+                    midTurnLastSyncSeq = eventSeq
+                    logger.info("[HistorySync][MidTurnSync] in-turn delta calibration fire at event #\(eventSeq) session=\(streamDiagSession)")
+                    await MainActor.run { self.scheduleRemoteHistoryBackfill() }
+                }
             }
 
             // [Remote compaction] No end event on the Bridge wire — the

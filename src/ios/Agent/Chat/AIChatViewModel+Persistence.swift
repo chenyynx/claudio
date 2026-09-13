@@ -850,8 +850,30 @@ extension AIChatViewModel {
     /// [v1.14.31 B1] 可见性 private→internal：send() 收尾的回合结束结算点
     /// 在另一文件（AIChatViewModel.swift），Swift 的 extension-private 仅同
     /// 文件可见——不放开则跨文件调用编译失败。内部 gate 完备，无旁路风险。
-    func scheduleRemoteHistoryBackfill() {
-        guard remoteBackfillInFlight == false else { return }
+    /// 触发一次远端历史校准。
+    /// - Parameter retriesWhileBusy: >0 时，若上一次校准仍 in-flight 则延迟
+    ///   1.5s 重进、最多重试该次数。**仅供回合末 B1 使用**——R2 回合中校准
+    ///   上线后，B1 撞上在途校准的窗口显著变多，原"静默早退"会让回合末
+    ///   定序不落地（旧 B1 bug 症状复发：用户看一眼才知道要重进）。
+    ///   预算 10 次 ×1.5s ≈ 15s，覆盖在途校准的最坏实测时长（掉窗全量
+    ///   11.4s，pp 真机 2026-09-13 10:34）；耗尽打 WARN 不留静默。
+    ///   默认 0 = 其余 caller 行为逐字节不变（早退）。
+    func scheduleRemoteHistoryBackfill(retriesWhileBusy: Int = 0) {
+        guard remoteBackfillInFlight == false else {
+            if retriesWhileBusy > 0 {
+                let next = retriesWhileBusy - 1
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(1500))
+                    guard let self else { return }
+                    if next == 0, self.remoteBackfillInFlight {
+                        logger.error("[HistorySync] B1 calibration starved by in-flight sync after 10 retries — turn-end settle deferred to next entry")
+                        return
+                    }
+                    self.scheduleRemoteHistoryBackfill(retriesWhileBusy: next)
+                }
+            }
+            return
+        }
         // [Fix 2026-09-10 v1.14.18] iCloud 来源的远端会话（remoteDeviceId 非空）
         // 展示走 remote_messages 镜像表（CloudSync 推送），校准写本机主表对它
         // 无效——旧管线在这里的行为本来就是半吊子（读 remote 表判重、写主表）。

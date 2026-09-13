@@ -639,6 +639,37 @@ enum RemoteHistorySyncCore {
         }
     }
 
+    // MARK: - 回合中同步触发判定（[Fix 2026-09-13 · R2] 长回合游标保护）
+
+    /// 远端长回合进行中，"现在该不该再补一次轻量校准"的纯判定——无 IO、
+    /// 无时钟源，时长与新事件数由 caller（SSEStream 事件循环）测量后传入。
+    ///
+    /// 为什么需要它（pp 真机 2026-09-13 10:34 日志实锤）：桥端 history 是
+    /// 滑动窗口（`MAX_HISTORY_PER_SESSION=100` trim），而游标只在**进场校准
+    /// 与回合末 B1** 两个时点推进。单个重回合（实测 30 分钟 / 188 条 wire）
+    /// 期间游标停在回合起点——B1 到达时早已掉出窗口：fallback 全量 = 窗内
+    /// **残缺**快照（回合的 user 输入行被 trim 到窗外 → RemoteTurnModel 按
+    /// `headOrphanKey` 哨兵切回合 → live 聚合行的 turnKey 匹配不到任何回合 →
+    /// 不吸收 + 甩尾 + 窗内重叠内容双份）。回合中定期把游标推上去
+    /// （delta = 既有 fastPath 纯追加；空 delta = no-op——全部现有语义，
+    /// 本判定只回答"何时多触发一次"），稳态下掉窗路径根本不会被踩到。
+    ///
+    /// 双阈值的意图：
+    ///   · `intervalSeconds` 防网络往返过密（delta 命中也要 1-3s 落库往返）；
+    ///   · `minEvents` 防"静默回合"空转——等审批/长工具执行期间无新事件，
+    ///     delta 必为空，不值得触发。
+    static func midTurnSyncDue(
+        enabled: Bool,
+        elapsedSinceLastSync: TimeInterval,
+        newEventsSinceLastSync: Int,
+        intervalSeconds: TimeInterval,
+        minEvents: Int
+    ) -> Bool {
+        guard enabled else { return false }
+        guard elapsedSinceLastSync >= intervalSeconds else { return false }
+        return newEventsSinceLastSync >= minEvents
+    }
+
     // MARK: - 增量快路径准入（[Fix v1.14.29] 远端乱序根因 A 的闸门）
 
     /// delta 增量**只含本次新条目**，而 renumber 的定序契约要求**全量

@@ -2939,7 +2939,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // remoteBackfillInFlight / remoteDeviceId），本地回合零路径。
             if lastAgentProviderIsRemote, promptQueue.isEmpty {
                 logger.info("[HistorySync] turn-end settle calibration (B1)")
-                scheduleRemoteHistoryBackfill()
+                // [R2 配套] 回合中校准上线后 B1 可能在途——占用时延迟重试
+                // （10 次 ×1.5s，覆盖在途校准最坏实测 11.4s；耗尽有 WARN），
+                // 保证"回合结束定序必落地"不再靠运气。
+                scheduleRemoteHistoryBackfill(retriesWhileBusy: 10)
             }
 
             logger.info("🔄SESSION [vm=\(self.vmInstanceId)] send DONE session=\(self.sessionId ?? "nil")")

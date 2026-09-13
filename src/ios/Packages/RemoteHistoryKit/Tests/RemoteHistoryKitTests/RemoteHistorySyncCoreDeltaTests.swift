@@ -183,4 +183,53 @@ final class RemoteHistorySyncCoreDeltaTests: XCTestCase {
             inserts: []
         ))
     }
+
+    // MARK: - midTurnSyncDue（[Fix 2026-09-13 · R2] 回合中触发判定）
+    //
+    // 生产阈值（RemoteHistorySyncConfig）：interval=60s、minEvents=15。
+    // 用例把阈值显式写进参数——测试锁定的是**判定语义**，不随常量漂移；
+    // 常量本身改动的守护由 Config 侧（app 层）负责。
+
+    private func due(
+        enabled: Bool = true,
+        elapsed: TimeInterval,
+        newEvents: Int,
+        interval: TimeInterval = 60,
+        minEvents: Int = 15
+    ) -> Bool {
+        RemoteHistorySyncCore.midTurnSyncDue(
+            enabled: enabled,
+            elapsedSinceLastSync: elapsed,
+            newEventsSinceLastSync: newEvents,
+            intervalSeconds: interval,
+            minEvents: minEvents
+        )
+    }
+
+    func test_midTurnSyncDue_firesWhenBothThresholdsMet() {
+        XCTAssertTrue(due(elapsed: 61, newEvents: 20))
+    }
+
+    func test_midTurnSyncDue_killSwitchOffNeverFires() {
+        XCTAssertFalse(due(enabled: false, elapsed: 3600, newEvents: 10_000))
+    }
+
+    func test_midTurnSyncDue_intervalNotReached() {
+        // 事件再多，间隔不足也不触发（防网络往返过密）
+        XCTAssertFalse(due(elapsed: 59.9, newEvents: 1000))
+    }
+
+    func test_midTurnSyncDue_silentTurnNeverFires() {
+        // 时间再久，无新事件也不触发（等审批/长工具的空转保护）
+        XCTAssertFalse(due(elapsed: 3600, newEvents: 14))
+    }
+
+    func test_midTurnSyncDue_boundaryIsInclusive() {
+        // 恰好等于双阈值 → 触发（>= 语义，与既有闸门函数一致）
+        XCTAssertTrue(due(elapsed: 60, newEvents: 15))
+    }
+
+    func test_midTurnSyncDue_zeroNewEventsAfterQuietStream() {
+        XCTAssertFalse(due(elapsed: 120, newEvents: 0))
+    }
 }
