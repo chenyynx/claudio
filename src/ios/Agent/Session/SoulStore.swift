@@ -753,9 +753,14 @@ enum SoulStore {
     /// agent runs with vanilla behaviour out of the box and users decide
     /// what voice / tone to add themselves. Only the frontmatter (name /
     /// style / lang) is seeded.
+    /// [Rename 2026-09-13] 模板 name 原本写 "Minis"，与 SoulMetadata.default.name
+    /// （早就是 "Claudio"）不一致：首次启动写盘的 SOUL.md 带非空旧名，使所有代码
+    /// 回退分支永远走不到，界面与系统提示词里助手仍自称旧名。此处对齐两处默认。
+    /// ⚠️ 这段是字符串字面量 —— 注释只能写在三引号**外面**，写进去会被原样投递到
+    /// 用户设备的 SOUL.md，frontmatter 里的非 key:value 行会污染解析。
     static let defaultContent: String = """
     ---
-    name: "Minis"
+    name: "Claudio"
     style: ""
     lang: "auto"
     ---
@@ -925,7 +930,7 @@ enum SystemPromptBuilder {
         let name: String = {
             let n = (file?.metadata.name ?? SoulMetadata.default.name)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return n.isEmpty ? "Minis" : n
+            return n.isEmpty ? "Claudio" : n
         }()
         let style: String = (file?.metadata.style ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1029,12 +1034,12 @@ enum SystemPromptBuilder {
 @MainActor
 struct AssistantSoulName: View {
     @State private var name: String = SoulStore.cachedMetadata.name.isEmpty
-        ? "Minis" : SoulStore.cachedMetadata.name
+        ? "Claudio" : SoulStore.cachedMetadata.name
     var body: some View {
         Text(name)
             .onReceive(NotificationCenter.default.publisher(for: .soulMdChanged)) { _ in
                 let n = SoulStore.cachedMetadata.name
-                name = n.isEmpty ? "Minis" : n
+                name = n.isEmpty ? "Claudio" : n
             }
     }
 }

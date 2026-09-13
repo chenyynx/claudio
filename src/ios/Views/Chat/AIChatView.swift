@@ -477,9 +477,9 @@ struct AIChatView: View {
     /// Session being edited via the title-pill tap. Drives the SessionEditSheet.
     @State private var titlePillEditSession: ChatSession?
     /// Default chat title for sessions without a generated title. Sourced
-    /// from SOUL.md (`name`), falls back to "Minis". Refreshed on .soulMdChanged.
+    /// from SOUL.md (`name`), falls back to "Claudio". Refreshed on .soulMdChanged.
     @State private var soulName: String = SoulStore.cachedMetadata.name.isEmpty
-        ? "Minis" : SoulStore.cachedMetadata.name
+        ? "Claudio" : SoulStore.cachedMetadata.name
 
     /// True when any sheet or fullScreenCover is presented (suppress auto-focus to avoid keyboard bugs).
     private var hasOverlayPresented: Bool {

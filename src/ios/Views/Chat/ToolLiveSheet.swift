@@ -2074,9 +2074,9 @@ struct ToolLiveSheet: View {
         case .browserTool: return "Minis is using Browser"
         case .readImageTool: return "Minis is reading Image"
         case .memoryTool: return "Minis is using Memory"
-        case .info: return "Minis"
-        case .text: return "Minis"
-        case .thinking: return "Minis"
+        case .info: return "Claudio"
+        case .text: return "Claudio"
+        case .thinking: return "Claudio"
         case .questionCard: return "Minis is asking"
         }
     }

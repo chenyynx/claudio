@@ -135,13 +135,13 @@ jobs:
           BUILD_NO=${{ github.run_number }}
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NO" build/Payload/Minis.app/Info.plist
           echo "CFBundleVersion set to $BUILD_NO"
-          cd build && zip -qr Minis-unsigned.ipa Payload
+          cd build && zip -qr Claudio-unsigned.ipa Payload
 
       - name: Upload unsigned .ipa
         uses: actions/upload-artifact@v4
         with:
-          name: Minis-unsigned-ipa
-          path: src/ios/build/Minis-unsigned.ipa
+          name: Claudio-unsigned-ipa
+          path: src/ios/build/Claudio-unsigned.ipa
           if-no-files-found: error
 
       # [doris] Release the ipa as a release asset (fixed tag, commit-suffixed
@@ -159,8 +159,8 @@ jobs:
           SHA_SHORT: ${{ github.sha }}
         run: |
           TAG="ipa-latest"
-          NAME="Minis-unsigned-${SHA_SHORT:0:7}.ipa"
-          cp src/ios/build/Minis-unsigned.ipa "$NAME"
+          NAME="Claudio-unsigned-${SHA_SHORT:0:7}.ipa"
+          cp src/ios/build/Claudio-unsigned.ipa "$NAME"
           gh release create "$TAG" --title "Claudio unsigned builds" --notes "Latest main build — asset filename carries the commit hash." || true
           gh release upload "$TAG" "$NAME" --clobber
 

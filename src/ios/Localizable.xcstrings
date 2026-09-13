@@ -15594,6 +15594,110 @@
         }
       }
     },
+    "Claudio": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio"
+          }
+        }
+      }
+    },
+    "Claudio is thinking": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio denkt nach"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio is thinking"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio réfléchit"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio が考えています"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio가 생각하는 중"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio думает"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio 正在思考"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudio 正在思考"
+          }
+        }
+      }
+    },
     "Clear": {
       "comment": "Clear transcript context menu\nDownloads panel action",
       "localizations": {
@@ -27917,6 +28021,12 @@
     },
     "Encrypted": {
       "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cifrado"
+          }
+        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
@@ -27927,12 +28037,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "已加密"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cifrado"
           }
         }
       }
@@ -48032,6 +48136,12 @@
     },
     "No": {
       "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No"
+          }
+        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
@@ -48042,12 +48152,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "否"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No"
           }
         }
       }
@@ -88468,6 +88572,12 @@
     },
     "Yes": {
       "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sí"
+          }
+        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
@@ -88478,12 +88588,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "是"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sí"
           }
         }
       }
