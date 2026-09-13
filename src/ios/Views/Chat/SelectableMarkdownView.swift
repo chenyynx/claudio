@@ -5628,25 +5628,34 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         }
     }
 
-    // Allow code block UITextViews to handle horizontal pans.
-    // The outer text view's panGestureRecognizer can intercept touches
-    // even when isScrollEnabled=false; reject horizontal pans that
-    // originate inside a scrollable code block subview.
+    // [Fix 2026-09-14] The outer text view's built-in panGestureRecognizer
+    // (installed by UIKit because isSelectable=true) competes with the outer
+    // UICollectionView's scrolling pan. Neither side declares a failure
+    // requirement, so whichever begins first wins — when this pan wins, the
+    // collection view's scroll gets cancelled and upward swipes feel "stuck"
+    // until the user swipes again. Only a horizontal drag is a text-selection
+    // gesture here, so vertical intent is handed back to the scroll view.
+    //
+    // (The previous body tried to detect "horizontal pan inside a scrollable
+    // code block", but its `codeTV.isScrollEnabled` guard was never true — all
+    // code text views set isScrollEnabled=false and scroll via an inner
+    // scrollView — so it was dead code and never once returned false.)
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer == self.panGestureRecognizer {
-            let location = gestureRecognizer.location(in: self)
-            // Check if touch is inside any code block UITextView subview
-            for subview in attachmentViews {
-                if subview.frame.contains(location) {
-                    // Find the UITextView inside this attachment view
-                    if let codeTV = findCodeTextView(in: subview), codeTV.isScrollEnabled {
-                        let vel = self.panGestureRecognizer.velocity(in: self)
-                        // If primarily horizontal, let the inner code block handle it
-                        if abs(vel.x) > abs(vel.y) {
-                            return false
-                        }
-                    }
-                }
+            // [Fix 2026-09-14 上滑受阻] UITextView(isSelectable=true) 的内置 pan
+            // 与外层 UICollectionView 的滚动 pan 竞争同一触摸序列（全仓无
+            // require(toFail:)，纯竞争）。上滑时若本 pan 先 .began，collectionView
+            // 的 pan 被 cancel → 滚动卡住，需再滑一次。文本选择手柄本质是
+            // **水平**拖拽：垂直意图占优时直接放行给滚动视图。
+            //
+            // 用 translation 而非 velocity：本回调在手势刚过识别阈值时调用，
+            // velocity 在该时刻噪声极大（常为 0 或方向抖动），是"有时候才卡"
+            // 的来源；translation 已是这段位移的可靠方向信号。
+            // 用 >=（而非 >）：dx==dy==0 的"方向未定"也一律放行给滚动——
+            // 宁可让滚动先接管，也不要在这里吞掉一次触摸。
+            let t = self.panGestureRecognizer.translation(in: self)
+            if abs(t.y) >= abs(t.x) {
+                return false
             }
         }
         // Inline code tap / blank area tap: allow unless tapping a link or attachment view
@@ -5711,14 +5720,6 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             return true  // a real long press must fail before our tap can begin
         }
         return false
-    }
-
-    private func findCodeTextView(in view: UIView) -> UITextView? {
-        for sub in view.subviews {
-            if let tv = sub as? UITextView { return tv }
-            if let found = findCodeTextView(in: sub) { return found }
-        }
-        return nil
     }
 
     @available(*, unavailable)
