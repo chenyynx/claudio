@@ -6323,10 +6323,10 @@ private struct EmptyChatDirectoryTimeline: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(
-                        Capsule().fill(ChatColors.secondaryBg)
+                        Capsule().fill(ChatColors.attachmentChipBg)
                     )
                     .overlay(
-                        Capsule().stroke(ChatColors.toolBorder, lineWidth: 0.5)
+                        Capsule().stroke(ChatColors.inputIconBorder, lineWidth: 0.5)
                     )
                 }
                 .buttonStyle(.plain)
@@ -6338,11 +6338,11 @@ private struct EmptyChatDirectoryTimeline: View {
         .frame(maxWidth: 460, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(ChatColors.secondaryBg.opacity(0.6))
+                .fill(ChatColors.attachmentChipBg)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(ChatColors.toolBorder, lineWidth: 0.5)
+                .stroke(ChatColors.inputIconBorder, lineWidth: 0.5)
         )
         .fixedSize(horizontal: false, vertical: true)
     }

@@ -550,7 +550,7 @@ struct ToolLiveSheet: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(ChatColors.primaryText)
                         .frame(width: 32, height: 32)
-                        .background(ChatColors.secondaryBg)
+                        .background(ChatColors.attachmentChipBg)
                         .clipShape(Circle())
                 }
 
@@ -581,7 +581,7 @@ struct ToolLiveSheet: View {
                         }
                         .foregroundStyle(ChatColors.primaryText)
                         .frame(width: 32, height: 32)
-                        .background(ChatColors.secondaryBg)
+                        .background(ChatColors.attachmentChipBg)
                         .clipShape(Circle())
                     }
                 } else if case .browserTool = block.kind, browserPool != nil {
@@ -590,7 +590,7 @@ struct ToolLiveSheet: View {
                             .font(.system(size: 14))
                             .foregroundStyle(ChatColors.primaryText)
                             .frame(width: 32, height: 32)
-                            .background(ChatColors.secondaryBg)
+                            .background(ChatColors.attachmentChipBg)
                             .clipShape(Circle())
                     }
                 } else if case .fileWriteTool = block.kind {
@@ -606,7 +606,7 @@ struct ToolLiveSheet: View {
                             .font(.system(size: 14))
                             .foregroundStyle(navCopyDone ? Color.green : ChatColors.primaryText)
                             .frame(width: 32, height: 32)
-                            .background(ChatColors.secondaryBg)
+                            .background(ChatColors.attachmentChipBg)
                             .clipShape(Circle())
                     }
                 } else if case .fileReadTool = block.kind {
@@ -619,7 +619,7 @@ struct ToolLiveSheet: View {
                             .font(.system(size: 14))
                             .foregroundStyle(navCopyDone ? Color.green : ChatColors.primaryText)
                             .frame(width: 32, height: 32)
-                            .background(ChatColors.secondaryBg)
+                            .background(ChatColors.attachmentChipBg)
                             .clipShape(Circle())
                     }
                 } else if case .fileEditTool = block.kind {
@@ -634,7 +634,7 @@ struct ToolLiveSheet: View {
                             .font(.system(size: 14))
                             .foregroundStyle(navCopyDone ? Color.green : ChatColors.primaryText)
                             .frame(width: 32, height: 32)
-                            .background(ChatColors.secondaryBg)
+                            .background(ChatColors.attachmentChipBg)
                             .clipShape(Circle())
                     }
                 } else if case .readImageTool = block.kind {
@@ -649,7 +649,7 @@ struct ToolLiveSheet: View {
                             .font(.system(size: 14))
                             .foregroundStyle(navCopyDone ? Color.green : ChatColors.primaryText)
                             .frame(width: 32, height: 32)
-                            .background(ChatColors.secondaryBg)
+                            .background(ChatColors.attachmentChipBg)
                             .clipShape(Circle())
                     }
                 } else if case .memoryTool = block.kind {
@@ -663,7 +663,7 @@ struct ToolLiveSheet: View {
                             .font(.system(size: 14))
                             .foregroundStyle(navCopyDone ? Color.green : ChatColors.primaryText)
                             .frame(width: 32, height: 32)
-                            .background(ChatColors.secondaryBg)
+                            .background(ChatColors.attachmentChipBg)
                             .clipShape(Circle())
                     }
                 } else {
@@ -672,7 +672,7 @@ struct ToolLiveSheet: View {
                             .font(.system(size: 14))
                             .foregroundStyle(ChatColors.primaryText)
                             .frame(width: 32, height: 32)
-                            .background(ChatColors.secondaryBg)
+                            .background(ChatColors.attachmentChipBg)
                             .clipShape(Circle())
                     }
                 }

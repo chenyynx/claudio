@@ -438,7 +438,7 @@ struct MinisAudioPlayerView: View {
         }
         .padding(10)
         .frame(maxWidth: 320, minHeight: controlsHeight)
-        .background(ChatColors.secondaryBg)
+        .background(ChatColors.attachmentChipBg)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .sheet(isPresented: $showPreview) {
             MinisAudioPreviewView(fileURL: fileURL)
@@ -456,7 +456,7 @@ struct MinisAudioPlayerView: View {
         .foregroundColor(ChatColors.secondaryText)
         .padding(10)
         .frame(maxWidth: 320, minHeight: controlsHeight)
-        .background(ChatColors.secondaryBg)
+        .background(ChatColors.attachmentChipBg)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 

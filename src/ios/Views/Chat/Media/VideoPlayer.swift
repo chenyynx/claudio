@@ -59,7 +59,7 @@ struct MinisVideoPlayerView: View {
                 // Fixed-size placeholder matches mediaPlaceholderHeight to prevent layout jumps
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(ChatColors.secondaryBg)
+                        .fill(ChatColors.attachmentChipBg)
                     VStack(spacing: 8) {
                         Image(systemName: "play.circle.fill")
                             .font(.system(size: 48))
@@ -102,7 +102,7 @@ struct MinisVideoPlayerView: View {
         }
         .foregroundColor(ChatColors.secondaryText)
         .frame(maxWidth: 400, minHeight: mediaPlaceholderHeight, maxHeight: mediaPlaceholderHeight)
-        .background(ChatColors.secondaryBg)
+        .background(ChatColors.attachmentChipBg)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
