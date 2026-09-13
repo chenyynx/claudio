@@ -134,7 +134,10 @@ private struct RemotePermissionDialogContent: View {
             .padding(.bottom, 30)
             .background(Color(.systemGroupedBackground))
         }
-        .background(Color(.systemGroupedBackground))
+        // [AskDialog 2026-09-13 · 批3] 实色 → 与问题卡/终态摘要卡同一套液态玻璃
+        // （glassSurface 28 + 描边 + 投影）。只换材质，布局（图标 / 参数表 /
+        // 底部钉按钮）与审批语义零改动。iOS<26 由 glassSurface 自带 material 回退。
+        .glassSurface(radius: 28, dark: scheme == .dark)
     }
 }
 
