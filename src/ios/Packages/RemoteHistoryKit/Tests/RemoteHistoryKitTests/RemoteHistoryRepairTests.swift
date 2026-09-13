@@ -122,4 +122,42 @@ final class RemoteHistoryRepairTests: XCTestCase {
         XCTAssertFalse(RemoteHistoryRepair.isCovered(needed: ["a": 2], by: ["a": 1]),
             "同文本出现两次必须服务端也有两个")
     }
+    // MARK: - 双远端 bm- 行内容重复去重（[Fix] dupContent>1 根因）
+
+    func test_duplicateRemoteStableIds_detectsTwinBmRow() {
+        let oldRow = RemoteHistoryFixture.row(
+            id: "bm-old", role: .assistant, parts: [RemoteHistoryFixture.toolUse(id: "tu-1")])
+        let incoming = RemoteHistoryFixture.row(
+            id: "bm-new", role: .assistant, parts: [RemoteHistoryFixture.toolUse(id: "tu-1")])
+        let ids = RemoteHistoryRepair.duplicateRemoteStableIds(dbRows: [oldRow], incomingRaws: [incoming])
+        XCTAssertEqual(ids, ["bm-old"], "同内容不同 uuid 的两条远端行 → 旧行判冗余")
+    }
+
+    func test_duplicateRemoteStableIds_skipsSelfId() {
+        // incoming 已含该 bm- 行本身（幂等 upsert）→ 不把自己判为重复。
+        let row = RemoteHistoryFixture.row(
+            id: "bm-old", role: .assistant, parts: [RemoteHistoryFixture.toolUse(id: "tu-1")])
+        let ids = RemoteHistoryRepair.duplicateRemoteStableIds(dbRows: [row], incomingRaws: [row])
+        XCTAssertTrue(ids.isEmpty, "自己不删自己")
+    }
+
+    func test_duplicateRemoteStableIds_plainSingleTextKept() {
+        // 护栏：纯单行文本保守保留（避免「继续/好」误删，同 hasStrongIdentity 准则）。
+        let oldRow = RemoteHistoryFixture.row(
+            id: "bm-old", role: .assistant, parts: [.text("继续")])
+        let incoming = RemoteHistoryFixture.row(
+            id: "bm-new", role: .assistant, parts: [.text("继续")])
+        let ids = RemoteHistoryRepair.duplicateRemoteStableIds(dbRows: [oldRow], incomingRaws: [incoming])
+        XCTAssertTrue(ids.isEmpty, "纯单行文本不删")
+    }
+
+    func test_duplicateRemoteStableIds_noTwinEmpty() {
+        let oldRow = RemoteHistoryFixture.row(
+            id: "bm-old", role: .assistant, parts: [RemoteHistoryFixture.toolUse(id: "tu-1")])
+        let incoming = RemoteHistoryFixture.row(
+            id: "bm-new", role: .assistant, parts: [RemoteHistoryFixture.toolUse(id: "tu-2")])
+        let ids = RemoteHistoryRepair.duplicateRemoteStableIds(dbRows: [oldRow], incomingRaws: [incoming])
+        XCTAssertTrue(ids.isEmpty, "内容不同 → 不误删")
+    }
+
 }

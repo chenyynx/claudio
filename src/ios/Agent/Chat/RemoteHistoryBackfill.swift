@@ -722,6 +722,15 @@ final class RemoteHistoryBackfill {
             var mergedLegacy = supersededLegacyIds
             for id in repairIds { mergedLegacy.insert(id) }
 
+            // [Fix] 双远端 bm- 行内容重复去重（dupContent>1 根因）：snapshot 与 delta
+            // 给同一消息发了不同 messageUuid -> 两条内容相同的 bm-{uuid} 远端行共存。
+            // Repair 只删无 turnKey 的 live 行、Reconciler 只吸收 live 行，都管不到；
+            // 此处按内容身份多重集键把 DB 中 id 不同、内容相同的旧 bm- 行判冗余删除。
+            // 护栏：纯单行文本不删（避免「继续/好」误删，同 hasStrongIdentity 准则）。
+            let duplicateStableIds = RemoteHistoryRepair.duplicateRemoteStableIds(
+                dbRows: dbRows, incomingRaws: stableRaws)
+            for id in duplicateStableIds { mergedLegacy.insert(id) }
+
             // 2) 回合对账计划
             let turnPlan = RemoteTurnReconciler.plan(
                 serverRaws: stableRaws, dbRows: dbRows,
@@ -775,7 +784,7 @@ final class RemoteHistoryBackfill {
 
             let changed = !turnPlan.inserts.isEmpty || !turnPlan.deleteIds.isEmpty || applied.orderWrites > 0
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
-            logger.info("[HistorySync] session=\(sessionId.prefix(8)) turnReconcile done in \(String(format: "%.0f", elapsedMs))ms inserts=\(turnPlan.inserts.count) deletes=\(turnPlan.deleteIds.count) absorbed=\(turnPlan.absorbedLiveIds.count) repaired=\(repairIds.count) orderWrites=\(applied.orderWrites) ordered=\(turnPlan.orderedIds.count)")
+            logger.info("[HistorySync] session=\(sessionId.prefix(8)) turnReconcile done in \(String(format: "%.0f", elapsedMs))ms inserts=\(turnPlan.inserts.count) deletes=\(turnPlan.deleteIds.count) absorbed=\(turnPlan.absorbedLiveIds.count) repaired=\(repairIds.count) dupStable=\(duplicateStableIds.count) orderWrites=\(applied.orderWrites) ordered=\(turnPlan.orderedIds.count)")
 
             return RemoteHistorySyncOutcome(
                 changed: changed, lastWireType: lastWireType,
