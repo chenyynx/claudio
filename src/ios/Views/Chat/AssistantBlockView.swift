@@ -453,7 +453,7 @@ struct ToolCapsuleView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
-            .background(ChatColors.attachmentChipBg)
+            .background(ChatColors.toolPillBg)
             .clipShape(Capsule())
             .overlay(
                 Group {
@@ -1009,8 +1009,16 @@ struct ThinkingBlockView: View {
             if isExpanded.wrappedValue {
                 Color.clear
             } else {
+                // [T-tool-pill] Shares the tool pill's graphite plate rather than the
+                // light control plate: the collapsed header is the same 36pt-scale bar
+                // wedged between glass bubbles, so it needs the same edge — at white .50
+                // over ivory it measured +4 levels, i.e. effectively borderless, and
+                // sitting right next to a now-darker tool row it would read as a bug.
+                // Identity stays with the violet rail / glyph / title, not the fill:
+                // same tier of control, same plate. Contrast holds — #4B3F86 on
+                // #EAE8E4 is about 4.5:1, and the paired dark (#A79BE0 on #343330) about 4:1.
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(ChatColors.attachmentChipBg)
+                    .fill(ChatColors.toolPillBg)
             }
         }
         .overlay {

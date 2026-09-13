@@ -106,6 +106,20 @@ enum ChatColors {
     static let thinkingInk = Color(UIColor { $0.userInterfaceStyle == .dark
         ? UIColor(red: 167 / 255.0, green: 155 / 255.0, blue: 224 / 255.0, alpha: 1)
         : UIColor(red: 75 / 255.0, green: 63 / 255.0, blue: 134 / 255.0, alpha: 1) })
+
+    /// [T-tool-pill] The in-stream tool pill is a 36pt bar wedged between glass
+    /// bubbles, so it needs a stronger edge than the small controls around it: the
+    /// shared plate (`attachmentChipBg`, white .50) measured only +4 levels over the
+    /// ivory page — effectively borderless, which is what read as "uncomfortable".
+    ///
+    /// Deliberately its OWN token rather than a darkening of `attachmentChipBg`:
+    /// that one is shared by the attachment chips and the composer's round controls,
+    /// and deepening it there would muddy the glass bar they sit on. pp picked the
+    /// graphite value (P2); the dark value is paired in the same closure so nobody
+    /// can ship the light one alone — #EAE8E4 on the dark page would be unreadable.
+    static let toolPillBg = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 52 / 255.0, green: 51 / 255.0, blue: 48 / 255.0, alpha: 1)
+        : UIColor(red: 234 / 255.0, green: 232 / 255.0, blue: 228 / 255.0, alpha: 1) })
     static let inputBg = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.12, alpha: 1) : .white })
     static let inputBorder = Color(UIColor.separator)
     static let primaryText = Color(UIColor.label)
