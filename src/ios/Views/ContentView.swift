@@ -402,6 +402,105 @@ private struct FolderMemberRowBackground: View {
     }
 }
 
+// MARK: - [T-session-list-card] Floating card face for plain session rows
+//
+// Layout is deliberately untouched: this paints *behind* the existing row via
+// `listRowBackground`, so not one glyph moves — the row keeps
+// `.listRowInsets(EdgeInsets())` and its own internal padding. Only the
+// material and the page tone changed.
+//
+// WHY A FLAT SAMPLED FILL AND NOT `glassEffect`: live glass on List rows has
+// already been tried and rejected twice in this file (see `FolderSurface`:
+// glass pieces cannot merge across rows, and a live material flickers frame to
+// frame as heterogeneous content scrolls behind it). This list also carries
+// two scroll-performance incidents on record ([T-ios-session-list-equatable-jank])
+// and an explicit ban on hand-rolled blur. So the lift is produced the same way
+// the folder card produces it: a face barely above the page tone, with an EDGE
+// GRADIENT carrying the bright top hairline and the darker bottom edge. No
+// blur, and no per-row `.shadow` either — rows clip to bounds, so a real shadow
+// would be sliced into a dark band.
+
+/// Page tone. Neutral gray, darkening downward. Needed: on a pure-white page a
+/// card that is only a few levels lighter is invisible, which is exactly why the
+/// reference reads as floating and a naive white-on-white port does not.
+private let sessionPageTop = Color(UIColor { traits in
+    traits.userInterfaceStyle == .dark
+        ? UIColor(white: 14 / 255.0, alpha: 1)
+        : UIColor(white: 231 / 255.0, alpha: 1)
+})
+private let sessionPageBottom = Color(UIColor { traits in
+    traits.userInterfaceStyle == .dark
+        ? UIColor(white: 8 / 255.0, alpha: 1)
+        : UIColor(white: 217 / 255.0, alpha: 1)
+})
+
+/// Card face. Light 240 sits a few levels over the page at the top of the
+/// screen and more near the bottom (that is the gradient doing the work). Dark
+/// reuses the folder card's sampled 18/18/18 so both card families match.
+private let sessionRowCardFill = Color(UIColor { traits in
+    traits.userInterfaceStyle == .dark
+        ? UIColor(red: 18 / 255.0, green: 18 / 255.0, blue: 18 / 255.0, alpha: 1)
+        : UIColor(white: 240 / 255.0, alpha: 1)
+})
+
+/// Edge top: the highlight that reads as glass catching light.
+private let sessionRowEdgeTop = Color(UIColor { traits in
+    traits.userInterfaceStyle == .dark
+        ? UIColor(white: 1, alpha: 0.16)
+        : UIColor(white: 1, alpha: 0.72)
+})
+/// Edge bottom: the contact shadow, faked as a stroke so nothing clips.
+private let sessionRowEdgeBottom = Color(UIColor { traits in
+    traits.userInterfaceStyle == .dark
+        ? UIColor(white: 0, alpha: 0.55)
+        : UIColor(white: 0, alpha: 0.10)
+})
+
+/// The gutter between cards, and how far the card pulls in from the screen
+/// edge. Both live here so a single-line tweak retunes the whole rhythm.
+private let sessionRowCardRadius: CGFloat = 22
+private let sessionRowCardInsetX: CGFloat = 8
+private let sessionRowCardGapY: CGFloat = 3
+
+private struct SessionRowCardBackground: View {
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: sessionRowCardRadius, style: .continuous)
+    }
+
+    var body: some View {
+        shape
+            .fill(sessionRowCardFill)
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(
+                        stops: [
+                            .init(color: sessionRowEdgeTop, location: 0),
+                            .init(color: .clear, location: 0.45),
+                            .init(color: sessionRowEdgeBottom, location: 1)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom),
+                    lineWidth: 0.75)
+            }
+            .padding(.horizontal, sessionRowCardInsetX)
+            .padding(.vertical, sessionRowCardGapY)
+    }
+}
+
+/// Backdrop for the iPhone session list. See `SessionRowCardBackground` for why
+/// the page needs its own tone.
+private struct SessionListPageBackground: View {
+    var body: some View {
+        LinearGradient(
+            stops: [
+                .init(color: sessionPageTop, location: 0),
+                .init(color: sessionPageBottom, location: 1)
+            ],
+            startPoint: .top,
+            endPoint: .bottom)
+    }
+}
+
 /// Rename + dissolve alerts for the folder-header menu, extracted into a
 /// modifier so their inline Binding(get:set:) expressions don't count against
 /// ContentView.body's type-check budget (adding them inline tipped the
@@ -3302,6 +3401,20 @@ struct ContentView: View {
                             selectableRow(session)
                                 .id("select-\(session.id)")
                                 .listRowInsets(EdgeInsets())
+                                .listRowSeparator(.hidden)
+                                // [T-session-list-card] Selection mode never set a row
+                                // background, which was invisible while the page was
+                                // opaque white. On the new gray page it would read as
+                                // white stripes, so it gets the same face as the normal
+                                // rows — and folder members keep their tiled container
+                                // instead of splitting into per-row cards.
+                                .listRowBackground(Group {
+                                    if group.folderId != nil {
+                                        FolderMemberRowBackground(isLast: sessionId == group.ids.last)
+                                    } else {
+                                        SessionRowCardBackground()
+                                    }
+                                })
                         } else {
                             SessionRow(
                                 session: session,
@@ -3334,7 +3447,10 @@ struct ContentView: View {
                                 .overlay {
                                     if regeneratingTitleSessionId == session.id {
                                         ZStack {
-                                            Color(.systemBackground).opacity(0.7)
+// [T-session-list-card] Was page-white: on the new gray page a white
+                                            // scrim rendered as a bright box. Use the card face itself so
+                                            // the row still reads as one card while its title regenerates.
+                                            sessionRowCardFill.opacity(0.7)
                                             ProgressView()
                                         }
                                     }
@@ -3349,7 +3465,8 @@ struct ContentView: View {
                                 if group.folderId != nil {
                                     FolderMemberRowBackground(isLast: sessionId == group.ids.last)
                                 } else {
-                                    Color(.systemBackground)
+                                    // [T-session-list-card] Was a flat page-white slab.
+                                    SessionRowCardBackground()
                                 }
                             })
                             .contextMenu {
@@ -3382,6 +3499,11 @@ struct ContentView: View {
 
         }
         .listStyle(.plain)
+        // [T-session-list-card] Neutral gray page tone, darkening downward, so the
+        // card faces read as lifted. Scoped to the iPhone list only — the iPad
+        // sidebar keeps its old page until the same recipe lands there.
+        .scrollContentBackground(.hidden)
+        .background(SessionListPageBackground().ignoresSafeArea())
         #if DEBUG
         // TEMPORARY scroll-phase markers to bracket the jitter window in the
         // log. Pair with the [ROWH] probe: a [ROWH] line appearing during
