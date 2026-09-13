@@ -187,6 +187,8 @@ struct ChatMessageRow: View {
     var onAskSubmit: ((UUID, [String: String]) -> Void)?
     /// [AskCard 2026-09-13] 跳过回答回调。
     var onAskSkip: ((UUID) -> Void)?
+    /// [AskDialog 2026-09-13] 点紧凑行重开问题弹窗。
+    var onAskReopen: ((UUID) -> Void)?
     /// Read this whole reply aloud from the start (clears any in-progress TTS).
     /// Wired from AIChatView (which owns the view model). Disabled while the
     /// message is still streaming to avoid fighting the live streaming TTS.
@@ -546,6 +548,7 @@ struct ChatMessageRow: View {
                     toolSnapshots: toolSnapshots,
                     onAskSubmit: onAskSubmit,
                     onAskSkip: onAskSkip,
+                    onAskReopen: onAskReopen,
                     highlightedBlockId: $highlightedBlockId,
                     detailBlock: $detailBlock
                 )

@@ -1179,7 +1179,15 @@ final class CellStateBridgeV2: ObservableObject {
     var onShowCompactSummary: ((String) -> Void)?
     /// [AskCard 2026-09-12] 流内 AskUserQuestion 卡回调（blockId + answers）。
     /// 由 VM 侧统一注入（getOrCreateBridge 附近接线）；nil = 只读渲染。
+    /// [AskDialog 2026-09-13 · 休眠保留] pending 卡已移进弹窗，弹窗直连
+    /// vm.submitAskAnswer / skipAskAnswer，本回调与 onAskSkip 当前**无渲染方消费**。
+    /// 刻意保留整条注入链（16 处引用）作为回退通道：若 pp 再改回流内作答，
+    /// AskCardHost 的 pending 分支恢复画 AskQuestionCardView 即刻可用，无需重接。
+    /// 不是漏删，别按死代码清掉。
     var onAskSubmit: ((UUID, [String: String]) -> Void)?
     /// [AskCard 2026-09-13] 跳过回答回调（blockId）。发 reject，卡片置 skipped。
     var onAskSkip: ((UUID) -> Void)?
+    /// [AskDialog 2026-09-13] 点流内紧凑行重开问题弹窗（blockId）。
+    /// nil = 只读渲染（历史回放）。
+    var onAskReopen: ((UUID) -> Void)?
 }

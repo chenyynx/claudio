@@ -19,6 +19,19 @@ struct RemotePermissionRequest: Identifiable {
     let input: [String: Any]
 }
 
+/// [AskDialog 2026-09-13] AskUserQuestion 弹窗的载荷。
+/// 刻意与 RemotePermissionRequest **分两个类型、两个字段**：审批弹窗的 item 是
+/// pendingPermission，SSEStream 里 AskUserQuestion 早已被 gate 排除在该赋值之外
+/// （见 case .permissionRequest）。复用同一 item 会让两种弹窗抢同一个 sheet、
+/// 互相顶掉。
+struct PendingAskRequest: Identifiable, Equatable {
+    let toolUseId: String
+    let blockId: UUID
+    let payload: AskWirePayload
+
+    var id: String { toolUseId }
+}
+
 /// 远端 agent（CC Pocket bridge 通道）会话的 UI 状态 + 动作，独立于本地
 /// agent 主 VM —— 隔离架构铁律（pp 2026-09-09）：远端 Agent 是扩展独立
 /// 大模块，不得反向侵入或污染本地 Agent 的内部状态。
@@ -47,6 +60,12 @@ final class RemoteAgentSessionState: ObservableObject {
     /// [M3] Latest Bridge `permission_request` awaiting an answer, or nil.
     /// Drives the RemotePermissionDialog (non-bypass permission modes).
     @Published var pendingPermission: RemotePermissionRequest?
+
+    /// [AskDialog 2026-09-13] 待作答的 AskUserQuestion。非 nil → 弹问题弹窗。
+    /// 与 pendingPermission 互斥（同一时刻只会有一种远端请求弹窗）。
+    /// 隔离 gate：只有 RemoteAgentProvider 的 permission_request 分支会写，
+    /// 本地 agent 会话恒 nil → 弹窗永不触发。
+    @Published var pendingAsk: PendingAskRequest?
 
     /// 远端 agent 工具输出文件已下载到本地后，UI 层监听这个字段弹
     /// FilePreviewPanel 全屏面板。**仅远端 agent 用** —— 本地 agent 走

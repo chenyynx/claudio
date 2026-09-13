@@ -16,17 +16,15 @@ private struct AskCardHost: View {
     @ObservedObject var block: AssistantBlock
     let onAskSubmit: ((UUID, [String: String]) -> Void)?
     let onAskSkip: ((UUID) -> Void)?
+    let onAskReopen: ((UUID) -> Void)?
 
     var body: some View {
         if let payload = block.askPayload {
             if block.askStatus.isPending {
-                AskQuestionCardView(
-                    payload: payload,
-                    status: block.askStatus,
-                    block: block,
-                    onSubmit: { answers in onAskSubmit?(block.id, answers) },
-                    onSkip: { onAskSkip?(block.id) }
-                )
+                // [AskDialog 2026-09-13] pending 态不再画大卡（已移进弹窗），
+                // 流里只留一行紧凑行：与工具胶囊同高，保住"这里问过什么"的上下文。
+                // 草稿存在 block.askDraft（Store 侧），弹窗关闭重开不丢勾选。
+                AskQuestionCompactRow(payload: payload) { onAskReopen?(block.id) }
             } else {
                 AskQuestionSummaryView(payload: payload, status: block.askStatus)
             }
@@ -39,7 +37,8 @@ extension AssistantBlockView {
         AskCardHost(
             block: block,
             onAskSubmit: onAskSubmit,
-            onAskSkip: onAskSkip
+            onAskSkip: onAskSkip,
+            onAskReopen: onAskReopen
         )
     }
 }
@@ -69,6 +68,8 @@ struct AssistantBlockView: View {
     var onAskSubmit: ((UUID, [String: String]) -> Void)?
     /// [AskCard 2026-09-13] 跳过回答回调（发 reject，卡片置 skipped）。
     var onAskSkip: ((UUID) -> Void)?
+    /// [AskDialog 2026-09-13] 点紧凑行重开问题弹窗。
+    var onAskReopen: ((UUID) -> Void)?
     @Binding var highlightedBlockId: UUID?
     @Binding var detailBlock: AssistantBlock?
     private var isHighlighted: Bool { highlightedBlockId == block.id }
@@ -1073,7 +1074,7 @@ struct TypingIndicator: View {
     /// `.soulMdChanged` Notification — same wiring used by `AssistantSoulName`.
     @State private var soulName: String = {
         let n = SoulStore.cachedMetadata.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return n.isEmpty ? "Minis" : n
+        return n.isEmpty ? "Claudio" : n
     }()
 
     var body: some View {
@@ -1091,7 +1092,7 @@ struct TypingIndicator: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .soulMdChanged)) { _ in
             let n = SoulStore.cachedMetadata.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            soulName = n.isEmpty ? "Minis" : n
+            soulName = n.isEmpty ? "Claudio" : n
         }
         .font(.system(size: 15, weight: .medium))
         .foregroundStyle(ChatColors.tertiaryText)

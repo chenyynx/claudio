@@ -495,9 +495,14 @@ extension AIChatViewModel {
                 }
 
             case .permissionRequest(let id, let toolName, let input):
-                // [AskCard 2026-09-12] AskUserQuestion 走流内问题卡（v3 设计，
-                // pp 拍板弹窗退役）：升级当前回合里同 toolUseId 的 tool 卡块为
-                // questionCard 块。其他审批工具保持弹窗路径不变（隔离 gate）。
+                // [AskDialog 2026-09-13 · 政策反转] 这里原注释写的是"pp 拍板弹窗
+                // 退役、改走流内问题卡"，现按 pp 新指令改回弹窗：pending 态在弹窗
+                // 里作答，流内只留一行紧凑行（点击可重开弹窗），终态仍是流内摘要卡。
+                // 反转理由：卡片高度在 占位→完整卡→摘要 之间剧变，流式列表四层高度
+                // 缓存追不上（pp 实测"首次弹出被输入栏盖住"+"收场上下留白"）。
+                // 与官方对齐：ccpocket 官方 Flutter 对 AskUserQuestion 走的就是
+                // permission RPC + 弹窗，流内卡才是我们的偏离。
+                // 其他审批工具仍走 pendingPermission 弹窗（两条通道互斥、零改动）。
                 if toolName == "AskUserQuestion" {
                     await MainActor.run {
                         attachAskCard(id: id, input: input)
@@ -1648,6 +1653,11 @@ extension AIChatViewModel {
                 let blk = m.blocks[bi]
                 blk.askPayload = payload
                 if blk.askStatus.isPending { blk.askStatus = .pending }
+                // [AskDialog] 重连重发：弹窗已开着同一 toolUseId 时刷新载荷，
+                // 不重开（避免把用户正在答的弹窗顶掉重弹）。
+                if remote.pendingAsk?.toolUseId == id {
+                    remote.pendingAsk = PendingAskRequest(toolUseId: id, blockId: blk.id, payload: payload)
+                }
                 askCardChangedSignal.send((messageId: m.id, blockId: blk.id, shouldScroll: true))
                 return
             }
@@ -1657,6 +1667,7 @@ extension AIChatViewModel {
                 blk.askPayload = payload
                 blk.askStatus = .pending
                 blk.toolStatus = .running
+                remote.pendingAsk = PendingAskRequest(toolUseId: id, blockId: blk.id, payload: payload)
                 askCardChangedSignal.send((messageId: m.id, blockId: blk.id, shouldScroll: true))
                 return
             }
@@ -1666,6 +1677,7 @@ extension AIChatViewModel {
         blk.askPayload = payload
         blk.askStatus = .pending
         msg.blocks.append(blk)
+        remote.pendingAsk = PendingAskRequest(toolUseId: id, blockId: blk.id, payload: payload)
         // 新 append 的 block 走 snapshot 重建路径（cell 首次配置即读到 payload），
         // 信号此刻多半找不到 item——仍发，幂等兜底 snapshot 竞态。
         askCardChangedSignal.send((messageId: msg.id, blockId: blk.id, shouldScroll: true))
@@ -1683,6 +1695,8 @@ extension AIChatViewModel {
         for m in messages {
             for blk in m.blocks where blk.kind == .questionCard && blk.askStatus.isPending {
                 blk.askStatus = .expired
+                // [AskDialog] 卡过期时弹窗一并关，否则用户面对一个答了必失败的死弹窗。
+                if remote.pendingAsk?.blockId == blk.id { remote.pendingAsk = nil }
                 askCardChangedSignal.send((messageId: m.id, blockId: blk.id, shouldScroll: false))
             }
         }
@@ -1705,6 +1719,7 @@ extension AIChatViewModel {
             for blk in m.blocks where blk.kind == .questionCard && blk.askStatus.isPending {
                 if blk.toolUseId == toolUseId {
                     blk.askStatus = .expired
+                    if remote.pendingAsk?.toolUseId == toolUseId { remote.pendingAsk = nil }
                     askCardChangedSignal.send((messageId: m.id, blockId: blk.id, shouldScroll: false))
                 }
             }
@@ -1723,6 +1738,9 @@ extension AIChatViewModel {
               let payload = blk.askPayload else { return }
         let result = AskResultCodec.result(for: payload.questions, answers: answers)
         guard !result.isEmpty else { return }
+        // [AskDialog] 用户已作答 → 立即关弹窗，不等桥回执（失败时
+        // handleRemoteServerError 会把卡置 expired 并再清一次弹窗）。
+        if remote.pendingAsk?.blockId == blockId { remote.pendingAsk = nil }
         remote.answerQuestion(toolUseId: payload.toolUseId, result: result, sessionId: sessionId) { [weak self] ok in
             Task { @MainActor in
                 guard let self, ok else { return }
@@ -1744,6 +1762,7 @@ extension AIChatViewModel {
               case .questionCard = blk.kind,
               blk.askStatus.isPending,
               let payload = blk.askPayload else { return }
+        if remote.pendingAsk?.blockId == blockId { remote.pendingAsk = nil }
         remote.skipQuestion(toolUseId: payload.toolUseId, sessionId: sessionId) { [weak self] ok in
             Task { @MainActor in
                 guard let self, ok else { return }
@@ -1755,6 +1774,16 @@ extension AIChatViewModel {
                 }
             }
         }
+    }
+
+    /// [AskDialog 2026-09-13] 点流内紧凑行重开弹窗。只认 pending —— 终态卡不可
+    /// 重开（桥侧那个 toolUseId 早已不存在，答了必失败）。
+    @MainActor
+    func reopenAskDialog(blockId: UUID) {
+        guard let blk = RemoteAgentSessionState.findBlock(in: messages, byId: blockId),
+              blk.kind == .questionCard, blk.askStatus.isPending,
+              let payload = blk.askPayload else { return }
+        remote.pendingAsk = PendingAskRequest(toolUseId: payload.toolUseId, blockId: blockId, payload: payload)
     }
 
     // MARK: - [batch1.8 2026-09-12] 输入即答路由（替代已删除的「跳过」）
@@ -1824,6 +1853,7 @@ extension AIChatViewModel {
                 && blk.askPayload?.toolUseId == toolUseId
                 && blk.askStatus.isPending {
                 blk.askStatus = .expired
+                if remote.pendingAsk?.toolUseId == toolUseId { remote.pendingAsk = nil }
                 askCardChangedSignal.send((messageId: m.id, blockId: blk.id, shouldScroll: false))
             }
         }

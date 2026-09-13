@@ -331,6 +331,7 @@ private struct BridgedAssistantBlockV3: View {
             toolSnapshots: bridge.toolSnapshots,
             onAskSubmit: bridge.onAskSubmit,
             onAskSkip: bridge.onAskSkip,
+            onAskReopen: bridge.onAskReopen,
             highlightedBlockId: .constant(nil),
             detailBlock: $bridge.detailBlock
         )
@@ -1498,6 +1499,10 @@ extension CollectionViewMessageListV3 {
             // [AskCard 2026-09-13] 跳过回答回调 → VM（发 reject，卡片置 skipped）。
             bridge.onAskSkip = { [weak vm] blockId in
                 vm?.skipAskAnswer(blockId: blockId)
+            }
+            // [AskDialog 2026-09-13] 紧凑行点击 → 重开弹窗（VM 侧 gate 非 pending）。
+            bridge.onAskReopen = { [weak vm] blockId in
+                vm?.reopenAskDialog(blockId: blockId)
             }
             bridge.onReadAloud = (message.role == .assistant)
                 ? { [weak vm] in vm?.readReplyFromStart(message) }
@@ -3898,7 +3903,13 @@ extension CollectionViewMessageListV3 {
                 //          + 选项（首项 39、其后各 +10 分隔线；带 description 再 +3+行高）
                 //   终态摘要 = headline 14 + 每题两列行 26 + 分隔线/脚注 46 + 内边距 28
                 case .questionCard:
-                    guard let payload = block.askPayload else { return 120 }
+                    guard let payload = block.askPayload else { return 36 }
+                    // [AskDialog 2026-09-13] pending 态已改弹窗作答，流里只剩一行
+                    // 紧凑行（与工具胶囊同高 36pt）。原先在这里按题数/选项数算大卡
+                    // 高度，正是"首次弹出被输入栏盖住"的源头 —— 高度在
+                    // 占位→完整卡→摘要 之间剧变，四层缓存追不上。弹窗不在
+                    // UICollectionView 里，没有高度问题，故 pending 直接常量。
+                    if block.askStatus.isPending { return 36 }
                     let innerWidth = max(width - 28, 120)          // padding 水平 14×2
                     let cpl = max(1, innerWidth / 8)              // 14pt 中文约 8pt/字
                     func wrappedHeight(_ text: String, perChar: CGFloat, lineH: CGFloat) -> CGFloat {

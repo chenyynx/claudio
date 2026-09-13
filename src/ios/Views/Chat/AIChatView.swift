@@ -887,6 +887,7 @@ struct AIChatView: View {
         }
         .offloadPermissionDialog()
         .remotePermissionDialog(vm: vm)
+        .askQuestionDialog(vm: vm)
         .environment(\.openMinisURL, OpenMinisURLAction { url in
             handleMinisURLTap(url)
         })
