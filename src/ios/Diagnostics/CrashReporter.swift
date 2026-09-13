@@ -422,6 +422,18 @@ final class CrashReporter: NSObject, MXMetricManagerSubscriber {
         if let p = api.provider { marker["lastAPIProvider"] = p }
         if let m = api.model { marker["lastAPIModel"] = m }
 
+        // [T-crash-last-log-lines] Persist the in-memory log ring with the
+        // marker. Without this, the next launch's post-mortem report reads
+        // `logRingSnapshot()` — which by then holds the NEW process's launch
+        // chatter (FileProvider mounts, FPSyncTrace, even the "Stale launch
+        // marker" warning itself), and the section titled "before exit" shows
+        // lines written AFTER the exit. Field case (pp device, 2026-09-13):
+        // both background-termination reports listed only 09:43 startup lines
+        // for a 09:35 death. The ring is refreshed on every phase change, so
+        // what lands here is the last thing the process logged before iOS
+        // suspended it — the freshest possible tail a SIGKILL can leave.
+        marker["logRing"] = logRingSnapshot()
+
         let shellSnap = ShellCommandRingBuffer.syncSnapshot
         let timeFmt = DateFormatter()
         timeFmt.dateFormat = "HH:mm:ss"
@@ -579,6 +591,11 @@ final class CrashReporter: NSObject, MXMetricManagerSubscriber {
         let webViewTotalTabs = markerInfo?["webViewTotalTabs"] as? Int
         let webViewGlobalCap = markerInfo?["webViewGlobalCap"] as? Int
         let webViewTabs = markerInfo?["webViewTabs"] as? [[String: Any]]
+        // [T-crash-last-log-lines] The log ring as the DYING process last
+        // persisted it (see `marker["logRing"]` in updateMarkerPhase). Absent
+        // on markers written by pre-fix builds — writeReport then falls back to
+        // the current (new-process) ring, i.e. old behavior.
+        let dyingLogLines = markerInfo?["logRing"] as? [String]
         let memPressure: String = {
             if let free = memoryFreeMB {
                 if free < 200 { return "critical" }
@@ -709,7 +726,8 @@ final class CrashReporter: NSObject, MXMetricManagerSubscriber {
             bkaAudioInterruption: bkaAudioInterruption,
             webViewTotalTabs: webViewTotalTabs,
             webViewGlobalCap: webViewGlobalCap,
-            webViewTabs: webViewTabs
+            webViewTabs: webViewTabs,
+            dyingLogLines: dyingLogLines
         )
         return true
     }
@@ -834,7 +852,8 @@ final class CrashReporter: NSObject, MXMetricManagerSubscriber {
         bkaAudioInterruption: String? = nil,
         webViewTotalTabs: Int? = nil,
         webViewGlobalCap: Int? = nil,
-        webViewTabs: [[String: Any]]? = nil
+        webViewTabs: [[String: Any]]? = nil,
+        dyingLogLines: [String]? = nil
     ) {
         let fm = FileManager.default
         let dir = crashReportsDir
@@ -1034,8 +1053,16 @@ final class CrashReporter: NSObject, MXMetricManagerSubscriber {
             }
         }
 
-        let logLines = logRingSnapshot()
-        report += "\n--- Last \(logLines.count) Log Lines (before exit) ---\n"
+        // [T-crash-last-log-lines] Prefer the dying process's own ring
+        // (persisted with the launch marker). Only fall back to the live ring
+        // when the marker predates the fix — and label which one it is, so a
+        // reader can never mistake new-process startup chatter for the last
+        // words before an exit.
+        let logLines = dyingLogLines?.isEmpty == false ? dyingLogLines! : logRingSnapshot()
+        let logOrigin = (dyingLogLines?.isEmpty == false)
+            ? " — from launch marker (last phase change before exit)"
+            : " — WARNING: from current process (marker predates this fix)"
+        report += "\n--- Last \(logLines.count) Log Lines (before exit)\(logOrigin) ---\n"
         if logLines.isEmpty {
             report += "(none recorded)\n"
         } else {
