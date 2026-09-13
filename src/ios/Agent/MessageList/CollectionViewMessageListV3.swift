@@ -2158,6 +2158,18 @@ extension CollectionViewMessageListV3 {
                     // 还会经 pendingFooterReflow 二次重排收口。shouldScroll 仅填充到达为
                     // true，故强制滚到底只在「新卡进入视野」时生效，收场态(skip/expired)
                     // 不拽用户（与 text 流 autoScrolling 语义一致）。
+                    // [AskCard-fix 2026-09-13 · B3] apply 之后再清一次 cell 侧缓存
+                    // —— 与 text 路径 (blockContentFilledSignal) 同构。第二次清专防
+                    // "provider 根本没跑"：configureCell 的 .assistantBlock 分支在
+                    // messageIndex / blockId miss 时提前 return，既不会
+                    // applyContentConfiguration 也不会 clearCachedHeight，cell 的
+                    // lastComputedHeight 就停在旧值。问题卡恰是最容易 miss 的一种
+                    // （跨消息回合 + dedupe 改名 id-2/id-3）。
+                    if let cv = self.viewController?.collectionView {
+                        let ip = IndexPath(item: idx, section: 0)
+                        (cv.cellForItem(at: ip) as? SelfSizingCell)?.clearCachedHeight()
+                    }
+
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
                         guard let self else { return }
                         self.viewController?.messageListLayout?.invalidateHeight(at: idx)

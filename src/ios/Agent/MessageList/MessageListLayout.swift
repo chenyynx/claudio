@@ -783,6 +783,15 @@ final class MessageListLayout: UICollectionViewLayout {
         if let key = contentKeyByIndex[index] {
             measuredHeightByContentKey.removeValue(forKey: key)
         }
+        // [AskCard-fix 2026-09-13 · B1] 位置型种子也要一起清。remapIndexes 会按
+        // index 把 precalcHeights / estimatedHeights 整表搬到新位置，而 prepare()
+        // 的取值顺序是 heightCache → precalc → estimated → 常量：只删 heightCache
+        // 时，回合内新块插入让卡片 index 位移后，旧高度会跟着搬过来被复用
+        // —— 问题卡收场（pending 高卡 → 摘要矮卡）上下留白的残留根因。
+        // 二者在 prepare() 里优先级低于 heightCache，属纯 fallback，清掉的后果
+        // 最多是多种测一次高度，不会算错。
+        precalcHeights.removeValue(forKey: index)
+        estimatedHeights.removeValue(forKey: index)
     }
 
     /// Directly set the cached height for a specific item index.
