@@ -453,7 +453,7 @@ struct ToolCapsuleView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
-            .background(Color(UIColor.systemGray6))
+            .background(ChatColors.attachmentChipBg)
             .clipShape(Capsule())
             .overlay(
                 Group {
@@ -466,7 +466,7 @@ struct ToolCapsuleView: View {
             )
             .overlay(
                 Capsule()
-                    .stroke(ChatColors.toolBorder, lineWidth: 0.5)
+                    .stroke(ChatColors.inputIconBorder, lineWidth: 0.5)
             )
             .contentShape(Capsule())
             .onTapGesture {
@@ -809,13 +809,13 @@ struct ThinkingBlockView: View {
                 Image("ThinkingIcon")
                     .resizable()
                     .frame(width: 14, height: 14)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(ClaudePalette.selectionBlue)
                 // [Fix] verbatim: always show English "Deep Thinking" —
                 // String(localized:) rendered 深度思考 on zh devices
                 // (pp 2026-09-02: keep the header English).
                 Text(verbatim: "Deep Thinking")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(ClaudePalette.selectionBlue)
                 if isStreaming {
                     ProgressView()
                         .controlSize(.mini)
@@ -825,12 +825,12 @@ struct ThinkingBlockView: View {
                     let charCount = max(block.content.count, block.thinkingContentBuffer.count)
                     Text(charCount > 1000 ? "\(charCount / 1000)K" : "\(charCount)")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.blue.opacity(0.6))
+                        .foregroundStyle(ClaudePalette.selectionBlue.opacity(0.6))
                 }
                 Spacer()
                 Image(systemName: isExpanded.wrappedValue ? "chevron.up" : "chevron.down")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.blue.opacity(0.5))
+                    .foregroundStyle(ClaudePalette.selectionBlue.opacity(0.5))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -896,7 +896,7 @@ struct ThinkingBlockView: View {
                             // streaming finished.
                             let thinkingText = Text(displayContent)
                                 .font(.system(size: 13))
-                                .foregroundStyle(ChatColors.tertiaryText)
+                                .foregroundStyle(ChatColors.secondaryText)
                                 .lineSpacing(3)
                             Group {
                                 if isStreaming {
@@ -995,12 +995,38 @@ struct ThinkingBlockView: View {
         }
         // [Fix] Thinking block background: blue tint → palette card fill,
         // matching the session-open/settings ivory surfaces (pp 2026-09-02).
-        .background(ClaudePalette.cardFill)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(ClaudePalette.border, lineWidth: 0.5)
-        )
+        // [T-thinking-quiet-body] Two states, two deliberate treatments.
+        // COLLAPSED = a tappable control, so it wears the same translucent plate as
+        // the composer controls and the attachment chips.
+        // EXPANDED = narration. The old opaque slab (was a 6% blue tint, then
+        // `cardFill`) became the largest visual weight on screen precisely because
+        // thinking is long and unbounded — a secondary block reading as primary.
+        // So the body carries no background and no border at all: a 2pt leading rail
+        // plus the existing 12pt content inset is what says "process, not answer".
+        // No `glassEffect` here either: the bubbles already own that material, and
+        // giving the narration the same one would put it on the same level.
+        .background {
+            if isExpanded.wrappedValue {
+                Color.clear
+            } else {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(ChatColors.attachmentChipBg)
+            }
+        }
+        .overlay {
+            if isExpanded.wrappedValue {
+                HStack(spacing: 0) {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(ClaudePalette.selectionBlue.opacity(0.35))
+                        .frame(width: 2)
+                        .padding(.vertical, 6)
+                    Spacer(minLength: 0)
+                }
+            } else {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(ChatColors.inputIconBorder, lineWidth: 0.5)
+            }
+        }
         .task(id: block.id) {
             // One-shot per-block auto-expand. Runs when this cell first hosts
             // a given thinking block (block.id is stable across content
