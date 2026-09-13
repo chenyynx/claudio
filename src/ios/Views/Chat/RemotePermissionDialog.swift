@@ -205,7 +205,16 @@ private struct AskQuestionDialogContent: View {
             onSubmit: { answers in vm.submitAskAnswer(blockId: request.blockId, answers: answers) },
             onSkip: { vm.skipAskAnswer(blockId: request.blockId) }
         )
-        .padding(16)
+        // [AskDialog 真机修正 2026-09-13 · pp 截图] 顶部留白必须明显大于四边：
+        // sheet 的拖拽指示条（grabber）就画在顶部约 20-30pt 一带，原先统一 16pt 时
+        // 卡片自带的 12pt 内边距合计只有 28pt，玻璃卡上圆角与 pending 呼吸橙点被
+        // 指示条压掉一半。刻意只改弹窗容器 —— AskQuestionCardView 还服务流内终态
+        // 摘要卡，动它的内边距会连带改变聊天流里的观感。
+        // 注：底部**不加** ignoresSafeArea —— sheet 内容默认已在安全区内，加了反而
+        // 会把「提交答案」键压到手势条下面（第一版写了这行，审查时撤掉）。
+        .padding(.horizontal, 16)
+        .padding(.top, 34)
+        .padding(.bottom, 16)
     }
 
     /// 卡片需要 block 来读写 askDraft（草稿存 Store 侧，弹窗关闭重开不丢）。
