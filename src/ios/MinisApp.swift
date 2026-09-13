@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreText
 import ObjectiveC
 import FileProvider
 import UserNotifications
@@ -72,6 +73,37 @@ extension Notification.Name {
     static let dismissAllImmersivePresentations = Notification.Name("dismissAllImmersivePresentations")
 }
 
+
+/// [T-ios-wordmark-serif] The sidebar wordmark is set in a serif so the app name
+/// reads as a brand mark instead of system chrome. The face is **Source Serif 4**
+/// (SIL OFL, redistributable): the closest embeddable match to Anthropic's
+/// Tiempos Headline, which is licensed and cannot ship inside an IPA.
+///
+/// Delivery route: the TTF sits in `Assets.xcassets` as a `.dataset`, so the
+/// existing asset-catalog phase copies it into the bundle — chosen specifically
+/// to avoid hand-editing `project.pbxproj` (a new .swift file or a new resource
+/// both require one). Core Text wants a file URL rather than catalog bytes, so
+/// the data is spilled to the temporary directory once per process.
+enum BundledFonts {
+    /// Family name from the font's own `name` table (ID 1). Axes: wght 200-900,
+    /// opsz 8-60 — variable, so `.weight(...)` picks a real instance instead of
+    /// synthesizing a faux bold that smears at display sizes.
+    static let serifFamily = "Source Serif 4"
+
+    static func registerBundledFonts() {
+        guard let asset = NSDataAsset(name: "SourceSerif4") else { return }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SourceSerif4-\(asset.data.count).ttf")
+        if !FileManager.default.fileExists(atPath: url.path) {
+            do { try asset.data.write(to: url) } catch { return }
+        }
+        // Already-registered is a normal outcome (relaunch inside the same
+        // process domain); the error is deliberately not acted on.
+        var error: Unmanaged<CFError>?
+        CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error)
+    }
+}
+
 @main
 struct MinisApp: App {
     /// [T-voice-input-mode-preference-ios] Process launch instant, pinned in
@@ -128,6 +160,10 @@ struct MinisApp: App {
         //
         // `install` is idempotent, so the later onAppLaunch() call is a no-op.
         CrashSignalHandler.install()
+        // [T-ios-wordmark-serif] Must run before the first view graph builds: an
+        // unregistered custom font does not fail, it silently falls back to the
+        // system face — which would read as "the change did nothing".
+        BundledFonts.registerBundledFonts()
         // [T-auto-grouping-default-on] Auto-grouping ships ON. `bool(forKey:)`
         // returns false for an unregistered key, so the default has to be
         // registered here rather than expressed at the (multiple) read sites —

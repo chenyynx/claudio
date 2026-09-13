@@ -3950,7 +3950,11 @@ struct ContentView: View {
                 // off the Text as a trailing overlay (no layout footprint) and
                 // the title stays centred.
                 let titleLabel = Text(soulName)
-                    .font(.system(size: 18.5, weight: .semibold))
+                    // [T-ios-wordmark-serif] Was `.system(size: 18.5, weight: .semibold)`.
+                    // Size and weight are unchanged on purpose — only the face moves,
+                    // so nav-bar centering and the sync-indicator overlay offset (-27)
+                    // keep the geometry they were tuned against.
+                    .font(.custom(BundledFonts.serifFamily, size: 18.5).weight(.semibold))
                     .foregroundStyle(.primary)
                     .overlay(alignment: .leading) {
                         if canOpenSync {
