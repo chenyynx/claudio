@@ -409,38 +409,53 @@ private struct FolderMemberRowBackground: View {
 // `.listRowInsets(EdgeInsets())` and its own internal padding. Only the
 // material and the page tone changed.
 //
-// WHY A FLAT SAMPLED FILL AND NOT `glassEffect`: live glass on List rows has
-// already been tried and rejected twice in this file (see `FolderSurface`:
-// glass pieces cannot merge across rows, and a live material flickers frame to
-// frame as heterogeneous content scrolls behind it). This list also carries
-// two scroll-performance incidents on record ([T-ios-session-list-equatable-jank])
-// and an explicit ban on hand-rolled blur. So the lift is produced the same way
-// the folder card produces it: a face barely above the page tone, with an EDGE
-// GRADIENT carrying the bright top hairline and the darker bottom edge. No
-// blur, and no per-row `.shadow` either — rows clip to bounds, so a real shadow
-// would be sliced into a dark band.
+// ITERATION LOG (read before "optimizing" this again)
+//
+// v1 shipped a FLAT sampled fill + an edge gradient and deliberately skipped
+// `glassEffect`, because `FolderSurface` records live glass on List rows being
+// rejected twice here (glass pieces cannot merge across rows; a live material
+// flickers as heterogeneous content passes behind). That reasoning was sound
+// but it answered a question the user had not asked — the ask was liquid
+// glass. Lesson: repo history is input to the decision, not a veto to be
+// exercised on the user's behalf. Try it, then report what it costs.
+//
+// v1 also took its absolute tones from pixel-sampling a PHOTOGRAPH of a screen.
+// Photos compress the luminance range (the reference "card" measured only ~5
+// levels over its page), so the port read as muddy/dark on a real display.
+// Lesson: sampling a photo gives you RELATIONSHIPS (card > page, bright top
+// edge, dark bottom edge), never absolute values. Lift the whole scale and let
+// the device be the judge.
+//
+// v2 = real glass, brighter page, and folder-card tone parity. Still no
+// `.shadow`: rows clip to bounds, so a cast shadow is sliced into a dark band
+// (and this list has two scroll-performance incidents on record,
+// [T-ios-session-list-equatable-jank], plus a ban on hand-rolled blur).
+// The one thing genuinely unproven here is glass INSIDE `listRowBackground`;
+// the expanded folder tiles do render `.regularMaterial` there, which is why
+// this is believed rather than guessed. If it renders nothing on device, the
+// flat fallback branch below is the shape of the fix.
 
-/// Page tone. Neutral gray, darkening downward. Needed: on a pure-white page a
-/// card that is only a few levels lighter is invisible, which is exactly why the
-/// reference reads as floating and a naive white-on-white port does not.
+/// Page tone: near-white at the top, easing to a light gray at the bottom. The
+/// card has to sit ABOVE this and still be legible as a separate plane, so the
+/// page is the darker of the two — the same relationship the folder card has.
 private let sessionPageTop = Color(UIColor { traits in
     traits.userInterfaceStyle == .dark
-        ? UIColor(white: 14 / 255.0, alpha: 1)
-        : UIColor(white: 231 / 255.0, alpha: 1)
+        ? UIColor(white: 12 / 255.0, alpha: 1)
+        : UIColor(white: 246 / 255.0, alpha: 1)
 })
 private let sessionPageBottom = Color(UIColor { traits in
     traits.userInterfaceStyle == .dark
-        ? UIColor(white: 8 / 255.0, alpha: 1)
-        : UIColor(white: 217 / 255.0, alpha: 1)
+        ? UIColor(white: 6 / 255.0, alpha: 1)
+        : UIColor(white: 236 / 255.0, alpha: 1)
 })
 
-/// Card face. Light 240 sits a few levels over the page at the top of the
-/// screen and more near the bottom (that is the gradient doing the work). Dark
-/// reuses the folder card's sampled 18/18/18 so both card families match.
+/// Pre-iOS-26 card face, and the tone parity target for the folder card:
+/// light 252 / dark 18/18/18 is `FolderSurface.sampledGlassColor` verbatim, so
+/// groups and plain rows can never read as two different materials again.
 private let sessionRowCardFill = Color(UIColor { traits in
     traits.userInterfaceStyle == .dark
         ? UIColor(red: 18 / 255.0, green: 18 / 255.0, blue: 18 / 255.0, alpha: 1)
-        : UIColor(white: 240 / 255.0, alpha: 1)
+        : UIColor(white: 252 / 255.0, alpha: 1)
 })
 
 /// Edge top: the highlight that reads as glass catching light.
@@ -468,22 +483,30 @@ private struct SessionRowCardBackground: View {
     }
 
     var body: some View {
-        shape
-            .fill(sessionRowCardFill)
-            .overlay {
-                shape.strokeBorder(
-                    LinearGradient(
-                        stops: [
-                            .init(color: sessionRowEdgeTop, location: 0),
-                            .init(color: .clear, location: 0.45),
-                            .init(color: sessionRowEdgeBottom, location: 1)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom),
-                    lineWidth: 0.75)
+        Group {
+            if #available(iOS 26.0, *) {
+                // The ask. Glass brings its own edge highlight, so the hand-drawn
+                // gradient stroke below stays out of its way.
+                Color.clear.glassEffect(.regular, in: shape)
+            } else {
+                shape
+                    .fill(sessionRowCardFill)
+                    .overlay {
+                        shape.strokeBorder(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: sessionRowEdgeTop, location: 0),
+                                    .init(color: .clear, location: 0.45),
+                                    .init(color: sessionRowEdgeBottom, location: 1)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom),
+                            lineWidth: 0.75)
+                    }
             }
-            .padding(.horizontal, sessionRowCardInsetX)
-            .padding(.vertical, sessionRowCardGapY)
+        }
+        .padding(.horizontal, sessionRowCardInsetX)
+        .padding(.vertical, sessionRowCardGapY)
     }
 }
 
