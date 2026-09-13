@@ -221,6 +221,10 @@ private struct AttachmentDropDelegate: DropDelegate {
 
 // MARK: - Video Loading Placeholder
 
+/// [T-composer-glass-aa] One radius for every attachment chip. Was 8 everywhere,
+/// which read as a different design language next to the composer's 20pt glass.
+private let attachmentChipRadius: CGFloat = 12
+
 private struct VideoLoadingChip: View {
     var body: some View {
         VStack(spacing: 4) {
@@ -232,9 +236,9 @@ private struct VideoLoadingChip: View {
                 .foregroundStyle(ChatColors.secondaryText)
         }
         .frame(width: 64, height: 64)
-        .background(ChatColors.secondaryBg)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+        .background(ChatColors.attachmentChipBg)
+        .clipShape(RoundedRectangle(cornerRadius: attachmentChipRadius))
+        .overlay(RoundedRectangle(cornerRadius: attachmentChipRadius).stroke(ChatColors.inputIconBorder, lineWidth: 0.5))
     }
 }
 
@@ -293,9 +297,9 @@ private struct AttachmentChip: View {
         ProgressView()
             .controlSize(.small)
             .frame(width: 64, height: 64)
-            .background(ChatColors.secondaryBg)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+            .background(ChatColors.attachmentChipBg)
+            .clipShape(RoundedRectangle(cornerRadius: attachmentChipRadius))
+            .overlay(RoundedRectangle(cornerRadius: attachmentChipRadius).stroke(ChatColors.inputIconBorder, lineWidth: 0.5))
     }
 
     /// [T-ios-photo-pick-placeholder] Error chip for a photo that failed to load.
@@ -311,16 +315,17 @@ private struct AttachmentChip: View {
                     .foregroundStyle(ChatColors.secondaryText)
             }
             .frame(width: 64, height: 64)
-            .background(ChatColors.secondaryBg)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.5), lineWidth: 0.5))
+            .background(ChatColors.attachmentChipBg)
+            .clipShape(RoundedRectangle(cornerRadius: attachmentChipRadius))
+            .overlay(RoundedRectangle(cornerRadius: attachmentChipRadius).stroke(Color.orange.opacity(0.5), lineWidth: 0.5))
 
             Button {
                 onRemove()
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 18))
-                    .foregroundStyle(.white)
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, ChatColors.inputIconFg)
                     .shadow(color: .black.opacity(0.5), radius: 2)
             }
             .offset(x: 4, y: -4)
@@ -338,8 +343,8 @@ private struct AttachmentChip: View {
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                         .frame(width: 64, height: 64)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: attachmentChipRadius))
+                        .overlay(RoundedRectangle(cornerRadius: attachmentChipRadius).stroke(ChatColors.inputIconBorder, lineWidth: 0.5))
                         .shadow(color: .black.opacity(0.08), radius: 2, x: 0, y: 1)
 
                     if isVideo {
@@ -358,7 +363,8 @@ private struct AttachmentChip: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 18))
-                        .foregroundStyle(.white)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, ChatColors.inputIconFg)
                         .shadow(color: .black.opacity(0.5), radius: 2)
                 }
                 .offset(x: 4, y: -4)
@@ -446,16 +452,17 @@ private struct AttachmentChip: View {
             .padding(.horizontal, 4)
             .padding(.vertical, 6)
             .frame(width: 64, height: 64)
-            .background(ChatColors.secondaryBg)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+            .background(ChatColors.attachmentChipBg)
+            .clipShape(RoundedRectangle(cornerRadius: attachmentChipRadius))
+            .overlay(RoundedRectangle(cornerRadius: attachmentChipRadius).stroke(ChatColors.inputIconBorder, lineWidth: 0.5))
 
             Button {
                 onRemove()
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 16))
-                    .foregroundStyle(.white)
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, ChatColors.inputIconFg)
                     .shadow(color: .black.opacity(0.4), radius: 2)
             }
             .offset(x: 4, y: -4)
@@ -704,8 +711,8 @@ struct UserAttachmentList: View {
             .padding(.horizontal, 4)
             .padding(.vertical, 6)
             .frame(width: tileSize, height: tileSize)
-            .background(ChatColors.secondaryBg)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .background(ChatColors.attachmentChipBg)
+            .clipShape(RoundedRectangle(cornerRadius: attachmentChipRadius))
         }
         .buttonStyle(.plain)
         // WebApp entry point — only for .html / .htm. Long-press → context
@@ -801,8 +808,8 @@ struct QueuedAttachmentPreview: View {
                 .lineLimit(1)
         }
         .frame(width: tileSize, height: tileSize)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color(.systemGray5)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(RoundedRectangle(cornerRadius: attachmentChipRadius).fill(ChatColors.attachmentChipBg))
+        .clipShape(RoundedRectangle(cornerRadius: attachmentChipRadius))
         .opacity(0.7)
     }
 }

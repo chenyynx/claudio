@@ -85,6 +85,14 @@ enum ChatColors {
     /// for) and inverts to white in dark, where literal black would be unreadable
     /// on the dark glass. One line to make it literally black everywhere if wanted.
     static let inputIconFg = Color(UIColor.label)
+
+    // [T-composer-glass-aa] Attachment chips sit inside the same glass composer,
+    // so they drop the opaque `secondarySystemBackground` slab for a translucent
+    // plate and share the composer's hairline. The failed chip keeps its orange
+    // stroke on purpose — that one carries meaning, not decoration.
+    static let attachmentChipBg = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(white: 1, alpha: 0.10)
+        : UIColor(white: 1, alpha: 0.50) })
     static let inputBg = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.12, alpha: 1) : .white })
     static let inputBorder = Color(UIColor.separator)
     static let primaryText = Color(UIColor.label)
