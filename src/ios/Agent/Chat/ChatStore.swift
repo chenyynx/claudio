@@ -3541,8 +3541,17 @@ actor ChatStore {
             logger.info("[ChatStore.loadMessages] \(sessionId) — \(messages.count) messages in \(String(format: "%.1f", totalElapsed))ms (JSON decode: \(String(format: "%.1f", jsonElapsed))ms, SQL+IO: \(String(format: "%.1f", totalElapsed - jsonElapsed))ms)")
         }
 
-        // DIAG: Detect sortOrder anomalies (duplicates, gaps). Small cost — O(n) scan.
+        // DIAG: Detect sortOrder anomalies (duplicates). Small cost — O(n) scan.
         // loadMessages doesn't populate sortOrder on RawMessage, so re-query it.
+        //
+        // [Fix v1.14.34] 为什么只查重复、不查空洞：旧判据 `gaps = (max-min+1) -
+        // count` 假设编号**稠密**，但本会话的合法编号方案本来就有洞——远端校准
+        // 走 RemoteSortOrderAllocator（`base + step×index`，step=1000），live
+        // 追加走 `MAX+1` 逐 1 递增，两套混用后 13 行占 10003 个槽位，空洞恒为
+        // ~9990 → 每次 loadMessages 误报 ANOMALY（pp 真机 2026-09-13 日志
+        // `dup=0 … gaps=9990`，且 RemoteHistoryDiagnostics.inspect 的同源判据
+        // 从未误报——它只看重复与倒挂，这才是真信号）。撞号（dup）才是渲染
+        // 顺序未定义的根因指标；"洞"在稠密分配契约下不再承载任何语义。
         var sortOrders: [Int] = []
         let soSql = "SELECT sort_order FROM messages WHERE session_id = ? ORDER BY sort_order ASC, created_at ASC, id ASC"
         var soStmt: OpaquePointer?
@@ -3558,15 +3567,13 @@ actor ChatStore {
             let dupCount = sortOrders.count - uniq.count
             let minSo = sortOrders.first!
             let maxSo = sortOrders.last!
-            let expectedIfDense = maxSo - minSo + 1
-            let gaps = expectedIfDense - sortOrders.count
-            if dupCount > 0 || gaps > 0 {
+            if dupCount > 0 {
                 // Count duplicates per sortOrder value
                 var counts: [Int: Int] = [:]
                 for so in sortOrders { counts[so, default: 0] += 1 }
                 let dupSamples = counts.filter { $0.value > 1 }.sorted(by: { $0.key < $1.key }).prefix(20)
                 let dupStr = dupSamples.map { "\($0.key)×\($0.value)" }.joined(separator: ",")
-                logger.error("[SortOrder] ANOMALY sid=\(sessionId.prefix(8)) count=\(sortOrders.count) uniq=\(uniq.count) dup=\(dupCount) min=\(minSo) max=\(maxSo) gaps=\(gaps)")
+                logger.error("[SortOrder] ANOMALY sid=\(sessionId.prefix(8)) count=\(sortOrders.count) uniq=\(uniq.count) dup=\(dupCount) min=\(minSo) max=\(maxSo)")
                 logger.error("[SortOrder] duplicates (first 20): \(dupStr)")
                 // Dump first 15 and last 5 sortOrder values to see structure
                 let headSO = sortOrders.prefix(15).map(String.init).joined(separator: ",")
@@ -3577,7 +3584,7 @@ actor ChatStore {
             // The healthy branch used to log an "[SortOrder] OK …" line on every
             // loadMessages — 6,628 lines in a single day (2026-08-11), the
             // largest single source of log noise. The ANOMALY branch above is
-            // what carries signal: duplicates and gaps are real data problems.
+            // what carries signal: a duplicate order is a real data problem.
         }
 
         return messages
