@@ -120,7 +120,11 @@ enum BundledFonts {
             log.error("wordmark serif NOT resolvable registered=\(registered) asked=\(serifFamily) got=\(resolved) err=\(String(describing: error?.takeUnretainedValue()).prefix(120))")
         }
     }
-os] Process launch instant, pinned in
+}
+
+@main
+struct MinisApp: App {
+    /// [T-voice-input-mode-preference-ios] Process launch instant, pinned in
     /// the App initializer (Swift statics are lazy — referencing it from
     /// init() makes it accurate). Used to tell a cold-launch LANDING chat
     /// apart from a chat the user navigated into minutes later.
