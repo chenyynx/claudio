@@ -6166,6 +6166,15 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             committedBlockCount = allBlocks.count
             self.committedBlockCount = committedBlockCount
             var assistantMessage = AgentMessage(role: .assistant, parts: assistantParts)
+            // [Fix 2026-09-14 路径A] 回合末回写助手行稳定身份：用 live 流捕获的
+            // 桥 messageUuid 派生 bm-{uuid}，与 backfill 的 bm-{uuid} 同一主键
+            // -> 幂等合并，根治 live 本地 UUID 行 + stable bm- 行重复渲染。
+            // 仅远端回合、且仅当本行尚未持有稳定身份时注入（不覆盖已有值）。
+            if assistantMessage.remoteMessageUuid == nil,
+               let remote = provider as? RemoteAgentProvider,
+               let uuid = remote.lastAssistantMessageUuid {
+                assistantMessage.remoteMessageUuid = uuid
+            }
             assistantMessage.isInterrupted = streamResult.isStreamInterrupted
             assistantMessage.reasoningContent = streamResult.reasoningContent
             assistantMessage.reasoningEcho = streamResult.reasoningEcho
