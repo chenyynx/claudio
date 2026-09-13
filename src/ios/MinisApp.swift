@@ -90,23 +90,37 @@ enum BundledFonts {
     /// synthesizing a faux bold that smears at display sizes.
     static let serifFamily = "Source Serif 4"
 
-    static func registerBundledFonts() {
-        guard let asset = NSDataAsset(name: "SourceSerif4") else { return }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SourceSerif4-\(asset.data.count).ttf")
-        if !FileManager.default.fileExists(atPath: url.path) {
-            do { try asset.data.write(to: url) } catch { return }
-        }
-        // Already-registered is a normal outcome (relaunch inside the same
-        // process domain); the error is deliberately not acted on.
-        var error: Unmanaged<CFError>?
-        CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error)
-    }
-}
+    private static let log = AppLogger(category: "Fonts")
 
-@main
-struct MinisApp: App {
-    /// [T-voice-input-mode-preference-ios] Process launch instant, pinned in
+    static func registerBundledFonts() {
+        // The TTF is a plain bundle resource (`Resources/Fonts/SourceSerif4.ttf`,
+        // listed in the Minis target's Resources phase).
+        //
+        // The first attempt shipped it as an asset-catalog `.dataset`: the build
+        // stayed green and the IPA installed, but the compiled `Assets.car`
+        // contained no trace of the asset (verified by unpacking the device build),
+        // so `NSDataAsset` returned nil, the guard returned silently, and the
+        // wordmark fell back to the system face — a silent no-op that looked like
+        // "the change did nothing". Hence the explicit logging below.
+        guard let url = Bundle.main.url(forResource: "SourceSerif4", withExtension: "ttf") else {
+            log.error("wordmark serif MISSING from bundle — falling back to system font")
+            return
+        }
+        var error: Unmanaged<CFError>?
+        let registered = CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error)
+
+        // Verify the way the renderer will resolve it, not the way we asked.
+        // CTFontCreateWithName never fails — it substitutes a system font — so the
+        // PostScript name is the only honest signal available here.
+        let probe = CTFontCreateWithName(serifFamily as CFString, 18.5, nil)
+        let resolved = CTFontCopyPostScriptName(probe) as String
+        if resolved.hasPrefix("SourceSerif") {
+            log.info("wordmark serif ready registered=\(registered) ps=\(resolved)")
+        } else {
+            log.error("wordmark serif NOT resolvable registered=\(registered) asked=\(serifFamily) got=\(resolved) err=\(String(describing: error?.takeUnretainedValue()).prefix(120))")
+        }
+    }
+os] Process launch instant, pinned in
     /// the App initializer (Swift statics are lazy — referencing it from
     /// init() makes it accurate). Used to tell a cold-launch LANDING chat
     /// apart from a chat the user navigated into minutes later.
