@@ -146,53 +146,6 @@ enum RemoteHistoryRepair {
         for (key, count) in needed {
             guard (available[key] ?? 0) >= count else { return false }
         }
-    /// 内容身份相同的「双远端 bm- 行」去重：返回 DB 中应删的旧行 id。
-    ///
-    /// 根因（pp 真机 2026-09-13，会话 4E9828C9）：bridge 的 `resolveMessageUuid`
-    /// 对缺稳定 uuid 的行（典型 `tool_result` / 兜底帧）生成**进程内随机 uuid**；
-    /// snapshot 走 archive（落盘 uuid）、delta 走 in-memory（另一随机 uuid），
-    /// 同一消息两端拿到不同的 `bm-{uuid}` → 两条内容完全相同的远端行共存，
-    /// 体检 `dupContent` 组数从 1 涨到 2。
-    ///
-    /// 现有 `redundantLegacyLiveIds`（只删无 turnKey 的 live 行）与
-    /// `RemoteTurnReconciler`（只吸收 live 行）都管不到「两条都是远端 bm- 行」
-    /// 的重复，故此处按**内容身份多重集键**判定：DB 中 `bm-` 行若 id 不同于
-    /// 本次 incoming 行、内容键相同、且带强身份或 ≥2 part → 判为冗余同源副本
-    /// 删除（incoming 行由 reconciler 正常落库）。
-    ///
-    /// 护栏：纯单行文本不删（避免「继续/好」误删，与 `hasStrongIdentity` 同准则）。
-    /// 幂等：删完不再命中。纯函数（无 DB / actor / 网络）。
-    static func duplicateRemoteStableIds(
-        dbRows: [RawMessage],
-        incomingRaws: [RawMessage]
-    ) -> [String] {
-        let incomingKeys = incomingRaws.compactMap { raw -> (id: String, key: [String])? in
-            guard ReplayRowId.parseStableUuid(raw.id) != nil,
-                  hasStrongIdentity(raw.parts) else { return nil }
-            return (raw.id, contentIdentityKey(raw.parts))
-        }
-        let incomingIds = Set(incomingKeys.map { $0.id })
-        let incomingKeySet = Set(incomingKeys.map { $0.key })
-        guard !incomingKeySet.isEmpty else { return [] }
-
-        var result: [String] = []
-        for row in dbRows {
-            // 只查远端 bm- 行；跳过本次 incoming 自身的 id（幂等 upsert 不会重复）。
-            guard ReplayRowId.parseStableUuid(row.id) != nil,
-                  !incomingIds.contains(row.id),
-                  hasStrongIdentity(row.parts) else { continue }
-            if incomingKeySet.contains(contentIdentityKey(row.parts)) {
-                result.append(row.id)
-            }
-        }
-        return result
-    }
-
-    /// 内容身份多重集键：各 part 身份键排序后成数组（顺序无关、计数敏感，
-    /// 用数组而非拼接字符串，避免正文含分隔符导致的歧义）。
-    private static func contentIdentityKey(_ parts: [ContentPart]) -> [String] {
-        parts.map { partKey($0) }.sorted()
-    }
         return true
     }
 }
