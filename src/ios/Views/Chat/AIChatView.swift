@@ -70,8 +70,21 @@ private final class CachedViewModel: ObservableObject {
 enum ChatColors {
     static let background = Color(UIColor.systemBackground)
     static let secondaryBg = Color(UIColor.secondarySystemBackground)
-    static let inputIconBg = Color(UIColor.secondarySystemBackground)
-    static let inputIconBorder = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.35, alpha: 1) : UIColor(white: 0, alpha: 0) })
+    // [T-composer-glass-aa] The composer's round controls sit ON liquid glass now.
+    // `secondarySystemBackground` is an opaque gray that read as a stuck-on disc
+    // over the material, so they become translucent plates: light = a milky white
+    // lift, dark = a faint light plate, each with a hairline that actually exists
+    // in BOTH appearances (the old border was alpha 0 in light mode, i.e. invisible).
+    static let inputIconBg = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(white: 1, alpha: 0.12)
+        : UIColor(white: 1, alpha: 0.62) })
+    static let inputIconBorder = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(white: 1, alpha: 0.16)
+        : UIColor(white: 0, alpha: 0.08) })
+    /// Icon ink for those controls: `label` is black in light mode (what pp asked
+    /// for) and inverts to white in dark, where literal black would be unreadable
+    /// on the dark glass. One line to make it literally black everywhere if wanted.
+    static let inputIconFg = Color(UIColor.label)
     static let inputBg = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.12, alpha: 1) : .white })
     static let inputBorder = Color(UIColor.separator)
     static let primaryText = Color(UIColor.label)
@@ -3263,7 +3276,7 @@ struct AIChatView: View {
         // announce the same thing; otherwise VoiceOver reads "plus".
         let icon = Image(systemName: "plus")
             .font(.system(size: 18, weight: .medium))
-            .foregroundStyle(ChatColors.secondaryText)
+            .foregroundStyle(ChatColors.inputIconFg)
             .frame(width: 34, height: 34)
             .accessibilityLabel(Text("Add attachment", comment: "VoiceOver label for the attachment button"))
             .background(ChatColors.inputIconBg)
@@ -3390,7 +3403,7 @@ struct AIChatView: View {
             Text("/")
                 .font(.system(size: 18, weight: .semibold, design: .rounded))
                 .italic()
-                .foregroundStyle(ChatColors.secondaryText)
+                .foregroundStyle(ChatColors.inputIconFg)
                 .frame(width: 34, height: 34)
                 .background(ChatColors.inputIconBg)
                 .clipShape(Circle())
@@ -3405,7 +3418,7 @@ struct AIChatView: View {
         } label: {
             Text("Exit Edit Mode", comment: "Cancel message editing")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(ChatColors.secondaryText)
+                .foregroundStyle(ChatColors.inputIconFg)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(ChatColors.inputIconBg)
@@ -3421,7 +3434,7 @@ struct AIChatView: View {
         } label: {
             Text(speechManager.languageLabel)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(ChatColors.secondaryText)
+                .foregroundStyle(ChatColors.inputIconFg)
                 .frame(width: 34, height: 34)
                 .background(ChatColors.inputIconBg)
                 .clipShape(Circle())
@@ -4752,7 +4765,13 @@ private struct ComposerSurface: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
             content
-                .glassEffect(.regular, in: shape)
+                // [T-composer-glass-aa] `.interactive()` is the Agents-Anywhere
+                // recipe (their ChatComposer.swift uses `.regular.interactive()`):
+                // plain `.regular` is a static pane, while `.interactive()` makes the
+                // material respond to touch and to the field taking focus — that is
+                // the "it lights up when the keyboard comes up" behaviour pp asked to
+                // port. No hand-rolled focus ring: iOS 26 draws the response itself.
+                .glassEffect(.regular.interactive(), in: shape)
                 .clipShape(shape)
         } else {
             content
