@@ -98,12 +98,6 @@ final class RemoteAgentProvider: AgentProvider {
     /// 必查 3 件套」).
     private var _lastBridgeSeq: Int? = nil
     private var _lastAssistantBridgeSeq: Int? = nil
-    // [Fix 2026-09-14 路径A] live 流捕获的回合末助手行稳定身份（桥下发
-    // messageUuid = CLI transcript UUID）。回合末持久化时注给
-    // AgentMessage.remoteMessageUuid -> rawMessageId() 走 bm-{uuid}，与
-    // backfill 的 bm-{uuid} 同一主键 -> 幂等合并，根治「live 本地 UUID 行 +
-    // stable bm- 行」双份重复渲染（23:21 长回合实测）。
-    private var _lastAssistantMessageUuid: String? = nil
     private let seqLock = NSLock()
     var lastBridgeSeq: Int? { seqLock.withLock { _lastBridgeSeq } }
     /// [诊断打点 2026-09-10] The `assistant` wire message's own seq —
@@ -113,9 +107,6 @@ final class RemoteAgentProvider: AgentProvider {
     /// seq（大一统行回归 UUID，由校准删除①换血为回放逐轮行）。属性保留
     /// 作 seq 观测锚点，如复发先 grep 本属性确认无新消费方。
     var lastAssistantBridgeSeq: Int? { seqLock.withLock { _lastAssistantBridgeSeq } }
-
-    /// [Fix 2026-09-14 路径A] 回合末助手行稳定身份，见 `_lastAssistantMessageUuid`。
-    var lastAssistantMessageUuid: String? { seqLock.withLock { _lastAssistantMessageUuid } }
 
     /// Whether a `.text` content block is currently open. The engine's
     /// stream consumer only accumulates `textDelta` into a block once
@@ -560,11 +551,6 @@ final class RemoteAgentProvider: AgentProvider {
             // from THIS value, not from `lastBridgeSeq` (result's seq).
             if let seq = message.historySeq {
                 seqLock.withLock { _lastAssistantBridgeSeq = seq }
-            }
-            // [Fix 2026-09-14 路径A] 同点捕获助手行稳定身份（桥下发
-            // messageUuid）。回合末持久化用它派生 bm-{uuid}，与 backfill 对齐。
-            if let uuid = message.messageUuid {
-                seqLock.withLock { _lastAssistantMessageUuid = uuid }
             }
             if case .assistant(let m) = message.message, let content = m.content {
                 for block in content {
