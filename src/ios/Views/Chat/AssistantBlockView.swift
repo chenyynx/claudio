@@ -809,28 +809,28 @@ struct ThinkingBlockView: View {
                 Image("ThinkingIcon")
                     .resizable()
                     .frame(width: 14, height: 14)
-                    .foregroundStyle(ClaudePalette.selectionBlue)
+                    .foregroundStyle(ChatColors.thinkingInk)
                 // [Fix] verbatim: always show English "Deep Thinking" —
                 // String(localized:) rendered 深度思考 on zh devices
                 // (pp 2026-09-02: keep the header English).
                 Text(verbatim: "Deep Thinking")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(ClaudePalette.selectionBlue)
+                    .foregroundStyle(ChatColors.thinkingInk)
                 if isStreaming {
                     ProgressView()
                         .controlSize(.mini)
-                        .tint(.blue)
+                        .tint(ChatColors.thinkingInk)
                 }
                 if block.content.count > 0 || block.thinkingContentBuffer.count > 0 {
                     let charCount = max(block.content.count, block.thinkingContentBuffer.count)
                     Text(charCount > 1000 ? "\(charCount / 1000)K" : "\(charCount)")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(ClaudePalette.selectionBlue.opacity(0.6))
+                        .foregroundStyle(ChatColors.thinkingInk.opacity(0.6))
                 }
                 Spacer()
                 Image(systemName: isExpanded.wrappedValue ? "chevron.up" : "chevron.down")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(ClaudePalette.selectionBlue.opacity(0.5))
+                    .foregroundStyle(ChatColors.thinkingInk.opacity(0.5))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -1017,14 +1017,30 @@ struct ThinkingBlockView: View {
             if isExpanded.wrappedValue {
                 HStack(spacing: 0) {
                     RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(ClaudePalette.selectionBlue.opacity(0.35))
+                        .fill(ChatColors.thinkingInk.opacity(0.35))
                         .frame(width: 2)
                         .padding(.vertical, 6)
                     Spacer(minLength: 0)
                 }
             } else {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(ChatColors.inputIconBorder, lineWidth: 0.5)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(ChatColors.inputIconBorder, lineWidth: 0.5)
+                    // [T-thinking-shimmer] pp asked for the shine on thinking. It rides
+                    // the COLLAPSED header only, reusing the tool row's `ShimmerOverlay`
+                    // (white diagonal band, peak .75 light / .25 dark, and its own
+                    // comment notes it deliberately avoids the CAGradientLayer
+                    // colourspace crash). The expanded body is deliberately excluded:
+                    // it is windowed to 8000 characters and relaid out on every stream
+                    // flush, so a full-size animation there is the same family as this
+                    // list's two scroll-jank incidents — and while expanded, the text
+                    // itself is already moving, so it needs no extra signal.
+                    if isStreaming {
+                        ShimmerOverlay()
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .allowsHitTesting(false)
+                    }
+                }
             }
         }
         .task(id: block.id) {

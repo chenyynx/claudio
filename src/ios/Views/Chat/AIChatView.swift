@@ -93,6 +93,19 @@ enum ChatColors {
     static let attachmentChipBg = Color(UIColor { $0.userInterfaceStyle == .dark
         ? UIColor(white: 1, alpha: 0.10)
         : UIColor(white: 1, alpha: 0.50) })
+
+    /// [T-thinking-ink] Identity colour for the thinking block: a deep violet that
+    /// belongs to no other role in this app — blue stays reserved for selection and
+    /// links (`ClaudePalette.selectionBlue`), orange for the live dot.
+    ///
+    /// PAIRED VALUES, NOT ONE: the light value is #4B3F86 (L≈52), which on the dark
+    /// page (#262624) would sit at roughly 2.3:1 contrast — under the readable line,
+    /// with the 2pt rail nearly vanishing. So the dark appearance gets the same hue
+    /// lifted to L≈74. One token, two values, so nobody can ship one without the
+    /// other.
+    static let thinkingInk = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 167 / 255.0, green: 155 / 255.0, blue: 224 / 255.0, alpha: 1)
+        : UIColor(red: 75 / 255.0, green: 63 / 255.0, blue: 134 / 255.0, alpha: 1) })
     static let inputBg = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.12, alpha: 1) : .white })
     static let inputBorder = Color(UIColor.separator)
     static let primaryText = Color(UIColor.label)
