@@ -280,11 +280,13 @@ private struct FolderSurface: ViewModifier {
     /// color. Sampling it gives pixel-level brightness parity with the
     /// collapsed card, perfectly seamless tiling, and zero perf risk —
     /// chosen by the user over a preference-propagation spike.
-    static let sampledGlassColor = Color(UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 18/255.0, green: 18/255.0, blue: 18/255.0, alpha: 1)
-            : UIColor(red: 252/255.0, green: 252/255.0, blue: 252/255.0, alpha: 1)
-    })
+    // [2026-09-14 Doris] Retargeted to `ClaudePalette.card` (#FFFFFF / #30302E).
+    // The literals below were sampled against the OLD page (white / pure black);
+    // once the list page became the settings tone (#F7F7F5 / #262624), a 18/18/18
+    // folder card sat BELOW its own background — a hole, not a card. Reverting
+    // this one line is all it takes to go back. The history above stays true:
+    // it documents why the fill is a constant and not a live material.
+    static let sampledGlassColor = ClaudePalette.card
 
     private var shape: AnyShape {
         switch kind {
@@ -435,28 +437,15 @@ private struct FolderMemberRowBackground: View {
 // this is believed rather than guessed. If it renders nothing on device, the
 // flat fallback branch below is the shape of the fix.
 
-/// Page tone: near-white at the top, easing to a light gray at the bottom. The
-/// card has to sit ABOVE this and still be legible as a separate plane, so the
-/// page is the darker of the two — the same relationship the folder card has.
-private let sessionPageTop = Color(UIColor { traits in
-    traits.userInterfaceStyle == .dark
-        ? UIColor(white: 12 / 255.0, alpha: 1)
-        : UIColor(white: 246 / 255.0, alpha: 1)
-})
-private let sessionPageBottom = Color(UIColor { traits in
-    traits.userInterfaceStyle == .dark
-        ? UIColor(white: 6 / 255.0, alpha: 1)
-        : UIColor(white: 236 / 255.0, alpha: 1)
-})
+// Page and card tones now come from the app's own design tokens (`ClaudePalette`,
+// `Views/Providers/RemoteNewSessionSheet.swift`) instead of numbers invented for
+// this list. pp 2026-09-14: "把背景颜色换成设置页的那个背景颜色" — the settings
+// family all paint `ClaudePalette.background` via `SettingsPaletteBackground`,
+// and a second page tone is exactly how a list and a settings sheet start
+// reading as two different apps.
 
-/// Pre-iOS-26 card face, and the tone parity target for the folder card:
-/// light 252 / dark 18/18/18 is `FolderSurface.sampledGlassColor` verbatim, so
-/// groups and plain rows can never read as two different materials again.
-private let sessionRowCardFill = Color(UIColor { traits in
-    traits.userInterfaceStyle == .dark
-        ? UIColor(red: 18 / 255.0, green: 18 / 255.0, blue: 18 / 255.0, alpha: 1)
-        : UIColor(white: 252 / 255.0, alpha: 1)
-})
+/// Card face (pre-26 fallback + the regenerating-title scrim) = `ClaudePalette.card`.
+private let sessionRowCardFill = ClaudePalette.card
 
 /// Edge top: the highlight that reads as glass catching light.
 private let sessionRowEdgeTop = Color(UIColor { traits in
@@ -510,17 +499,13 @@ private struct SessionRowCardBackground: View {
     }
 }
 
-/// Backdrop for the iPhone session list. See `SessionRowCardBackground` for why
-/// the page needs its own tone.
+/// Backdrop for the iPhone session list: the settings-page color, token-identical.
+/// Kept as a named view (rather than inlining `ClaudePalette.background` at the
+/// call site) so the `.ignoresSafeArea()` coverage of the FAB inset stays in one
+/// place — settings screens have no bottom inset to worry about, this one does.
 private struct SessionListPageBackground: View {
     var body: some View {
-        LinearGradient(
-            stops: [
-                .init(color: sessionPageTop, location: 0),
-                .init(color: sessionPageBottom, location: 1)
-            ],
-            startPoint: .top,
-            endPoint: .bottom)
+        ClaudePalette.background
     }
 }
 
