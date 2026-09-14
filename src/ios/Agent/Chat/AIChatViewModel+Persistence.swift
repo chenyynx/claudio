@@ -2218,15 +2218,29 @@ extension AIChatViewModel {
             logger.info("[EmptyTurnDiag] skip carrier — no sessionId (draft)")
             return
         }
-        guard agentHistory.indices.contains(agentIdx), agentHistory[agentIdx].dbMessageId == nil else {
-            logger.info("[EmptyTurnDiag] skip carrier — 目标行越界或已落库 idx=\(agentIdx)")
+        // ⚠️ 不能用 `dbMessageId == nil` 当"没落库"的判据：`persistAgentMessage` 是无条件
+        // `return raw.id` 的，而 ChatStore.appendMessages 会把零内容的 assistant 行丢弃
+        // （pp 真机日志 13:14:50 实证：`parts=0` → `built raw.id=4BCF22AB` →
+        //  `appendMessages: all messages dropped after empty-assistant filter`，
+        //  但调用方仍拿到 4BCF22AB 这个**幻影 id**）。所以这里问库，DB 才是事实源。
+        let claimedId = agentHistory.indices.contains(agentIdx) ? agentHistory[agentIdx].dbMessageId : nil
+        if let claimedId, await ChatStore.shared.messageSessionId(id: claimedId) != nil {
+            logger.info("[EmptyTurnDiag] skip carrier — 目标行确已在库 id=\(claimedId.prefix(8))")
             return
+        }
+        guard agentHistory.indices.contains(agentIdx) else {
+            logger.info("[EmptyTurnDiag] skip carrier — 目标下标越界 idx=\(agentIdx) count=\(agentHistory.count)")
+            return
+        }
+        if claimedId != nil {
+            logger.warning("[EmptyTurnDiag] 检出幻影 dbMessageId=\(claimedId!.prefix(8))（行被空内容过滤器丢弃）→ 以载体行 id 覆盖之")
         }
         let carrier = AgentMessage(role: .assistant, parts: [.text("\u{200B}")])
         guard let newId = await persistAgentMessage(carrier) else {
             logger.warning("[EmptyTurnDiag] carrier row persist failed — banner stays in memory only")
             return
         }
+        // 覆盖幻影 id：让 retry() 等按 dbMessageId 找行的消费点能找到真行。
         agentHistory[agentIdx].dbMessageId = newId
         let ok = await ChatStore.shared.updateMessageErrorInfo(messageId: newId, errorInfo: error)
         logger.info("[EmptyTurnDiag] carrier row msg=\(newId.prefix(8)) 挂到 agentHistory[\(agentIdx)] error_info ok=\(ok)")

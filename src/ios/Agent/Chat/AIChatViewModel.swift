@@ -6393,7 +6393,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 // 一条字节都不多写，也不会造重复行。
                 if msgIdx < messages.count, messages[msgIdx].error != nil,
                    agentHistory.indices.contains(assistantAgentIdx),
-                   agentHistory[assistantAgentIdx].dbMessageId == nil {
+                   await ChatStore.shared.messageSessionId(
+                       id: agentHistory[assistantAgentIdx].dbMessageId ?? "") == nil {
                     await persistEmptyTurnErrorCarrier(error: messages[msgIdx].error!,
                                                        agentIdx: assistantAgentIdx)
                 }
