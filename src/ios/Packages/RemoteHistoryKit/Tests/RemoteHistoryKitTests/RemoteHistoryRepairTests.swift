@@ -72,11 +72,18 @@ final class RemoteHistoryRepairTests: XCTestCase {
             dbRows: [failed], serverRaws: server, lastTurnFinished: true).isEmpty)
     }
 
-    func test_rowWithTurnKey_isLeftToSteadyStatePath() {
-        // 有 turnKey 的行由 RemoteTurnReconciler 精确处理，本模块只管老数据。
+    // [S1a-批4 2026-09-14 语义改写] 原 test_rowWithTurnKey_isLeftToSteadyStatePath
+    // 锁定「带 turnKey 的行 Repair 恒不参与」——该门本批移除（head-orphan 场景
+    // Reconciler 吸收不到、Repair 又不收 = 两头不管，pp 真机 23:21 双行根因）。
+    // 新语义下本形态（完整快照 + 正常可吸收）Repair **也会**命中；与 Reconciler
+    // 吸收并集后经 mergedLegacy→deleteIds 去重仍只删一次，落库行为不变（等价性
+    // 由本用例锁"命中"、Reconciler 侧 supersededLegacyIds 短路锁"不双删"）。
+    func test_turnKeyRow_underFullSnapshot_alsoDetected() {
         let modern = RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-1")
-        XCTAssertTrue(RemoteHistoryRepair.redundantLegacyLiveIds(
-            dbRows: [modern], serverRaws: server, lastTurnFinished: true).isEmpty)
+        let ids = RemoteHistoryRepair.redundantLegacyLiveIds(
+            dbRows: [modern], serverRaws: server, lastTurnFinished: true)
+        XCTAssertEqual(ids, ["B274A31B"],
+            "内容完全覆盖 + 强身份 + 已终结 → 参与判定（正常吸收行经合并去重，无副作用）")
     }
 
     func test_unfinishedTurn_isNotRedundant() {
