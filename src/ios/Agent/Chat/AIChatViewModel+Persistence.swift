@@ -2227,7 +2227,7 @@ extension AIChatViewModel {
         let claimedId = agentHistory.indices.contains(agentIdx) ? agentHistory[agentIdx].dbMessageId : nil
         if let claimedId, await ChatStore.shared.messageSessionId(id: claimedId) != nil {
             logger.info("[EmptyTurnDiag] skip carrier — 目标行确已在库 id=\(claimedId.prefix(8))")
-            return
+            return nil
         }
         guard agentHistory.indices.contains(agentIdx) else {
             logger.info("[EmptyTurnDiag] skip carrier — 目标下标越界 idx=\(agentIdx) count=\(agentHistory.count)")
