@@ -784,6 +784,13 @@ final class RemoteAgentProvider: AgentProvider {
             // made full-history calibration (replaceEntries semantics) lose
             // user bubbles for DB-empty restores.
             guard let text = m.text, !text.isEmpty else { return nil }
+            // [skill-flatten fix 2026-09-14] 桥把 Skill 注入正文（"Base
+            // directory for this skill:" 等系统位 user 消息）标了
+            // isSynthetic（sdk-process.ts:470-476），语义 = 非用户面向。
+            // 此前 iOS 消息层零消费 → 9380 字 SKILL.md 平铺成用户气泡
+            // （pp 真机 07:59 截图实锤）。skip 落库：不进 DB/回放/上下文；
+            // cursor 按 wire toSeq 推进与行数无关，跳过安全。
+            if m.isSynthetic == true { return nil }
             var userMsg = AgentMessage(role: .user, parts: [.text(text)])
             if let seq = m.historySeq {
                 userMsg.bridgeSeq = seq

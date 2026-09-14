@@ -167,3 +167,35 @@ final class RemoteHistoryIdentityTests: XCTestCase {
         XCTAssertEqual(index.claimOwner(for: toolResultRow(id: "bridge-ns-seg-6", toolUseId: "toolu-1")), .duplicate)
     }
 }
+
+
+// MARK: - [dup-drift fix 2026-09-14] WireUuidHoist 提升语义
+final class WireUuidHoistTests: XCTestCase {
+    /// messageUuid 已存在 → 原样胜出（不覆盖已有值，与 D12 注入同规则）。
+    func test_existingMessageUuidWins() {
+        XCTAssertEqual(
+            WireUuidHoist.hoist(messageUuid: "m-1", userMessageUuid: "u-2"), "m-1")
+    }
+    /// messageUuid 缺失 → userMessageUuid 提升（raw history 的 tool_result 形态）。
+    func test_userUuidHoistedWhenAbsent() {
+        XCTAssertEqual(
+            WireUuidHoist.hoist(messageUuid: nil, userMessageUuid: "u-2"), "u-2")
+    }
+    /// 空串 = 缺失（桥 additive 字段可能下发 ""，不能当身份）。
+    func test_emptyStringsCountAsAbsent() {
+        XCTAssertNil(WireUuidHoist.hoist(messageUuid: "", userMessageUuid: ""))
+        XCTAssertEqual(
+            WireUuidHoist.hoist(messageUuid: "", userMessageUuid: "u-2"), "u-2")
+    }
+    /// 双 nil → nil（旧桥无 uuid，走 bridge-{seq} 原路径，零行为变化）。
+    func test_bothNilStaysNil() {
+        XCTAssertNil(WireUuidHoist.hoist(messageUuid: nil, userMessageUuid: nil))
+    }
+    /// 核心回归：同一条 tool_result 经 entries（顶层 uuid）与 raw history
+    /// （body userMessageUuid）两路到达必须收敛到同一身份 → 幂等 upsert。
+    func test_bothDeliveryPathsConverge() {
+        let viaEntries = WireUuidHoist.hoist(messageUuid: "u-9", userMessageUuid: nil)
+        let viaRaw = WireUuidHoist.hoist(messageUuid: nil, userMessageUuid: "u-9")
+        XCTAssertEqual(viaEntries, viaRaw)
+    }
+}

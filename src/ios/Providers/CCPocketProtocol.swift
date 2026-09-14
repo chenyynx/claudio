@@ -411,7 +411,7 @@ enum CCPocketProtocol {
             case fromSeq, toSeq, reason, entries
             case sessions, hasMore, sourceSessionId, resumeRequestId
             case acceptedSeq, queued, historySeq, errorCode
-            case requestId, userMessageUuid, clientMessageId, baseSeq
+            case requestId, userMessageUuid, clientMessageId, baseSeq, isSynthetic
             // [stable history ids] assistant 帧的稳定身份字段（与 user_input /
             // tool_result 帧的 userMessageUuid 并列，命名沿用桥与官方 Flutter
             // 既有惯例）。additive：旧桥不下发 → nil。
@@ -471,6 +471,7 @@ enum CCPocketProtocol {
             userMessageUuid = try c.decodeIfPresent(String.self, forKey: .userMessageUuid)
             messageUuid = try c.decodeIfPresent(String.self, forKey: .messageUuid)
             clientMessageId = try c.decodeIfPresent(String.self, forKey: .clientMessageId)
+            isSynthetic = try c.decodeIfPresent(Bool.self, forKey: .isSynthetic)
             baseSeq = try c.decodeIfPresent(Int.self, forKey: .baseSeq)
             skills = try c.decodeIfPresent([String].self, forKey: .skills)
             skillMetadata = try c.decodeIfPresent([[String: JSONValue]].self, forKey: .skillMetadata)
@@ -561,6 +562,10 @@ enum CCPocketProtocol {
         /// 可变。消费链不变：rawMessageId() 的 `bm-{uuid}` 稳定 id 分支。
         var messageUuid: String?
         let clientMessageId: String?
+        // [skill-flatten fix 2026-09-14] 桥对系统注入的 user 位文本（Skill
+        // 正文等，sdk-process.ts isClaudeSystemInjectedUserText）打的标记，
+        // 语义 = 非用户面向。additive：旧桥不下发 → nil，行为零变化。
+        let isSynthetic: Bool?
         let baseSeq: Int?
         // system/supported_commands — 远端(服务器)技能清单
         let skills: [String]?

@@ -162,3 +162,30 @@ struct RemoteHistoryOwnerIndex {
         return s
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// [dup-drift fix 2026-09-14] wire 身份提升：userMessageUuid → messageUuid
+//
+// 桥的三种历史响应把**同一条 wire 条目**的稳定身份放在不同位置：
+//   · history_delta / history_snapshot（entries 形态）→ 顶层 entry.messageUuid
+//   · 全量 history（raw messages 形态，websocket.ts:5060 发 session.history）
+//     → assistant 帧在 body.messageUuid，user_input / tool_result 帧在
+//       body.userMessageUuid
+// 而 iOS 下游消费链（historyAgentMessagesWithWire / rawMessageId）只读
+// `messageUuid`。后果：同一条 tool_result 经 delta 落库为 `bm-{uuid}`、
+// 经全量 history 落库为 `bridge-{ns}-{seg}-{seq}` —— 两个主键两份内容
+// （dupContent 逐轮累加），且旧 bm- 行不在新快照 id 集里被"窗外旧行"
+// 规则甩到列表最前（pp 真机 2026-09-14 07:36 乱序+dupContent=7 实锤）。
+//
+// 修复：扁平化层把 userMessageUuid 提升到 messageUuid（缺失才提升），
+// 两条投递路径收敛到同一 `bm-{uuid}` 主键 → 重复投递 = 幂等 upsert。
+// 纯函数（无 actor / 网络），单测在 RemoteHistoryIdentityTests。
+// ═══════════════════════════════════════════════════════════════════
+public enum WireUuidHoist {
+    /// messageUuid 非空则原样胜出；否则非空 userMessageUuid 提升；都空 → nil。
+    public static func hoist(messageUuid: String?, userMessageUuid: String?) -> String? {
+        if let m = messageUuid, !m.isEmpty { return m }
+        if let u = userMessageUuid, !u.isEmpty { return u }
+        return nil
+    }
+}

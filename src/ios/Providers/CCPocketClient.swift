@@ -740,6 +740,17 @@ final class CCPocketClient: @unchecked Sendable {
         // 8f0b870 把 key 从 m.message?.sessionId 改成 m.sessionId 更糟：m.sessionId
         // 是 bridge session id（一行 session 内所有消息共享），判重后 50 条历史
         // 只剩 1 条。直接用 flat。
+        // [dup-drift fix 2026-09-14] raw messages 形态（全量 history）里
+        // user_input / tool_result 的稳定身份在 body 的 userMessageUuid，
+        // 下游只读 messageUuid → 与 entries 形态（顶层 uuid）产生两种主键。
+        // 统一提升点：三种形态（messages / pastMessages / entries 注入后）
+        // 全部收敛 bm-{uuid}。判定语义与单测见 RemoteHistoryKit
+        // `WireUuidHoist`（与上方 entries 分支的 D12 注入同一设计）。
+        for i in flat.indices {
+            flat[i].messageUuid = WireUuidHoist.hoist(
+                messageUuid: flat[i].messageUuid,
+                userMessageUuid: flat[i].userMessageUuid)
+        }
         let unique = flat
         if unique.isEmpty {
             logger.info("[CCPocket] history: empty reply (all forms empty)")
