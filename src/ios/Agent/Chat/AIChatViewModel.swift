@@ -6387,6 +6387,16 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                         await ChatStore.shared.updateMessageErrorInfo(messageId: persistedId, errorInfo: messages[msgIdx].error)
                     }
                 }
+                // [T-ios-empty-turn-visible] 本回合**没有**拿到 dbMessageId（正文为空被
+                // 过滤器丢弃）却带横幅 ⇒ 补零宽载体行，让提示活过一次 reload / 切会话。
+                // 门三条：有 error + 本回合行未落库 + msgIdx 仍有效 ⇒ 成功路径（已落库）
+                // 一条字节都不多写，也不会造重复行。
+                if msgIdx < messages.count, messages[msgIdx].error != nil,
+                   agentHistory.indices.contains(assistantAgentIdx),
+                   agentHistory[assistantAgentIdx].dbMessageId == nil {
+                    await persistEmptyTurnErrorCarrier(error: messages[msgIdx].error!,
+                                                       agentIdx: assistantAgentIdx)
+                }
                 hitTurnLimit = false
 
                 // [T-ios-queued-message-continues-prev-turn] The current turn's

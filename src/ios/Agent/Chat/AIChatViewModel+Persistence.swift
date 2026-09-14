@@ -2198,6 +2198,40 @@ extension AIChatViewModel {
         return raw.id
     }
 
+    /// [T-ios-empty-turn-visible] 为**当前这一回合**写一条只承载横幅的 assistant 行。
+    ///
+    /// 为什么需要：空回合成交后走 `persistAgentMessage`，而 `ChatStore.appendMessages`
+    /// 会把"无任何非空 text / toolUse / toolResult / mediaRef"的 assistant 行整行丢弃
+    /// （防 DeepSeek/OpenAI 兼容端点报 `400 content or tool_calls must be set`）。行不存
+    /// ⇒ 横幅只活在内存；而回合末 B1 校准 changed=true 会 `loadSession` 从 DB 整体重建
+    /// `messages`，`reloadMessagesFromDB` 的 DEFER 保护门要求 `blocks > committedBlockCount`
+    /// （空回合 0 > 0 不成立）⇒ 横幅在回合结束后一秒内就被自己冲掉。
+    ///
+    /// 与 `persistErrorInfo` 的区别：后者按 `dbMessageId != nil` 取**最后一条已落库的
+    /// assistant**，在"本回合没落库"的场景会命中**上一回合**的行（错行）。本函数由调用方
+    /// 显式交出本回合在 `agentHistory` 里的下标，写完成功再把 id 挂回**那一条**，
+    /// 因此 retry() 的清除路径（同样按 dbMessageId 找行）能找回它，不会留孤儿。
+    ///
+    /// 载体用零宽空格：对过滤器是"非空 text"，对用户与模型都不产生可见正文。
+    func persistEmptyTurnErrorCarrier(error: String, agentIdx: Int) async {
+        guard sessionId != nil else {
+            logger.info("[EmptyTurnDiag] skip carrier — no sessionId (draft)")
+            return
+        }
+        guard agentHistory.indices.contains(agentIdx), agentHistory[agentIdx].dbMessageId == nil else {
+            logger.info("[EmptyTurnDiag] skip carrier — 目标行越界或已落库 idx=\(agentIdx)")
+            return
+        }
+        let carrier = AgentMessage(role: .assistant, parts: [.text("\u{200B}")])
+        guard let newId = await persistAgentMessage(carrier) else {
+            logger.warning("[EmptyTurnDiag] carrier row persist failed — banner stays in memory only")
+            return
+        }
+        agentHistory[agentIdx].dbMessageId = newId
+        let ok = await ChatStore.shared.updateMessageErrorInfo(messageId: newId, errorInfo: error)
+        logger.info("[EmptyTurnDiag] carrier row msg=\(newId.prefix(8)) 挂到 agentHistory[\(agentIdx)] error_info ok=\(ok)")
+    }
+
     /// [T-error-persist-ios] Persist (or clear, when `error == nil`) the device-local
     /// error string for the CURRENT assistant turn, so the indicator survives session
     /// reload / app restart. The error lives on the UI ChatMessage, but the DB row is
