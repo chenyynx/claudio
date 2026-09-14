@@ -21,6 +21,35 @@ final class RemoteTurnModelTests: XCTestCase {
         XCTAssertEqual(RemoteTurnModel.key(clientMessageId: "", fallbackAnchor: "bm-a1"), "turn@bm-a1")
     }
 
+    // MARK: - [T-ios-empty-turn-visible] 空回合成因分档
+
+    func test_emptyTurn_zeroOutputIsUpstream() {
+        XCTAssertEqual(EmptyTurnPolicy.cause(contextTokens: 6_900, contextWindow: 128_000, outputTokens: 0),
+                       .upstreamNoContent)
+    }
+
+    func test_emptyTurn_contextPressureWinsOverZeroOutput() {
+        XCTAssertEqual(EmptyTurnPolicy.cause(contextTokens: 100_000, contextWindow: 128_000, outputTokens: 0),
+                       .contextNearlyFull(used: 100_000, window: 128_000))
+    }
+
+    func test_emptyTurn_nonzeroOutputIsUnknown() {
+        XCTAssertEqual(EmptyTurnPolicy.cause(contextTokens: 1_000, contextWindow: 128_000, outputTokens: 7),
+                       .unknown)
+    }
+
+    /// 恰好 70% 不算压力（与改前的 `curCtx > Int(maxCtx * 0.7)` 严格同边界）。
+    func test_emptyTurn_seventyPercentBoundaryIsNotPressure() {
+        XCTAssertEqual(EmptyTurnPolicy.cause(contextTokens: 89_600, contextWindow: 128_000, outputTokens: 0),
+                       .upstreamNoContent)
+    }
+
+    /// 窗口未知（0）时不得因除零/误判把一切归因成上下文，须落到输出档。
+    func test_emptyTurn_unknownWindowSkipsPressure() {
+        XCTAssertEqual(EmptyTurnPolicy.cause(contextTokens: 999_999, contextWindow: 0, outputTokens: 0),
+                       .upstreamNoContent)
+    }
+
     // MARK: - 回合边界
 
     func test_boundary_trueForPlainUserRow() {

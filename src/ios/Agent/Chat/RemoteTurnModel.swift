@@ -135,3 +135,34 @@ enum RemoteTurnModel {
         return turn.isCarriedByServer && turn.isFinished
     }
 }
+
+/// [T-ios-empty-turn-visible] 空回合成因。**纯判定**（无 AppLocalized / Logger 依赖），
+/// 住在这里是因为本文件已 symlink 进 RemoteHistoryKit = 每次 push 真跑单测。
+///
+/// 设备侧拿得到的事实只有"本轮零内容 + 桥是否已收场 + 上下文占用 + 本轮输出
+/// token"，成因是在这几项上做分档，不是断言上游到底发生了什么 —— 文案措辞
+/// 因此一律带"可能"，避免把推断当结论（pp 定的纪律）。
+public enum EmptyTurnCause: Equatable, Sendable {
+    /// 上下文占用过高：空回复多半是溢出症状，盲重试无效，应引导压缩/新会话。
+    case contextNearlyFull(used: Int, window: Int)
+    /// 上游一个输出 token 都没给：多为额度耗尽 / 限流 / 密钥被拒后网关回空包。
+    case upstreamNoContent
+    /// 有输出 token 却无可见内容（如只回了被丢弃的 reasoning/工具帧）：归因不明。
+    case unknown
+}
+
+public enum EmptyTurnPolicy {
+    /// 与既有内联阈值同源（0.7）。提到常量是为了单测能锁住边界。
+    public static let contextPressureRatio = 0.7
+
+    /// 优先级：上下文压力 > 零输出 > 未知。上下文满时即使 outputTokens=0，
+    /// 用户可行动的处置也是"压缩/新会话"而不是"重试"，故先判它。
+    /// `contextWindow <= 0`（模型窗口未知）时不做除法，直接跳到下一档。
+    public static func cause(contextTokens: Int, contextWindow: Int, outputTokens: Int) -> EmptyTurnCause {
+        if contextWindow > 0, Double(contextTokens) > Double(contextWindow) * contextPressureRatio {
+            return .contextNearlyFull(used: contextTokens, window: contextWindow)
+        }
+        if outputTokens == 0 { return .upstreamNoContent }
+        return .unknown
+    }
+}

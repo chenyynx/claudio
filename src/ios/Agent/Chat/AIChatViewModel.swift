@@ -5775,7 +5775,18 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // Catches both the nil-stopReason path (Anthropic SSE error inside
             // HTTP 200) and the endTurn-with-zero-output path (OpenAI gpt-5.5
             // on long contexts: `finish_reason=stop` with no text/tool/reasoning).
-            func isEmptyResponse(_ r: StreamResult) -> Bool {
+            func isEmptyResponse(_ r: StreamResult, remoteTerminalEmpty: Bool = false) -> Bool {
+                // [T-ios-empty-turn-visible] 远端回合已由桥的 `result` 正常收场（拿到终局
+                // stopReason、流未中断）却一个字都没有 —— 这**不是** stall，不该进
+                // transient → G1 静默 return（那条路把"用户知情权"连同机器重投一起抑制掉了）。
+                // 返回 false 让本轮落到下面 no-tool 收尾的空 endTurn 分类：由 EmptyTurnPolicy
+                // 映射成因写入 messages[].error，既有 inlineError 红条 + Retry 按钮随之可见。
+                // 不重发的语义保持不变（G1 的初衷），只是不再无声。
+                if remoteTerminalEmpty {
+                    logger.info("[EmptyTurnDiag] remote closed with zero content (result 已到) "
+                                + "— surfacing mapped reason instead of transient retry")
+                    return false
+                }
                 let hasReasoning = !(r.reasoningContent ?? "").isEmpty
                 return r.assistantText.isEmpty && r.toolEntries.isEmpty
                     && !hasReasoning && !r.isStreamInterrupted
@@ -5786,6 +5797,16 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                     // transient-retry / group-fallback path; let the .refusal branch in
                     // the stop-reason handler surface it directly. [T-ios-fable5-empty-response]
                     && r.stopReason != .refusal
+            }
+
+            // [T-ios-empty-turn-visible] 远端本轮是否"已由桥收场"：三条件齐备才算 ——
+            // 输入已 ack（回合归属在桥侧，机器不重发的前提不变）+ 拿到终局 stopReason
+            // （result 帧确实到了）+ 流未被中断。真 stall（result 未到 / 半路断流）不满足，
+            // 仍走 G1 交 beginRemoteTurnWatchdog 轮询补内容，语义零变化。
+            func remoteTurnClosedEmpty(_ r: StreamResult) -> Bool {
+                guard lastAgentProviderIsRemote,
+                      let rp = provider as? RemoteAgentProvider, rp.turnInputAcked else { return false }
+                return r.stopReason != nil && !r.isStreamInterrupted
             }
 
             // Process SSE stream events on a background thread to keep
@@ -5806,7 +5827,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 // returns an SSE `event: error` (e.g. overloaded_error) inside an HTTP 200
                 // response: the SDK silently terminates the stream instead of throwing.
                 // Treat as a transient error so it enters the auto-retry path below.
-                if isEmptyResponse(result) {
+                if isEmptyResponse(result, remoteTerminalEmpty: remoteTurnClosedEmpty(result)) {
                     // [T-ios-empty-after-toolresult-reminder] Special case: the
                     // server returned nothing right after we handed it a tool
                     // result. The model owes a follow-up (next tool call or a
@@ -6273,12 +6294,25 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                     let freshModel = ProviderConfigStore.shared.entry(for: entry.id)?.model ?? entry.model
                     let maxCtx = effectiveContextWindow(for: freshModel)
                     let curCtx = estimateContextTokens()
-                    if maxCtx > 0 && curCtx > Int(Double(maxCtx) * 0.7) {
+                    // [T-ios-empty-turn-visible] 成因分档交给纯函数（RemoteHistoryKit 单测锁语义），
+                    // 视图侧只做 成因 → 文案 的映射，不再一律"啥也不知道"式单一提示。
+                    let emptyCause = EmptyTurnPolicy.cause(contextTokens: curCtx,
+                                                           contextWindow: maxCtx,
+                                                           outputTokens: turnUsage.outputTokens)
+                    logger.warning("[EmptyTurnDiag] empty endTurn — cause=\(emptyCause) ctx=\(curCtx)/\(maxCtx) outTok=\(turnUsage.outputTokens)")
+                    switch emptyCause {
+                    case .contextNearlyFull:
                         messages[msgIdx].error = AppLocalized("The model returned an empty response. The conversation context may be too large — try compacting or starting a new session.")
-                    } else {
+                    case .upstreamNoContent:
+                        messages[msgIdx].error = AppLocalized("The upstream model returned no content (0 output tokens). It may be out of quota or rate-limited — tap Retry, or switch models.")
+                    case .unknown:
                         messages[msgIdx].error = AppLocalized("Model returned an empty response. Please try again or switch models.")
                     }
-                    canResume = true
+                    // [T-ios-empty-turn-visible] 远端"已由 result 收场的空回合"不是中断：
+                    // canResume 的 didSet 会把会话打上 PAUSED 徽章（AIChatViewModel:733），
+                    // 而这条回合桥侧已经终结、Resume 也没有可续写的内容 → 只给横幅 + Retry。
+                    // 本地 provider 走不到这里（remoteTurnClosedEmpty 恒 false）→ 仍为 true，行为不变。
+                    canResume = !remoteTurnClosedEmpty(streamResult)
                 }
 
                 // Flush any remaining unspoken text (streaming TTS already spoke most sentences)
