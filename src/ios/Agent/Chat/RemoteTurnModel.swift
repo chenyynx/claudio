@@ -151,6 +151,26 @@ public enum EmptyTurnCause: Equatable, Sendable {
     case unknown
 }
 
+/// [T-ios-remote-stall-visible] 批4：远端"回合未收场且桥侧再无新内容"时，何时该向
+/// 用户交代。**纯判定**（住这里 = symlink 进 RemoteHistoryKit，单测每次 push 真跑）。
+///
+/// 病根：`beginRemoteTurnWatchdog` 每 3s 轮询，只有 wire 尾变成 result/error 才停，
+/// **没有放弃上限**；而 Retry 按钮挂在 `!isProcessing` 上 ⇒ 上游真停时用户面对的是
+/// 无限 spinner + 无提示 + 点不到重试。
+public enum RemoteTurnStallPolicy {
+    /// 默认静默上限：4 分钟。取这个量级是因为远端合法的长工具（编译/CI 等待）也会
+    /// 让桥侧零事件，阈值太低会把"仍在干活"误报成停滞。
+    public static let defaultGiveUpSeconds: Double = 240
+
+    /// `deadline <= 0` = 关断（逐字节回到现在的无限轮询行为，留的逃生阀）。
+    /// 用 Double 而非 TimeInterval：本文件也编进 SwiftPM 包，不依赖 Foundation。
+    /// （app 侧 TimeInterval 就是 Double，调用点无需转换。）
+    public static func shouldGiveUp(elapsed: Double, deadline: Double) -> Bool {
+        guard deadline > 0 else { return false }
+        return elapsed >= deadline
+    }
+}
+
 public enum EmptyTurnPolicy {
     /// 与既有内联阈值同源（0.7）。提到常量是为了单测能锁住边界。
     public static let contextPressureRatio = 0.7

@@ -50,6 +50,29 @@ final class RemoteTurnModelTests: XCTestCase {
                        .upstreamNoContent)
     }
 
+    // MARK: - [T-ios-remote-stall-visible] 批4 停滞放弃判定
+
+    func test_stall_belowDeadlineKeepsWaiting() {
+        XCTAssertFalse(RemoteTurnStallPolicy.shouldGiveUp(elapsed: 239.9,
+                                                         deadline: RemoteTurnStallPolicy.defaultGiveUpSeconds))
+    }
+
+    func test_stall_atDeadlineGivesUp() {
+        XCTAssertTrue(RemoteTurnStallPolicy.shouldGiveUp(elapsed: 240.0,
+                                                         deadline: RemoteTurnStallPolicy.defaultGiveUpSeconds))
+    }
+
+    /// deadline<=0 是逃生阀：必须逐字节回到"无限轮询、永不交代"的旧行为。
+    func test_stall_zeroDeadlineDisables() {
+        XCTAssertFalse(RemoteTurnStallPolicy.shouldGiveUp(elapsed: 9_999, deadline: 0))
+        XCTAssertFalse(RemoteTurnStallPolicy.shouldGiveUp(elapsed: 9_999, deadline: -1))
+    }
+
+    func test_stall_negativeElapsedNeverGivesUp() {
+        XCTAssertFalse(RemoteTurnStallPolicy.shouldGiveUp(elapsed: -5,
+                                                          deadline: RemoteTurnStallPolicy.defaultGiveUpSeconds))
+    }
+
     // MARK: - 回合边界
 
     func test_boundary_trueForPlainUserRow() {

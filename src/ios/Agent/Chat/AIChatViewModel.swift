@@ -1746,6 +1746,13 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// progress but no live stream consumer on this device — poll the bridge
     /// history until a result lands (send button shows Stop meanwhile).
     var remoteTurnWatchdogTask: Task<Void, Never>? = nil
+    /// [T-ios-remote-stall-visible] 批4：轮询的"最后进度时刻"（起点=watchdog 建立；
+    /// 每次轮询看到校准产生变化就刷新）。
+    var remoteWatchdogLastProgressAt: Date?
+    /// 横幅是否已打出（防每 3s 重复写库/重复提示）；result 落地后清除并复位。
+    var remoteWatchdogBannerShown = false
+    /// 横幅所挂的载体行 id（批3 helper 返回），撤横幅时按它清库内 error_info。
+    var remoteWatchdogCarrierId: String?
 
     /// Create an AVSpeechUtterance with the user's speech settings applied.
     private func makeUtterance(_ text: String) -> AVSpeechUtterance {
@@ -4257,6 +4264,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         guard !isProcessing else { return }
         isProcessing = true
         logger.info("[RemoteWatchdog] turn-in-progress detected — isProcessing=true, polling every 3s")
+        // [T-ios-remote-stall-visible] 静默计时从这里开始（每次新建 watchdog 都复位）。
+        remoteWatchdogLastProgressAt = Date()
+        remoteWatchdogBannerShown = false
+        remoteWatchdogCarrierId = nil
         remoteTurnWatchdogTask?.cancel()
         remoteTurnWatchdogTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -4294,17 +4305,77 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // pollRemoteTurnProgress 本身在 @MainActor（VM 隔离，Task{} 继承）。
         if outcome.lastWireType == "result" || outcome.lastWireType == "error" {
             logger.info("[RemoteWatchdog] result landed — ending watchdog")
+            // [T-ios-remote-stall-visible] 内容真到了就撤掉先前"我放弃等待"的横幅
+            // （内存 + 库内 error_info），自愈不留残。
+            if remoteWatchdogBannerShown { await clearRemoteStallBanner() }
             endRemoteTurnWatchdog()
             if outcome.changed && isActive {
                 // endRemoteTurnWatchdog 已把 isProcessing 置 false（didSet drain
                 // 若有挂起的 reload 会跑）——这里直接重建补齐 result 内容。
                 await loadSession()
             }
-        } else if outcome.changed && isActive {
-            // [排查 2026-09-10] 恢复态期间用户可能在排队（isProcessing=true）：
-            // 不直接重建打断队列观感，挂 idle drain，result 落地时一次补齐。
-            applyCalibrationRefresh()
+        } else {
+            if outcome.changed {
+                // 桥侧又有新内容落地 = 有进度 ⇒ 静默计时重新开始。
+                remoteWatchdogLastProgressAt = Date()
+            }
+            // [T-ios-remote-stall-visible] 长时间零进度 ⇒ 交代原因 + 放开 Retry。
+            await surfaceRemoteStallIfNeeded()
+            if outcome.changed && isActive {
+                // [排查 2026-09-10] 恢复态期间用户可能在排队（isProcessing=true）：
+                // 不直接重建打断队列观感，挂 idle drain，result 落地时一次补齐。
+                applyCalibrationRefresh()
+            }
         }
+    }
+
+    /// 静默阈值（可 defaults 关断：<=0 回到旧的无限轮询）。用 NSNumber 取，避免
+    /// 命令行 `defaults write` 落成整数时 `as? TimeInterval` 读出 nil。
+    private var remoteStallGiveUpSeconds: TimeInterval {
+        (UserDefaults.standard.object(forKey: "claudio.remote.turnWatchdogGiveUpSeconds") as? NSNumber)
+            .map { $0.doubleValue } ?? RemoteTurnStallPolicy.defaultGiveUpSeconds
+    }
+
+    /// [T-ios-remote-stall-visible] 桥侧再无新内容且回合未收场，静默超阈值 ⇒
+    /// ①打一条映射成因的横幅（内存 + 载体行落库，活过切会话/重启）
+    /// ②把 isProcessing 放下来，Retry 才点得到（按钮挂在 !isProcessing 上）。
+    /// **轮询不取消**：这条横幅表达的是"我停止等待"，不是"回合失败"；桥后来真出
+    /// result 时由上面的落地分支自动撤销。
+    private func surfaceRemoteStallIfNeeded() async {
+        guard !remoteWatchdogBannerShown, let last = remoteWatchdogLastProgressAt else { return }
+        let elapsed = Date().timeIntervalSince(last)
+        let deadline = remoteStallGiveUpSeconds
+        guard RemoteTurnStallPolicy.shouldGiveUp(elapsed: elapsed, deadline: deadline) else { return }
+        let text = AppLocalized("The remote agent has produced no new content for a long time and the turn has not ended. It may still be running a long tool, or the upstream has stalled. Tap Retry to send again - this notice disappears automatically once new content arrives.")
+        logger.warning("[RemoteStall] 桥侧静默 \(String(format: "%.0f", elapsed))s（阈值 \(String(format: "%.0f", deadline))s）且回合未收场 — 交代横幅并放开 Retry（轮询继续）")
+        await MainActor.run {
+            if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
+                messages[idx].error = text
+            }
+        }
+        remoteWatchdogBannerShown = true
+        // 落库：本回合行多半没落库（停滞时 runAgentLoop 在 G1 分支就 return 了），
+        // 批3 的 helper 自己会问库确认，确实无行才写零宽载体行。
+        if let agentIdx = agentHistory.lastIndex(where: { $0.role == .assistant }) {
+            remoteWatchdogCarrierId = await persistEmptyTurnErrorCarrier(error: text, agentIdx: agentIdx)
+        }
+        // 只放开按钮，不 cancel task（撤横幅靠落地分支）。
+        if isProcessing { isProcessing = false }
+    }
+
+    /// 撤销停滞横幅：内存 error 清空 + 载体行的 error_info 清掉。
+    private func clearRemoteStallBanner() async {
+        await MainActor.run {
+            if let idx = messages.lastIndex(where: { $0.role == .assistant }), messages[idx].error != nil {
+                messages[idx].error = nil
+            }
+        }
+        if let carrier = remoteWatchdogCarrierId {
+            let ok = await ChatStore.shared.updateMessageErrorInfo(messageId: carrier, errorInfo: nil)
+            logger.info("[RemoteStall] 新内容已到达 — 撤横幅并清 error_info msg=\(carrier.prefix(8)) ok=\(ok)")
+        }
+        remoteWatchdogCarrierId = nil
+        remoteWatchdogBannerShown = false
     }
 
     func endRemoteTurnWatchdog() {

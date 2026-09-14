@@ -2213,10 +2213,11 @@ extension AIChatViewModel {
     /// 因此 retry() 的清除路径（同样按 dbMessageId 找行）能找回它，不会留孤儿。
     ///
     /// 载体用零宽空格：对过滤器是"非空 text"，对用户与模型都不产生可见正文。
-    func persistEmptyTurnErrorCarrier(error: String, agentIdx: Int) async {
+    @discardableResult
+    func persistEmptyTurnErrorCarrier(error: String, agentIdx: Int) async -> String? {
         guard sessionId != nil else {
             logger.info("[EmptyTurnDiag] skip carrier — no sessionId (draft)")
-            return
+            return nil
         }
         // ⚠️ 不能用 `dbMessageId == nil` 当"没落库"的判据：`persistAgentMessage` 是无条件
         // `return raw.id` 的，而 ChatStore.appendMessages 会把零内容的 assistant 行丢弃
@@ -2230,7 +2231,7 @@ extension AIChatViewModel {
         }
         guard agentHistory.indices.contains(agentIdx) else {
             logger.info("[EmptyTurnDiag] skip carrier — 目标下标越界 idx=\(agentIdx) count=\(agentHistory.count)")
-            return
+            return nil
         }
         if claimedId != nil {
             logger.warning("[EmptyTurnDiag] 检出幻影 dbMessageId=\(claimedId!.prefix(8))（行被空内容过滤器丢弃）→ 以载体行 id 覆盖之")
@@ -2238,12 +2239,13 @@ extension AIChatViewModel {
         let carrier = AgentMessage(role: .assistant, parts: [.text("\u{200B}")])
         guard let newId = await persistAgentMessage(carrier) else {
             logger.warning("[EmptyTurnDiag] carrier row persist failed — banner stays in memory only")
-            return
+            return nil
         }
         // 覆盖幻影 id：让 retry() 等按 dbMessageId 找行的消费点能找到真行。
         agentHistory[agentIdx].dbMessageId = newId
         let ok = await ChatStore.shared.updateMessageErrorInfo(messageId: newId, errorInfo: error)
         logger.info("[EmptyTurnDiag] carrier row msg=\(newId.prefix(8)) 挂到 agentHistory[\(agentIdx)] error_info ok=\(ok)")
+        return newId   // 行已存在；调用方拿它来撤横幅时清 error_info
     }
 
     /// [T-error-persist-ios] Persist (or clear, when `error == nil`) the device-local

@@ -45768,6 +45768,59 @@
       }
     }
     },
+    "The remote agent has produced no new content for a long time and the turn has not ended. It may still be running a long tool, or the upstream has stalled. Tap Retry to send again - this notice disappears automatically once new content arrives.": {
+    "extractionState": "manual",
+    "localizations": {
+      "de": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Der Remote-Agent liefert seit Langem keine neuen Inhalte und die Runde endete nicht. Möglicherweise läuft noch ein langes Tool, oder der Upstream hat aufgehört. Erneut versuchen sendet erneut — dieser Hinweis verschwindet automatisch, wenn neue Inhalte eintreffen."
+        }
+      },
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "The remote agent has produced no new content for a long time and the turn has not ended. It may still be running a long tool, or the upstream has stalled. Tap Retry to send again - this notice disappears automatically once new content arrives."
+        }
+      },
+      "fr": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "L'agent distant ne renvoie rien de nouveau depuis longtemps et le tour n'est pas terminé. Un outil long tourne peut-être encore, ou l'amont est bloqué. Réessayer renverra la demande — cette notice disparaît dès que du contenu arrive."
+        }
+      },
+      "ja": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "リモートエージェントはしばらく新しい内容を返しておらず、ターンも終了していません。長時間のツール実行中の可能性と、上流が停止した可能性があります。再試行で再送信でき、新しい内容が届くとこの表示は自動的に消えます。"
+        }
+      },
+      "ko": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "원격 에이전트가 한동안 새 내용을 반환하지 않았고 턴도 종료되지 않았습니다. 긴 도구 실행 중이거나 상류가 멈췄을 수 있습니다. 재시도를 누르면 다시 전송되며, 새 내용이 도착하면 이 안내는 자동으로 사라집니다."
+        }
+      },
+      "ru": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Удалённый агент давно не выдаёт нового содержимого, и ход не завершён. Возможно, ещё длится долгий инструмент, либо вышестоящая сторона остановилась. Повтор отправит запрос снова — это уведомление исчезнет автоматически, когда придут новые данные."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "远端长时间没有新内容，回合也未结束。它可能仍在执行长工具，也可能上游已停住。点按重试可再发一次；新内容到达后本提示会自动消失。"
+        }
+      },
+      "zh-Hant": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "遠端長時間沒有新內容，回合也未結束。它可能仍在執行長工具，也可能上游已停住。點按重試可再發一次；新內容到達後本提示會自動消失。"
+        }
+      }
+    }
+    },
     "Model returned an empty response. Please try again or switch models.": {
       "localizations": {
         "de": {
