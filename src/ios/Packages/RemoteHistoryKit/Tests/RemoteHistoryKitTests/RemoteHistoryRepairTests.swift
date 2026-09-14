@@ -123,3 +123,34 @@ final class RemoteHistoryRepairTests: XCTestCase {
             "同文本出现两次必须服务端也有两个")
     }
 }
+
+// MARK: - [S1a-批4 2026-09-14] turnKey 门移除：head-orphan 自愈
+final class RepairTurnKeyGateTests: XCTestCase {
+
+    /// 掉窗形态：窗口从回合中间开始（边界 user 行被裁），服务端行 = 哨兵回合。
+    /// live 聚合行带 turnKey="cmid-1" 与哨兵键不等 → Reconciler 吸收不到 →
+    /// 旧门把它挡在 Repair 外 = 两头都不管（pp 真机 23:21 长回合双行根因之一）。
+    func test_turnKeyLiveRow_headOrphanSelfHeals() {
+        let live = RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-1")
+        let orphanServer = Array(RemoteHistoryFixture.serverRowsForSameTurn().dropFirst())
+        let ids = RemoteHistoryRepair.redundantLegacyLiveIds(
+            dbRows: [live], serverRaws: orphanServer, lastTurnFinished: true)
+        XCTAssertEqual(ids, ["B274A31B"], "内容被哨兵回合完全覆盖 + 强身份 → 可删")
+    }
+
+    func test_turnKeyLiveRow_inProgressTurn_survives() {
+        let live = RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-1")
+        let orphanServer = Array(RemoteHistoryFixture.serverRowsForSameTurn().dropFirst())
+        let ids = RemoteHistoryRepair.redundantLegacyLiveIds(
+            dbRows: [live], serverRaws: orphanServer, lastTurnFinished: false)
+        XCTAssertTrue(ids.isEmpty, "回合未终结：live 行仍是内容唯一来源")
+    }
+
+    func test_turnKeyLiveRow_withErrorInfo_survives() {
+        let live = RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-1", errorInfo: "boom")
+        let orphanServer = Array(RemoteHistoryFixture.serverRowsForSameTurn().dropFirst())
+        let ids = RemoteHistoryRepair.redundantLegacyLiveIds(
+            dbRows: [live], serverRaws: orphanServer, lastTurnFinished: true)
+        XCTAssertTrue(ids.isEmpty, "本地错误行是失败的唯一记录，硬否决不变")
+    }
+}

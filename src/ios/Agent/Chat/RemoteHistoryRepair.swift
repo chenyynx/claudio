@@ -48,7 +48,10 @@ enum RemoteHistoryRepair {
     /// 老 live 聚合行中"内容已被服务端完全覆盖"的冗余副本 id。
     ///
     /// 参与条件（全部满足才可能命中——宁可不删）：
-    ///   1. 本地 live 行（非回放行）且**没有** `remoteTurnKey`（老数据）；
+    ///   1. 本地 live 行（非回放行）。⚠️ [S1a-批4] 不再要求「没有
+    ///      `remoteTurnKey`」——带 turnKey 的行在 head-orphan（掉窗回合的
+    ///      边界 user 被裁出快照）时 Reconciler 也吸收不到，本层是唯一兜底；
+    ///      有 turnKey 的行若被 Reconciler 正常吸收，删除集去重后无副作用；
     ///   2. 非 user 行（user 行的去重视由 OwnerIndex 在插入侧负责）；
     ///   3. parts 非空（空 parts 的多重集覆盖恒真 —— 必须显式排除，否则会
     ///      把"仅携带本地错误的空行"误删）；
@@ -96,7 +99,12 @@ enum RemoteHistoryRepair {
         var result: [String] = []
         for row in dbRows {
             guard !ReplayRowId.isReplayRow(row.id) else { continue }
-            guard row.remoteTurnKey == nil || row.remoteTurnKey?.isEmpty == true else { continue }
+            // [S1a-批4] 原「且没有 remoteTurnKey（老数据）」门已移除：带 turnKey 的
+            // live 聚合行同样需要内容覆盖兜底。缺口场景=head-orphan：掉窗回合的
+            // 边界 user 行被裁出快照 → Reconciler 的 turnKey 匹配（RemoteTurnModel
+            // .turnIndex(forLiveRow)）命不中 → 不吸收；旧门又把它挡在 Repair 外 →
+            // 两头都不管，live 行幸存成双（pp 真机 23:21 长回合形态）。
+            // 误删防线不变：isFinished 回合 + 全 part 多重集覆盖 + hasStrongIdentity。
             guard row.role != .user else { continue }
             guard !row.parts.isEmpty else { continue }
             guard row.errorInfo == nil else { continue }

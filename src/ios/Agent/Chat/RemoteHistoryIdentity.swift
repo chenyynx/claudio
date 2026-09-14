@@ -19,6 +19,14 @@
 // 优先级 clientMessageId → toolUseId → 文本；文本队列弹出时跳过已被认领的行，
 // 保证"第 i 个同文本回放行 ↔ 第 i 个**未被占用**的本地行"。
 //
+// [S1a 2026-09-14] 新增**回放池**（byReplayKey）：库内回放行（bm-/bridge-/past-）
+// 的强身份（toolUseId/clientMessageId，键带 u:/r:/c: 前缀，不收文本键）也可被
+// 认领，owner 为回放行 = 同一 wire 条目的**旧形态**（桥 gen→real 回填、两路
+// 先后入库），Reconciler 据此做形态升级（插/留快照形态、删旧形态）。
+// 优先级铁律：user 行 live 池（cmid/toolUseId）永远先于回放池——旧形态若抢在
+// live 承载行前被命中，升级插入的新行会与 live 行双份（行为回退）。
+// assistant 行原本直通 .unmatched，现仅探回放池（live 池不收 assistant 不变）。
+//
 // [v1.14.31] 超额副本判定：同批次里命中同一本地行的第 i+n 条回放行 =
 // bridge 对同一逻辑消息的**超录**（watchdog 重试重发等）→ `.duplicate`
 // 丢弃不插。旧 Optional 语义把"已占用"和"无本地行"都返回 nil → 超录行
@@ -51,6 +59,20 @@ struct RemoteHistoryOwnerIndex {
     private var byToolUseId: [String: String] = [:]
     /// 归一化正文 → 本地行 id 队列（同文本多 occurrence 按序配对）
     private var textQueues: [String: [String]] = [:]
+    /// [S1a] 强身份 → **回放行** id（形态互认池）。同一条 wire 条目可能以两种
+    /// 主键先后入库（桥 gen→real 回填、delta 先落 bm-{G} 快照后带 bm-{R}），
+    /// 主键变了但 parts 里的强身份（toolUseId / clientMessageId）同源 ——
+    /// 回放池让旧形态可被认领，Reconciler 据此做「形态升级」：权威形态存活、
+    /// 旧形态删除。必须升级而非保留旧形态：桥后续只发新形态 id，旧形态会
+    /// 永久 miss `serverIdSet` 判定 → headRows 甩头（本次乱序的机制本体）。
+    /// ⚠️ 只收强身份、**不收文本队列**：内容级配对是仓库明文否决的
+    /// （09-11 对抗实证：回放行与 live 行竞争文本队列会挤掉 live 行甩尾）；
+    /// toolUseId 是 UUID 级唯一、无竞争面。live 池命中永远优先（user 行）。
+    private var byReplayKey: [String: String] = [:]
+    /// [S1a] 回放池开关。**只有新路径（RemoteTurnReconciler）开启**：
+    /// 旧路径 planStableReplace（v1.14.32 回滚通道，SyncCore 调用）必须逐字节
+    /// 保持旧行为，否则"回滚 = 还原 v1.14.32"的语义被破坏（死隔离 gate）。
+    private let formUpgradePoolEnabled: Bool
     /// 已被认领的本地行 id（同一行不得被两条回放行占用）
     private var claimedRowIds: Set<String> = []
 
@@ -59,7 +81,11 @@ struct RemoteHistoryOwnerIndex {
     ///   - dbRows: 本地现有行（`ChatStore.loadMessages` 原样输出）
     ///   - deleteIds: 本轮将被删除的行 id——不得进池（否则本轮回放行会顶替
     ///     一个马上要被删的 id：旧行已删 + 新行不插 = 用户消息净丢）
-    init(dbRows: [RawMessage], excluding deleteIds: Set<String>) {
+    ///   - formUpgradePool: [S1a] 是否开启回放池（旧形态互认）。默认关——
+    ///     仅新路径 RemoteTurnReconciler 显式传 true，回滚通道保持 v1.14.32 行为。
+    init(dbRows: [RawMessage], excluding deleteIds: Set<String>,
+         formUpgradePool: Bool = false) {
+        formUpgradePoolEnabled = formUpgradePool
         // ⚠️ 只收 **live 行**（UUID）——回放行（bridge-*/past-*）**不得进池**：
         // 它们本身就是回放产物，不是"本地承载行"；进池后会与真正的 live 行
         // 竞争同一个文本队列（队列按 sort_order 出队，回放行常常更靠前），
@@ -86,12 +112,51 @@ struct RemoteHistoryOwnerIndex {
             guard let key = Self.textKey(parts: row.parts) else { continue }
             textQueues[key, default: []].append(row.id)
         }
+        // [S1a] 第二遍：回放行进强身份池（不碰文本队列，理由见字段注释）。
+        // 排在 live 池之后 + `??=` 只填空键 ⇒ 同一强身份 live 承载行永远优先，
+        // 回放池仅做「旧形态互认」，不抢 live 行的认领权。
+        if formUpgradePoolEnabled {
+            for row in dbRows where ReplayRowId.isReplayRow(row.id)
+                && !deleteIds.contains(row.id) {
+                for key in Self.strongKeys(of: row) {
+                    byReplayKey[key] = byReplayKey[key] ?? row.id
+                }
+            }
+        }
     }
 
     /// 为一条回放行认领本地承载行（结果语义见 OwnerClaim）。
     /// "命中即消费一次"——保证第 i 个回放行对上第 i 个**未被占用**的本地行；
     /// 超额命中（第 i+n 条）返回 .duplicate 而不是当新内容插入（v1.14.31 F1）。
     mutating func claimOwner(for raw: RawMessage) -> OwnerClaim {
+        // [S1a] 回放池探测（非己方旧形态）。**优先级按角色**：
+        //   · assistant：直通回放池（live 池本就不收 assistant，无竞争）；
+        //   · user：live 三步池（cmid/toolUseId）优先——若旧形态 G 先命中，
+        //     升级插入的 R 会与 live 承载行 L 双份（丢 L 保 R 是行为回退）。
+        // self 命中（同 id 重放）跳过走原分支，幂等承载。
+        if formUpgradePoolEnabled, ReplayRowId.isReplayRow(raw.id) {
+            if raw.role != .user {
+                for key in Self.strongKeys(of: raw) {
+                    guard let owner = byReplayKey[key], owner != raw.id else { continue }
+                    return claimedRowIds.insert(owner).inserted ? .owner(owner) : .duplicate
+                }
+                return .unmatched
+            }
+            // user：先查 cmid / toolUseId 两个 live 池（peek 不消费），
+            // 都未命中才看回放池（peek），再落原有三步（含文本兜底）。
+            let liveHit = (raw.clientMessageId.flatMap { byClientMessageId[$0] })
+                ?? (raw.parts.first.flatMap { part in
+                    guard case .toolResult(let tr) = part else { return nil }
+                    return byToolUseId[tr.toolUseId]
+                })
+            if liveHit == nil {
+                for key in Self.strongKeys(of: raw) {
+                    guard let owner = byReplayKey[key], owner != raw.id else { continue }
+                    return claimedRowIds.insert(owner).inserted ? .owner(owner) : .duplicate
+                }
+            }
+        }
+
         guard raw.role == .user else { return .unmatched }
 
         // 1. clientMessageId（协议身份，首选）
@@ -123,6 +188,24 @@ struct RemoteHistoryOwnerIndex {
     }
 
     // MARK: - 内容键（兜底匹配用）
+
+    /// [S1a] 一行的**强身份键**集合：clientMessageId + 全部 toolUse/toolResult
+    /// 的 toolUseId。键带类型前缀（c:/u:/r:），与 `RemoteHistoryRepair.partKey`
+    /// 同族语义但**不含文本/媒体键**——内容级配对在认领侧被明文否决，这里
+    /// 只认 UUID 级身份。一行多个键全部入池（聚合行 1:N 承载时每个 call id
+    /// 都能指回它）。
+    static func strongKeys(of raw: RawMessage) -> [String] {
+        var keys: [String] = []
+        if let cid = raw.clientMessageId, !cid.isEmpty { keys.append("c:\(cid)") }
+        for part in raw.parts {
+            switch part {
+            case .toolUse(let tu): keys.append("u:\(tu.toolUseId)")
+            case .toolResult(let tr): keys.append("r:\(tr.toolUseId)")
+            case .text, .mediaRef: break
+            }
+        }
+        return keys
+    }
 
     /// 用户正文配对键：第一个「剥掉附件 XML 后非空」的 text part。
     /// 无文本部分（纯图片 / tool_result-only 行）→ nil（不参与文本配对，

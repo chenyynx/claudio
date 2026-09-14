@@ -7,7 +7,7 @@
 // |---|---|---|
 // | 合并依据 | 行 id 幂等 upsert | **回合**：live 聚合行 ↔ 该回合的服务端扁平行 |
 // | live 聚合行 | 永不处理（永久保留 → 重复） | 回合被服务端承载且已终结 → **吸收删除** |
-// | 回放 user 行 | 一律插入（与 live 行双份） | 命中本地承载行 → 不插（防双份） |
+// | 回放 user 行 | 一律插入（与 live 行双份） | 命中本地承载行 → 不插（防双份）；命中旧形态回放行 → 顶替它（[S1a] 形态升级） |
 // | 未落库内容 | 一律排到会话末尾（甩尾） | 落在其**所属回合之后**（未知回合才排末尾） |
 //
 // 为什么不继续"补丁式修 planStableReplace"：assistant 回合的两份数据是
@@ -19,6 +19,10 @@
 //   · 无 turnKey 的老 live 行**不在本模块吸收**，交由 `RemoteHistoryRepair`
 //     的内容覆盖匹配（要求全部 part 逐个对齐，误判概率 ≈ 0）；
 //   · user 行永不吸收（本地行携带附件/解析产物，其重复由插入侧 OwnerIndex 拦截）；
+//   · [S1a] 回放行 ↔ 回放行强身份互中（桥 gen→real 回填 / 两路先后入库致同
+//     条目两种 `bm-` 主键）→ **形态升级**：插入/保留快照形态、删旧形态。
+//     不做"保旧丢新"——旧 id 不在桥现行 id 空间，会永久 miss serverIdSet
+//     判定被 headRows 甩头（2026-09-14 dupContent 主形态）；
 //   · 删除集**分级保护**：调用方传入的 `supersededLegacyIds` 里的 `bm-` 正主
 //     一律不删（上游 id 空间可能搞混）；由 OwnerIndex 证实的 `redundantReplayIds`
 //     可删（内容已被本地行承载，有据可依）。
@@ -71,7 +75,8 @@ enum RemoteTurnReconciler {
         // = 桥超录（watchdog 重发），不插入。OwnerIndex 只对 DB 行生效，
         // 当两条都是新行时 OwnerIndex 返回两条 `.unmatched` —— 必须在这里
         // 补一层批次级拦截。
-        var owners = RemoteHistoryOwnerIndex(dbRows: dbRows, excluding: supersededLegacyIds)
+        var owners = RemoteHistoryOwnerIndex(dbRows: dbRows, excluding: supersededLegacyIds,
+                                             formUpgradePool: true)
         var inserts: [RawMessage] = []
         var placements: [(turnIndex: Int, rowId: String)] = []
         var placedLiveIds: Set<String> = []
@@ -89,6 +94,22 @@ enum RemoteTurnReconciler {
             }
 
             let claim = owners.claimOwner(for: raw)
+
+            // [S1a] 强身份互中**另一条回放行**（旧形态）→ 形态升级：快照形态
+            // 存活、旧形态退场。方向不可反（保 G 丢 R）：G 不在桥现行 id 空间，
+            // 后续每轮校准 `serverIdSet` miss → headRows 判"窗外回放行"甩到
+            // 会话头部 + 内容位置漂移（本次乱序的机制本体）。两种命中：
+            //   · G 在库、R 新到 → 插 R 占位、删 G（回合中升级）
+            //   · G/R 都在库（存量双行）→ R 在位、删 G（存量自愈）
+            // 旧形态未被本轮快照覆盖到（在库里躺着）不受影响——删除只发生在
+            // 强身份互中当轮，有据可依。
+            if case .owner(let owner) = claim, owner != raw.id,
+               ReplayRowId.isReplayRow(owner) {
+                if !dbIds.contains(raw.id) { inserts.append(raw) }
+                placements.append((turnIndex, raw.id))
+                if dbIds.contains(owner) { redundantReplayIds.append(owner) }
+                continue
+            }
 
             if dbIds.contains(raw.id) {
                 switch claim {

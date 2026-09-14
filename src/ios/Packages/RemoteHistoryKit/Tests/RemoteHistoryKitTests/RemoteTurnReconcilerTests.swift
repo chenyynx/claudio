@@ -218,3 +218,56 @@ final class RemoteTurnReconcilerTests: XCTestCase {
         XCTAssertTrue(missing.isEmpty, "漏一行 = 它保持旧号 = 撞车")
     }
 }
+
+// MARK: - [S1a 2026-09-14] 形态升级（回放行互中 → 快照形态存活）
+final class RemoteTurnReconcilerS1aTests: XCTestCase {
+
+    private var boundary: RawMessage {
+        RemoteHistoryFixture.row(id: "bm-u1", parts: [.text("看图")], clientMessageId: "cmid-1")
+    }
+
+    func test_oldFormInDb_newFormArrives_upgrades() {
+        // G→R 在途升级：库里有旧形态，本轮快照带新形态 → 插 R、删 G、R 在位。
+        let g = RemoteHistoryFixture.row(id: "bm-g", parts: [RemoteHistoryFixture.toolResult(id: "call-1")])
+        let r = RemoteHistoryFixture.row(id: "bm-r", parts: [RemoteHistoryFixture.toolResult(id: "call-1")])
+        let plan = RemoteTurnReconciler.plan(
+            serverRaws: [boundary, r],
+            dbRows: [boundary, g], lastTurnFinished: true)
+        XCTAssertEqual(plan.inserts.map(\.id), ["bm-r"])
+        XCTAssertEqual(plan.deleteIds, ["bm-g"])
+        XCTAssertEqual(plan.orderedIds, ["bm-u1", "bm-r"], "新形态必须占据旧形态腾出的回合位")
+    }
+
+    func test_bothFormsInDb_convergesToSnapshotForm() {
+        // 存量双行（上次校准漏进来的 G + 已在库的 R）：快照再发 R → 删 G 保 R。
+        let g = RemoteHistoryFixture.row(id: "bm-g", parts: [RemoteHistoryFixture.toolResult(id: "call-1")])
+        let r = RemoteHistoryFixture.row(id: "bm-r", parts: [RemoteHistoryFixture.toolResult(id: "call-1")])
+        let plan = RemoteTurnReconciler.plan(
+            serverRaws: [boundary, r], dbRows: [boundary, g, r], lastTurnFinished: true)
+        XCTAssertTrue(plan.inserts.isEmpty, "R 已在库，不得二次插入")
+        XCTAssertEqual(plan.deleteIds, ["bm-g"])
+        XCTAssertTrue(plan.orderedIds.contains("bm-r"))
+        XCTAssertFalse(plan.orderedIds.contains("bm-g"))
+    }
+
+    func test_oldFormWithoutSnapshot_untouched() {
+        // 旧形态本轮未被快照覆盖（掉窗）→ 不动它（无据不删）。
+        let g = RemoteHistoryFixture.row(id: "bm-g", parts: [RemoteHistoryFixture.toolResult(id: "call-1")])
+        let plan = RemoteTurnReconciler.plan(
+            serverRaws: [boundary], dbRows: [boundary, g], lastTurnFinished: true)
+        XCTAssertTrue(plan.deleteIds.isEmpty)
+        XCTAssertTrue(plan.inserts.isEmpty)
+    }
+
+    func test_assistantFormUpgrade_insertsNewDeletesOld() {
+        // 无边界 user 行的窗口段 = head-orphan 哨兵回合，照样能承载形态升级。
+        let g = RemoteHistoryFixture.row(id: "bm-g", role: .assistant,
+                                         parts: [RemoteHistoryFixture.toolUse(id: "call-9")])
+        let r = RemoteHistoryFixture.row(id: "bm-r", role: .assistant,
+                                         parts: [RemoteHistoryFixture.toolUse(id: "call-9")])
+        let plan = RemoteTurnReconciler.plan(
+            serverRaws: [r], dbRows: [g], lastTurnFinished: true)
+        XCTAssertEqual(plan.inserts.map(\.id), ["bm-r"])
+        XCTAssertEqual(plan.deleteIds, ["bm-g"])
+    }
+}

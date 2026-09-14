@@ -199,3 +199,89 @@ final class WireUuidHoistTests: XCTestCase {
         XCTAssertEqual(viaEntries, viaRaw)
     }
 }
+
+// MARK: - [S1a 2026-09-14] 回放池强身份互认（形态升级的认领侧）
+//
+// 事故形态：桥对同一 wire 条目的 uuid 原位变异（gen→real 回填、两路先后入库），
+// 旧形态 bm-{G} 已在库、快照又发 bm-{R} → 主键互不相识 → 双行 + 旧行 miss
+// serverIdSet 被甩头。回放池让两条形态**互认**（只认 toolUseId/clientMessageId，
+// 不认文本——内容级配对是 09-11 对抗审查明文否决的）。
+
+final class ReplayPoolIdentityTests: XCTestCase {
+
+    private func row(_ id: String, role: MessageRole = .user, parts: [ContentPart],
+                     cmid: String? = nil) -> RawMessage {
+        RemoteHistoryFixture.row(id: id, role: role, parts: parts, clientMessageId: cmid)
+    }
+    private func tr(_ tu: String) -> ContentPart { RemoteHistoryFixture.toolResult(id: tu) }
+    private func tu(_ id: String) -> ContentPart { RemoteHistoryFixture.toolUse(id: id) }
+
+    func test_assistantReplay_hitsOldFormInDb() {
+        // assistant 回放行原本直通 .unmatched（插入 → 与库里旧形态双份）。
+        let g = row("bm-g", role: .assistant, parts: [tu("call-1")])
+        var index = RemoteHistoryOwnerIndex(dbRows: [g], excluding: [], formUpgradePool: true)
+        XCTAssertEqual(index.claimOwner(for: row("bm-r", role: .assistant, parts: [tu("call-1")])),
+                       .owner("bm-g"), "同一 tool_use 的两种 uuid 形态必须互认")
+    }
+
+    func test_assistantReplay_neverClaimsLiveAssistantRow() {
+        // live 承载行不进回放池：assistant 的 live↔回放配对由 Reconciler 的
+        // 回合吸收负责（删 live 插权威行），认领侧不得抢这条分工。
+        let live = row("UUID-A", role: .assistant, parts: [tu("call-1")])
+        var index = RemoteHistoryOwnerIndex(dbRows: [live], excluding: [], formUpgradePool: true)
+        XCTAssertEqual(index.claimOwner(for: row("bm-x", role: .assistant, parts: [tu("call-1")])),
+                       .unmatched)
+    }
+
+    func test_userRow_livePoolWinsOverReplayPool() {
+        // 三形态并存（L live 承载 + G 旧回放 + R 快照）：live 池必须先命中，
+        // 否则升级插入的 R 会与 L 双份（行为回退）。
+        let l = row("UUID-L", parts: [tr("call-1")])
+        let g = row("bm-g", parts: [tr("call-1")])
+        var index = RemoteHistoryOwnerIndex(dbRows: [l, g], excluding: [], formUpgradePool: true)
+        XCTAssertEqual(index.claimOwner(for: row("bm-r", parts: [tr("call-1")])),
+                       .owner("UUID-L"))
+    }
+
+    func test_userRow_replayPoolUpgradesWhenNoLiveOwner() {
+        let g = row("bm-g", parts: [tr("call-1")])
+        var index = RemoteHistoryOwnerIndex(dbRows: [g], excluding: [], formUpgradePool: true)
+        XCTAssertEqual(index.claimOwner(for: row("bm-r", parts: [tr("call-1")])), .owner("bm-g"))
+    }
+
+    func test_selfForm_notConsumed() {
+        // 快照重放**同一条**旧形态（桥还没回填）：owner==raw.id → 不算互认、
+        // 不消费 claimedRowIds，走原分支幂等在位。
+        let g = row("bm-g", parts: [tr("call-1")])
+        var index = RemoteHistoryOwnerIndex(dbRows: [g], excluding: [], formUpgradePool: true)
+        XCTAssertEqual(index.claimOwner(for: g), .unmatched)
+    }
+
+    func test_secondUpgradeCandidateIsDuplicate() {
+        let g = row("bm-g", parts: [tr("call-1")])
+        var index = RemoteHistoryOwnerIndex(dbRows: [g], excluding: [], formUpgradePool: true)
+        XCTAssertEqual(index.claimOwner(for: row("bm-r1", parts: [tr("call-1")])), .owner("bm-g"))
+        XCTAssertEqual(index.claimOwner(for: row("bm-r2", parts: [tr("call-1")])), .duplicate,
+                       "同一旧形态已被一条新形态认领，第二条同身份行=超录，丢弃")
+    }
+
+    func test_textNeverEntersReplayPool() {
+        let g = row("bm-g", role: .assistant, parts: [.text("你好")])
+        var index = RemoteHistoryOwnerIndex(dbRows: [g], excluding: [], formUpgradePool: true)
+        XCTAssertEqual(index.claimOwner(for: row("bm-r", role: .assistant, parts: [.text("你好")])),
+                       .unmatched, "文本键不得进回放池——跨回合同文本误认必爆")
+    }
+
+    func test_clientMessageIdWorksInReplayPool() {
+        let g = row("bm-g", parts: [.text("看图")], cmid: "c-1")
+        var index = RemoteHistoryOwnerIndex(dbRows: [g], excluding: [], formUpgradePool: true)
+        XCTAssertEqual(index.claimOwner(for: row("bm-r", parts: [.text("看图")], cmid: "c-1")),
+                       .owner("bm-g"))
+    }
+
+    func test_rowsScheduledForDeletion_notPooled() {
+        let g = row("bm-g", parts: [tr("call-1")])
+        var index = RemoteHistoryOwnerIndex(dbRows: [g], excluding: ["bm-g"], formUpgradePool: true)
+        XCTAssertEqual(index.claimOwner(for: row("bm-r", parts: [tr("call-1")])), .unmatched)
+    }
+}
