@@ -758,6 +758,12 @@ extension CollectionViewMessageListV3 {
 
         // === O(1) Lookup Indices ===
         private var messageIndex: [UUID: Int] = [:]
+        /// [T-ios-width-purge-reseed] 比对**实例身份**而不是用 bool：VC 重建会换
+        /// MessageListLayout 实例，bool 仍为 true 就会永不重挂 ⇒ 修复静默失效。
+        /// （applySnapshot 每秒可能被调多次，故只在身份不同时装一次。）
+        private weak var reseedHookLayout: MessageListLayout?
+        /// 关断后**逐字节退回**今天的行为（purge 后不重播种，离屏行吃常数 200）。
+        static let reseedAfterWidthPurgeKey = "claudio.list.reseedAfterWidthPurge"
         private var itemToIndex: [MessageListItem: Int] = [:]
 
         // === Snapshot State ===
@@ -2726,6 +2732,26 @@ extension CollectionViewMessageListV3 {
 
             // Remap height cache + set accurate estimates for ALL item types
             if let layout = viewController?.messageListLayout {
+                // [T-ios-width-purge-reseed] 宽度 purge 会把三档高度缓存清空，而离屏行
+                // 只有在这里（播种段）才会拿到高度。挂一次回调：清空后按**新宽度**重跑
+                // 播种。走 applySnapshot 是安全的——它的播种段在 `items unchanged` 的
+                // SKIP-return **之前**，所以重播种只填高度、不重建 cell（SKIP 省掉的
+                // 那部分开销一分不少地仍然省着）。
+                if reseedHookLayout !== layout {
+                    reseedHookLayout = layout
+                    layout.onHeightsPurgedForWidthChange = { [weak self] purgedCount in
+                        guard let self else { return }
+                        let enabled = UserDefaults.standard.object(forKey: Self.reseedAfterWidthPurgeKey) as? Bool ?? true
+                        guard enabled else {
+                            AppLogger(category: "SnapshotDiag").info("[SnapshotDiag] WIDTH-PURGE 重播种已被 kill switch 关闭 purged=\(purgedCount)（退回旧行为：离屏行将按常数 200 计）")
+                            return
+                        }
+                        guard !self.snapshotMessages.isEmpty else { return }
+                        AppLogger(category: "SnapshotDiag").info("[SnapshotDiag] WIDTH-PURGE 清空高度 purged=\(purgedCount) → 按新宽度重播种 items=\(self.snapshotMessages.count)")
+                        self.applySnapshot(messages: self.snapshotMessages, caller: "reseed-after-width-purge")
+                    }
+                }
+
                 layout.updateCacheForSnapshot(oldIds: previousSnapshotIds, newIds: newItems)
 
                 // [T-ios-first-block-footer-gap] Collapse the footer the moment

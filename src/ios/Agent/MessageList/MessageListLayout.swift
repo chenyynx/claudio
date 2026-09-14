@@ -16,6 +16,15 @@ final class MessageListLayout: UICollectionViewLayout {
     /// Default estimated height for cells that haven't been measured yet.
     var estimatedItemHeight: CGFloat = 200
 
+    /// [T-ios-width-purge-reseed] 宽度稳定后 `scheduleWidthPurge` 会把三档高度缓存
+    /// （heightCache / precalcHeights / estimatedHeights）**全部清空**，而它只对可见
+    /// cell 做重测 —— 离屏行就此**没有任何高度来源**，`prepare()` 只能退回上面那个
+    /// 常数 200。pp 真机 14:00 日志实锤：那些行真实高 28–72pt，于是每揭示一行塌
+    /// ~160pt，contentSize 4326→3834→3175→2235→2071 连续缩，offset 越过新的最大
+    /// 可滚值被 UIKit 夹回边界，他的原话是"往上滑一直弹我、像卡机一样"。
+    /// 布局不认识内容，重播种只能交给持有 items 的协调器 —— 故以回调交出事件。
+    var onHeightsPurgedForWidthChange: ((_ purgedRowCount: Int) -> Void)?
+
     /// Per-item estimated heights based on content analysis (text length, role, etc.).
     /// These are cheaper than full UIHostingConfiguration rendering but much more
     /// accurate than the single `estimatedItemHeight` constant, reducing the
@@ -731,12 +740,16 @@ final class MessageListLayout: UICollectionViewLayout {
             // too — otherwise prepare() uses stale heights from the old width,
             // producing an incorrect contentSize that prevents scroll-to-bottom
             // from reaching the true end.
+            // [T-ios-width-purge-reseed] 计数必须在清空**之前**取，否则永远是 0。
+            let purgedCount = self.heightCache.count + self.precalcHeights.count + self.estimatedHeights.count
             self.heightCache.removeAll()
             self.precalcHeights.removeAll()
             self.estimatedHeights.removeAll()
             self.geometryReaderConfirmed.removeAll()
             self.lastSettledWidth = cv.bounds.width
             self.invalidateLayout()
+            // 通知协调器按新宽度重播种（其内有 kill switch，可退回今天的旧行为）。
+            self.onHeightsPurgedForWidthChange?(purgedCount)
         }
     }
 
