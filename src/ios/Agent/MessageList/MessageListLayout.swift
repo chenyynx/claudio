@@ -37,6 +37,15 @@ final class MessageListLayout: UICollectionViewLayout {
     /// for blocks that have a cachedAttributedString.
     private var precalcHeights: [Int: CGFloat] = [:]
 
+    /// 常数回退探针（[T-ios-def-fallback]）：prepare() 退到 `estimatedItemHeight`
+    /// 常数的行数（三档皆无 = 播种静默洞的量化证据）。pp 真机 09-15 日志 est=200
+    /// ×213，但播种段无覆盖率日志，无法区分"guard continue 静默"与"播种未跑"。
+    /// 开关（与 claudio.list.* 既有门控惯例一致）：false = 逐字节退回改动前行为
+    /// （不计数、不打 WARN、不写 44pt 兜底）。
+    static let defFallbackProbeKey = "claudio.list.defFallbackProbe"
+    private(set) var defFallbackCount = 0
+    private var defFallbackLogged = false
+
     func setEstimatedHeight(_ height: CGFloat, at index: Int) {
         // Don't overwrite if we already have a real measured height.
         guard heightCache[index] == nil else { return }
@@ -196,6 +205,11 @@ final class MessageListLayout: UICollectionViewLayout {
         itemAttributes.reserveCapacity(itemCount)
 
         var y: CGFloat = 0
+        // [T-ios-def-fallback] 按 pass 复位：度量"本次 prepare 退常数"而非布局实例
+        // 生命周期累计——否则跨多次 prepare 各 miss 几行也会累到 >10，把"多个小量"
+        // 误报成"单次大面积"。开关关则连计数都不做（退回改动前行为）。
+        let defFallbackProbe = UserDefaults.standard.object(forKey: Self.defFallbackProbeKey) as? Bool ?? true
+        defFallbackCount = 0
         for i in 0..<itemCount {
             let ip = IndexPath(item: i, section: 0)
             let attrs = UICollectionViewLayoutAttributes(forCellWith: ip)
@@ -208,6 +222,8 @@ final class MessageListLayout: UICollectionViewLayout {
                 h = est
             } else {
                 h = estimatedItemHeight
+                // [T-ios-def-fallback] 三档皆无 = 该 index 从未被播种段覆盖。
+                if defFallbackProbe { defFallbackCount &+= 1 }
             }
             attrs.frame = CGRect(x: 0, y: y, width: width, height: h)
             itemAttributes.append(attrs)
@@ -244,6 +260,15 @@ final class MessageListLayout: UICollectionViewLayout {
         // sessions iterating the full itemCount can show up as scroll hitches.
         let elapsed = (CACurrentMediaTime() - t0) * 1000
         Self.prepareCallCount &+= 1
+        // [T-ios-def-fallback] 播种覆盖率探针：本 pass（已按 pass 复位）若大面积常数
+        // 回退（>10 行）打一条 WARN（仅一次，且受开关门控）。def 大 + seedMiss=0 → 播种
+        // 段压根没跑（purge/reset 后未 reseed）；def 大 + seedMiss 大 → 播种跑但 guard 静默。
+        // 注：两个 guard 在播种同步 pass 内结构上不可达（messageIndex 与 newItems 同源），
+        // 故 seedMiss 实战恒 0——这本身证伪"est=200 来自 guard 竞态"假设，真因指向 purge 窗口。
+        if defFallbackProbe && defFallbackCount > 10 && !defFallbackLogged {
+            defFallbackLogged = true
+            AppLogger(category: "CellSizing").warning("[CellSizing][DEF-FALLBACK] prepare #\(Self.prepareCallCount) 常数回退=\(defFallbackCount) items=\(itemCount) cache=\(heightCache.count) pre=\(precalcHeights.count) est=\(estimatedHeights.count)")
+        }
         #if DEBUG
         // [T-ios-scroll-metrics-ring] Record every full re-flow.
         ScrollMetricsRecorder.shared.record(

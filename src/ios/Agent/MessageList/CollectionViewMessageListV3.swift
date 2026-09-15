@@ -764,6 +764,9 @@ extension CollectionViewMessageListV3 {
         private weak var reseedHookLayout: MessageListLayout?
         /// 关断后**逐字节退回**今天的行为（purge 后不重播种，离屏行吃常数 200）。
         static let reseedAfterWidthPurgeKey = "claudio.list.reseedAfterWidthPurge"
+        /// [T-ios-def-fallback] 与 MessageListLayout 共用同一开关：两处探针随
+        /// `claudio.list.defFallbackProbe` 同开同关；false = 退回改动前行为。
+        static let defFallbackProbeKey = "claudio.list.defFallbackProbe"
         private var itemToIndex: [MessageListItem: Int] = [:]
 
         // === Snapshot State ===
@@ -2853,6 +2856,9 @@ extension CollectionViewMessageListV3 {
                 streamGeneration &+= 1
 
                 let cvWidth = viewController?.collectionView.bounds.width ?? 390
+                // [T-ios-def-fallback] 播种覆盖率计数：guard 静默 continue 的次数。
+                let defFallbackProbe = UserDefaults.standard.object(forKey: Self.defFallbackProbeKey) as? Bool ?? true
+                var seedMisses = 0
                 for (i, item) in newItems.enumerated() {
                     // [T-ios-scroll-decel-height-drift] Register the stable
                     // content key for this index so a later self-size writes the
@@ -2960,9 +2966,26 @@ extension CollectionViewMessageListV3 {
                         #endif
 
                     case .assistantBlock(let msgId, let blockId):
-                        guard let msgIdx = messageIndex[msgId], msgIdx < messages.count else { continue }
+                        // [T-ios-def-fallback] 两个 guard 原本静默 continue：该行从此
+                        // 没有任何高度来源，prepare() 退常数 200，揭示时塌 ~160pt——
+                        // pp 真机 09-15 est=200×213 的候选来源之一（messageIndex 与
+                        // messages 竞态时成批命中）。改退为 estimateItemHeight 兜底
+                        // （块缺失=44，远好于 200）并计数，播种末尾一次性上报。
+                        guard let msgIdx = messageIndex[msgId], msgIdx < messages.count else {
+                            if defFallbackProbe {
+                                seedMisses &+= 1
+                                layout.setEstimatedHeight(44, at: i)
+                            }
+                            continue
+                        }
                         let msg = messages[msgIdx]
-                        guard let block = msg.blocks.first(where: { $0.id == blockId }) else { continue }
+                        guard let block = msg.blocks.first(where: { $0.id == blockId }) else {
+                            if defFallbackProbe {
+                                seedMisses &+= 1
+                                layout.setEstimatedHeight(44, at: i)
+                            }
+                            continue
+                        }
 
                         switch block.kind {
                         case .text:
@@ -3123,6 +3146,14 @@ extension CollectionViewMessageListV3 {
                             layout.setEstimatedHeight(est, at: i)
                         }
                     }
+                }
+
+                // [T-ios-def-fallback] 播种覆盖率一次性上报：misses>0 = 有行拿不到块内容
+                // （messageIndex 竞态形态）。实战该 guard 在同步 pass 内不可达（见 CellSizing
+                // DEF-FALLBACK 注释），故 misses 恒 0；这恰证伪"est=200 来自 guard 静默"假设。
+                // 日志受 claudio.list.defFallbackProbe 开关门控。
+                if seedMisses > 0 && defFallbackProbe {
+                    AppLogger(category: "SnapshotDiag").warning("[SnapshotDiag] SEED-COVERAGE caller=\(caller) items=\(newItems.count) misses=\(seedMisses)（已按 44pt 兜底播种）")
                 }
 
             }
