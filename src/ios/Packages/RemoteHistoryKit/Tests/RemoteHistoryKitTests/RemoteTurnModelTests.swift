@@ -206,4 +206,77 @@ final class RemoteTurnModelTests: XCTestCase {
         XCTAssertFalse(RemoteTurnModel.shouldAbsorb(
             liveRow: RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-other"), in: turns))
     }
+
+    // MARK: - 吸收归因（[T-ios-absorb-attribution]）
+
+    /// 🔴 归因与判定不得漂移：`shouldAbsorb=true` 当且仅当 `absorbSkip` 对
+    /// 非 user 行返回 nil。遍历各形态逐一互锁，改一门必改另一门，否则这里红。
+    func test_absorbSkip_neverDisagreesWithShouldAbsorb() {
+        let carried = RemoteTurnModel.splitServerTurns(
+            RemoteHistoryFixture.serverRowsForSameTurn(), lastTurnFinished: true)
+        let inProgress = RemoteTurnModel.splitServerTurns(
+            RemoteHistoryFixture.serverRowsForSameTurn(), lastTurnFinished: false)
+        let emptyTurn = [RemoteTurn(key: "cmid-1", serverRowIds: [], isFinished: true)]
+        let cases: [RawMessage] = [
+            RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-1"),           // 可吸收
+            RemoteHistoryFixture.liveAggregateRow(turnKey: nil),                // noKey
+            RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-other"),       // unknownTurn
+            RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-1", errorInfo: "boom"), // err
+        ]
+        for (name, turns) in [("carried", carried), ("inProgress", inProgress), ("empty", emptyTurn)] {
+            for row in cases {
+                let absorb = RemoteTurnModel.shouldAbsorb(liveRow: row, in: turns)
+                let skip = RemoteTurnModel.absorbSkip(forLiveRow: row, in: turns)
+                XCTAssertEqual(absorb, skip == nil,
+                    "turns=\(name) key=\(row.remoteTurnKey ?? "nil") err=\(row.errorInfo != nil): absorb=\(absorb) 但 skip=\(String(describing: skip)) 不自洽")
+            }
+        }
+    }
+
+    func test_absorbSkip_noKeyWhenRowHasNoTurnKey() {
+        let turns = RemoteTurnModel.splitServerTurns(
+            RemoteHistoryFixture.serverRowsForSameTurn(), lastTurnFinished: true)
+        XCTAssertEqual(
+            RemoteTurnModel.absorbSkip(forLiveRow: RemoteHistoryFixture.liveAggregateRow(turnKey: nil), in: turns),
+            .noKey, "头号嫌疑：live 落库时回合键没写进去")
+    }
+
+    func test_absorbSkip_unknownTurnWhenKeyMissingInTable() {
+        let turns = RemoteTurnModel.splitServerTurns(
+            RemoteHistoryFixture.serverRowsForSameTurn(), lastTurnFinished: true)
+        XCTAssertEqual(
+            RemoteTurnModel.absorbSkip(forLiveRow: RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-other"), in: turns),
+            .unknownTurn, "有键但回合表查不到（gen→real 身份变异 / 跨轮残键）")
+    }
+
+    func test_absorbSkip_serverEmptyWhenTurnHasNoContentRows() {
+        let turns = [RemoteTurn(key: "cmid-1", serverRowIds: ["bm-u1"], isFinished: true)]
+        XCTAssertEqual(
+            RemoteTurnModel.absorbSkip(forLiveRow: RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-1"), in: turns),
+            .serverEmpty, "只有 user 边界行、无助手内容 → 保守不吸收，但要能看见")
+    }
+
+    func test_absorbSkip_notFinishedWhileTurnInProgress() {
+        let turns = RemoteTurnModel.splitServerTurns(
+            RemoteHistoryFixture.serverRowsForSameTurn(), lastTurnFinished: false)
+        XCTAssertEqual(
+            RemoteTurnModel.absorbSkip(forLiveRow: RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-1"), in: turns),
+            .notFinished)
+    }
+
+    func test_absorbSkip_errorInfoHardVeto() {
+        let turns = RemoteTurnModel.splitServerTurns(
+            RemoteHistoryFixture.serverRowsForSameTurn(), lastTurnFinished: true)
+        XCTAssertEqual(
+            RemoteTurnModel.absorbSkip(
+                forLiveRow: RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-1", errorInfo: "boom"), in: turns),
+            .errorInfo, "错误否决优先于回合键判定——先于 noKey：带 err 且无键也报 err")
+    }
+
+    func test_absorbSkip_nilWhenAbsorbable() {
+        let turns = RemoteTurnModel.splitServerTurns(
+            RemoteHistoryFixture.serverRowsForSameTurn(), lastTurnFinished: true)
+        XCTAssertNil(
+            RemoteTurnModel.absorbSkip(forLiveRow: RemoteHistoryFixture.liveAggregateRow(turnKey: "cmid-1"), in: turns))
+    }
 }

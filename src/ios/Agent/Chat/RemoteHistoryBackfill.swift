@@ -775,7 +775,14 @@ final class RemoteHistoryBackfill {
 
             let changed = !turnPlan.inserts.isEmpty || !turnPlan.deleteIds.isEmpty || applied.orderWrites > 0
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - startedAt) * 1000
-            logger.info("[HistorySync] session=\(sessionId.prefix(8)) turnReconcile done in \(String(format: "%.0f", elapsedMs))ms inserts=\(turnPlan.inserts.count) deletes=\(turnPlan.deleteIds.count) absorbed=\(turnPlan.absorbedLiveIds.count) repaired=\(repairIds.count) orderWrites=\(applied.orderWrites) ordered=\(turnPlan.orderedIds.count)")
+            // [T-ios-absorb-attribution] skips= 只在非空时打印：absorbed=0 且
+            // skip 全落 noKey/unknownTurn → 回合键链路断（落库时机/身份变异）；
+            // 全落 notFinished → 终结判定断；serverEmpty → 服务端回放形态断。
+            let skipDesc = turnPlan.absorbSkipCounts
+                .sorted { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) }
+                .map { "\($0.key):\($0.value)" }
+                .joined(separator: ",")
+            logger.info("[HistorySync] session=\(sessionId.prefix(8)) turnReconcile done in \(String(format: "%.0f", elapsedMs))ms inserts=\(turnPlan.inserts.count) deletes=\(turnPlan.deleteIds.count) absorbed=\(turnPlan.absorbedLiveIds.count)\(skipDesc.isEmpty ? "" : " skips=[\(skipDesc)]") repaired=\(repairIds.count) orderWrites=\(applied.orderWrites) ordered=\(turnPlan.orderedIds.count)")
 
             return RemoteHistorySyncOutcome(
                 changed: changed, lastWireType: lastWireType,

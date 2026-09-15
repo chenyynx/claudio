@@ -54,6 +54,24 @@ final class RemoteTurnReconcilerTests: XCTestCase {
 
         XCTAssertTrue(plan.deleteIds.isEmpty, "回合进行中：live 行是流式内容的唯一来源")
         XCTAssertEqual(plan.orderedIds.last, "B274A31B")
+        // [T-ios-absorb-attribution] 接线锁定：计划必须带出归因计数，
+        // 否则 done 日志的 skips= 永远为空 = 探针失明。
+        XCTAssertEqual(plan.absorbSkipCounts["notFinished"], 1)
+    }
+
+    func test_absorbSkipCounts_noKeyAttributionWhenRowLacksTurnKey() {
+        // [T-ios-absorb-attribution] absorbed=0 且行没键（头号嫌疑形态）→
+        // 归因必须是 noKey，而不是静默混进 unknownTurn。
+        let liveUser = RemoteHistoryFixture.row(
+            id: "UUID-U1", parts: [.text("看图")],
+            clientMessageId: "cmid-1", remoteTurnKey: "cmid-1", sortOrder: 1)
+        let orphan = RemoteHistoryFixture.liveAggregateRow(id: "NOKEY-1", turnKey: nil, sortOrder: 2)
+        let plan = RemoteTurnReconciler.plan(
+            serverRaws: RemoteHistoryFixture.serverRowsForSameTurn(),
+            dbRows: [liveUser, orphan], lastTurnFinished: true)
+        XCTAssertEqual(plan.absorbedLiveIds, [])
+        XCTAssertEqual(plan.absorbSkipCounts["noKey"], 1)
+        XCTAssertEqual(plan.absorbSkipCounts["notFinished"], nil)
     }
 
     // MARK: - 用户消息双份（插入侧拦截）

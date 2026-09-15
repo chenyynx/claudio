@@ -41,6 +41,10 @@ struct RemoteTurnReconcilePlan {
     let orderedIds: [String]
     /// 被吸收的 live 行（诊断）
     let absorbedLiveIds: [String]
+    /// [T-ios-absorb-attribution] 未被吸收的 assistant live 行按首要门计数
+    /// （noKey/unknownTurn/serverEmpty/notFinished/errorInfo）——纯诊断，
+    /// 判定零影响。09-15 真机 300 行会话 absorbed=0 贯穿的归因探针。
+    let absorbSkipCounts: [String: Int]
     /// 本次是否为"无变化"（供上层跳过 UI 重建）
     var isEmpty: Bool { inserts.isEmpty && deleteIds.isEmpty }
 }
@@ -146,6 +150,7 @@ enum RemoteTurnReconciler {
 
         // 2) live 行归属：吸收（冗余）或保留（其回合尚未被服务端承载）
         var absorbedLiveIds: [String] = []
+        var absorbSkipCounts: [String: Int] = [:]
         var survivorsByTurn: [Int: [RawMessage]] = [:]
         var unknownTurnRows: [RawMessage] = []
         for row in dbRows where !ReplayRowId.isReplayRow(row.id) {
@@ -154,6 +159,12 @@ enum RemoteTurnReconciler {
             if RemoteTurnModel.shouldAbsorb(liveRow: row, in: turns) {
                 absorbedLiveIds.append(row.id)
                 continue
+            }
+            // [T-ios-absorb-attribution] 诊断计数：user 行恒不吸收是承载策略
+            // （非"跳过"），不计；只给"本该可吸收却没吸收"的形态归因。
+            if row.role != .user,
+               let skip = RemoteTurnModel.absorbSkip(forLiveRow: row, in: turns) {
+                absorbSkipCounts[RemoteTurnModel.absorbSkipLabel(skip), default: 0] += 1
             }
             if let index = RemoteTurnModel.turnIndex(forLiveRow: row, in: turns) {
                 survivorsByTurn[index, default: []].append(row)
@@ -237,7 +248,8 @@ enum RemoteTurnReconciler {
             inserts: inserts,
             deleteIds: deleteIds,
             orderedIds: orderedIds,
-            absorbedLiveIds: absorbedLiveIds
+            absorbedLiveIds: absorbedLiveIds,
+            absorbSkipCounts: absorbSkipCounts
         )
     }
 

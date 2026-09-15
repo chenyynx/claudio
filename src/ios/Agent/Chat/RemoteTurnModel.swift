@@ -134,6 +134,44 @@ enum RemoteTurnModel {
         let turn = turns[index]
         return turn.isCarriedByServer && turn.isFinished
     }
+
+    /// live 行**不被吸收**的首要门（吸收归因诊断 [T-ios-absorb-attribution]）。
+    ///
+    /// 病根：真机 300 行长会话 `absorbed=0` 贯穿、live 聚合行只进不出，
+    /// 但**不知道卡在哪道门**——turnKey 未落库？回合键对不上？服务端没承载？
+    /// 回合未终结？v1.14.33 的 C10 注释已自认"无 turnKey → 保守保留"是设计内，
+    /// 但设计内 ≠ 不需要看见。本函数与 `shouldAbsorb` **同序同判**（判假即真），
+    /// 由单测锁死"absorb=true 恒返回 nil"，防归因与判定漂移。
+    ///
+    /// 五道门对 user 行不适用（user 恒不吸收是承载策略而非"跳过"），
+    /// 调用方在 user 行前自行过滤。
+    enum AbsorbSkip: String {
+        case noKey          // live 行没有 remoteTurnKey（落库时机竞态的头号嫌疑）
+        case unknownTurn    // 有键但回合表查不到（gen→real 回填 / 跨轮残键）
+        case serverEmpty    // 回合内服务端零内容行（非边界行计数 = 0）
+        case notFinished    // 回合未终结（进行中：live 行是唯一内容源，保守正确）
+        case errorInfo      // 本地错误唯一记录，永不吸收（保守正确）
+    }
+    static func absorbSkip(forLiveRow row: RawMessage, in turns: [RemoteTurn]) -> AbsorbSkip? {
+        guard row.errorInfo == nil else { return .errorInfo }
+        guard let turnKey = row.remoteTurnKey, !turnKey.isEmpty else { return .noKey }
+        guard let index = turns.firstIndex(where: { $0.key == turnKey }) else { return .unknownTurn }
+        let turn = turns[index]
+        guard turn.isCarriedByServer else { return .serverEmpty }
+        guard turn.isFinished else { return .notFinished }
+        return nil
+    }
+
+    /// 日志用短标签（避免 enum case 名撑爆 done 行）。
+    static func absorbSkipLabel(_ skip: AbsorbSkip) -> String {
+        switch skip {
+        case .noKey: return "noKey"
+        case .unknownTurn: return "unknownTurn"
+        case .serverEmpty: return "serverEmpty"
+        case .notFinished: return "notFinished"
+        case .errorInfo: return "err"
+        }
+    }
 }
 
 /// [T-ios-empty-turn-visible] 空回合成因。**纯判定**（无 AppLocalized / Logger 依赖），

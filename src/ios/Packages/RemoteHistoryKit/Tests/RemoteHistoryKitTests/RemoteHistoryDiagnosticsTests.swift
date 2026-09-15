@@ -50,6 +50,22 @@ final class RemoteHistoryDiagnosticsTests: XCTestCase {
         XCTAssertFalse(report.isHealthy)
     }
 
+    /// [T-ios-dupcontent-order-blindspot] parts 顺序不同的同内容行必须计入重复。
+    /// 真机 2026-09-15 实锤：live 聚合行与回放行 parts 顺序可不同，顺序敏感键
+    /// 让 UI 双份多组但 dupContent 恒报 1 → 验收指标失明。键 = 多重集。
+    func test_duplicateContentGroups_partOrderInsensitive() {
+        let dup = [
+            RemoteHistoryFixture.row(
+                id: "live", role: .assistant,
+                parts: [RemoteHistoryFixture.toolUse(id: "tu-1"), .text("answer")], sortOrder: 1000),
+            RemoteHistoryFixture.row(
+                id: "replay", role: .assistant,
+                parts: [.text("answer"), RemoteHistoryFixture.toolUse(id: "tu-1")], sortOrder: 2000),
+        ]
+        XCTAssertEqual(RemoteHistoryDiagnostics.inspect(sessionId: "S1", rows: dup).duplicateContentGroups, 1,
+            "同内容不同 parts 顺序 = 重复（live 聚合行 vs 回放行的正常形态）")
+    }
+
     func test_sameTextDifferentRole_isNotDuplicateContent() {
         let mixed = [
             RemoteHistoryFixture.row(id: "a", role: .user, parts: [.text("same")], sortOrder: 1000),

@@ -64,11 +64,15 @@ enum RemoteHistoryDiagnostics {
             }
         }
 
-        // 内容重复：同 role + 同 part 身份键序列（借用 Repair 的 partKey）
+        // 内容重复：同 role + 同 part 身份键**多重集**（借用 Repair 的 partKey）。
+        // [T-ios-dupcontent-order-blindspot] 键必须先 sorted 再 join：live 聚合行
+        // 与回放行的 parts 顺序可以不同（同一回合 [toolUse,text] vs [text,toolUse]），
+        // 顺序敏感键会让这种重复完全逃逸检测——真机 2026-09-15 日志：UI 双份多组、
+        // dupContent 恒报 1。role + 排序键序列 = 多重集相等，才符合"内容重复"语义。
         var contentCounts: [String: Int] = [:]
         for row in rows {
             let key = row.role.rawValue + "|"
-                + row.parts.map { RemoteHistoryRepair.partKey($0) }.joined(separator: ",")
+                + row.parts.map { RemoteHistoryRepair.partKey($0) }.sorted().joined(separator: ",")
             contentCounts[key, default: 0] += 1
         }
         let duplicateContentGroups = contentCounts.values.filter { $0 > 1 }.count
